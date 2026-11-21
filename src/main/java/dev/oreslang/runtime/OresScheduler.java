@@ -91,16 +91,31 @@ public final class OresScheduler implements AutoCloseable {
         Step<T> resume(Resume resume) throws Exception;
     }
 
+    /** Scheduler-owned lifecycle of one exact compiler child. */
+    enum CompilerAdmissionState {
+        PREPARED,
+        BOUND,
+        REGISTERED,
+        ENTERED,
+        NEVER_REGISTERED,
+        QUIESCENT,
+        INDETERMINATE
+    }
+
     /**
-     * Runtime-minted identity of one exact compiler-admitted scheduler child.
+     * Runtime-minted identity and scheduler-owned admission state for one exact
+     * compiler child.
      *
      * <p>The constructor is private and equality is intentionally object
-     * identity. The hidden scheduler epoch prevents a child token from another
-     * scheduler lifetime from becoming retirement authority.</p>
+     * identity. Callers can observe the monotonic state but cannot mutate it.
+     * Registration truth therefore comes from the scheduler itself rather than
+     * from a caller-maintained callback flag.</p>
      */
     public static final class CompilerTaskHandle<T> {
         private final Object schedulerEpoch;
         private final Object runnerIdentity;
+        private final AtomicReference<CompilerAdmissionState> admissionState =
+                new AtomicReference<>(CompilerAdmissionState.PREPARED);
 
         private CompilerTaskHandle(Object schedulerEpoch, Object runnerIdentity) {
             this.schedulerEpoch = Objects.requireNonNull(
@@ -108,17 +123,100 @@ public final class OresScheduler implements AutoCloseable {
             this.runnerIdentity = Objects.requireNonNull(
                     runnerIdentity, "runner identity");
         }
+
+        CompilerAdmissionState admissionState() {
+            return admissionState.get();
+        }
+
+        private void markBound() {
+            transition(
+                    CompilerAdmissionState.PREPARED,
+                    CompilerAdmissionState.BOUND,
+                    "compiler scheduler child bound out of order");
+        }
+
+        private void markRegistered() {
+            transition(
+                    CompilerAdmissionState.BOUND,
+                    CompilerAdmissionState.REGISTERED,
+                    "compiler scheduler child registered out of order");
+        }
+
+        private void markEntered() {
+            CompilerAdmissionState observed = admissionState.get();
+            if (observed == CompilerAdmissionState.ENTERED) return;
+            transition(
+                    CompilerAdmissionState.REGISTERED,
+                    CompilerAdmissionState.ENTERED,
+                    "compiler scheduler child entered out of order");
+        }
+
+        private void markNeverRegistered() {
+            for (;;) {
+                CompilerAdmissionState observed = admissionState.get();
+                if (observed != CompilerAdmissionState.PREPARED
+                        && observed != CompilerAdmissionState.BOUND) {
+                    throw new IllegalStateException(
+                            "never-registered compiler child had state " + observed);
+                }
+                if (admissionState.compareAndSet(
+                        observed, CompilerAdmissionState.NEVER_REGISTERED)) {
+                    return;
+                }
+            }
+        }
+
+        private void markIndeterminate() {
+            for (;;) {
+                CompilerAdmissionState observed = admissionState.get();
+                if (observed == CompilerAdmissionState.INDETERMINATE) return;
+                if (observed != CompilerAdmissionState.PREPARED
+                        && observed != CompilerAdmissionState.BOUND) {
+                    throw new IllegalStateException(
+                            "indeterminate compiler admission had state " + observed);
+                }
+                if (admissionState.compareAndSet(
+                        observed, CompilerAdmissionState.INDETERMINATE)) {
+                    return;
+                }
+            }
+        }
+
+        private void markQuiescent() {
+            for (;;) {
+                CompilerAdmissionState observed = admissionState.get();
+                if (observed != CompilerAdmissionState.REGISTERED
+                        && observed != CompilerAdmissionState.ENTERED) {
+                    throw new IllegalStateException(
+                            "compiler scheduler child quiesced from state " + observed);
+                }
+                if (admissionState.compareAndSet(
+                        observed, CompilerAdmissionState.QUIESCENT)) {
+                    return;
+                }
+            }
+        }
+
+        private void transition(
+                CompilerAdmissionState expected,
+                CompilerAdmissionState next,
+                String message) {
+            if (!admissionState.compareAndSet(expected, next)) {
+                throw new IllegalStateException(
+                        message + ": " + admissionState.get());
+            }
+        }
     }
 
     /**
      * Trusted lifecycle observer for an exact compiler scheduler child.
      *
-     * <p>This is only a scheduler witness. Memory/resource retirement ordering
-     * remains the caller's responsibility.</p>
+     * <p>The scheduler itself owns admission state. The observer only binds
+     * compiler authority to the exact handle and receives the final physical
+     * quiescence notification for ordered resource retirement.</p>
      */
-    public interface CompilerChildLifecycle {
+    interface CompilerChildLifecycle {
         void bind(CompilerTaskHandle<?> child);
-        void neverStarted(CompilerTaskHandle<?> child);
         void physicallyQuiescent(CompilerTaskHandle<?> child);
     }
 
@@ -427,20 +525,110 @@ public final class OresScheduler implements AutoCloseable {
      */
     <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
         return startAdmitted(
-                task, onQuiescent, null, 0L, () -> { }, null);
+                task, onQuiescent, null, 0L, () -> { });
     }
 
     /**
-     * Compiler/runtime-only start that binds an opaque exact scheduler child
-     * before admission. A failure before live-set registration reports only the
-     * never-started edge; a registered child reports physical quiescence.
+     * Compiler/runtime-only start with scheduler-owned admission state.
+     *
+     * <p>A thrown admission failure is certified by the exact handle as either
+     * NEVER_REGISTERED or INDETERMINATE. Once registration is observed, this
+     * method returns a Future and all later failure/retirement flows through the
+     * registered child's physical-quiescence path.</p>
      */
     <T> OresFuture<T> startCompilerAdmittedTask(
             Task<T> task,
             CompilerChildLifecycle lifecycle) {
+        Objects.requireNonNull(task, "task");
         Objects.requireNonNull(lifecycle, "compiler child lifecycle");
-        return startAdmitted(
-                task, () -> { }, null, 0L, () -> { }, lifecycle);
+
+        TaskRunner<T> runner = new TaskRunner<>(
+                task, () -> { }, false, () -> { }, lifecycle);
+        CompilerTaskHandle<T> handle = runner.compilerHandle();
+
+        try {
+            lifecycle.bind(handle);
+            handle.markBound();
+        } catch (RuntimeException | Error bindingFailure) {
+            try {
+                handle.markNeverRegistered();
+            } catch (RuntimeException | Error stateFailure) {
+                if (stateFailure != bindingFailure) {
+                    bindingFailure.addSuppressed(stateFailure);
+                }
+            }
+            throw bindingFailure;
+        }
+
+        Throwable failureAfterPublication = null;
+        try {
+            synchronized (taskAdmissionLock) {
+                ensureOpen();
+                try {
+                    if (!tasks.add(runner)) {
+                        throw new IllegalStateException(
+                                "compiler TaskRunner was already registered");
+                    }
+                    handle.markRegistered();
+                } catch (RuntimeException | Error admissionFailure) {
+                    final boolean published;
+                    try {
+                        published = tasks.contains(runner);
+                    } catch (RuntimeException | Error probeFailure) {
+                        try {
+                            handle.markIndeterminate();
+                        } catch (RuntimeException | Error stateFailure) {
+                            if (stateFailure != probeFailure) {
+                                probeFailure.addSuppressed(stateFailure);
+                            }
+                        }
+                        if (probeFailure != admissionFailure) {
+                            admissionFailure.addSuppressed(probeFailure);
+                        }
+                        throw admissionFailure;
+                    }
+
+                    if (!published) {
+                        handle.markNeverRegistered();
+                        throw admissionFailure;
+                    }
+
+                    // Publication happened. Convert the failure into a
+                    // registered child terminal outcome rather than throwing
+                    // an ambiguous admission result back to the caller.
+                    if (handle.admissionState()
+                            == CompilerAdmissionState.BOUND) {
+                        handle.markRegistered();
+                    }
+                    failureAfterPublication = admissionFailure;
+                }
+            }
+        } catch (RuntimeException | Error admissionFailure) {
+            if (handle.admissionState() == CompilerAdmissionState.BOUND) {
+                try {
+                    handle.markNeverRegistered();
+                } catch (RuntimeException | Error stateFailure) {
+                    if (stateFailure != admissionFailure) {
+                        admissionFailure.addSuppressed(stateFailure);
+                    }
+                }
+            }
+            throw admissionFailure;
+        }
+
+        if (failureAfterPublication != null) {
+            runner.failBeforeStart(failureAfterPublication);
+            return runner.completion;
+        }
+
+        try {
+            runner.scheduleInitial();
+        } catch (RuntimeException | Error failure) {
+            // Registered executor rejection remains an admitted child and
+            // retires only through scheduler physical quiescence.
+            runner.failBeforeStart(failure);
+        }
+        return runner.completion;
     }
 
     /**
@@ -463,14 +651,13 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(deadlineFailure, "deadlineFailure");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
         return startAdmitted(task, onQuiescent, deadlineFailure,
-                Math.max(0L, remainingNanos), onNotificationDrained, null);
+                Math.max(0L, remainingNanos), onNotificationDrained);
     }
 
     private <T> OresFuture<T> startAdmitted(
             Task<T> task, Runnable onQuiescent,
             Throwable deadlineFailure, long remainingNanos,
-            Runnable onNotificationDrained,
-            CompilerChildLifecycle compilerLifecycle) {
+            Runnable onNotificationDrained) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
@@ -478,11 +665,7 @@ public final class OresScheduler implements AutoCloseable {
         // NOT hold the lock while handing work to an arbitrary executor.
         // Shutdown must still cancel this task if enqueue blocks or rejects.
         TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
-                deadlineFailure != null, onNotificationDrained,
-                compilerLifecycle);
-        if (compilerLifecycle != null) {
-            compilerLifecycle.bind(runner.compilerHandle());
-        }
+                deadlineFailure != null, onNotificationDrained, null);
         try {
             synchronized (taskAdmissionLock) {
                 ensureOpen();
@@ -497,15 +680,6 @@ public final class OresScheduler implements AutoCloseable {
             }
         } catch (RuntimeException | Error admissionFailure) {
             runner.releaseUnusedDeadlineSlot();
-            if (compilerLifecycle != null) {
-                try {
-                    compilerLifecycle.neverStarted(runner.compilerHandle());
-                } catch (RuntimeException | Error lifecycleFailure) {
-                    if (lifecycleFailure != admissionFailure) {
-                        admissionFailure.addSuppressed(lifecycleFailure);
-                    }
-                }
-            }
             throw admissionFailure;
         }
         try {
@@ -804,6 +978,9 @@ public final class OresScheduler implements AutoCloseable {
             }
             ownsExecution.set(true);
             if (!phase.compareAndSet(QUEUED, RUNNING)) return;
+            if (compilerLifecycle != null) {
+                compilerHandle().markEntered();
+            }
 
             ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(
                     ignored -> watchdogOverruns.incrementAndGet());
@@ -1127,8 +1304,9 @@ public final class OresScheduler implements AutoCloseable {
                     if (compilerLifecycle == null) {
                         onQuiescent.run();
                     } else {
-                        compilerLifecycle.physicallyQuiescent(
-                                compilerHandle());
+                        CompilerTaskHandle<T> handle = compilerHandle();
+                        handle.markQuiescent();
+                        compilerLifecycle.physicallyQuiescent(handle);
                     }
                 } finally {
                     deadlineQuiescenceRetired.set(true);

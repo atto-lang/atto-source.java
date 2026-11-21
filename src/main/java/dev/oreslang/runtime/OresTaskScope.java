@@ -394,9 +394,7 @@ public final class OresTaskScope implements AutoCloseable {
         final java.util.concurrent.atomic.AtomicReference<
                 OresScheduler.CompilerTaskHandle<?>> schedulerChild =
                 new java.util.concurrent.atomic.AtomicReference<>();
-        final java.util.concurrent.atomic.AtomicBoolean schedulerBindAttempted =
-                new java.util.concurrent.atomic.AtomicBoolean();
-        final java.util.concurrent.atomic.AtomicBoolean neverStartedWitness =
+        final java.util.concurrent.atomic.AtomicBoolean schedulerLoanBindCommitted =
                 new java.util.concurrent.atomic.AtomicBoolean();
 
         OresScheduler.CompilerChildLifecycle schedulerLifecycle =
@@ -406,36 +404,23 @@ public final class OresTaskScope implements AutoCloseable {
                             OresScheduler.CompilerTaskHandle<?> child) {
                         Objects.requireNonNull(
                                 child, "compiler scheduler child");
-                        if (schedulerChild.get() != null
-                                || !schedulerBindAttempted.compareAndSet(
-                                        false, true)) {
+                        if (!schedulerChild.compareAndSet(null, child)) {
                             throw new IllegalStateException(
                                     "compiler scheduler child bound more than once");
                         }
                         try {
                             loanRetirement.bindSchedulerChild(
                                     compilerScopeEpoch, ownedChild, child);
+                            schedulerLoanBindCommitted.set(true);
                         } catch (RuntimeException | Error bindingFailure) {
-                            // Do not regress to an owner-only rollback edge:
-                            // the capability may have partially accepted this
-                            // exact scheduler identity before throwing.
+                            // The exact scheduler handle is retained before
+                            // entering the external compiler authority. If that
+                            // authority partially accepts and throws, scheduler
+                            // state can still certify that no registration
+                            // occurred while the compiler loan remains pinned.
                             poisonCompilerLoan(
                                     loanRetirement, bindingFailure);
                             throw bindingFailure;
-                        }
-                        schedulerChild.set(child);
-                    }
-
-                    @Override
-                    public synchronized void neverStarted(
-                            OresScheduler.CompilerTaskHandle<?> child) {
-                        if (schedulerChild.get() != child) {
-                            throw new IllegalStateException(
-                                    "never-started witness belongs to a different scheduler child");
-                        }
-                        if (!neverStartedWitness.compareAndSet(false, true)) {
-                            throw new IllegalStateException(
-                                    "scheduler child reported never-started more than once");
                         }
                     }
 
@@ -446,9 +431,10 @@ public final class OresTaskScope implements AutoCloseable {
                             throw new IllegalStateException(
                                     "physical witness belongs to a different scheduler child");
                         }
-                        if (neverStartedWitness.get()) {
+                        if (child.admissionState()
+                                != OresScheduler.CompilerAdmissionState.QUIESCENT) {
                             throw new IllegalStateException(
-                                    "never-started scheduler child cannot report physical quiescence");
+                                    "physical callback requires scheduler QUIESCENT state");
                         }
 
                         // Dependency order is deliberate:
@@ -501,20 +487,21 @@ public final class OresTaskScope implements AutoCloseable {
             OresScheduler.CompilerTaskHandle<?> exact =
                     schedulerChild.get();
 
-            if (exact != null && !neverStartedWitness.get()) {
-                // The scheduler minted/bound an exact child but did not attest
-                // a clean pre-registration rollback. That child may still be
-                // present in the scheduler live set, so neither external
-                // resources nor borrowed memory may be reclaimed here.
-                IllegalStateException indeterminateAdmission =
+            if (exact != null
+                    && exact.admissionState()
+                            != OresScheduler.CompilerAdmissionState.NEVER_REGISTERED) {
+                // A thrown start is reclaimable only when the exact scheduler
+                // state certifies that the child was never published. Any
+                // INDETERMINATE/REGISTERED/ENTERED/QUIESCENT state pins both
+                // external resources and borrowed memory.
+                IllegalStateException unsafeAdmission =
                         new IllegalStateException(
-                                "compiler scheduler child admission rollback is unproven");
-                rejectedBeforeDispatch.addSuppressed(
-                        indeterminateAdmission);
+                                "compiler scheduler child start failed in state "
+                                        + exact.admissionState());
+                rejectedBeforeDispatch.addSuppressed(unsafeAdmission);
                 poisonPhysicalExitAndDependentLoan(
-                        onPhysicalExit, loanRetirement,
-                        indeterminateAdmission);
-                exitFence.failFromRuntime(indeterminateAdmission);
+                        onPhysicalExit, loanRetirement, unsafeAdmission);
+                exitFence.failFromRuntime(unsafeAdmission);
                 throw rejectedBeforeDispatch;
             }
 
@@ -532,15 +519,17 @@ public final class OresTaskScope implements AutoCloseable {
 
             if (releaseFailure == null) {
                 try {
-                    if (exact == null
-                            && schedulerBindAttempted.get()) {
-                        // bindSchedulerChild itself failed before scheduler
-                        // registration. Resource cleanup is safe, but the
-                        // partially accepted compiler authority remains pinned.
-                        releaseFailure = rejectedBeforeDispatch;
-                    } else if (exact == null) {
+                    if (exact == null) {
+                        // TaskRunner/handle construction failed before the
+                        // scheduler exposed any exact child identity.
                         loanRetirement.retireBeforeSchedulerChildBound(
                                 compilerScopeEpoch, ownedChild);
+                    } else if (!schedulerLoanBindCommitted.get()) {
+                        // bindSchedulerChild partially failed. Scheduler state
+                        // proves no registration, so external cleanup above was
+                        // safe, but compiler memory authority is unknowable and
+                        // remains poisoned/pinned.
+                        releaseFailure = rejectedBeforeDispatch;
                     } else {
                         loanRetirement.retireNeverStarted(
                                 compilerScopeEpoch, ownedChild, exact);

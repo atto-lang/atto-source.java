@@ -463,4 +463,193 @@ final class OresSchedulerTest {
         assertEquals(1, pc.get(),
                 "detached continuation must never resume after producer completion");
     }
+
+    @Test
+    void compilerAdmissionOnClosedSchedulerIsCertifiedNeverRegistered() {
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> handle =
+                new AtomicReference<>();
+        AtomicInteger physical = new AtomicInteger();
+        OresScheduler scheduler = new OresScheduler(1);
+        scheduler.close();
+
+        assertThrows(RejectedExecutionException.class,
+                () -> scheduler.startCompilerAdmittedTask(
+                        resume -> OresScheduler.done(1),
+                        new OresScheduler.CompilerChildLifecycle() {
+                            @Override
+                            public void bind(
+                                    OresScheduler.CompilerTaskHandle<?> child) {
+                                assertTrue(handle.compareAndSet(null, child));
+                                assertEquals(
+                                        OresScheduler.CompilerAdmissionState.PREPARED,
+                                        child.admissionState());
+                            }
+
+                            @Override
+                            public void physicallyQuiescent(
+                                    OresScheduler.CompilerTaskHandle<?> child) {
+                                physical.incrementAndGet();
+                            }
+                        }));
+
+        assertNotNull(handle.get());
+        assertEquals(
+                OresScheduler.CompilerAdmissionState.NEVER_REGISTERED,
+                handle.get().admissionState());
+        assertEquals(0, physical.get());
+    }
+
+    @Test
+    void compilerLifecycleBindFailureCannotPublishSchedulerChild() {
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> handle =
+                new AtomicReference<>();
+        AtomicInteger physical = new AtomicInteger();
+        RuntimeException failure = new RuntimeException("bind failed");
+
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            assertSame(failure, assertThrows(RuntimeException.class,
+                    () -> scheduler.startCompilerAdmittedTask(
+                            resume -> OresScheduler.done(1),
+                            new OresScheduler.CompilerChildLifecycle() {
+                                @Override
+                                public void bind(
+                                        OresScheduler.CompilerTaskHandle<?> child) {
+                                    handle.set(child);
+                                    throw failure;
+                                }
+
+                                @Override
+                                public void physicallyQuiescent(
+                                        OresScheduler.CompilerTaskHandle<?> child) {
+                                    physical.incrementAndGet();
+                                }
+                            })));
+
+            assertNotNull(handle.get());
+            assertEquals(
+                    OresScheduler.CompilerAdmissionState.NEVER_REGISTERED,
+                    handle.get().admissionState());
+            assertEquals(0, physical.get());
+        }
+    }
+
+    @Test
+    void registeredExecutorRejectionRetiresThroughQuiescentState()
+            throws Exception {
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> handle =
+                new AtomicReference<>();
+        AtomicInteger physical = new AtomicInteger();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "compiler-admission-rejection", 1,
+                command -> {
+                    throw new RejectedExecutionException(
+                            "executor rejected registered child");
+                });
+        try {
+            OresFuture<Integer> result = scheduler.startCompilerAdmittedTask(
+                    resume -> OresScheduler.done(1),
+                    new OresScheduler.CompilerChildLifecycle() {
+                        @Override
+                        public void bind(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            handle.set(child);
+                        }
+
+                        @Override
+                        public void physicallyQuiescent(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            assertSame(handle.get(), child);
+                            assertEquals(
+                                    OresScheduler.CompilerAdmissionState.QUIESCENT,
+                                    child.admissionState());
+                            physical.incrementAndGet();
+                        }
+                    });
+
+            var observed = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    RejectedExecutionException.class,
+                    observed.getCause());
+            assertEquals(1, physical.get());
+            assertEquals(
+                    OresScheduler.CompilerAdmissionState.QUIESCENT,
+                    handle.get().admissionState());
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
+    void compilerAdmissionProgressesRegisteredEnteredQuiescent()
+            throws Exception {
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> handle =
+                new AtomicReference<>();
+        AtomicReference<OresScheduler.CompilerAdmissionState> stateInside =
+                new AtomicReference<>();
+        AtomicInteger physical = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> result = scheduler.startCompilerAdmittedTask(
+                    resume -> {
+                        stateInside.set(handle.get().admissionState());
+                        entered.countDown();
+                        assertTrue(release.await(5, TimeUnit.SECONDS));
+                        return OresScheduler.done(7);
+                    },
+                    new OresScheduler.CompilerChildLifecycle() {
+                        @Override
+                        public void bind(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            handle.set(child);
+                        }
+
+                        @Override
+                        public void physicallyQuiescent(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            assertSame(handle.get(), child);
+                            assertEquals(
+                                    OresScheduler.CompilerAdmissionState.QUIESCENT,
+                                    child.admissionState());
+                            physical.incrementAndGet();
+                        }
+                    });
+
+            assertNotNull(handle.get());
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(
+                    OresScheduler.CompilerAdmissionState.ENTERED,
+                    stateInside.get());
+            assertEquals(
+                    OresScheduler.CompilerAdmissionState.ENTERED,
+                    handle.get().admissionState());
+
+            release.countDown();
+            assertEquals(7, result.get(5, TimeUnit.SECONDS));
+            assertEquals(1, physical.get());
+            assertEquals(
+                    OresScheduler.CompilerAdmissionState.QUIESCENT,
+                    handle.get().admissionState());
+        } finally {
+            release.countDown();
+        }
+    }
+
+
+    @Test
+    void compilerAdmissionProtocolIsNotPublicHostApi() {
+        assertFalse(java.lang.reflect.Modifier.isPublic(
+                OresScheduler.CompilerAdmissionState.class.getModifiers()));
+        assertFalse(java.lang.reflect.Modifier.isPublic(
+                OresScheduler.CompilerChildLifecycle.class.getModifiers()));
+        var constructors = OresScheduler.CompilerTaskHandle.class
+                .getDeclaredConstructors();
+        assertEquals(1, constructors.length);
+        assertTrue(java.lang.reflect.Modifier.isPrivate(
+                constructors[0].getModifiers()));
+    }
+
 }
