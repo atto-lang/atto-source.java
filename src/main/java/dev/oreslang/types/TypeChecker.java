@@ -7800,9 +7800,10 @@ public final class TypeChecker {
 
         Type concrete = resolve(param.type(), generics, self);
         if (concrete instanceof Record record) {
-            // The explicit structural modifier converts either record{...} or
-            // struct{...} syntax into a readonly, non-storable shape contract.
-            // The underlying value keeps its concrete RECORD/STRUCT identity.
+            // Anonymous record/struct parameters reach this branch even without
+            // an explicit structural keyword (the parser normalizes both forms).
+            // The readonly non-storable contract projects public shape without
+            // changing the value's concrete RECORD/STRUCT storage identity.
             return readonlyStructuralProjection(
                     new Record(record.members(), true, AggregateKind.CONTRACT));
         }

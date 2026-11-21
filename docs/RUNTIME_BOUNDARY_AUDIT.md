@@ -9,8 +9,9 @@ an independent tracing heap collector and cannot repair an invalid borrow.
 ## Changes and invariants
 
 - `rt borrow` is accepted at borrowed argument positions, including imported
-  methods. `rt borrow mut` and `borrow mut T` use the existing exclusive-borrow
-  checks. Compatibility parser aliases remain for existing compiler fixtures.
+  methods. The canonical `rt mut borrow` expression and `borrow mut T` type
+  use the existing exclusive-borrow checks. The reversed legacy order
+  is rejected rather than retained as a parser alias.
 - Parentheses group expressions. Explicit `tuple (...)` constructs a product,
   including zero/singleton products. Immediate tuple unpacking creates lexical
   borrow leases; storing borrowed references in an owned tuple still fails closed.

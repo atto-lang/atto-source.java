@@ -1864,7 +1864,7 @@ public final class OwnershipChecker {
                         && scope.lookup(receiverName.name()) != null) {
                     // The implicit mutable receiver is the first live exclusive
                     // argument, even though it is not in call.arguments().
-                    // Otherwise q.method(rt borrow mut q) aliases a writable
+                    // Otherwise q.method(rt mut borrow q) aliases a writable
                     // receiver within one invocation.
                     VarState receiver = requireState(scope, receiverName.name());
                     beginPersistentBorrow(receiver, true);
@@ -2287,8 +2287,22 @@ public final class OwnershipChecker {
 
                 if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
                 Ast.Param param = params.get(parameterIndex);
-                VarState loanOwner = param.type().isBorrow()
+                // Anonymous and explicitly marked structural parameters are
+                // *implicit* shared loans, despite having no written borrow type.
+                // Reserve their source owner for the whole argument evaluation,
+                // exactly as an explicit borrowed parameter does.
+                boolean structuralLoan = param.structural() && !param.type().isBorrow();
+                VarState loanOwner = (structuralLoan || param.type().isBorrow())
                         ? invocationLoanRoot(argument, scope) : null;
+                if (structuralLoan && argument instanceof Ast.NameExpr name) {
+                    VarState binding = scope.lookup(name.name());
+                    if (binding != null && binding.borrowSource != null) {
+                        // A retained borrow is a lexical *view* of its source.
+                        // Never lock only the view binding and leave the owner
+                        // free to move in a later argument.
+                        loanOwner = ownershipRoot(binding.borrowSource);
+                    }
+                }
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
                 if (loanOwner != null) {
                     Boolean previous = invocationLoans.get(loanOwner);
@@ -2297,7 +2311,26 @@ public final class OwnershipChecker {
                                 + (parameterIndex + 1));
                     }
                 }
-                checkArgument(argument, param, scope, callable, parameterIndex + 1);
+                VarState resultBorrowOwner = checkArgument(
+                        argument, param, scope, callable, parameterIndex + 1);
+                if (structuralLoan && resultBorrowOwner != null) {
+                    // For expression-produced borrows, syntax alone may not
+                    // identify the owner. Recover the exact proven provenance
+                    // from the checked expression and retain its lease too.
+                    VarState recoveredRoot = ownershipRoot(resultBorrowOwner);
+                    if (loanOwner != null && ownershipRoot(loanOwner) != recoveredRoot) {
+                        throw error(callable + " argument " + (parameterIndex + 1)
+                                + " has inconsistent structural borrow provenance");
+                    }
+                    if (loanOwner == null) {
+                        loanOwner = recoveredRoot;
+                        Boolean previous = invocationLoans.get(loanOwner);
+                        if (previous != null && previous) {
+                            throw error(callable + " has overlapping mutable borrow arguments at position "
+                                    + (parameterIndex + 1));
+                        }
+                    }
+                }
                 if (loanOwner != null) {
                     // Borrowed arguments remain live until the call completes,
                     // including forwarded incoming &mut parameters. Their
@@ -2312,7 +2345,7 @@ public final class OwnershipChecker {
                             && runtime.arguments().size() == 1;
                     boolean forwarded = argument instanceof Ast.NameExpr name
                             && isIncomingBorrow(scope.lookup(name.name()));
-                    if (explicit || forwarded) {
+                    if (structuralLoan || explicit || forwarded) {
                         beginPersistentBorrow(loanOwner, mutable);
                         activeLoans.add(new CallArgumentLoan(ownershipRoot(loanOwner), mutable));
                     }
@@ -2349,6 +2382,13 @@ public final class OwnershipChecker {
         } else if (expression instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             return state == null ? null : ownershipRoot(state);
+        } else if (expression instanceof Ast.MemberExpr
+                || expression instanceof Ast.IndexExpr) {
+            // An implicit structural loan of a stable projection is still a
+            // loan of the enclosing owner. Reuse borrowPlace's conservative
+            // field/index checks, so effectful or unknown projections fail
+            // closed rather than silently losing alias provenance.
+            return ownershipRoot(borrowPlace(expression, scope).owner());
         }
 
         // Resolve a simple syntactic owner without reading it first. A loan
@@ -2363,7 +2403,7 @@ public final class OwnershipChecker {
         return place == null ? null : ownershipRoot(borrowPlace(place, scope).owner());
     }
 
-    private void checkArgument(
+    private VarState checkArgument(
             Ast.Expr arg,
             Ast.Param param,
             Scope scope,
@@ -2374,19 +2414,46 @@ public final class OwnershipChecker {
             arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
         }
         if (param.structural() && !param.type().isBorrow()) {
+            // A readonly structural parameter is a loan, never an ownership
+            // transfer. An explicit rt take here would move the owner even
+            // though the called parameter cannot retain that ownership.
+            if (arg instanceof Ast.RuntimeCallExpr runtime
+                    && runtime.operation().equals("take")) {
+                throw error(callable + " argument " + position
+                        + " cannot rt take into a readonly structural parameter; "
+                        + "pass the value directly or use rt copy");
+            }
             ValueInfo argument = checkExpr(arg, scope, false);
+            // A structural loan must have a provable owner whenever its
+            // argument is already borrowed. In particular, an opaque call
+            // returning a borrow cannot silently lose its original owner and
+            // then allow a later call argument to move that owner.
+            if (isBorrowValue(argument) && (argument.kind == ValueKind.MUT_BORROW
+                    || (argument.type != null && argument.type.isBorrow()
+                            && argument.type.mutableBorrow()))) {
+                throw error(callable + " argument " + position
+                        + " cannot forward a mutable borrow as a readonly structural view");
+            }
+            if (isBorrowValue(argument) && argument.borrowSource == null) {
+                throw error(callable + " argument " + position
+                        + " has no proven borrow provenance for a structural parameter");
+            }
+            if (argument.borrowSource != null && isActorConfinedBorrow(argument.borrowSource)) {
+                throw error(callable + " argument " + position
+                        + " cannot expose actor-owned borrow through a structural view");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(callable + " argument " + position
                         + " cannot consume protected mutex state through a structural by-value parameter");
             }
-            return;
+            return argument.borrowSource;
         }
         if (param.type().isBorrow()) {
             boolean mutable = param.type().mutableBorrow();
             if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                 if (mutable && !unary.operator().equals("&mut")) {
-                    throw error(callable + " argument " + position + " requires rt borrow mut");
+                    throw error(callable + " argument " + position + " requires rt mut borrow");
                 }
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
@@ -2396,7 +2463,7 @@ public final class OwnershipChecker {
                 if (isActorConfinedBorrow(place.owner())) {
                     throw error("actor self borrow cannot cross an ordinary callable boundary");
                 }
-                return;
+                return null;
             }
             if (arg instanceof Ast.NameExpr name) {
                 VarState state = requireState(scope, name.name());
@@ -2410,7 +2477,7 @@ public final class OwnershipChecker {
                 if (!mutable && state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW) {
                     throw error(callable + " argument " + position + " requires borrowed value; pass rt borrow " + name.name());
                 }
-                return;
+                return null;
             }
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
@@ -2418,6 +2485,7 @@ public final class OwnershipChecker {
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
+        return null;
     }
 
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {

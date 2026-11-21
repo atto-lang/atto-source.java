@@ -1304,21 +1304,36 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
+                boolean annotatedStructural = matchContextualKeyword("structural");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(normalizedStructuralParameter(type, name, annotatedStructural, mutable));
                 continue;
             }
 
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
-            if (structural && mutable) {
-                throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
-            }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(normalizedStructuralParameter(type, name, structural, mutable));
         } while (match(COMMA));
         return List.copyOf(params);
+    }
+
+    /**
+     * Anonymous inline struct/record parameter types are structural without an
+     * opt-in keyword. Keep the AST capability identical whether the keyword is
+     * explicit or omitted: a read-only, non-escaping borrowed shape view.
+     *
+     * Named classes, interfaces, and traits remain nominal unless explicitly
+     * marked structural. Nested generic wrappers do not implicitly opt in.
+     */
+    private Ast.Param normalizedStructuralParameter(
+            Ast.TypeRef type, String name, boolean explicitStructural, boolean mutable) {
+        boolean structural = explicitStructural || type.isClosedAggregateType();
+        if (structural && mutable) {
+            throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+        }
+        return new Ast.Param(type, name, structural, mutable);
     }
 
     private boolean matchContextualKeyword(String keyword) {
@@ -1370,10 +1385,7 @@ public final class Parser {
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
                 String name = consume(IDENT, "expected parameter name").lexeme();
-                if (mutable) {
-                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
-                }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(normalizedStructuralParameter(type, name, true, mutable));
                 continue;
             }
 
@@ -1384,10 +1396,7 @@ public final class Parser {
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                if (mutable) {
-                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
-                }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(normalizedStructuralParameter(type, name, true, mutable));
                 continue;
             }
 
@@ -1396,10 +1405,7 @@ public final class Parser {
                 String name = advance().lexeme();
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                if (mutable) {
-                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
-                }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(normalizedStructuralParameter(type, name, true, mutable));
                 continue;
             }
 
@@ -1415,19 +1421,17 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
+                boolean annotatedStructural = matchContextualKeyword("structural");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(normalizedStructuralParameter(type, name, annotatedStructural, mutable));
                 continue;
             }
 
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name after type").lexeme();
-            if (structural && mutable) {
-                throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
-            }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(normalizedStructuralParameter(type, name, structural, mutable));
         } while (match(COMMA));
         return params;
     }
@@ -3339,6 +3343,10 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
+        // Explicit mutable-borrow syntax is 'rt mut borrow expr'. The
+        // qualifier precedes the operation so no parser branch can
+        // accidentally treat it as a mutable assignment to the operand.
+        boolean mutableBorrow = match(MUT);
         Token operation;
         if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
@@ -3347,6 +3355,9 @@ public final class Parser {
         }
 
         String name = operation.lexeme();
+        if (mutableBorrow && !name.equals("borrow")) {
+            throw error(operation, "rt mut is only supported with 'borrow'");
+        }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
                 if (!check(RPAREN)) {
@@ -3365,9 +3376,15 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        // Mutable borrows use the same ownership checks as the legacy spelling.
-        if (name.equals("borrow") && match(MUT)) {
+        if (mutableBorrow) {
+            // Lower to the existing exclusive-loan AST node. Only one
+            // canonical spelling is admitted; type/ownership checks remain
+            // identical to the established mutable borrow representation.
             return new Ast.UnaryExpr("&mut", parseUnary());
+        }
+        if (name.equals("borrow") && match(MUT)) {
+            throw error(previous(),
+                    "legacy borrow/mut ordering is invalid; use 'rt mut borrow'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
@@ -3772,11 +3789,19 @@ public final class Parser {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else if (check(IDENT) && checkNext(COLON)) {
+                    String name = advance().lexeme();
+                    consume(COLON, "expected ':' after lambda parameter name");
+                    boolean explicitStructural = matchContextualKeyword("structural");
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    params.add(normalizedStructuralParameter(type, name, explicitStructural, mutable));
                 } else {
+                    boolean explicitStructural = matchContextualKeyword("structural");
                     Ast.TypeRef type = parseTypeRef();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mutable));
+                    params.add(normalizedStructuralParameter(type, name, explicitStructural, mutable));
                 }
             } while (match(COMMA));
         }

@@ -1257,8 +1257,8 @@ pub routine main(): void {
 
 ## Nominal typing and opt-in structural parameters
 
-Named classes and interfaces are nominal by default. The canonical structural-parameter
-spelling is `structural Type name`:
+Named classes and interfaces are nominal by default. The canonical opt-in for
+**named** structural parameters is `structural Type name`:
 
 ```ores
 pub interface Brand {
@@ -1275,10 +1275,30 @@ public shape must satisfy the required contract. Structural compatibility is
 directional width subtyping: extra public members are allowed, while every required
 field/method must exist with a compatible type/signature.
 
-`@Structural Brand value`, `value structural Brand`, and
-`@AllowStructural(value)` remain compatibility spellings. Structural parameters are
+`@Structural Brand value`, `value structural Brand`, `value: structural Brand`,
+and `@AllowStructural(value)` remain compatibility spellings. Structural parameters are
 read-only borrowed views: they cannot be `mut`, survive async suspension, cross an
 actor mailbox boundary, or turn an actor reference into an ordinary object.
+
+**Anonymous inline parameter shapes are structural by default.** These are four
+alternative spellings of one parameter contract (not four legal overloads):
+
+```oreslang
+fnc display(struct{name: string, age: int} item): void {}
+fnc display(item: struct{name: string, age: int}): void {}
+fnc display(structural struct{name: string, age: int} item): void {}
+fnc display(item: structural struct{name: string, age: int}): void {}
+```
+
+The optional `structural` keyword adds no capability or conversion to an
+anonymous `struct{...}`, `record{...}`, or `{...}` parameter. All spellings
+are readonly shape loans: compatible additional public fields are allowed;
+missing or incompatible fields, mutation, unsafe numeric widening, suspension,
+and mailbox escape are rejected. Named class/interface/trait parameters remain
+nominal unless explicitly marked `structural`. Wrappers such as
+`Option<struct{id: int}>` do not implicitly enable structural loans for
+their outer parameter. The formatter should prefer type-first ordering and
+omit `structural` when redundant on an anonymous inline parameter.
 
 Interfaces may inherit from other interfaces and support literal-string marker fields:
 
@@ -1898,7 +1918,7 @@ fnc inspect(borrow Bar value): void {
 }
 ```
 
-Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
+Exclusive mutable borrowing uses `rt mut borrow value` and `borrow mut T`:
 
 ```ores
 fnc change(borrow mut Bar value): void {
@@ -1908,7 +1928,7 @@ fnc change(borrow mut Bar value): void {
 
 fnc example(): void {
   val Bar b = new Bar();
-  change(rt borrow mut b);
+  change(rt mut borrow b);
   stdio.println(b.foo);
   return;
 }
