@@ -896,6 +896,7 @@ public final class ActorRuntime implements AutoCloseable {
                 created = new ControlPlaneArena32(1);
                 long witness = created.allocate();
                 created.writeI64(witness, 0, 0L); // admitted actor reservations
+                created.writeI64(witness, 8, 0L); // completed ordinary mailbox messages
                 nativeControlRoot = witness;
                 nativeControlArena = created;
             } catch (RuntimeException | Error failure) {
@@ -917,6 +918,37 @@ public final class ActorRuntime implements AutoCloseable {
             if (nativeControlArena == null)
                 throw new IllegalStateException("native CONTROL counter not active");
             return nativeControlArena.readI64(nativeControlRoot, 0);
+        }
+    }
+
+    /** Completed ordinary mailbox messages physically committed by actor turns. */
+    public long nativeControlCompletedMessages() {
+        synchronized (nativeControlCounterLock) {
+            if (nativeControlArena == null)
+                throw new IllegalStateException("native CONTROL counter not active");
+            return nativeControlArena.readI64(nativeControlRoot, 8);
+        }
+    }
+
+    /**
+     * Coherent snapshot of both native control counters in one 128-bit read.
+     * Caller owns the reusable two-limb output array; no per-call Java object.
+     * These are HOST bookkeeping counters, not a compiled Atto i128 guest.
+     */
+    public void nativeControlSnapshot(long[] counts) {
+        synchronized (nativeControlCounterLock) {
+            if (nativeControlArena == null)
+                throw new IllegalStateException("native CONTROL counter not active");
+            nativeControlArena.readI128(nativeControlRoot, counts);
+        }
+    }
+
+    private void publishNativeMessageCompletion() {
+        synchronized (nativeControlCounterLock) {
+            if (nativeControlArena != null) {
+                long prior = nativeControlArena.readI64(nativeControlRoot, 8);
+                nativeControlArena.writeI64(nativeControlRoot, 8, Math.addExact(prior, 1L));
+            }
         }
     }
 
@@ -7888,6 +7920,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
             }
+            publishNativeMessageCompletion();
             // Complete outside the lifecycle monitor: Future callbacks may
             // synchronously request actor stop or another lifecycle operation.
             for (OresFuture<Void> waiter : completed) waiter.completeFromRuntime(null);
