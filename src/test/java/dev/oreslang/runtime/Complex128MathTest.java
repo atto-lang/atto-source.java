@@ -86,6 +86,27 @@ final class Complex128MathTest {
     }
 
     @Test
+    void divisionPinsCancellationScaleAndZeroNumeratorRegressions() {
+        Complex128Math.Value cancellation = Complex128Math.divide(
+                0.9999999947592926,
+                1.0000000008845844,
+                0.9999999973991033,
+                1.0000000035243972);
+        assertRawBits(0x3feffffffe952fe2L, cancellation.real());
+        assertRawBits(0xbcd2dab72384c7b8L, cancellation.imaginary());
+
+        Complex128Math.Value separatedScale = Complex128Math.divide(
+                1e300, 1e-20, 0.0, 1.0);
+        assertRawBits(0x3bc79ca10c924223L, separatedScale.real());
+        assertRawBits(0xfe37e43c8800759cL, separatedScale.imaginary());
+
+        Complex128Math.Value zeroNumerator = Complex128Math.divide(
+                0.0, 0.0, 0.0, 5e-324);
+        assertRawBits(0x0000000000000000L, zeroNumerator.real());
+        assertRawBits(0x0000000000000000L, zeroNumerator.imaginary());
+    }
+
+    @Test
     void multiplicationPreservesMinimumSubnormalAndSignedZeroHint() {
         Complex128Math.Value tiny = Complex128Math.multiply(
                 1.3e-162, 1.3e-162, 1.3e-162, 1.3e-162);
@@ -95,6 +116,40 @@ final class Complex128MathTest {
         Complex128Math.Value zero = Complex128Math.multiply(-0.0, 0.0, 1.0, 0.0);
         assertRawBits(0x8000000000000000L, zero.real());
         assertRawBits(0x0000000000000000L, zero.imaginary());
+    }
+
+    @Test
+    void finiteRoundingPinsSubnormalTiesAndOverflowBoundary() {
+        double minSubnormal = Double.longBitsToDouble(0x0000000000000001L);
+        double threeMinSubnormals = Double.longBitsToDouble(0x0000000000000003L);
+
+        Complex128Math.Value halfMin = Complex128Math.multiply(
+                minSubnormal, 0.0, 0.5, 0.0);
+        assertRawBits(0x0000000000000000L, halfMin.real());
+
+        Complex128Math.Value oneAndHalfMin = Complex128Math.multiply(
+                threeMinSubnormals, 0.0, 0.5, 0.0);
+        assertRawBits(0x0000000000000002L, oneAndHalfMin.real());
+
+        Complex128Math.Value minNormalHalf = Complex128Math.divide(
+                Double.MIN_NORMAL, 0.0, 2.0, 0.0);
+        assertRawBits(0x0008000000000000L, minNormalHalf.real());
+
+        Complex128Math.Value maxIdentity = Complex128Math.multiply(
+                Double.MAX_VALUE, 0.0, 1.0, 0.0);
+        assertRawBits(0x7fefffffffffffffL, maxIdentity.real());
+
+        Complex128Math.Value overflow = Complex128Math.multiply(
+                Double.MAX_VALUE, 0.0, Math.nextUp(1.0), 0.0);
+        assertRawBits(0x7ff0000000000000L, overflow.real());
+
+        Complex128Math.Value divideHalfMin = Complex128Math.divide(
+                minSubnormal, 0.0, 2.0, 0.0);
+        assertRawBits(0x0000000000000000L, divideHalfMin.real());
+
+        Complex128Math.Value divideOneAndHalfMin = Complex128Math.divide(
+                threeMinSubnormals, 0.0, 2.0, 0.0);
+        assertRawBits(0x0000000000000002L, divideOneAndHalfMin.real());
     }
 
     private static void assertRawBits(long expected, double actual) {

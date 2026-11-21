@@ -25,7 +25,7 @@ This contract is an implementation target, not a declaration of runtime feature 
 ## Reference corpus and limitations
 
 `contracts/v1/numeric-complex/complex128-finite-reference-v1.json`
-holds thirteen cases for add/subtract/multiply/divide/conjugate and one
+holds sixteen cases for add/subtract/multiply/divide/conjugate and one
 complex row-major matrix multiplication. Operands are short decimal text
 first parsed as **IEEE binary64**. The source-free Python oracle then
 uses **exact rational arithmetic on those decoded binary64 values** and
@@ -64,7 +64,7 @@ artifact that explicitly says native/guest parity is **false**.
    real-to-complex promotion and reject lossy implicit exact Decimal
    or BigInt conversions. Do not assume the proposed `Complex<T>`
    generic is available from the lowercase `complex` type.
-2. **Arithmetic:** execute all thirteen scalar vectors through the actual
+2. **Arithmetic:** execute all sixteen scalar vectors through the actual
    compiler/guest runtime, including wide-exponent divisions,
    subnormal imaginary components, signed cross terms and conjugation.
    For finite complex128 multiplication and division, the v1 target is the
@@ -153,7 +153,7 @@ scalar/guest implementation.
 
 ## Frozen finite-reference input and issue identity admission
 
-The finite-complex128 oracle now pins all **13** scalar vector identities
+The finite-complex128 oracle now pins all **16** scalar vector identities
 to their exact operation and binary64 input decimal strings, and pins
 the `1×2 @ 2×1` complex matrix input planes. It also checks exact
 source-issue anchors for Java #120, #1033, and division issue #1042.
@@ -179,3 +179,23 @@ uploaded short-lived [artifact #12110614229](https://github.com/cliptown/cliptow
 Its checks were not copied from the private Oreslang source tree;
 **the actual source finite/IEEE oracle files and Oreslang native guest
 compilers have not been tested successfully by that host**.
+
+
+## Refreshed Java IEEE-special implementation (2026-10-17)
+
+Java hardening branch `hardening/complex128-exceptional-refresh-20261017`
+reapplies the reviewed exceptional complex128 kernel from draft #1140 on top
+of the newest actor/serde/arena integration head, rather than rebasing by
+overwriting the newer frozen-input finite oracle. The finite verifier remains
+at 13 methods per round; the separate IEEE-special verifier adds eight
+source-free contract methods for signed zero, infinities, NaNs, zero divisors,
+subnormal divisor scaling and overflow recovery.
+
+The production Java scalar path now uses exact dyadic arithmetic with one
+nearest-even binary64 rounding per component for finite multiply/divide and a
+compiler-rt-style recovery path for exceptional operands. Guest tests and
+raw-bit runtime tests are included, but all evidence remains
+`unverified` until an allocated exact-head source runner executes the
+Maven/GraalVM and Native Image suites. This refresh does not authorize
+cross-organization source publication and does not merge the stale #120
+Matrix/Vector tree.
