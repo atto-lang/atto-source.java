@@ -205,6 +205,29 @@ public final class RuntimePermissions {
     }
 
     public boolean allows(Permission permission, String resource) {
+        return allowsScoped(permission, resource, false);
+    }
+
+    /**
+     * A port-zero network target is never an outbound service endpoint.
+     * The only permitted exception is an explicit server *bind* operation:
+     * the kernel assigns its real listening port after authorization.
+     * All other network rules and deny precedence remain identical.
+     */
+    public void requireNetworkListen(String resource, String api) {
+        if (!allowsNetworkListen(resource)) {
+            throw new SecurityException(
+                    "Oreslang permission denied: net listen access to '"
+                            + resource + "' required by " + api);
+        }
+    }
+
+    public boolean allowsNetworkListen(String resource) {
+        return allowsScoped(Permission.NET, resource, true);
+    }
+
+    private boolean allowsScoped(
+            Permission permission, String resource, boolean listener) {
         Rule rule = rules.get(permission);
         if (rule == null || !safeScope(resource)) return false;
 
@@ -212,6 +235,12 @@ public final class RuntimePermissions {
         if (permission == Permission.NET) {
             NetworkScope endpoint = parseNetworkScope(resource, false);
             if (endpoint == null) return false;
+            // An actual listening socket always requests an explicit port
+            // (including 0 for an OS-assigned ephemeral bind).
+            if (listener && endpoint.port() == null) return false;
+            // The stable v1 contract treats port 0 as an invalid outbound
+            // service. It is only meaningful at the dedicated listen boundary.
+            if (Integer.valueOf(0).equals(endpoint.port()) && !listener) return false;
             if (endpoint.port() == null) {
                 // A portless authorization request cannot prove it excludes
                 // a denied port on the same host. Do not let a broad allow
