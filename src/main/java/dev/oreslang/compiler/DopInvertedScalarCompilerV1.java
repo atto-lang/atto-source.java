@@ -75,11 +75,26 @@ public final class DopInvertedScalarCompilerV1 {
     }
 
     private static long scalar(Ast.Expr expr, String purpose) {
-        if (!(expr instanceof Ast.LiteralExpr literal)
-                || !(literal.value() instanceof Long value)) {
-            throw reject("expected static signed i64 for " + purpose);
+        if (expr instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long value) {
+            return value;
         }
-        return value;
+        // Parser represents the signed i64 minimum directly as a literal.
+        // Other negative literals are strict unary operations. Admit only
+        // one statically checked sign and never evaluate guest expressions,
+        // silently wrap Long.MIN_VALUE, or widen into arbitrary BigInteger.
+        if (expr instanceof Ast.UnaryExpr sign
+                && (sign.operator().equals("-") || sign.operator().equals("+"))
+                && sign.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long magnitude) {
+            if (sign.operator().equals("+")) return magnitude;
+            try {
+                return Math.negateExact(magnitude);
+            } catch (ArithmeticException overflow) {
+                throw reject("signed i64 negation overflows for " + purpose);
+            }
+        }
+        throw reject("expected static signed i64 for " + purpose);
     }
 
     private static int index(Ast.Expr expr) {
@@ -138,6 +153,7 @@ public final class DopInvertedScalarCompilerV1 {
                 || fn.nonLexical() || fn.trapped()
                 || fn.actorKind() != Ast.ActorKind.NONE || !fn.effects().isEmpty()
                 || fn.returnType() == null || !"int".equals(fn.returnType().name())
+                || fn.returnType().inferArguments()
                 || !fn.returnType().arguments().isEmpty()
                 || fn.body().size() < 2 || fn.body().size() > 4096) {
             throw reject("only a synchronous scalar int main with a bounded body");
@@ -145,11 +161,15 @@ public final class DopInvertedScalarCompilerV1 {
         if (!(fn.body().getFirst() instanceof Ast.BindingStmt binding)
                 || binding.kind() != Ast.BindingKind.LET
                 || binding.declaredType() != null
-                || binding.name().isBlank()
+                || binding.mutableReferent()
+                || binding.inferredTypeName() != null
+                || binding.name().isBlank() || binding.name().equals("_")
                 || !(binding.initializer() instanceof Ast.NewExpr alloc)
                 || !"InvertedArray".equals(alloc.type().name())
+                || alloc.type().inferArguments()
                 || alloc.type().arguments().size() != 1
                 || !schema.name().equals(alloc.type().arguments().getFirst().name())
+                || alloc.type().arguments().getFirst().inferArguments()
                 || !alloc.type().arguments().getFirst().arguments().isEmpty()
                 || alloc.arguments().size() != 1) {
             throw reject("expected one local let owner initialized by InvertedArray<Schema>");
