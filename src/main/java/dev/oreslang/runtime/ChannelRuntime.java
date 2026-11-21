@@ -95,6 +95,56 @@ public final class ChannelRuntime {
     }
 
     /**
+     * Read-only source view over one Channel<T>. The view owns no queue and
+     * cannot write or close the backing channel.
+     */
+    public static final class ReadChannel<T> {
+        private final Channel<T> channel;
+
+        private ReadChannel(Channel<T> channel) {
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        public Optional<T> tryRead() {
+            return channel.tryRead();
+        }
+
+        public OresFuture<T> readAsync() {
+            return channel.readAsync();
+        }
+
+        public boolean isClosed() {
+            return channel.isClosed();
+        }
+
+    }
+
+    /**
+     * Write-only sink view over one Channel<T>. The view owns no queue and
+     * cannot read or close the backing channel.
+     */
+    public static final class WriteChannel<T> {
+        private final Channel<T> channel;
+
+        private WriteChannel(Channel<T> channel) {
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        public boolean tryWrite(T value) {
+            return channel.tryWrite(value);
+        }
+
+        public OresFuture<Void> writeAsync(T value) {
+            return channel.writeAsync(value);
+        }
+
+        public boolean isClosed() {
+            return channel.isClosed();
+        }
+
+    }
+
+    /**
      * Bounded MPMC channel. Capacity zero is a rendezvous channel.
      *
      * <p>Null is deliberately rejected because Oreslang has no standalone null
@@ -105,6 +155,8 @@ public final class ChannelRuntime {
         private final int maxPendingRegistrations;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
+        private final ReadChannel<T> output = new ReadChannel<>(this);
+        private final WriteChannel<T> input = new WriteChannel<>(this);
         private boolean closed;
         private Throwable closeCause;
 
@@ -128,6 +180,16 @@ public final class ChannelRuntime {
             }
             this.capacity = capacity;
             this.maxPendingRegistrations = maxPendingRegistrations;
+        }
+
+        /** Stable write-only default input endpoint. */
+        public WriteChannel<T> input() {
+            return input;
+        }
+
+        /** Stable read-only default output endpoint. */
+        public ReadChannel<T> output() {
+            return output;
         }
 
         public int capacity() {
@@ -340,8 +402,18 @@ public final class ChannelRuntime {
         return new ReadCase<>(channel);
     }
 
+    public static <T> ReadCase<T> read(ReadChannel<T> channel) {
+        Objects.requireNonNull(channel, "channel");
+        return new ReadCase<>(channel.channel);
+    }
+
     public static <T> WriteCase<T> write(Channel<T> channel, T value) {
         return new WriteCase<>(channel, value);
+    }
+
+    public static <T> WriteCase<T> write(WriteChannel<T> channel, T value) {
+        Objects.requireNonNull(channel, "channel");
+        return new WriteCase<>(channel.channel, value);
     }
 
     public static DefaultCase defaultCase() {

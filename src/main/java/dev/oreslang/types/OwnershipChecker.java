@@ -1145,6 +1145,21 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
+            if (concreteReceiver != null
+                    && concreteReceiver.name().equals("Channel")
+                    && concreteReceiver.arguments().size() == 1) {
+                Ast.TypeRef element = concreteReceiver.arguments().getFirst();
+                if (member.member().equals("input")) {
+                    Ast.TypeRef view = new Ast.TypeRef(
+                            "WriteChannel", List.of(element), false);
+                    return new ValueInfo(view, kindOfType(view), null);
+                }
+                if (member.member().equals("output")) {
+                    Ast.TypeRef view = new Ast.TypeRef(
+                            "ReadChannel", List.of(element), false);
+                    return new ValueInfo(view, kindOfType(view), null);
+                }
+            }
             if (concreteReceiver != null && concreteReceiver.isRecordType()) {
                 Ast.TypeRef valueType = concreteReceiver.recordMembers().get(member.member());
                 if (valueType == null) {
@@ -3280,7 +3295,10 @@ public final class OwnershipChecker {
     private Ast.TypeRef channelElementType(Ast.TypeRef type) {
         if (type == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
-        if (concrete.name().equals("Channel") && concrete.arguments().size() == 1) {
+        if ((concrete.name().equals("Channel")
+                || concrete.name().equals("ReadChannel")
+                || concrete.name().equals("WriteChannel"))
+                && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
         return Ast.TypeRef.inferred();
@@ -3594,7 +3612,8 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "Channel","ReadChannel","WriteChannel",
+                    "SelectCase","SelectSet","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))

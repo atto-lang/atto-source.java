@@ -170,6 +170,19 @@ final class AuthenticatedActorStreamSourceTest {
     }
 
     @Test
+    void nonActorStageCannotBorrowAuthenticatedActorPipeAuthority() throws Exception {
+        String source = fixture().replace(
+                "ActorUtils.pipe(\n        spawn Source(),\n        spawn Transform(),\n        spawn Sink()\n    )",
+                "ActorUtils.pipe(spawn Source(), 42, spawn Sink())");
+        assertNotEquals(fixture(), source);
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(rejected.getMessage().contains("statically typed ActorRef<T>"),
+                rejected.toString());
+    }
+
+    @Test
     void reservedPipelineTypesCannotBeRebound() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""

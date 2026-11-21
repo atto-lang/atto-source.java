@@ -45,7 +45,9 @@ public final class TypeChecker {
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "ActorStream", "Option", "Result", "Mutex",
-            "SharedMutex", "Channel", "Future", "Fnc", "Function");
+            "SharedMutex", "Channel", "ReadChannel", "WriteChannel",
+            "HasInputChannel", "HasOutputChannel",
+            "Future", "Fnc", "Function");
 
     // Reserved non-overridable actor pipeline operations. Until the typed
     // scheduler lowering is present they must be rejected explicitly, never
@@ -53,6 +55,18 @@ public final class TypeChecker {
     private static final Set<String> PIPELINE_ACTOR_INTRINSICS = Set.of(
             "forward", "forward_all", "forward_round_robin", "forward_to",
             "forward_by_key", "backward", "reply");
+
+    private static final Set<String> PIPE_ENDPOINT_BUILTINS = Set.of(
+            "ReadChannel", "WriteChannel",
+            "HasInputChannel", "HasOutputChannel");
+
+    private static boolean isBuiltinPipeEndpointInterface(String name) {
+        return name.equals("HasInputChannel") || name.equals("HasOutputChannel");
+    }
+
+    private static boolean isReservedPipeEndpointBuiltin(String name) {
+        return PIPE_ENDPOINT_BUILTINS.contains(name);
+    }
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -194,7 +208,9 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "ReadChannel", "WriteChannel",
+                "HasInputChannel", "HasOutputChannel",
+                "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorStream", "ActorUtils", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -234,21 +250,29 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            if (module.name().equals("ActorUtils") || module.name().equals("ActorStream")) {
+            if (module.name().equals("ActorUtils") || module.name().equals("ActorStream")
+                    || isReservedPipeEndpointBuiltin(module.name())) {
                 throw new IllegalArgumentException(
-                        "reserved actor pipeline namespace: " + module.name());
+                        "reserved pipeline namespace/type: " + module.name());
             }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.ClassDecl klass
-                        && (klass.name().equals("ActorUtils") || klass.name().equals("ActorStream"))) {
+                        && (klass.name().equals("ActorUtils") || klass.name().equals("ActorStream")
+                            || isReservedPipeEndpointBuiltin(klass.name()))) {
                     throw new IllegalArgumentException(
-                            "reserved actor pipeline type/namespace: " + klass.name());
+                            "reserved pipeline type/namespace: " + klass.name());
+                }
+                if (decl instanceof Ast.InterfaceDecl iface
+                        && isReservedPipeEndpointBuiltin(iface.name())) {
+                    throw new IllegalArgumentException(
+                            "reserved pipe endpoint interface: " + iface.name());
                 }
                 if (decl instanceof Ast.TypeAliasDecl alias
-                        && (alias.name().equals("ActorUtils") || alias.name().equals("ActorStream"))) {
+                        && (alias.name().equals("ActorUtils") || alias.name().equals("ActorStream")
+                            || isReservedPipeEndpointBuiltin(alias.name()))) {
                     throw new IllegalArgumentException(
-                            "reserved actor pipeline alias: " + alias.name());
+                            "reserved pipeline alias: " + alias.name());
                 }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
@@ -1588,6 +1612,11 @@ public final class TypeChecker {
         Set<String> implemented = new HashSet<>();
         for (Ast.TypeRef interfaceRef : klass.interfaces()) {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
+            if (isBuiltinPipeEndpointInterface(interfaceRef.name())) {
+                validateBuiltinPipeEndpointImplementation(
+                        klass, interfaceRef, classGenerics, self);
+                continue;
+            }
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
@@ -1600,6 +1629,49 @@ public final class TypeChecker {
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
+        }
+    }
+
+    private void validateBuiltinPipeEndpointImplementation(
+            Ast.ClassDecl klass,
+            Ast.TypeRef interfaceRef,
+            Set<String> classGenerics,
+            Type self) {
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "actor classes cannot implement " + interfaceRef.name()
+                            + " directly; ActorRef pipe endpoints are compiler-synthesized");
+        }
+        Type resolved = resolve(interfaceRef, classGenerics, self);
+        if (!(resolved instanceof Named named) || named.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    interfaceRef.name() + " requires exactly one payload type");
+        }
+        Type payload = named.arguments().getFirst();
+        validateChannelPayloadType(payload, interfaceRef.name() + "<T>");
+
+        String field = interfaceRef.name().equals("HasInputChannel") ? "input" : "output";
+        String channelTypeName = interfaceRef.name().equals("HasInputChannel")
+                ? "WriteChannel" : "ReadChannel";
+        Type expected = new Named(channelTypeName, List.of(payload));
+        Type actual = publicClassShape(klass, new LinkedHashSet<>()).members().get(field);
+        if (!expected.equals(actual)) {
+            throw new IllegalArgumentException(
+                    "class '" + klass.name() + "' implements " + interfaceRef.name()
+                            + " but must expose public stable property '" + field + ": "
+                            + expected + "'; got " + actual);
+        }
+
+        ResolvedField endpointField = effectiveFieldTargets(
+                        klass, nominalClassType(klass), new LinkedHashSet<>()).stream()
+                .filter(candidate -> candidate.field().name().equals(field))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "pipe endpoint property '" + field + "' has no concrete field slot"));
+        if (endpointField.field().bindingKind() == Ast.BindingKind.LET) {
+            throw new IllegalArgumentException(
+                    "pipe endpoint property '" + field
+                            + "' must be a stable val/const slot and cannot be rebound");
         }
     }
 
@@ -2050,7 +2122,9 @@ public final class TypeChecker {
                         element = future.arguments().getFirst();
                     } else {
                         element = channelElementType(
-                                source, "select " + arm.operation().name().toLowerCase());
+                                source,
+                                "select " + arm.operation().name().toLowerCase(),
+                                arm.operation());
                     }
                     if (arm.operation() == Ast.ChannelOperation.WRITE) {
                         requireAssignable(
@@ -2183,18 +2257,175 @@ public final class TypeChecker {
         }
     }
 
-    private Type checkActorStreamStages(
+    private record PipeProtocolTypes(Type input, Type output) { }
+
+    private Type mergePipeProtocolDomain(
+            Type current, Type candidate, String direction, Named ownerType) {
+        if (candidate == null) return current;
+        if (current == null) return candidate;
+        if (!current.equals(candidate)) {
+            throw new IllegalArgumentException(
+                    "pipe stage " + ownerType + " inherits conflicting " + direction
+                            + " endpoint domains: " + current + " versus " + candidate);
+        }
+        return current;
+    }
+
+    private PipeProtocolTypes pipeProtocolsForClass(
+            Named classType, Set<Named> seen) {
+        if (!seen.add(classType)) return new PipeProtocolTypes(null, null);
+        Ast.ClassDecl klass = findClass(classType.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+            return new PipeProtocolTypes(null, null);
+        }
+
+        Type input = null;
+        Type output = null;
+        for (Ast.TypeRef interfaceRef : klass.interfaces()) {
+            if (!isBuiltinPipeEndpointInterface(interfaceRef.name())) continue;
+            Named endpoint = concreteClassReference(interfaceRef, klass, classType);
+            if (endpoint.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "invalid pipe endpoint protocol on " + klass.name());
+            }
+            Type payload = endpoint.arguments().getFirst();
+            if (endpoint.name().equals("HasInputChannel")) {
+                input = mergePipeProtocolDomain(input, payload, "input", classType);
+            } else {
+                output = mergePipeProtocolDomain(output, payload, "output", classType);
+            }
+        }
+
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Named parentType = concreteClassReference(parentRef, klass, classType);
+            PipeProtocolTypes inherited = pipeProtocolsForClass(parentType, seen);
+            input = mergePipeProtocolDomain(input, inherited.input(), "input", classType);
+            output = mergePipeProtocolDomain(output, inherited.output(), "output", classType);
+        }
+        return new PipeProtocolTypes(input, output);
+    }
+
+    private PipeEndpointContracts.Endpoint pipeEndpointFor(Type raw) {
+        Type type = deref(raw);
+        if (!(type instanceof Named named)) {
+            throw new IllegalArgumentException(
+                    "pipe stage must expose HasInputChannel<T> and/or HasOutputChannel<T>; got "
+                            + type);
+        }
+
+        if (named.name().equals("Channel") && named.arguments().size() == 1) {
+            Type payload = named.arguments().getFirst();
+            return PipeEndpointContracts.transform(payload, payload);
+        }
+        if (named.name().equals("ReadChannel") && named.arguments().size() == 1) {
+            return PipeEndpointContracts.source(named.arguments().getFirst());
+        }
+        if (named.name().equals("WriteChannel") && named.arguments().size() == 1) {
+            return PipeEndpointContracts.sink(named.arguments().getFirst());
+        }
+        if (named.name().equals("HasInputChannel") && named.arguments().size() == 1) {
+            return PipeEndpointContracts.sink(named.arguments().getFirst());
+        }
+        if (named.name().equals("HasOutputChannel") && named.arguments().size() == 1) {
+            return PipeEndpointContracts.source(named.arguments().getFirst());
+        }
+        if (named.name().equals("ActorRef") && named.arguments().size() == 1) {
+            Ast.ClassDecl actorClass = actorClassForRef(named);
+            if (actorClass.actorKind() != Ast.ActorKind.SHARED) {
+                throw new IllegalArgumentException(
+                        "ActorStream authenticated routing currently requires SHARED actors; "
+                                + actorClass.name() + " is " + actorClass.actorKind());
+            }
+            Type mailbox = deref(actorMailboxPayloadType(named));
+            validateActorCallableBoundaryType(
+                    mailbox, Ast.ActorKind.SHARED, false,
+                    "pipe actor mailbox domain for " + actorClass.name());
+            return PipeEndpointContracts.authenticatedActor(mailbox);
+        }
+
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "pipe stage type " + type
+                            + " has no compiler-proven default input/output channel");
+        }
+        if (named.arguments().size() != klass.genericParameters().size()) {
+            throw new IllegalArgumentException(
+                    "pipe stage type " + type + " has invalid generic arity");
+        }
+
+        PipeProtocolTypes protocols =
+                pipeProtocolsForClass(named, new LinkedHashSet<>());
+        if (protocols.input() != null && protocols.output() != null) {
+            return PipeEndpointContracts.transform(
+                    protocols.input(), protocols.output());
+        }
+        if (protocols.input() != null) {
+            return PipeEndpointContracts.sink(protocols.input());
+        }
+        if (protocols.output() != null) {
+            return PipeEndpointContracts.source(protocols.output());
+        }
+        throw new IllegalArgumentException(
+                "pipe stage type " + type
+                        + " does not implement HasInputChannel<T> or HasOutputChannel<T>");
+    }
+
+    private Type checkPipeStages(
             List<Ast.Expr> stages, Env env, Set<String> generics, Type self) {
+        if (stages.size() < 2 || stages.size() > 16) {
+            throw new IllegalArgumentException("pipe requires 2..16 stages");
+        }
+
+        List<Type> stageTypes = new ArrayList<>(stages.size());
+        boolean allActors = true;
+        for (Ast.Expr stage : stages) {
+            Type type = deref(typeOf(stage, env, generics, self));
+            stageTypes.add(type);
+            allActors &= type instanceof Named named
+                    && named.name().equals("ActorRef")
+                    && named.arguments().size() == 1;
+        }
+        if (allActors) {
+            return checkActorStreamStageTypes(stageTypes);
+        }
+        if (currentActorKind != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "pipe graph construction currently requires a non-actor supervisor/root turn");
+        }
+
+        List<PipeEndpointContracts.Endpoint> endpoints = stageTypes.stream()
+                .map(this::pipeEndpointFor)
+                .toList();
+
+        // Validate the complete graph's directional ABI before asking whether
+        // any particular transport is executable. An unimplemented first
+        // bridge must never mask a later type mismatch.
+        List<PipeEndpointContracts.Link> links =
+                new ArrayList<>(Math.max(0, endpoints.size() - 1));
+        for (int i = 0; i + 1 < endpoints.size(); i++) {
+            links.add(PipeEndpointContracts.connect(
+                    endpoints.get(i), endpoints.get(i + 1)));
+        }
+        for (PipeEndpointContracts.Link link : links) {
+            PipeEndpointContracts.requireExecutable(link);
+        }
+        throw new IllegalStateException(
+                "non-actor pipe transport unexpectedly passed the executable bridge gate");
+    }
+
+    private Type checkActorStreamStageTypes(List<Type> stageTypes) {
         if (currentActorKind != Ast.ActorKind.NONE
-                || stages.size() < 2 || stages.size() > 16) {
+                || stageTypes.size() < 2 || stageTypes.size() > 16) {
             throw new IllegalArgumentException(
                     "ActorStream pipe requires 2..16 SHARED actor references "
                             + "from a non-actor supervisor/root turn");
         }
 
         Type domain = null;
-        for (Ast.Expr stage : stages) {
-            Type ref = deref(typeOf(stage, env, generics, self));
+        for (Type ref : stageTypes) {
             if (!(ref instanceof Named actorRef)
                     || !actorRef.name().equals("ActorRef")
                     || actorRef.arguments().size() != 1) {
@@ -2213,15 +2444,8 @@ public final class TypeChecker {
                     "ActorStream mailbox domain for " + actorClass.name());
             if (domain == null) {
                 domain = mailbox;
-            } else if (!mailbox.equals(domain)) {
-                // The transport erases per-edge guest payload types. Mutual
-                // assignability (including structural/readonly coercions) is
-                // not proof of an identical bidirectional mailbox contract.
-                // Every routed stage must therefore use the exact same type.
-
-                throw new IllegalArgumentException(
-                        "ActorStream pipe stage ActorMail domains must match exactly: "
-                                + domain + " versus " + mailbox);
+            } else {
+                PipeEndpointContracts.requireAuthenticatedActorConnection(domain, mailbox);
             }
         }
         if (domain == null || domain == Unknown.INSTANCE || domain == Primitive.VOID) {
@@ -2229,6 +2453,15 @@ public final class TypeChecker {
                     "ActorStream requires one statically resolved non-void mailbox domain");
         }
         return new Named("ActorStream", List.of(domain));
+    }
+
+    private Type checkActorStreamStages(
+            List<Ast.Expr> stages, Env env, Set<String> generics, Type self) {
+        List<Type> types = new ArrayList<>(stages.size());
+        for (Ast.Expr stage : stages) {
+            types.add(deref(typeOf(stage, env, generics, self)));
+        }
+        return checkActorStreamStageTypes(types);
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
@@ -2446,7 +2679,7 @@ public final class TypeChecker {
             if (binary.operator().equals("pipe")) {
                 List<Ast.Expr> stages = new ArrayList<>();
                 collectActorPipeStages(binary, stages);
-                return checkActorStreamStages(stages, env, generics, self);
+                return checkPipeStages(stages, env, generics, self);
             }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
@@ -2726,7 +2959,8 @@ public final class TypeChecker {
                         }
                         channelElementType(
                                 typeOf(call.arguments().getFirst(), env, generics, self),
-                                "SelectCase.read");
+                                "SelectCase.read",
+                                Ast.ChannelOperation.READ);
                         yield new Named("SelectCase", List.of());
                     }
                     case "write" -> {
@@ -2736,7 +2970,8 @@ public final class TypeChecker {
                         }
                         Type element = channelElementType(
                                 typeOf(call.arguments().get(0), env, generics, self),
-                                "SelectCase.write");
+                                "SelectCase.write",
+                                Ast.ChannelOperation.WRITE);
                         requireAssignable(
                                 typeOf(call.arguments().get(1), env, generics, self),
                                 element,
@@ -3548,12 +3783,32 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if (sumReceiver instanceof Named endpointProtocol
+                    && endpointProtocol.arguments().size() == 1
+                    && isBuiltinPipeEndpointInterface(endpointProtocol.name())) {
+                Type payload = endpointProtocol.arguments().getFirst();
+                if (endpointProtocol.name().equals("HasInputChannel")) {
+                    if (member.member().equals("input")) {
+                        return new Named("WriteChannel", List.of(payload));
+                    }
+                    throw new IllegalArgumentException(
+                            "unknown HasInputChannel member '" + member.member() + "'");
+                }
+                if (member.member().equals("output")) {
+                    return new Named("ReadChannel", List.of(payload));
+                }
+                throw new IllegalArgumentException(
+                        "unknown HasOutputChannel member '" + member.member() + "'");
+            }
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
                     && channelType.name().equals("Channel")
                     && channelType.arguments().size() == 1) {
+                Type element = channelType.arguments().getFirst();
                 return switch (member.member()) {
+                    case "input" -> new Named("WriteChannel", List.of(element));
+                    case "output" -> new Named("ReadChannel", List.of(element));
                     case "close" -> new Function(List.of(), Primitive.VOID);
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
                     default -> throw new IllegalArgumentException(
@@ -3955,7 +4210,8 @@ public final class TypeChecker {
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type element = channelElementType(
                     typeOf(channelOp.channel(), env, generics, self),
-                    channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
+                    channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech",
+                    channelOp.operation());
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
                 requireAssignable(
@@ -4186,18 +4442,38 @@ public final class TypeChecker {
         return Unknown.INSTANCE;
     }
 
-    private Type channelElementType(Type channel, String where) {
+    private Type channelElementType(
+            Type channel,
+            String where,
+            Ast.ChannelOperation operation) {
         channel = deref(channel);
         if (channel == Unknown.INSTANCE) return Unknown.INSTANCE;
-        if (channel instanceof Named named
-                && named.name().equals("Channel")
-                && named.arguments().size() == 1) {
-            Type element = named.arguments().getFirst();
-            validateChannelPayloadType(element, where);
-            return element;
+        if (!(channel instanceof Named named) || named.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    where + " requires a directional channel; got " + channel);
         }
-        throw new IllegalArgumentException(
-                where + " requires Channel<T>; got " + channel);
+
+        boolean readable = named.name().equals("Channel")
+                || named.name().equals("ReadChannel");
+        boolean writable = named.name().equals("Channel")
+                || named.name().equals("WriteChannel");
+        if (operation == Ast.ChannelOperation.READ && !readable) {
+            throw new IllegalArgumentException(
+                    where + " requires Channel<T> or ReadChannel<T>; got " + channel);
+        }
+        if (operation == Ast.ChannelOperation.WRITE && !writable) {
+            throw new IllegalArgumentException(
+                    where + " requires Channel<T> or WriteChannel<T>; got " + channel);
+        }
+        if (operation != Ast.ChannelOperation.READ
+                && operation != Ast.ChannelOperation.WRITE) {
+            throw new IllegalArgumentException(
+                    where + " requires a channel read/write operation");
+        }
+
+        Type element = named.arguments().getFirst();
+        validateChannelPayloadType(element, where);
+        return element;
     }
 
     private void validateChannelPayloadType(Type element, String where) {
@@ -5243,7 +5519,10 @@ public final class TypeChecker {
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
         // their stricter rule and continue to reject Channel<T> entirely.
-        if (type instanceof Named named && named.name().equals("Channel")
+        if (type instanceof Named named
+                && (named.name().equals("Channel")
+                    || named.name().equals("ReadChannel")
+                    || named.name().equals("WriteChannel"))
                 && named.arguments().size() == 1
                 && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
             return;
@@ -5298,7 +5577,10 @@ public final class TypeChecker {
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
+                || named.name().equals("Channel")
+                || named.name().equals("ReadChannel") || named.name().equals("WriteChannel")
+                || named.name().equals("HasInputChannel") || named.name().equals("HasOutputChannel")
+                || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("ActorStream")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
@@ -5383,6 +5665,9 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("ActorStream")
+                || named.name().equals("Channel")
+                || named.name().equals("ReadChannel") || named.name().equals("WriteChannel")
+                || named.name().equals("HasInputChannel") || named.name().equals("HasOutputChannel")
                 || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
@@ -8432,13 +8717,23 @@ public final class TypeChecker {
                 }
                 yield new Named("Mutex", List.of(element));
             }
-            case "Channel" -> {
+            case "Channel", "ReadChannel", "WriteChannel" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
-                    throw new IllegalArgumentException("Channel requires exactly one explicit type argument");
+                    throw new IllegalArgumentException(
+                            ref.name() + " requires exactly one explicit type argument");
                 }
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                validateChannelPayloadType(element, "Channel<T>");
-                yield new Named("Channel", List.of(element));
+                validateChannelPayloadType(element, ref.name() + "<T>");
+                yield new Named(ref.name(), List.of(element));
+            }
+            case "HasInputChannel", "HasOutputChannel" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " requires exactly one explicit payload type");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                validateChannelPayloadType(element, ref.name() + "<T>");
+                yield new Named(ref.name(), List.of(element));
             }
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
@@ -8523,6 +8818,24 @@ public final class TypeChecker {
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
 
+    private boolean builtinPipeEndpointAssignable(
+            Named actual, Named expected) {
+        if (!isBuiltinPipeEndpointInterface(expected.name())
+                || expected.arguments().size() != 1) {
+            return false;
+        }
+
+        Type expectedPayload = expected.arguments().getFirst();
+        if (actual.name().equals("Channel") && actual.arguments().size() == 1) {
+            return actual.arguments().getFirst().equals(expectedPayload);
+        }
+
+        Ast.ClassDecl klass = findClass(actual.name());
+        return klass != null
+                && klass.actorKind() == Ast.ActorKind.NONE
+                && classTypeImplements(actual, expected, new LinkedHashSet<>());
+    }
+
     private boolean assignable(Type actual, Type expected) {
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
@@ -8566,6 +8879,12 @@ public final class TypeChecker {
 
         if (actual instanceof Record sourceShape && expected instanceof Record targetShape) {
             return structuralRecordAssignable(sourceShape, targetShape);
+        }
+
+        if (actual instanceof Named actualNamed
+                && expected instanceof Named expectedNamed
+                && builtinPipeEndpointAssignable(actualNamed, expectedNamed)) {
+            return true;
         }
 
         if (Types.isAssignable(actual, expected)) return true;
