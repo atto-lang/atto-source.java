@@ -13,6 +13,19 @@ public final class ControlPlaneArena32Test {
     public static void main(String[] args) throws Exception {
         check(ControlPlaneArena32.ABI.equals("control_generation12_slot20_v1"), "ABI must be explicit");
         check(ControlPlaneArena32.RECORD_BYTES == 32, "record layout");
+        var synthetic = new java.util.concurrent.atomic.AtomicLong(0L);
+        check(ControlPlaneArena32.reserveIssuer(synthetic) == 1L,
+                "first issuer admitted");
+        synthetic.set(0xffff_fffeL);
+        check(ControlPlaneArena32.reserveIssuer(synthetic) == 0xffff_ffffL,
+                "last issuer admitted exactly once");
+        denied(() -> ControlPlaneArena32.reserveIssuer(synthetic));
+        check(synthetic.get() == 0xffff_ffffL,
+                "issuer exhaustion must saturate, not increment toward overflow");
+        denied(() -> ControlPlaneArena32.reserveIssuer(
+                new java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)));
+        denied(() -> ControlPlaneArena32.reserveIssuer(
+                new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE)));
         final long huge = 9_000_000_000L;
         try (var a = new ControlPlaneArena32(2); var b = new ControlPlaneArena32(2)) {
             long parent = a.allocate();
