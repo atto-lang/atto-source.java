@@ -762,19 +762,24 @@ public final class ActorNativeArena implements AutoCloseable {
         }
         Runnable release = budget.reserve(bytes);
         ByteBuffer memory = null;
+        Region candidate = null;
         try {
             NativeCarrierExecutor.ensureNativeLibraryLoaded();
             memory = allocateNative(bytes);
             if (memory == null) throw new OutOfMemoryError("native actor region allocation failed");
             long baseOffset = alignedActorOffset(bytes, Long.BYTES);
             long nextOffset = Math.addExact(baseOffset, bytes);
-            Region region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
-            regions.add(region);
+            candidate = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
+            regions.add(candidate);
             nextActorOffset = nextOffset;
             committed += bytes;
             allocated += bytes;
-            return region;
+            return candidate;
         } catch (RuntimeException | Error failure) {
+            // Registration may have inserted this region before throwing.
+            // Detach any candidate before its native bytes are freed; otherwise
+            // close() could later encounter a dangling/double-freed region.
+            if (candidate != null) regions.remove(candidate);
             if (memory != null) releaseNative(memory);
             release.run();
             throw failure;
@@ -1523,3 +1528,4 @@ public final class ActorNativeArena implements AutoCloseable {
     private static native ByteBuffer allocateNative(int bytes);
     private static native void releaseNative(ByteBuffer memory);
 }
+

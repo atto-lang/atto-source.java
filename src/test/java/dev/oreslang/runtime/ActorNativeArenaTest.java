@@ -576,6 +576,41 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void failedArenaTeardownNeverPartiallyReclaimsEarlierNativeRegions() {
+        AtomicLong charged = new AtomicLong();
+        ActorNativeArena.Region first;
+        ActorNativeArena.Region middle;
+        ActorNativeArena.Region last;
+        try (ActorNativeArena arena = arena(256, charged)) {
+            first = arena.region(32);
+            middle = arena.region(32);
+            last = arena.region(32);
+            first.writeLong(0, 11L);
+            middle.writeLong(0, 22L);
+            last.writeLong(0, 33L);
+            // A lease on only the last allocation must prevent *all* native
+            // regions from being freed, irrespective of iteration order.
+            try (var borrow = last.leaseReadOnly(0, Long.BYTES)) {
+                assertThrows(IllegalStateException.class, arena::close);
+                assertFalse(arena.closed());
+                assertEquals(96L, charged.get());
+                assertEquals(11L, first.readLong(0));
+                assertEquals(22L, middle.readLong(0));
+                assertEquals(33L, borrow.readLong(0));
+                first.writeLong(8, 44L);
+                middle.writeLong(8, 55L);
+                assertEquals(44L, first.readLong(8));
+                assertEquals(55L, middle.readLong(8));
+            }
+            arena.close();
+            assertThrows(IllegalStateException.class, () -> first.readLong(0));
+            assertThrows(IllegalStateException.class, () -> middle.readLong(0));
+            assertThrows(IllegalStateException.class, () -> last.readLong(0));
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
     void actorTaskFramesPersistResumeAuthorityInNativeMemory() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(4096, charged)) {
@@ -957,3 +992,4 @@ final class ActorNativeArenaTest {
         });
     }
 }
+
