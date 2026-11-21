@@ -1495,6 +1495,19 @@ public final class ActorNativeArena implements AutoCloseable {
         }
     }
 
+    /**
+     * Runtime-only, non-mutating preflight for finalization.
+     * Intentionally does not require the guest actor turn: the runtime runs
+     * this check after the last physical carrier has left the actor.
+     * It cannot prove source-task quiescence; that is a separate prerequisite.
+     */
+    synchronized boolean hasOutstandingReadLeases() {
+        for (Region region : regions) {
+            if (!region.readLeases.isEmpty()) return true;
+        }
+        return false;
+    }
+
     /** Called only after the runtime's actor/async physical quiescence barrier. */
     @Override public synchronized void close() {
         if (closed) return;
