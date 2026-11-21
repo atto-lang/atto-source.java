@@ -2216,8 +2216,15 @@ public final class TypeChecker {
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
+            // Conditional branches are mutually exclusive, but the join
+            // must not erase either branch's readonly/borrow provenance.
+            // In particular, any/unknown cannot be an inference escape hatch
+            // for a capability-bearing branch after narrowing.
+            Type joined = commonType(left, right);
+            requireReadonlyCapabilityPreserved(left, joined, "ternary true branch");
+            requireReadonlyCapabilityPreserved(right, joined, "ternary false branch");
             env.mergeInitialization(List.of(leftExit, rightExit));
-            return commonType(left, right);
+            return joined;
         }
         if (expr instanceof Ast.TypeTestExpr test) {
             requireRuntimeReifiableType(test.targetType(), "is");
