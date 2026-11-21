@@ -34,11 +34,13 @@ suites=(
   dev.oreslang.runtime.ActorPubSubV1ContractTest
   dev.oreslang.runtime.ActorPubSubConcurrencyTest
   dev.oreslang.runtime.ActorGroupMembershipMonitorTest
+  dev.oreslang.runtime.ActorGroupAtomicMonitorRegistrationTest
+  dev.oreslang.runtime.ActorEventBusDetachedTeardownTest
   dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest
   dev.oreslang.runtime.SourceActorPubSubTest
 )
 # Maven's selection is explicit, while reports are checked by full class name.
-selection="SourceActorPubSubExecutionTest,PubSubGuestIsolationGateTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorGroupMembershipMonitorTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
+selection="SourceActorPubSubExecutionTest,PubSubGuestIsolationGateTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorGroupMembershipMonitorTest,ActorGroupAtomicMonitorRegistrationTest,ActorEventBusDetachedTeardownTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
 
@@ -69,6 +71,16 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 expected = {
+    "dev.oreslang.runtime.ActorGroupAtomicMonitorRegistrationTest": {
+        "registrationAndConcurrentJoinProvideEitherBaselineOrNextRevision",
+        "invalidCapacityNeverAllocatesSnapshotOrMembershipMonitor",
+    },
+    "dev.oreslang.runtime.ActorEventBusDetachedTeardownTest": {
+        "leaveCannotCompleteReadCallbacksUnderMembershipOrTopicLocks",
+        "groupCloseSettlesPendingReadOutsideDefinitionAndDeliveryLocks",
+        "scopedPublisherLeaveRevokesOldChannelBeforeSameActorRejoins",
+        "staleReductionSubscriberCannotSettleCallbacksUnderReductionLock",
+    },
     "dev.oreslang.runtime.ActorGroupMembershipMonitorTest": {
         "snapshotOverflowsResyncsAndFencesOldGrantAfterLeaveRejoin",
         "otherMemberCannotUseMonitorAndGroupCloseReclaimsCredit",

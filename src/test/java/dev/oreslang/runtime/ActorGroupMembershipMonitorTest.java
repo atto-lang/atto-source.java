@@ -48,8 +48,11 @@ final class ActorGroupMembershipMonitorTest {
                         try {
                             switch (message) {
                                 case "register" -> {
-                                    monitor.set(group.monitorMembership(1));
-                                    initial.set(group.membershipSnapshot());
+                                    // Registration and baseline membership revision must
+                                    // be a single linearizable operation.
+                                    var registration = group.registerMembershipMonitor(1);
+                                    monitor.set(registration.monitor());
+                                    initial.set(registration.snapshot());
                                 }
                                 case "overflow" -> {
                                     overflow.set(monitor.get().poll("1"));
