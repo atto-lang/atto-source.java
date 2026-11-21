@@ -2,10 +2,15 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -92,6 +97,82 @@ final class ActorPubSubUnsignedSequenceTest {
             assertEquals(acceptedBeforeExhaustion,
                     events.topics().getFirst().published(),
                     "exhaustion must not commit an event or issue a phantom receipt");
+        }
+    }
+
+
+    @Test
+    void fullAtSignedBoundaryDoesNotBurnUnsignedSequenceOrAdmitPartialDelivery()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus events = group.events();
+            ActorEventBus.Topic<String> topic = events.topic(
+                    "unsigned-full", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+
+            CountDownLatch subscribed = new CountDownLatch(1);
+            CountDownLatch readComplete = new CountDownLatch(1);
+            AtomicReference<String> received = new AtomicReference<>();
+            AtomicReference<Throwable> actorError = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            if ("subscribe".equals(message)) {
+                                join.join();
+                                topic.subscribe();
+                                subscribed.countDown();
+                            } else if ("read".equals(message)) {
+                                var event = topic.subscribe().tryRead().orElseThrow();
+                                received.set(event.value());
+                                readComplete.countDown();
+                            }
+                        } catch (Throwable failure) {
+                            actorError.compareAndSet(null, failure);
+                            subscribed.countDown();
+                            readComplete.countDown();
+                        }
+                    });
+            actor.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS),
+                    "actor must establish an actual bounded subscription");
+            assertNull(actorError.get());
+
+            var topicsField = ActorEventBus.class.getDeclaredField("topics");
+            topicsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            Map<String, ?> topics = (Map<String, ?>) topicsField.get(events);
+            var sequenceField = topics.get("unsigned-full").getClass()
+                    .getDeclaredField("sequence");
+            sequenceField.setAccessible(true);
+            AtomicLong counter = (AtomicLong) sequenceField.get(topics.get("unsigned-full"));
+            counter.set(Long.MAX_VALUE);
+
+            ActorEventBus.PublishReceipt first =
+                    events.tryPublishReliableSystem("unsigned-full", "first")
+                            .orElseThrow();
+            assertEquals("9223372036854775808", first.sequenceUnsignedString());
+            assertEquals(1, first.accepted());
+            assertTrue(first.completion().isDone());
+            assertTrue(events.tryPublishReliableSystem("unsigned-full", "full").isEmpty(),
+                    "second atomic admission must fail when the one-slot queue is full");
+            assertEquals(Long.MIN_VALUE, counter.get(),
+                    "Full must not advance the unsigned-u64 topic sequence");
+            assertEquals(1L, events.topics().getFirst().published(),
+                    "Full must not count as a committed event");
+
+            actor.send("read");
+            assertTrue(readComplete.await(5, TimeUnit.SECONDS));
+            assertNull(actorError.get());
+            assertEquals("first", received.get(),
+                    "the refused event must never appear in the subscriber mailbox");
+            ActorEventBus.PublishReceipt afterRead =
+                    events.tryPublishReliableSystem("unsigned-full", "after")
+                            .orElseThrow();
+            assertEquals("9223372036854775809", afterRead.sequenceUnsignedString(),
+                    "the next accepted event uses the contiguous unsigned sequence");
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
 
