@@ -1080,7 +1080,71 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * A new actor role must never be treated as ordinary user method metadata.
+     * Until the existing source request/reply implementation is reconciled
+     * with main's actor scheduler, and network adapters supply request-scoped
+     * capabilities, reject execution rather than silently dropping the prefix.
+     */
+    private void validateExplicitActorRoleAndTransport(Ast.ClassDecl klass) {
+        if (klass.actorKind() == Ast.ActorKind.NONE) return;
+        Ast.ActorReplyRole role = klass.actorReplyRole();
+        Ast.ActorTransport transport = klass.actorTransport();
+        if (role == Ast.ActorReplyRole.INFER && transport == Ast.ActorTransport.GENERIC) return;
+
+        // Actor persistence will be exclusively inside the sealed state {}
+        // schema. Explicit new roles cannot accidentally resurrect ordinary
+        // instance fields while state lowering remains under integration.
+        if (!klass.fields().isEmpty()) {
+            throw new IllegalArgumentException("specialized actor '" + klass.name()
+                    + "' cannot declare ordinary instance fields; use sealed state {} with using/handle_state");
+        }
+
+        long localRuns = klass.methods().stream().filter(m -> !m.isStatic() && m.name().equals("run")).count();
+        long localReceives = klass.methods().stream().filter(m -> !m.isStatic() && m.name().equals("receive")).count();
+        if (localRuns > 1 || localReceives > 1 || (localRuns > 0 && localReceives > 0)) {
+            throw new IllegalArgumentException("actor '" + klass.name()
+                    + "' cannot overload or mix unary run and stream receive handlers");
+        }
+        if (role == Ast.ActorReplyRole.UNARY) {
+            if (localReceives != 0) throw new IllegalArgumentException(
+                    "unary actor '" + klass.name() + "' must declare run(...): R, not receive(...): void");
+            if (localRuns == 0 && klass.parents().isEmpty()) throw new IllegalArgumentException(
+                    "unary actor '" + klass.name() + "' requires a private run(...): R handler");
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.name().equals("run")) continue;
+                if (method.visibility() == Ast.Visibility.PUBLIC || method.isStatic()
+                        || method.isAbstract() || !method.genericParameters().isEmpty()
+                        || method.parameters().size() != 1
+                        || method.returnType().name().equals("void")) {
+                    throw new IllegalArgumentException("unary actor run must be private, concrete, "
+                            + "instance-only, non-generic, one-argument and return non-void");
+                }
+            }
+        } else if (role == Ast.ActorReplyRole.STREAM && localRuns != 0) {
+            throw new IllegalArgumentException("stream actor '" + klass.name()
+                    + "' must use receive(...): void, not run(...): R");
+        }
+        if (transport == Ast.ActorTransport.TCP || transport == Ast.ActorTransport.WEBSOCKET) {
+            if (role == Ast.ActorReplyRole.UNARY) {
+                throw new IllegalArgumentException("unary " + transport
+                        + " actors require typed request framing and correlation; not implemented");
+            }
+        }
+        if (transport != Ast.ActorTransport.GENERIC) {
+            throw new IllegalArgumentException("actor '" + klass.name() + "' declares "
+                    + transport + " transport but the runtime-bound network actor adapter "
+                    + "is not installed; listener/session dispatch is not yet supported");
+        }
+        if (role == Ast.ActorReplyRole.UNARY) {
+            throw new IllegalArgumentException("unary actor '" + klass.name()
+                    + "' requires the request/reply source runtime integration; "
+                    + "run/request cannot execute on this Java mainline yet");
+        }
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        validateExplicitActorRoleAndTransport(klass);
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
@@ -1106,6 +1170,24 @@ public final class TypeChecker {
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
             }
+            if (resolvedParent != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                if (resolvedParent.actorReplyRole() != Ast.ActorReplyRole.INFER
+                        && klass.actorReplyRole() == Ast.ActorReplyRole.INFER) {
+                    throw new IllegalArgumentException("actor '" + klass.name()
+                            + "' must explicitly preserve inherited actor reply role "
+                            + resolvedParent.actorReplyRole());
+                }
+                if (klass.actorReplyRole() != Ast.ActorReplyRole.INFER
+                        && resolvedParent.actorReplyRole() != Ast.ActorReplyRole.INFER
+                        && klass.actorReplyRole() != resolvedParent.actorReplyRole()) {
+                    throw new IllegalArgumentException("actor reply role mismatch across inheritance: "
+                            + klass.name() + " and " + resolvedParent.name());
+                }
+                if (klass.actorTransport() != resolvedParent.actorTransport()) {
+                    throw new IllegalArgumentException("actor transport mismatch across inheritance: "
+                            + klass.name() + " and " + resolvedParent.name());
+                }
+            }
             if (resolvedParent != null && resolvedParent.constructor() != null) {
                 throw new IllegalArgumentException(
                         "class '" + klass.name() + "' cannot extend '" + resolvedParent.name()
@@ -1121,6 +1203,14 @@ public final class TypeChecker {
                 klass, nominalClassType(klass), new LinkedHashSet<>())) {
             effectiveFieldNames.add(field.field().name());
         }
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && (klass.actorReplyRole() != Ast.ActorReplyRole.INFER
+                    || klass.actorTransport() != Ast.ActorTransport.GENERIC)
+                && !effectiveFieldNames.isEmpty()) {
+            throw new IllegalArgumentException("specialized actor '" + klass.name()
+                    + "' cannot inherit ordinary persistent instance fields; use sealed state {}");
+        }
+
         Set<String> effectiveInstanceMethodNames = new LinkedHashSet<>();
         collectInstanceMethodNames(klass, effectiveInstanceMethodNames, new LinkedHashSet<>());
         for (String name : effectiveFieldNames) {
@@ -1136,6 +1226,25 @@ public final class TypeChecker {
         // shared by AOT and JIT. Multiple-inheritance collisions require the
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && klass.actorReplyRole() != Ast.ActorReplyRole.INFER) {
+            Map<Ast.MethodArity, Ast.MethodDecl> effective =
+                    effectiveInstanceMethods(klass, new LinkedHashSet<>());
+            long runs = effective.keySet().stream().filter(m -> m.name().equals("run")).count();
+            long receives = effective.keySet().stream().filter(m -> m.name().equals("receive")).count();
+            if (runs > 1 || receives > 1 || (runs != 0 && receives != 0)) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' cannot mix or overload inherited unary/stream handlers");
+            }
+            if (klass.actorReplyRole() == Ast.ActorReplyRole.STREAM && runs != 0) {
+                throw new IllegalArgumentException("stream actor '" + klass.name()
+                        + "' cannot inherit a unary run handler");
+            }
+            if (klass.actorReplyRole() == Ast.ActorReplyRole.UNARY && receives != 0) {
+                throw new IllegalArgumentException("unary actor '" + klass.name()
+                        + "' cannot inherit a stream receive handler");
+            }
+        }
 
         // Declaration-site initialization may read constructor arguments in
         // the declaring class. Unlike constructor-body assignment, the

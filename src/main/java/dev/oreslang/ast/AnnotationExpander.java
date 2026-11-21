@@ -160,7 +160,9 @@ public final class AnnotationExpander {
                 klass.interfaces(),
                 klass.fields(),
                 klass.constructor(),
-                methods);
+                methods,
+                klass.actorReplyRole(),
+                klass.actorTransport());
     }
 
     private static void addGeneratedAccessor(

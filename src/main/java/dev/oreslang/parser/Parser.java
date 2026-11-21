@@ -108,8 +108,9 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
-                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
+                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
                     continue;
                 }
                 if (modifiers.shared) {
@@ -301,8 +302,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
-                return parseDefinedActorClass(previous(), modifiers, annotations);
+                return parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix);
             }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
@@ -685,10 +687,50 @@ public final class Parser {
      * allocation primitive. Actor construction/spawn must still be lowered by
      * the runtime before source programs may instantiate actor classes.
      */
+    private record ActorPrefix(Ast.ActorReplyRole role, Ast.ActorTransport transport) {
+        static ActorPrefix legacy() {
+            return new ActorPrefix(Ast.ActorReplyRole.INFER, Ast.ActorTransport.GENERIC);
+        }
+    }
+
+    /**
+     * Contextual actor modifiers apply only to define ... actor declarations.
+     * They remain ordinary identifiers elsewhere; a consumed prefix without
+     * an actor is an error, not silently discarded metadata.
+     */
+    private ActorPrefix parseActorPrefix() {
+        Ast.ActorReplyRole role = Ast.ActorReplyRole.INFER;
+        Ast.ActorTransport transport = Ast.ActorTransport.GENERIC;
+        if (isContextualIdentifier("unary") || isContextualIdentifier("stream")) {
+            role = advance().lexeme().equals("unary")
+                    ? Ast.ActorReplyRole.UNARY : Ast.ActorReplyRole.STREAM;
+        }
+        if (isContextualIdentifier("http") || isContextualIdentifier("tcp")
+                || isContextualIdentifier("websocket")) {
+            String wire = advance().lexeme();
+            transport = switch (wire) {
+                case "http" -> Ast.ActorTransport.HTTP;
+                case "tcp" -> Ast.ActorTransport.TCP;
+                default -> Ast.ActorTransport.WEBSOCKET;
+            };
+        }
+        // Network bindings are stream actors unless unary is explicit.
+        if (transport != Ast.ActorTransport.GENERIC && role == Ast.ActorReplyRole.INFER) {
+            role = Ast.ActorReplyRole.STREAM;
+        }
+        if (role != Ast.ActorReplyRole.INFER || transport != Ast.ActorTransport.GENERIC) {
+            if (!check(ACTOR) && !check(ISOACTOR)) {
+                throw error(peek(), "actor role/transport must immediately precede actor");
+            }
+        }
+        return new ActorPrefix(role, transport);
+    }
+
     private Ast.ClassDecl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
-            List<Ast.Annotation> annotations) {
+            List<Ast.Annotation> annotations,
+            ActorPrefix prefix) {
         modifiers = mergeModifiers(modifiers, parseModifiers());
         Ast.ActorKind kind = resolveActorKind(
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
@@ -700,7 +742,7 @@ public final class Parser {
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility);
+        return parseActorClass(kind, modifiers.visibility, prefix);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -726,6 +768,11 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+        return parseActorClass(actorKind, visibility, ActorPrefix.legacy());
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -798,7 +845,8 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
+                prefix.role(), prefix.transport());
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {

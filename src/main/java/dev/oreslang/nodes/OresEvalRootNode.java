@@ -522,6 +522,15 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            // A source interpreter can be invoked through host bootstrap as
+            // well as checked Oreslang source. Never accept a declaration whose
+            // role or transport the runtime cannot actually dispatch.
+            if (klass.actorReplyRole() == Ast.ActorReplyRole.UNARY
+                    || klass.actorTransport() != Ast.ActorTransport.GENERIC) {
+                throw new SecurityException(
+                        "source actor role/transport runtime adapter is unavailable: "
+                                + klass.actorReplyRole() + "/" + klass.actorTransport());
+            }
             ActorRuntime.ActorKind expectedKind = switch (klass.actorKind()) {
                 case NONE -> throw new IllegalArgumentException(
                         "source spawn target '" + actorTypeName + "' is not an actor");
