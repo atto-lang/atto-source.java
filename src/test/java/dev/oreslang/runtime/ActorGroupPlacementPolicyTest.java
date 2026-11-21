@@ -48,12 +48,11 @@ final class ActorGroupPlacementPolicyTest {
                             ActorGroupPlacementPolicy.CpuAffinity.PREFER_SAME_NUMA_NODE,
                             Integer.MAX_VALUE,
                             ActorGroupPlacementPolicy.Accelerator.CPU_ONLY, null, 0)));
-            var cpuBounded = runtime.createActorGroup(
+            assertThrows(UnsupportedOperationException.class, () -> runtime.createActorGroup(
                     new ActorGroupPlacementPolicy(
                             ActorGroupPlacementPolicy.CpuAffinity.ANY, 1,
-                            ActorGroupPlacementPolicy.Accelerator.CPU_ONLY, null, 0));
-            assertEquals(1, runtime.actorGroupCount());
-            cpuBounded.close();
+                            ActorGroupPlacementPolicy.Accelerator.CPU_ONLY, null, 0)));
+            assertEquals(0, runtime.actorGroupCount());
             assertThrows(UnsupportedOperationException.class, () -> runtime.createActorGroup(
                     new ActorGroupPlacementPolicy(
                             ActorGroupPlacementPolicy.CpuAffinity.ANY, Integer.MAX_VALUE,
@@ -126,6 +125,7 @@ final class ActorGroupPlacementPolicyTest {
                                     affinity, parallelism, accelerator, device, inFlight);
                             boolean supportedCpuTurns =
                                     affinity == ActorGroupPlacementPolicy.CpuAffinity.ANY
+                                    && parallelism == Integer.MAX_VALUE
                                     && accelerator == ActorGroupPlacementPolicy.Accelerator.CPU_ONLY;
                             if (supportedCpuTurns) {
                                 assertDoesNotThrow(policy::requireSupported);
@@ -140,9 +140,10 @@ final class ActorGroupPlacementPolicyTest {
                 }
             }
         }
-        assertEquals(3, accepted,
-                "only CPU-only bounded/unrestricted turn policies may be admitted");
-        assertEquals(240, rejected, "GPU, locality and malformed policies must reject");
+        assertEquals(1, accepted,
+                "only the unrestricted CPU policy may be admitted until nonparking permits are integrated");
+        assertEquals(242, rejected,
+                "bounded turns, GPU, locality and malformed policies must reject");
     }
 
     @Test

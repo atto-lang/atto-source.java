@@ -66,21 +66,20 @@ public record ActorGroupPlacementPolicy(
     }
 
     /**
-     * Admit bounded CPU-only physical turn limits now that ActorRuntime owns
-     * a nonparking gate for its managed workers. Physical CPU/NUMA locality and
-     * GPU execution still require separate, resource-admitted backends.
-     *
-     * <p>Creating a policy never authorizes a device, changes actor ownership,
-     * or changes how ordinary cooperation-group membership is scheduled.
+     * Keep every non-default placement request fail-closed until the integrated
+     * runtime uses a proven nonparking permit/handoff path. The current
+     * ActorGroupTurnGate serializes on a Java monitor and therefore cannot
+     * satisfy the carrier-nonparking contract merely because it is bounded.
      */
     void requireSupported() {
         if (cpuAffinity != CpuAffinity.ANY) {
             throw new UnsupportedOperationException(
                     "ActorGroup CPU affinity requires group-aware scheduler placement");
         }
-        // A bounded physical-turn permit gate is admitted by ActorRuntime.
-        // It never creates a group executor and holds the lease until after
-        // the physical TurnExecutor/guest-context exit.
+        if (maxParallelTurns != Integer.MAX_VALUE) {
+            throw new UnsupportedOperationException(
+                    "ActorGroup maxParallelTurns requires nonparking scheduler permit integration");
+        }
         if (accelerator != Accelerator.CPU_ONLY) {
             throw new UnsupportedOperationException(
                     "ActorGroup GPU placement requires a resource-admitted device broker");
