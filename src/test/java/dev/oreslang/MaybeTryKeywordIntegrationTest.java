@@ -109,6 +109,24 @@ final class MaybeTryKeywordIntegrationTest {
                 """));
     }
 
+    @Test
+    void legacyOnFailureMarkerIsAcceptedInsideKeywordTry() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc read(Result<int, String> value): Result<int, String> {
+                  try
+                    return maybe
+                      Ok(n) ?= value;
+                      return Ok(n)
+                    else
+                      on Err(reason) -> { return Err(reason); };
+                    end;
+                  finally
+                    stdio.stdout.write("F");
+                  end
+                }
+                """));
+    }
+
     private static String run(String source) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source guest = Source.newBuilder(OresLanguage.ID, source, "maybe-try-integration.atto")
