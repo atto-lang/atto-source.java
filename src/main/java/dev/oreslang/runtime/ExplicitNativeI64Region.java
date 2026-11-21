@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * access; Arena.ofShared supports actor continuation carrier migration.
  */
 public final class ExplicitNativeI64Region implements AutoCloseable {
+    private static final int MIN_STABLE_FFM_JDK = 25;
     public static final class Slot {
         private final Object owner;
         private final int index;
@@ -136,6 +137,11 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         if (slots < 1 || slots > 65536) {
             throw new IllegalArgumentException("native region size must be 1..65536 slots");
         }
+        // JDK 21 includes preview java.lang.foreign classes, but their
+        // presence does NOT certify the stable Java 25 FFM contract.
+        if (!isAvailable()) {
+            throw new IllegalStateException("actor-native FFM requires Java 25 or newer");
+        }
         this.requireActor = Objects.requireNonNull(requireActor);
         this.onRetired = Objects.requireNonNull(onRetired);
         this.reservation = Objects.requireNonNull(reservation);
@@ -187,10 +193,11 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     }
 
     public static boolean isAvailable() {
+        if (Runtime.version().feature() < MIN_STABLE_FFM_JDK) return false;
         try {
             Class.forName("java.lang.foreign.Arena");
             return true;
-        } catch (ClassNotFoundException absent) {
+        } catch (ClassNotFoundException | LinkageError unavailable) {
             return false;
         }
     }
