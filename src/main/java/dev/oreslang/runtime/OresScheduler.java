@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
 
 /**
  * Scheduler affinity for ordinary Oreslang tasks.
@@ -707,7 +706,7 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
         private static final int RUNNING = 2;
@@ -722,6 +721,8 @@ public final class OresScheduler implements AutoCloseable {
         // 3=callback failed. The publication path cannot overtake state 1.
         private final AtomicInteger quiescenceState = new AtomicInteger();
         private final AtomicReference<Throwable> quiescenceFailure = new AtomicReference<>();
+        // Arbitrate wall-deadline quarantine with physical-retirement admission.
+        private final Object deadlineRetirementLock = new Object();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -737,6 +738,10 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicInteger cleanupDispatches = new AtomicInteger();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
+        // Each await owns a distinct delivery generation. A producer callback
+        // claimed before cancellation/detachment must never deliver into the
+        // next (possibly cleanup-only) await, even if it runs much later.
+        private final AtomicLong awaitGeneration = new AtomicLong();
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
                 new AtomicReference<>();
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
@@ -1039,6 +1044,11 @@ public final class OresScheduler implements AutoCloseable {
             if (!phase.compareAndSet(RUNNING, WAITING)) {
                 return;
             }
+            long generation = awaitGeneration.incrementAndGet();
+            if (generation <= 0) {
+                failTerminal(new IllegalStateException("source await generation exhausted"));
+                return;
+            }
 
             try {
                 // Settled futures need no dependency edge and cannot take
@@ -1046,7 +1056,7 @@ public final class OresScheduler implements AutoCloseable {
                 Object alreadyTerminal = awaited.runtimeTerminalStateOrNull();
                 if (alreadyTerminal != null) {
                     deliverAwaitCompletion(
-                            OresFuture.runtimeTerminalValue(alreadyTerminal),
+                            generation, OresFuture.runtimeTerminalValue(alreadyTerminal),
                             OresFuture.runtimeTerminalFailure(alreadyTerminal));
                     return;
                 }
@@ -1060,7 +1070,7 @@ public final class OresScheduler implements AutoCloseable {
                     Object terminal = awaited.runtimeTerminalStateOrNull();
                     if (terminal != null) {
                         deliverAwaitCompletion(
-                                OresFuture.runtimeTerminalValue(terminal),
+                                generation, OresFuture.runtimeTerminalValue(terminal),
                                 OresFuture.runtimeTerminalFailure(terminal));
                         return;
                     }
@@ -1087,17 +1097,18 @@ public final class OresScheduler implements AutoCloseable {
                 Object terminal = awaited.runtimeTerminalStateOrNull();
                 if (terminal != null) {
                     deliverAwaitCompletion(
-                            OresFuture.runtimeTerminalValue(terminal),
+                            generation, OresFuture.runtimeTerminalValue(terminal),
                             OresFuture.runtimeTerminalFailure(terminal));
                     return;
                 }
 
-                // Pending path: TaskRunner itself is the reusable callback
-                // target, avoiding a new captured lambda for every await. The
-                // detachable registration remains per suspension so scheduler
-                // close/task cancellation can sever retention safely.
+                // Bind the callback to THIS await generation. Reusing TaskRunner
+                // directly as BiConsumer would let a claimed, detached producer
+                // callback publish into a later source cleanup await.
                 OresFuture.RuntimeWaiterRegistration<?> registration =
-                        awaited.whenCompleteRuntimeCancellable(this);
+                        awaited.whenCompleteRuntimeCancellable(
+                                (value, failure) -> deliverAwaitCompletion(
+                                        generation, value, failure));
 
                 OresFuture.RuntimeWaiterRegistration<?> previous =
                         activeAwaitRegistration.getAndSet(registration);
@@ -1115,31 +1126,35 @@ public final class OresScheduler implements AutoCloseable {
             }
         }
 
-        @Override
-        public void accept(Object value, Throwable failure) {
-            deliverAwaitCompletion(value, failure);
-        }
-
-        private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL
+        private boolean staleAwaitDelivery(long generation) {
+            return generation != awaitGeneration.get()
+                    || phase.get() == TERMINAL
                     || (task instanceof CleanupAwareTask<?>
                         && completion.deferredCancellationCause() != null
-                        && !cleanupCancellationInjected.get())) {
-                removeAwaitDependency(completion);
-                return;
-            }
+                        && !cleanupCancellationInjected.get());
+        }
 
+        private void deliverAwaitCompletion(long generation, Object value, Throwable failure) {
+            if (staleAwaitDelivery(generation)) return;
             Resume resume = Resume.completed(
                     value,
                     failure == null ? null : OresFuture.unwrap(failure));
+            // Unwrapping or a claimed Future callback may race with detached
+            // cancellation. Recheck before publishing into the reusable slot.
+            if (staleAwaitDelivery(generation)) return;
             if (!pendingResume.compareAndSet(null, resume)) {
+                if (staleAwaitDelivery(generation)) return;
                 failTerminal(new IllegalStateException(
                         "await delivered more than one resume to the same task"));
                 return;
             }
-
-            // The awaited Future has settled: this is no longer a pending
-            // dependency, even though scheduling the continuation may lag.
+            // Cancellation may invalidate this await immediately after CAS.
+            // Remove ONLY this exact producer resume; never clear the newer
+            // authenticated cleanup resume written by the cancelling thread.
+            if (staleAwaitDelivery(generation)) {
+                pendingResume.compareAndSet(resume, null);
+                return;
+            }
             removeAwaitDependency(completion);
             if (phase.get() == TERMINAL) {
                 pendingResume.compareAndSet(resume, null);
@@ -1166,6 +1181,9 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void detachActiveAwaitRegistration() {
+            // Invalidate in-flight callbacks even when their Future waiter was
+            // already claimed before detach() reached it.
+            awaitGeneration.incrementAndGet();
             removeAwaitDependency(completion);
             OresFuture.RuntimeWaiterRegistration<?> registration =
                     activeAwaitRegistration.getAndSet(null);
@@ -1191,19 +1209,26 @@ public final class OresScheduler implements AutoCloseable {
          */
         private void expireFromWallDeadline(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
-            if (task instanceof CleanupAwareTask<?>
-                    && cleanupCancellationInjected.get()) {
-                cleanupIncomplete.set(true);
-                failure = new CleanupIncompleteError(
-                        "deadline terminated in-progress source cleanup; quarantine loans",
-                        failure);
+            synchronized (deadlineRetirementLock) {
+                int observed;
+                do {
+                    observed = phase.get();
+                    if (observed == TERMINAL) return;
+                } while (!phase.compareAndSet(observed, TERMINAL));
+                Resume queued = pendingResume.get();
+                boolean lexicalFramesPossible = observed == RUNNING || observed == WAITING
+                        || (observed == QUEUED && (queued == null || !queued.initial()));
+                if (task instanceof CleanupAwareTask<?> && lexicalFramesPossible) {
+                    // A wall deadline has NO actor-lane cleanup authority, even
+                    // before the first cancellation injection. Report an
+                    // incomplete unwind and quarantine all lexical resources.
+                    cleanupIncomplete.set(true);
+                    failure = new CleanupIncompleteError(
+                            "deadline terminated live source continuation; quarantine loans",
+                            failure);
+                }
             }
             detachActiveAwaitRegistration();
-            int observed;
-            do {
-                observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
             pendingResume.set(null);
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
             if (!executing.get()) {
@@ -1267,9 +1292,11 @@ public final class OresScheduler implements AutoCloseable {
         private void retireWhenQuiescent() {
             // Never run physical retirement while a source defer/finally/FFI
             // obligation remains incomplete, or while a guest carrier runs.
-            if (cleanupIncomplete.get() || phase.get() != TERMINAL
-                    || executing.get() || !quiescenceState.compareAndSet(0, 1))
-                return;
+            synchronized (deadlineRetirementLock) {
+                if (cleanupIncomplete.get() || phase.get() != TERMINAL
+                        || executing.get() || !quiescenceState.compareAndSet(0, 1))
+                    return;
+            }
             cancelWallDeadline();
             try {
                 // Keep the Task registered until the callback has actually
@@ -1456,3 +1483,4 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 }
+

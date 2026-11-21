@@ -3,9 +3,11 @@ package dev.oreslang.runtime;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -132,6 +134,116 @@ final class CleanupAwareSchedulerCancellationTest {
         }
     }
 
+    @Test void producerCallbackClaimedBeforeCancelCannotPoisonLaterCleanupAwait()
+            throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        OresFuture<Integer> cleanup = new OresFuture<>();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch callbackPastCancellationCheck = new CountDownLatch(1);
+        CountDownLatch releaseStaleCallback = new CountDownLatch(1);
+        CountDownLatch cleanupAwaiting = new CountDownLatch(1);
+        AtomicBoolean pausedOnce = new AtomicBoolean();
+        AtomicInteger resumes = new AtomicInteger();
+        AtomicInteger cleanupStarts = new AtomicInteger();
+        AtomicInteger quiescent = new AtomicInteger();
+
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> work = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            int turn = resumes.incrementAndGet();
+                            if (turn == 1) {
+                                assertTrue(resume.initial());
+                                started.countDown();
+                                return OresScheduler.await(source);
+                            }
+                            if (turn == 2) {
+                                assertTrue(OresScheduler.cancellationCleanupTurn());
+                                assertInstanceOf(CancellationException.class, resume.failure());
+                                cleanupStarts.incrementAndGet();
+                                cleanupAwaiting.countDown();
+                                return OresScheduler.await(cleanup);
+                            }
+                            assertEquals(3, turn, "stale producer must not create a turn");
+                            assertTrue(OresScheduler.cancellationCleanupTurn());
+                            assertNull(resume.failure(), "only the cleanup Future can resume cleanup");
+                            assertEquals(Integer.valueOf(8), resume.value());
+                            return OresScheduler.done(8);
+                        }
+                    }, quiescent::incrementAndGet);
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (source.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, source.pendingRuntimeWaiterCount(),
+                    "wait until the source await callback is registered");
+
+            // OresFuture.unwrap() runs inside deliverAwaitCompletion AFTER
+            // its initial cancellation check and BEFORE pendingResume CAS.
+            // This deterministic gate represents an already-claimed callback,
+            // which a later detach() cannot retract.
+            CompletionException lateFailure =
+                    new CompletionException(new IllegalStateException("late producer")) {
+                        @Override public Throwable getCause() {
+                            if (pausedOnce.compareAndSet(false, true)) {
+                                callbackPastCancellationCheck.countDown();
+                                try {
+                                    if (!releaseStaleCallback.await(6, TimeUnit.SECONDS)) {
+                                        throw new IllegalStateException(
+                                                "test did not release source callback");
+                                    }
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                    throw new IllegalStateException(interrupted);
+                                }
+                            }
+                            return super.getCause();
+                        }
+                    };
+            Thread producerThread = new Thread(
+                    () -> source.failFromRuntime(lateFailure), "late-source-producer");
+            producerThread.start();
+            try {
+                assertTrue(callbackPastCancellationCheck.await(3, TimeUnit.SECONDS));
+                assertTrue(work.cancel(false));
+                assertFalse(work.cancel(false), "cancellation request is single-shot");
+                assertTrue(cleanupAwaiting.await(3, TimeUnit.SECONDS));
+                // The stale producer must be released only after the cleanup
+                // Future actually owns the CURRENT await registration.
+                long cleanupDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (cleanup.pendingRuntimeWaiterCount() == 0
+                        && System.nanoTime() < cleanupDeadline) {
+                    Thread.sleep(1);
+                }
+                assertEquals(1, cleanup.pendingRuntimeWaiterCount());
+                assertFalse(work.isDone(), "cleanup Future still owns lexical retirement");
+                assertEquals(0, quiescent.get());
+            } finally {
+                releaseStaleCallback.countDown();
+                producerThread.join(3_000);
+            }
+            assertFalse(producerThread.isAlive(), "detached producer callback must exit");
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+            assertEquals(1, cleanup.pendingRuntimeWaiterCount(),
+                    "stale producer cannot displace the cleanup await");
+            assertFalse(work.isDone(), "stale producer cannot publish task cancellation");
+            assertEquals(0, quiescent.get(), "no premature physical retirement");
+            assertEquals(2, resumes.get(), "no stale guest continuation resurrection");
+
+            cleanup.completeFromRuntime(8);
+            assertThrows(CancellationException.class,
+                    () -> work.get(3, TimeUnit.SECONDS));
+            assertEquals(3, resumes.get(), "exactly one authenticated cleanup continuation");
+            assertEquals(1, cleanupStarts.get());
+            assertEquals(1, quiescent.get(), "physical retirement is exactly once");
+            assertFalse(scheduler.hasIncompleteCleanup());
+            assertEquals(0, cleanup.pendingRuntimeWaiterCount());
+        }
+    }
+
     @Test void panicInCleanupCannotBeReclassifiedAsCancellation()
             throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
@@ -195,6 +307,50 @@ final class CleanupAwareSchedulerCancellationTest {
             assertEquals(0, blockedCleanup.pendingRuntimeWaiterCount());
         } finally {
             scheduler.close();
+        }
+    }
+
+    @Test void wallDeadlineWithoutCancellationInjectionQuarantinesSuspendedSource()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicInteger cleanQuiescence = new AtomicInteger();
+        IllegalStateException deadlineFailure = new IllegalStateException("wall deadline");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> work = scheduler.startWithWallDeadline(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            if (!resume.initial()) {
+                                fail("deadline must not resurrect suspended guest source");
+                            }
+                            started.countDown();
+                            return OresScheduler.await(producer);
+                        }
+                    },
+                    cleanQuiescence::incrementAndGet,
+                    TimeUnit.SECONDS.toNanos(2),
+                    deadlineFailure);
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            while (producer.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+
+            ExecutionException terminal = assertThrows(
+                    ExecutionException.class, () -> work.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class,
+                    terminal.getCause(), "deadline cannot stand in for lexical unwind");
+            assertSame(deadlineFailure, terminal.getCause().getCause());
+            assertFalse(work.isCancelled());
+            assertEquals(0, cleanQuiescence.get(),
+                    "aborted lexical frames cannot receive a clean retirement");
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "caller must retain/quarantine resource ownership");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertFalse(producer.isCancelled(), "borrowed producer remains independent");
         }
     }
 
@@ -366,3 +522,4 @@ final class CleanupAwareSchedulerCancellationTest {
         }
     }
 }
+
