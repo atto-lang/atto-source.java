@@ -145,8 +145,12 @@ public final class SupervisorDenseTable implements AutoCloseable {
     }
 
     public synchronized void set(Handle h, Field f, long value) {
+        Objects.requireNonNull(f, "field");
+        if (f == Field.ACTOR_ID) {
+            throw new IllegalArgumentException("ACTOR_ID is immutable after insertion");
+        }
         int row = dense(h);
-        data[offset(layout, capacity, row, Objects.requireNonNull(f).ordinal())] = value;
+        data[offset(layout, capacity, row, f.ordinal())] = value;
     }
 
     /** Returns a detached snapshot, never a pointer into private actor memory. */
