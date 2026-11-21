@@ -137,4 +137,143 @@ final class HotReloadManagerSafetyTest {
             // Never treat the manager's current active pointer as a serving route.
         }
     }
+
+    @Test
+    void failedRetireAfterSealRetainsGenerationForExactRetry()
+            throws Exception {
+        var manager =
+                new HotReloadManager(
+                        IsolatePolicy.developer(), PROFILE);
+        try {
+            var generation = manager.load("retry-retire.ores", GOOD);
+            var faultField =
+                    generation.getClass().getDeclaredField(
+                            "closeAfterSealFaultForTesting");
+            faultField.setAccessible(true);
+            var attempts = new java.util.concurrent.atomic.AtomicInteger();
+            faultField.set(generation, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected generation close after admission seal");
+                }
+            });
+
+            var failure =
+                    assertThrows(
+                            OutOfMemoryError.class,
+                            () -> manager.retire(generation.id()));
+            assertTrue(failure.getMessage().contains(
+                    "generation close after admission seal"));
+            assertTrue(generation.closed(),
+                    "failed retirement must keep execution/pin admission sealed");
+            assertNull(manager.active("retry-retire.ores"),
+                    "routing must unpublish before physical retirement");
+            assertEquals(1, manager.liveGenerations(),
+                    "failed physical close must retain exact generation owner");
+            assertThrows(
+                    IllegalStateException.class,
+                    generation::pinActorRoute,
+                    "sealed failed-retirement generation cannot mint new pins");
+
+            manager.retire(generation.id());
+
+            assertEquals(2, attempts.get());
+            assertEquals(0, manager.liveGenerations());
+            assertTrue(generation.closed());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void managerCloseRetriesGenerationAfterContextClosedButBeforeEviction()
+            throws Exception {
+        var manager =
+                new HotReloadManager(
+                        IsolatePolicy.developer(), PROFILE);
+        try {
+            var retained = manager.load("retry-manager-close.ores", GOOD);
+            var sibling = manager.load("retry-manager-sibling.ores", GOOD);
+
+            var faultField =
+                    retained.getClass().getDeclaredField(
+                            "closeAfterContextFaultForTesting");
+            var contextClosedField =
+                    retained.getClass().getDeclaredField(
+                            "contextCloseComplete");
+            faultField.setAccessible(true);
+            contextClosedField.setAccessible(true);
+            var attempts = new java.util.concurrent.atomic.AtomicInteger();
+            faultField.set(retained, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected after generation Context close");
+                }
+            });
+
+            var failure =
+                    assertThrows(OutOfMemoryError.class, manager::close);
+            assertTrue(failure.getMessage().contains(
+                    "after generation Context close"));
+            assertTrue(retained.closed());
+            assertTrue(contextClosedField.getBoolean(retained),
+                    "physical Context close receipt must survive later failure");
+            assertEquals(1, manager.liveGenerations(),
+                    "only failed deregistration owner should remain");
+            assertTrue(sibling.closed(),
+                    "manager close must continue closing independent generations");
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> manager.load("forbidden-after-seal.ores", GOOD),
+                    "failed manager close remains terminal for new admission");
+
+            manager.close();
+
+            assertEquals(2, attempts.get());
+            assertEquals(0, manager.liveGenerations());
+            assertTrue(manager.activeGenerations().isEmpty());
+        } finally {
+            manager.close();
+        }
+    }
+
+
+    @Test
+    void directCloseFailureUnpublishesRouteButRetainsCleanupRegistry()
+            throws Exception {
+        var manager =
+                new HotReloadManager(
+                        IsolatePolicy.developer(), PROFILE);
+        try {
+            var generation = manager.load("direct-close-retry.ores", GOOD);
+            var faultField =
+                    generation.getClass().getDeclaredField(
+                            "closeAfterSealFaultForTesting");
+            faultField.setAccessible(true);
+            var attempts = new java.util.concurrent.atomic.AtomicInteger();
+            faultField.set(generation, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected direct close after seal");
+                }
+            });
+
+            assertThrows(OutOfMemoryError.class, generation::close);
+
+            assertTrue(generation.closed());
+            assertNull(manager.active("direct-close-retry.ores"),
+                    "sealed generation must be removed from active routing");
+            assertNull(manager.active());
+            assertEquals(1, manager.liveGenerations(),
+                    "failed direct close must retain cleanup registration");
+
+            generation.close();
+
+            assertEquals(2, attempts.get());
+            assertEquals(0, manager.liveGenerations());
+        } finally {
+            manager.close();
+        }
+    }
+
 }

@@ -615,6 +615,58 @@ final class LogicalSourceActorCrossContextUpgradeTest {
         }
     }
 
+    @Test
+    void concurrentHostCloseDoesNotDoubleReleaseActiveGenerationLease()
+            throws Exception {
+        String source = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 1; return; }
+                  receive(ActorMail<int> mail): void {
+                    self.count = self.count + mail.value;
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration("double-close.ores", source);
+            var router = LogicalSourceActorRouterV1.spawn(
+                    generation, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+            var ref = router.ref();
+            ref.send(41L);
+            assertEquals(42L, next(ref));
+
+            final int closers = 8;
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread[] workers = new Thread[closers];
+            for (int i = 0; i < closers; i++) {
+                workers[i] = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        router.close();
+                    } catch (Throwable thrown) {
+                        failure.compareAndSet(null, thrown);
+                    }
+                });
+            }
+            start.countDown();
+            for (Thread worker : workers) {
+                worker.join(10000);
+                assertFalse(worker.isAlive(), "concurrent close must terminate");
+            }
+            assertNull(failure.get(),
+                    "racing cleanup must not double-release generation leases");
+            assertDoesNotThrow(router::close);
+            assertThrows(IllegalStateException.class, ref::routeEpoch);
+            assertDoesNotThrow(generation::close,
+                    "generation must not remain pinned after physical retirement");
+        }
+    }
+
     /**
      * Keep UUID assertions independent of string rendering and accidental
      * physical address equality.

@@ -848,6 +848,125 @@ The second model was corrected during audit to keep logical incarnation stable
 and advance a route epoch; older modeling that incremented incarnation for a
 transparent code replacement was semantically wrong.
 
+### Bounded logical proxy integration gate (2026-10-18)
+
+The stacked `LogicalActorProxyMailboxV1` is a **trusted runtime
+substrate**, not yet the live `LogicalSourceActorRouterV1.send(Object)`
+implementation. Its immutable byte envelopes carry monotonic sequences,
+and its bounded message/byte credits remain charged across queueing,
+dispatch and incomplete actor delivery. A route-upgrade freeze pauses
+**dispatch** while retaining bounded admission; its ticket can commit
+only after the old dispatched prefix has completed.
+
+The audit reconciled the mailbox branch with the latest Java router,
+including timeout/interruption cancellation and fail-closed protected
+PRIVATE/UNTRUSTED placement admission. The proxy now also supports a
+package-private `requeueProvenUnsent(seq)` for an unequivocally failed
+physical send, provided that send was the latest outstanding dispatch
+and no freeze is active. It preserves FIFO sequence and all credits;
+it is **not** a retry after ambiguous transport delivery. If a broker
+cannot prove an actor did not accept the message, it must retain and
+resolve the outstanding delivery rather than redeliver potentially
+duplicated work. The companion JUnit cases cover FIFO/credits,
+disallowed stale requeues, sparse completions and competing freeze
+versus unsent rollback.
+
+The remaining live integration must atomically bind the proxy's
+dispatch reservation to `ActorRuntime` mailbox admission, and bind
+logical completion to an authenticated runtime `mail.done()`/terminal
+receipt. An arbitrary host `complete(sequence)` call is not proof
+that the actor processed a message. Code may acknowledge a send only
+after physical mailbox acceptance. Before promotion, drain the exact
+old-route dispatch watermark and preserve queued post-freeze bytes
+for the new route. The compiler must produce canonical typed immutable
+wire envelopes, not retain mutable `Object` graphs or raw
+cross-context pointers. Actor/scheduler threads may not be parked
+behind a host monitor.
+
+These additions are committed in the stacked draft but have **not**
+been confirmed by an executed JDK25/Maven/Graal workflow. Do not claim
+exactly-once effect semantics, live proxy integration, or fully
+migratable private/untrusted worker processes from this mailbox proof.
+
+### Java real source-actor proxy bridge v1 (host-only, scalar)
+
+A narrow proof adapter, `LogicalSourceActorProxyBridgeV1`, now integrates
+`LogicalActorProxyMailboxV1` with `LogicalSourceActorRouterV1` and actual
+`ActorRuntime.ActorRef.send()` plus `drain()` under the logical route monitor.
+It is deliberately **serialized**: one host thread reserves, sends, awaits
+the physical drain observer, and only then records `complete(sequence)`.
+A failed or ambiguous physical send/drain leaves the message retained and
+seals the proxy. There is **no automatic replay** after ambiguous delivery.
+
+The first canonical wire form is precisely eight big-endian bytes encoding
+a signed 64-bit actor message; only `admitLong(long)` can enqueue messages.
+The bridge exposes output observation and an immutable logical address but
+**does not expose the underlying ActorRef**, preventing bypass of the proxy's
+bounded admission. Distinct admission and dispatch locks allow bounded new
+bytes while an upgrade freezes dispatch. A physical successful code migration
+commits the proxy's matching route epoch; exception paths stay fail-sealed.
+Ordinary close refuses queued or outstanding mail instead of falsely marking
+it completed. The bridge currently only starts `SHARED` actors, using the
+existing same-JVM source-actor path.
+
+Committed real-runtime JUnit fixtures exercise a Counter v1/v2 Oreslang
+actor across separate checked Graal contexts: 42 -> 43 -> 45, route epoch
+1 -> 2 with stable logical id/incarnation, bounded proxy credits,
+physical completion-barrier accounting, cross-upgrade queued mail,
+racing admission, and fail-sealed incompatible source upgrades.
+**None of these newly authored JVM tests has an executed exact-head
+Maven/JDK25 receipt yet.**
+
+This is *not* a general source-level actor proxy. In particular, the
+host-only scalar codec is NOT a compiler-generated typed message ABI, a
+`drain()` barrier is NOT a cryptographically authenticated remote
+`mail.done()` receipt, and the v1 adapter does not support parallel
+dispatch, direct guest-side mailboxes, durable retries, complete
+multi-actor supervision migration or cross-process PRIVATE/UNTRUSTED
+physical isolation. The production route must replace scalar encoding
+with compiler-owned immutable frames, add authenticated per-message
+accept/done proof tied to physical incarnation, preserve independent
+CONTROL flow and introduce a dedicated worker/isolate backend.
+
+### Close/retirement retry audit (2026-10-18)
+
+The V1 router's logical `closed` bit seals further DATA admission, but
+does **not** mean every physical actor/code-generation lease has been
+reaped. The earlier `close()` implementation sealed the router and then
+called `ActorRef.stop()`, which can throw on the bounded host wait:
+subsequent `close()` calls returned early even while the old generation
+remained pinned. Such a timeout cannot license unload or claim a
+successful shutdown.
+
+`LogicalSourceActorRouterV1` now serializes supervisor close attempts
+under a dedicated close monitor; a stop exception records the active
+physical actor in the deferred-retirement ledger before propagating.
+Repeated close calls on an already-sealed router continue physical
+retirement until every lease is finalized. Reaping closes each generation
+lease before removing its owner from the ledger and tracks whether the
+active lease has already been released to prevent duplicate closure.
+The ordinary fast path remains idempotent. Added a real source-actor
+JUnit regression with eight concurrent host closers that asserts a
+fully retired generation is unpinned and further closure is harmless.
+
+The bounded `LogicalSourceActorProxyBridgeV1` now mirrors that
+lifecycle distinction: closing seals admission immediately, but the
+bridge only records physical retirement after the router closes and the
+mailbox is released. A failed physical close leaves the bridge sealed
+and retryable; it must not silently become an idempotent no-op while
+a code generation remains pinned. A race regression checks that
+`admitLong` versus `close` either rejects admission or preserves
+accepted mail for actual delivery before shutdown. Multiple host
+closers, and repeated completed shutdowns, must be idempotent.
+
+These are committed **source-level changes and test cases, not yet
+executed JDK25/GraalVM proof**. A separate independent source-free
+Python model exercised 500,000 deterministic retirement/close transitions
+including 125,153 simulated stop failures, ensuring no early release,
+at-most-once release and eventual retirement following physical
+finalization. The model does not instantiate the Java router or
+substitute for exact-head CI.
+
 ### Remaining production gates
 
 This remains v1 and intentionally excludes:
@@ -868,3 +987,141 @@ Current source-owned Actions still create jobs with zero executed steps, so
 those jobs are neither pass evidence nor meaningful code-failure evidence.
 Private cross-org source mirroring remains disallowed while the reviewed
 destination allowlist is empty.
+
+### Runtime-minted exact physical message receipts — 2026-10-19
+
+The trusted SHARED source-actor proxy now uses
+`ActorRuntime.sendWithPhysicalReceipt(ref, message)` instead of pairing
+`ActorRef.send` with a cumulative `ActorRef.drain()`.
+
+The normal `send(ref, message)` and the tracked send share ONE physical
+mailbox acceptance implementation. For a tracked send, the runtime allocates
+an opaque `PhysicalMailReceipt` and non-cancellable terminal
+`OresFuture` **before** physical admission. Under the actor's lifecycle
+monitor it reserves an entry in a separate bounded
+`pendingPhysicalReceipts` map, attempts mailbox admission, and rolls back
+that entry if the mailbox rejects the message. The exact-message receipt
+ledger is independent of cumulative public `pendingDrains` waiters.
+The accepted sequence is assigned by the runtime at the same linearization
+point, never taken from the logical proxy or guest source. A terminal witness
+settles only once this physical sequence is marked processed, or fails if
+the physical actor stops/fails before it is processed.
+
+`LogicalSourceActorRouterV1.ProxyDrainReceipt` binds that opaque physical
+receipt to the exact authoritative physical `ActorRef`, copied logical
+envelope, owning mailbox, and logical route epoch. The bridge refunds
+credits only after the runtime-minted terminal receipt succeeds; a failed,
+cancelled, or timed-out physical receipt leaves outstanding mail fail-sealed
+without automatic replay. Physical sequence numbers are **not** logical
+message sequence numbers and restart from the new physical actor on upgrade.
+
+This is an in-process trusted terminal acknowledgment, **not** a remotely
+authenticated `mail.done()` receipt, transactional persistence, exactly-once
+side effects, or a compiler-generated typed envelope. A future PRIVATE /
+UNTRUSTED network/IPC transport must bind worker attestation, incarnation,
+route epoch, message ABI digest, and opaque accepted-message identity in
+independently authenticated receipts.
+
+Receipt-map keys and the completion callback list are allocated before
+physical mailbox admission and before publishing a processed-message
+watermark, respectively. A failed reservation cannot silently turn into an
+acknowledged send. The trusted receipt entry point also rejects scheduler,
+actor and async carrier contexts, including carrier-only callback markers.
+
+Regression sources include real `ActorRuntime` physical receipt tests
+for exact sequential and concurrent admissions, per-actor sequence namespaces,
+non-cancellable completion observers, paused physical execution, faulted actor
+receive, carrier admission rejection, and existing
+source-compiled SHARED proxy upgrade tests. These remain authored test code,
+**not an exact-head JDK25/GraalVM execution pass** while source-owned Actions
+are runner-blocked.
+
+Related code-image accounting hardening: `Generation.pinActorRoute()`
+allocates the lease before charging its counter; `ActorRouteLease.close()`
+checks the counter before consuming its release token. Failed pin accounting
+remains retryable. Dedicated generation race tests cover corrupted accounting,
+16 simultaneous releases, and concurrent code retirement.
+
+### Exact-receipt single-claim timeout hardening — 2026-10-19
+
+A follow-up audit found that `ProxyDrainReceipt.awaitAndComplete` previously
+marked its receipt consumed only **after** awaiting a successful physical
+terminal Future. The host bridge fail-sealed a failed wait, but a caller of
+the lower-level trusted router receipt could time out (or be interrupted)
+and then invoke the same receipt again after late physical completion.
+That crossed the quarantine boundary without a supervisor reconciliation.
+
+The receipt now obtains an exclusive one-shot claim under the physical
+`routeLock`, checking active route and bound proxy identity and marking
+its one-shot capability consumed **before** allocation-bearing mailbox
+epoch/envelope validation or waiting. That claim is never reset, including
+on validation fault, timeout, interruption, terminal exception, route
+change, or mailbox completion rejection. The terminal wait stays
+outside the route lock; a successful wait revalidates publication and uses
+`completeAfterPhysicalReceipt` to refund credits once. A second caller
+fails immediately without waiting; no timeout/retry loop is permitted.
+
+A real source-compiled SHARED Counter regression was added with deliberate
+test-only replacement of its receipt's terminal observation Future. This
+makes a timeout deterministic without relying on guest scheduler timing
+and verifies: the original physical message was submitted, the timeout
+retains logical credits, reusing the same receipt is rejected even after
+the synthetic terminal settles, and replaying the physical send is rejected.
+The test is committed but **not confirmed executed by an exact-head
+JDK25/GraalVM Maven job**. An independent Java 21 source-free one-shot
+receipt concurrency oracle compiled with `javac --release 21 -Xlint:all
+-Werror` and executed **31,000 assertions PASS** (10,000 timeout/retry
+cases and 500 eight-contender claim races). This is a proof-model probe,
+not a compilation or execution of the Oreslang source branch. The
+exact-head source-org fast-ci run 39308727188 completed FAILURE with a
+test job reporting **steps: null** (not a JVM/JUnit assertion failure).
+
+Private source export remains blocked by the EMPTY
+`.github/private-ci-approved-repositories.txt` allowlist and open
+security bootstrap issue #962. Do not copy a private Git tree into a
+foreign Actions repo merely because its budget has capacity.
+
+This is a local in-process receipt safety property, not a remote
+authenticated `mail.done`, durable deduplication, or exactly-once effects.
+
+### ABI-bound scalar hot-path audit — October 19, 2026
+
+The SHARED bridge's new opt-in `SourceActorScalarWireV1` is the single
+canonical 72-byte fixed-length i64 wire format. A concurrent duplicate
+`LogicalActorTypedI64WireV1` implementation was removed; independently
+invented magic/version layouts cannot be allowed to diverge.
+
+The production codec now validates its canonical lowercase compiler
+message-ABI digest once in the immutable `Binding`, then encodes/decodes
+all 32 digest bytes directly from that validated string. The decode path
+checks the complete logical UUID/incarnation and all digest bytes without
+constructing temporary UUID or digest byte arrays. It rejects changed
+magic/version/type/reserved fields, foreign actor or incarnation, different
+compiler ABI and noncanonical frame lengths before physical send attempts
+are reserved. The bounded mailbox still clones and owns admitted bytes.
+
+**Executed product-source codec evidence (isolated, not full runtime):**
+the Java file's local Git blob SHA was
+`442260316ef1f4db313ca0b1001ea44e37b6e6db`, exactly the GitHub
+committed source blob. OpenJDK 21
+`javac --release 21 -Xlint:all -Werror` passed, followed by a
+standalone deterministic driver reporting **50,513 / 50,513 checks PASS**:
+512 header-bit mutations rejected, 25,000 signed-i64 encode/decode
+round trips with length checks, and a canonical initial fixture.
+The new repository JUnit source contains equivalent exhaustive mutations
+and randomized round trips; it still needs Maven/JUnit execution on an
+approved JDK25/Graal runner. This evidence covers only the self-contained
+codec, **not** the compiler, actor router, state transfer, Task scheduler,
+or Native Image.
+
+**Remaining compiler gate:** the ABI fingerprint is emitted by the linked
+actor executor, but the transport still accepts only host-supplied signed
+i64 values. General actor-mail payload types (structs, records, unions,
+tuples, optionals) require compiler-generated typed encoders and decoders,
+closed-world type checking, payload bounds and ownership/capability proofs.
+The i64 frame is not a remotely authenticated message or worker attestation.
+
+**Private-source CI hold:** the destination allowlist is empty and
+source security review #962 is unresolved; no private code or Git tree was
+mirrored to a foreign GitHub Actions organization on the basis of available
+minutes alone.

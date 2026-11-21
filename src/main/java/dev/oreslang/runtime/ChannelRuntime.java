@@ -107,6 +107,12 @@ public final class ChannelRuntime {
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
         private Throwable closeCause;
+        // A conservative, non-forgeable LOCAL close witness for actor teardown:
+        // the closing coordinator observed no registered selectors before
+        // publishing closed=true, and completion plumbing returned normally.
+        // A failed/partial pump or user callback may not manufacture this
+        // certificate merely by leaving closed=true and no registrations.
+        private boolean closeSettledWithoutSelectors;
 
         public Channel(int capacity) {
             this(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS);
@@ -164,6 +170,21 @@ public final class ChannelRuntime {
             COORDINATOR.lock();
             try {
                 return closed;
+            } finally {
+                COORDINATOR.unlock();
+            }
+        }
+
+        /**
+         * Narrow supervisor-only close receipt. It is NOT evidence for a close
+         * that had outstanding select arms, whose deferred notification could
+         * survive after close() returned. Do not infer this receipt from
+         * isClosed() or an empty registrations list after the fact.
+         */
+        boolean closeSettledWithoutSelectorsForTeardown() {
+            COORDINATOR.lock();
+            try {
+                return closed && closeSettledWithoutSelectors;
             } finally {
                 COORDINATOR.unlock();
             }
@@ -276,9 +297,11 @@ public final class ChannelRuntime {
          */
         public void close(Throwable cause) {
             ArrayList<Runnable> completions = new ArrayList<>();
+            final boolean noSelectorsAtClose;
             COORDINATOR.lock();
             try {
                 if (closed) return;
+                noSelectorsAtClose = registrations.isEmpty();
                 closed = true;
                 closeCause = cause;
                 pumpLocked(completions);
@@ -286,6 +309,18 @@ public final class ChannelRuntime {
                 COORDINATOR.unlock();
             }
             runCompletions(completions);
+            // Both arbitration and all synchronous completion plumbing
+            // returned normally. Never publish this receipt on a failed
+            // pump/callback, or when close could defer a select result behind
+            // a concurrent Future waiter attachment.
+            if (noSelectorsAtClose) {
+                COORDINATOR.lock();
+                try {
+                    closeSettledWithoutSelectors = true;
+                } finally {
+                    COORDINATOR.unlock();
+                }
+            }
         }
     }
 

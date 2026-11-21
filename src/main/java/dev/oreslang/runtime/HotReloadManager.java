@@ -278,9 +278,13 @@ public final class HotReloadManager implements AutoCloseable {
                                 + " while a logical actor route pins it");
             }
             if (generation != null) {
-                generations.remove(generationId, generation);
+                // Unpublish routing immediately, but retain the generation in
+                // the durable registry until physical Context teardown and
+                // manager deregistration both succeed. A failed close must be
+                // addressable by generationId for explicit retry.
                 boolean removed = active.compareAndSet(generation, null);
-                removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
+                removed |= activeByCodeUnit.remove(
+                        generation.codeUnitId(), generation);
                 if (removed) advanceRoutingEpoch();
             }
         }
@@ -291,7 +295,19 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized int liveGenerations() { return generations.size(); }
 
-    /** Closed guest contexts must not remain in the manager's active registry. */
+    /**
+     * A generation that has entered physical close must stop serving routing
+     * immediately, even if Context teardown later fails. Keep it in
+     * generations as the durable cleanup owner until onGenerationClosed().
+     */
+    private synchronized void onGenerationSealed(Generation generation) {
+        boolean removed =
+                activeByCodeUnit.remove(generation.codeUnitId(), generation);
+        removed |= active.compareAndSet(generation, null);
+        if (removed && !closed) advanceRoutingEpoch();
+    }
+
+    /** Closed guest contexts must not remain in the manager's cleanup registry. */
     private synchronized void onGenerationClosed(Generation generation) {
         generations.remove(generation.id(), generation);
         boolean removed = activeByCodeUnit.remove(generation.codeUnitId(), generation);
@@ -309,24 +325,28 @@ public final class HotReloadManager implements AutoCloseable {
     public void close() {
         final java.util.List<Generation> toClose;
         synchronized (this) {
-            if (closed) return;
-            for (Generation generation : generations.values()) {
-                if (generation.actorRoutePins() != 0) {
-                    throw new IllegalStateException(
-                            "cannot close HotReloadManager while generation "
-                                    + generation.id()
-                                    + " is pinned by a logical actor route");
+            if (!closed) {
+                for (Generation generation : generations.values()) {
+                    if (generation.actorRoutePins() != 0) {
+                        throw new IllegalStateException(
+                                "cannot close HotReloadManager while generation "
+                                        + generation.id()
+                                        + " is pinned by a logical actor route");
+                    }
                 }
+                // Seal all new load/pin admission and unpublish routing. Do not
+                // clear generations: that map is the durable retry registry.
+                closed = true;
+                activeByCodeUnit.clear();
+                active.set(null);
+            } else if (generations.isEmpty()) {
+                return;
             }
-            closed = true;
-            // Atomically seal the manager and detach all generations. Context
-            // cleanup is intentionally outside this monitor.
+            // Allocation failure here is safe: the sealed manager retains the
+            // exact generation registry and a later close() reconstructs it.
             toClose = java.util.List.copyOf(generations.values());
-            generations.clear();
-            activeByCodeUnit.clear();
-            active.set(null);
         }
-        // Closing is terminal; in-flight candidates cannot publish afterward.
+
         Throwable failure = null;
         for (Generation generation : toClose) {
             try {
@@ -334,14 +354,12 @@ public final class HotReloadManager implements AutoCloseable {
             } catch (RuntimeException | Error closingFailure) {
                 if (failure == null) {
                     failure = closingFailure;
-                } else {
+                } else if (failure != closingFailure) {
                     failure.addSuppressed(closingFailure);
                 }
             }
         }
-        if (failure instanceof Error error) {
-            throw error;
-        }
+        if (failure instanceof Error error) throw error;
         if (failure instanceof RuntimeException runtimeFailure) {
             throw runtimeFailure;
         }
@@ -389,7 +407,17 @@ public final class HotReloadManager implements AutoCloseable {
         private final Source source;
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
+        /** Admission/routing seal; not a physical Context-close witness. */
         private final AtomicBoolean closed = new AtomicBoolean();
+        /** Guarded by this Generation. */
+        private boolean contextCloseComplete;
+        /** Guarded by this Generation. */
+        private boolean closeComplete;
+        /** Guarded by this Generation. */
+        private boolean closeActive;
+        // Package/test fault boundaries around physical Context teardown.
+        private Runnable closeAfterSealFaultForTesting;
+        private Runnable closeAfterContextFaultForTesting;
         private int actorRoutePins;
         private boolean actorLinked;
         private OresContext linkedActorContext;
@@ -417,11 +445,15 @@ public final class HotReloadManager implements AutoCloseable {
 
             @Override public void close() {
                 synchronized (Generation.this) {
-                    if (!released.compareAndSet(false, true)) return;
+                    if (released.get()) return;
+                    // Do not consume the lease token before validating its
+                    // accounting debit. A failed release must be retryable;
+                    // otherwise code retirement could be certified falsely.
                     if (actorRoutePins <= 0)
                         throw new IllegalStateException(
                                 "hot-reload generation route-pin underflow");
                     actorRoutePins--;
+                    released.set(true);
                 }
             }
         }
@@ -447,8 +479,11 @@ public final class HotReloadManager implements AutoCloseable {
                     if (actorRoutePins == Integer.MAX_VALUE)
                         throw new IllegalStateException(
                                 "generation route-pin budget exhausted");
+                    // Construct the lease before charging its count: if an
+                    // allocation fails, no unowned generation pin remains.
+                    ActorRouteLease lease = new ActorRouteLease();
                     actorRoutePins++;
-                    return new ActorRouteLease();
+                    return lease;
                 }
             }
         }
@@ -543,7 +578,13 @@ public final class HotReloadManager implements AutoCloseable {
             try {
                 return context.eval(source);
             } catch (RuntimeException | Error failure) {
-                close();
+                try {
+                    close();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (cleanupFailure != failure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
                 throw failure;
             }
         }
@@ -558,21 +599,56 @@ public final class HotReloadManager implements AutoCloseable {
         }
 
         private void closeInternal(boolean force) {
+            final boolean closeContext;
             synchronized (this) {
-                if (closed.get()) return;
+                if (closeComplete) return;
+                if (closeActive) {
+                    throw new IllegalStateException(
+                            "generation close is already in progress");
+                }
                 if (!force && actorRoutePins != 0) {
                     throw new IllegalStateException(
                             "cannot close generation while "
                                     + actorRoutePins
                                     + " logical actor route(s) pin it");
                 }
+                // Revoke execution/pin admission before touching Context, but
+                // retain separate completion receipts for retry.
                 closed.set(true);
+                closeActive = true;
+                closeContext = !contextCloseComplete;
             }
+
             try {
-                context.close(true);
-            } finally {
                 HotReloadManager manager = owner.get();
+                if (manager != null) manager.onGenerationSealed(this);
+
+                Runnable afterSeal = closeAfterSealFaultForTesting;
+                if (afterSeal != null) afterSeal.run();
+
+                if (closeContext) {
+                    context.close(true);
+                    synchronized (this) {
+                        contextCloseComplete = true;
+                    }
+                }
+
+                Runnable afterContext = closeAfterContextFaultForTesting;
+                if (afterContext != null) afterContext.run();
+
+                // Registry eviction is part of physical retirement. If it ever
+                // fails, contextCloseComplete lets a later retry skip Context
+                // teardown while retaining this exact Generation owner.
                 if (manager != null) manager.onGenerationClosed(this);
+
+                synchronized (this) {
+                    closeComplete = true;
+                }
+            } finally {
+                synchronized (this) {
+                    // Failed teardown remains sealed but explicitly retryable.
+                    closeActive = false;
+                }
             }
         }
     }

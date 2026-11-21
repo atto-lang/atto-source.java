@@ -105,6 +105,37 @@ final class ActorMemoryReservationFailureAtomicityTest {
     }
 
     @Test
+    void sliceCloseUnderflowRetainsAggregateRefundAuthorityForRetry() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var slice = isolatedSlice(runtime);
+            AtomicLong local = counter(slice, "usedBytes");
+            AtomicLong global = counter(runtime, "privateMemoryBytes");
+            try {
+                local.set(16);
+                global.set(0);
+
+                assertThrows(IllegalStateException.class, slice::close);
+                assertTrue(slice.closed(),
+                        "guest access stays revoked after a failed aggregate refund");
+                assertEquals(16, local.get(),
+                        "failed close must retain the exact outstanding debit");
+                assertEquals(0, global.get());
+
+                global.set(16);
+                slice.close();
+                slice.close();
+                assertEquals(0, local.get(),
+                        "successful retry consumes the retained debit exactly once");
+                assertEquals(0, global.get());
+            } finally {
+                // Repair the synthetic aggregate counter before runtime close.
+                global.set(local.get());
+                slice.close();
+            }
+        }
+    }
+
+    @Test
     void duplicateCloseRefundsReservationOnce() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var slice = isolatedSlice(runtime);

@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -234,6 +235,21 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public enum CancellationMode { STRUCTURED, FORCE_ISOLATED }
 
+    /**
+     * Runtime-only terminal class for one physically accepted user message.
+     * This is deliberately coarser than source-language throw/raise/panic:
+     * an uncaught guest terminal failure remains FAILED and its exact Throwable
+     * is carried by the receipt's exceptional terminal Future.
+     */
+    enum PhysicalMailDisposition {
+        PROCESSED,
+        STOPPED,
+        CANCELLED,
+        FORCE_CANCELLED,
+        RUNTIME_CLOSED,
+        FAILED
+    }
+
     public record IsolationTarget(
             ActorId actorId,
             Object executionDomain) {
@@ -285,13 +301,21 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static final class ActorCancelledException extends CancellationException {
         private final ActorId actorId;
+        private final CancellationMode mode;
 
         private ActorCancelledException(ActorId actorId, String message) {
+            this(actorId, message, CancellationMode.STRUCTURED);
+        }
+
+        private ActorCancelledException(
+                ActorId actorId, String message, CancellationMode mode) {
             super(message);
-            this.actorId = actorId;
+            this.actorId = Objects.requireNonNull(actorId, "actorId");
+            this.mode = Objects.requireNonNull(mode, "mode");
         }
 
         public ActorId actorId() { return actorId; }
+        public CancellationMode mode() { return mode; }
     }
 
     /**
@@ -412,8 +436,12 @@ public final class ActorRuntime implements AutoCloseable {
      * once, quota-accounted once, and retained until runtime teardown.
      */
     public final class Shared<T> {
+        /** Admission seal; not a cleanup-complete witness. */
         private final AtomicBoolean sharedClosed = new AtomicBoolean();
+        /** Guarded by this Shared instance. */
+        private boolean sharedCleanupComplete;
         private T value;
+        /** Exact runtime-wide debit retained until aggregate release succeeds. */
         private long reservedBytes;
 
         private Shared(T value, long reservedBytes) {
@@ -431,13 +459,25 @@ public final class ActorRuntime implements AutoCloseable {
             return ActorRuntime.this == runtime;
         }
 
-        private void closeFromRuntime() {
-            if (!sharedClosed.compareAndSet(false, true)) return;
-            long bytes = reservedBytes;
-            reservedBytes = 0L;
+        private synchronized void closeFromRuntime() {
+            if (sharedCleanupComplete) return;
+
+            // Revoke guest observation immediately, but do not treat that seal
+            // as proof that the aggregate memory debit has been refunded.
+            sharedClosed.set(true);
             value = null;
-            releaseSharedRuntimeBytes(bytes);
+
+            long bytes = reservedBytes;
+            if (bytes != 0L) {
+                // Keep the exact debit locally until the aggregate release
+                // succeeds. Any live/internal cleanup retry must retain the
+                // same owner instead of treating sharedClosed=true as proof.
+                releaseSharedRuntimeBytes(bytes);
+                reservedBytes = 0L;
+            }
+
             sharedValues.remove(this);
+            sharedCleanupComplete = true;
         }
     }
 
@@ -459,10 +499,21 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /**
+     * Runtime close is retryable. A first close attempt may fail while
+     * preparing one actor's teardown (for example OOME) after the global
+     * closed bit is visible. Dispatcher shutdown therefore has its own
+     * retryable publication rather than being tied to "first close".
+     */
+    private final Object dispatcherShutdownLock = new Object();
+    private boolean dispatchersShutdown;
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
+    // Package/reflection fault injection after resource invalidation, before
+    // runtime-wide physical-termination proof publishes aggregate cleanup.
+    private Runnable runtimeCloseBeforeTerminationProofFaultForTesting;
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     /** Read-only parent-observable streams retained until drained/runtime close. */
@@ -881,7 +932,15 @@ public final class ActorRuntime implements AutoCloseable {
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
+        /**
+         * Sealing allocation is not the same as completing teardown. Direct
+         * block invalidation and aggregate quota release can fail under OOME
+         * and must remain retryable after sliceClosed becomes visible.
+         */
+        private final AtomicBoolean sliceCleanupComplete = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        // Package-runtime fault injection at the post-seal/pre-cleanup boundary.
+        private Runnable closeAfterSealFaultForTesting;
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -910,9 +969,12 @@ public final class ActorRuntime implements AutoCloseable {
          * compiler-lowered private actor state a genuinely unshared backing
          * region while actors remain multiplexed over carrier threads.
          */
-        public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
+        public synchronized PrivateMemoryBlock allocatePrivateBytes(int bytes) {
             requireCurrentOwner();
             if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
+            // Keep reserve -> block publication atomic against close(). Without
+            // the shared monitor, close could seal and drain blocks after the
+            // quota reservation but before the new direct block is published.
             MemoryReservation reservation = reserve(bytes, "private actor direct heap");
             try {
                 PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
@@ -975,11 +1037,33 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
+            // Seal first so no actor turn can allocate new state while teardown
+            // is in progress. Do NOT use this bit as a cleanup-complete witness:
+            // every operation below may fail under resource exhaustion.
+            sliceClosed.set(true);
+            if (sliceCleanupComplete.get()) return;
+
+            Runnable injected = closeAfterSealFaultForTesting;
+            if (injected != null) injected.run();
+
+            // allocatePrivateBytes() shares this monitor, so once sealed no new
+            // direct block can appear after this traversal. Avoid List.copyOf():
+            // teardown must not require an O(n) allocation merely to make
+            // progress while recovering from memory pressure.
+            for (PrivateMemoryBlock block : blocks) {
+                block.invalidateFromSlice();
+            }
             blocks.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+
+            // Keep local debit ownership until the aggregate release succeeds.
+            // If release throws, a later physical-finalization retry resumes
+            // from the same usedBytes value.
+            long bytes = usedBytes.get();
+            if (bytes != 0) {
+                releasePrivateRuntimeBytes(bytes, owner);
+                usedBytes.set(0);
+            }
+            sliceCleanupComplete.set(true);
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -999,6 +1083,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final int capacity;
         private volatile ByteBuffer memory;
         private final AtomicBoolean blockClosed = new AtomicBoolean();
+        /** Guarded by this: explicit close can fail after sealing and must resume. */
+        private boolean blockCleanupComplete;
 
         private PrivateMemoryBlock(
                 ActorMemorySlice slice,
@@ -1087,18 +1173,28 @@ public final class ActorRuntime implements AutoCloseable {
             memory = null;
         }
 
-        private void invalidateFromSlice() {
-            if (!blockClosed.compareAndSet(false, true)) return;
+        private synchronized void invalidateFromSlice() {
+            if (blockCleanupComplete) return;
+            // Seal access before zeroing, but do not mistake the seal for proof
+            // that zero/detach completed. If zeroing throws, slice close retains
+            // this exact block and retries it.
+            blockClosed.set(true);
             zeroAndDetachMemory();
         }
 
         @Override
-        public void close() {
-            openMemory(); // owner + liveness check before invalidation
-            if (!blockClosed.compareAndSet(false, true)) return;
+        public synchronized void close() {
+            if (blockCleanupComplete) return;
+            if (!blockClosed.get()) {
+                openMemory(); // owner + liveness check before first invalidation
+                blockClosed.set(true);
+            }
+            // Each step is idempotent. A failure after zero/detach but before
+            // reservation.close() must leave the quota owner retryable.
             zeroAndDetachMemory();
             slice.unregister(this);
             reservation.close();
+            blockCleanupComplete = true;
         }
     }
 
@@ -1173,8 +1269,12 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class SyncCell<T> implements AutoCloseable {
         private final ReentrantLock lock = new ReentrantLock(true);
+        /** Admission/observation seal; distinct from cleanup completion. */
         private final AtomicBoolean cellClosed = new AtomicBoolean();
+        /** Guarded by lock. */
+        private boolean cellCleanupComplete;
         private T value;
+        /** Exact shared-memory debit retained until live-runtime release succeeds. */
         private long reservedBytes;
 
         @SuppressWarnings("unchecked")
@@ -1238,9 +1338,16 @@ public final class ActorRuntime implements AutoCloseable {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
                 long nextBytes = estimateFrozenBytes(frozen);
                 long delta = nextBytes - reservedBytes;
-                if (delta > 0) reserveSharedRuntimeBytes(delta, "shared SyncCell update");
+                if (delta > 0) {
+                    reserveSharedRuntimeBytes(delta, "shared SyncCell update");
+                } else if (delta < 0) {
+                    // Refund aggregate accounting BEFORE publishing the smaller
+                    // value. If the refund fails, update() must throw without
+                    // committing a state change that its caller cannot observe
+                    // as successful.
+                    releaseSharedRuntimeBytes(-delta);
+                }
                 value = (T) frozen;
-                if (delta < 0) releaseSharedRuntimeBytes(-delta);
                 reservedBytes = nextBytes;
                 return value;
             } finally {
@@ -1267,20 +1374,42 @@ public final class ActorRuntime implements AutoCloseable {
         private void closeFromRuntime() {
             lock.lock();
             try {
-                if (!cellClosed.compareAndSet(false, true)) return;
-                long bytes = reservedBytes;
-                reservedBytes = 0L;
+                if (cellCleanupComplete) return;
+
+                // Revoke observation first. If aggregate accounting release
+                // fails, keep the exact debit and registry owner for a later
+                // trusted retry instead of treating cellClosed as completion.
+                cellClosed.set(true);
                 value = null;
-                releaseSharedRuntimeBytes(bytes);
+
+                long bytes = reservedBytes;
+                if (bytes != 0L) {
+                    releaseSharedRuntimeBytes(bytes);
+                    reservedBytes = 0L;
+                }
+
                 syncCells.remove(this);
+                cellCleanupComplete = true;
             } finally {
                 lock.unlock();
             }
         }
 
         private void invalidateFromRuntime() {
-            cellClosed.set(true);
-            syncCells.remove(this);
+            lock.lock();
+            try {
+                if (cellCleanupComplete) return;
+                // Global ActorRuntime close owns aggregate shared-accounting
+                // reset after every live resource has been invalidated, so no
+                // per-cell debit release occurs on this already-closed path.
+                cellClosed.set(true);
+                value = null;
+                reservedBytes = 0L;
+                syncCells.remove(this);
+                cellCleanupComplete = true;
+            } finally {
+                lock.unlock();
+            }
         }
     }
 
@@ -1339,6 +1468,13 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorOutputStream<M> {
         private final ActorId actorId;
         private final ChannelRuntime.Channel<ActorOutputEnvelope> channel;
+        /**
+         * Every admitted output is retained here before channel publication.
+         * A dequeued envelope whose accounting release fails therefore remains
+         * reachable even though its OresFuture waiter is single-shot.
+         */
+        private final Set<ActorOutputEnvelope> retainedEnvelopes =
+                ConcurrentHashMap.newKeySet();
 
         private ActorOutputStream(
                 ActorId actorId,
@@ -1352,10 +1488,32 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public boolean isDone() {
-            return channel.isClosed() && channel.isEmpty();
+            return channel.isClosed() && channel.isEmpty()
+                    && retainedEnvelopes.isEmpty();
+        }
+
+        private void retainEnvelope(ActorOutputEnvelope envelope) {
+            if (!retainedEnvelopes.add(envelope)) {
+                throw new IllegalStateException(
+                        "actor output envelope is already retained");
+            }
+        }
+
+        private void releaseEnvelope(ActorOutputEnvelope envelope) {
+            retainedEnvelopes.remove(envelope);
+        }
+
+        private void retryFailedEnvelopeReleases() {
+            for (ActorOutputEnvelope envelope : retainedEnvelopes) {
+                if (envelope.releaseFailed()) envelope.close();
+            }
         }
 
         public OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> next() {
+            // A previous read may have dequeued an envelope before its
+            // accounting release failed inside a runtime Future callback.
+            // Retry those exact owners before consuming another output.
+            retryFailedEnvelopeReleases();
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
                     new OresFuture<>(() -> read.cancel(false));
@@ -1381,7 +1539,16 @@ public final class ActorRuntime implements AutoCloseable {
 
                 @SuppressWarnings("unchecked")
                 ActorOutput<M> output = (ActorOutput<M>) envelope.output();
-                envelope.close();
+                try {
+                    envelope.close();
+                } catch (RuntimeException | Error releaseFailure) {
+                    // Runtime waiter exceptions are intentionally isolated by
+                    // OresFuture. Settle the public result explicitly so this
+                    // resource failure cannot turn into a permanently pending
+                    // next() while the exact envelope remains retained.
+                    result.failFromRuntime(releaseFailure);
+                    return;
+                }
                 result.completeFromRuntime(
                         GeneratorRuntime.Step.yielded(output));
                 if (isDone()) actorOutputStreams.remove(this);
@@ -1395,21 +1562,42 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void closeAndDrainFromRuntime() {
             channel.close();
+
+            // First repair any envelope already dequeued by a prior failed
+            // consumer/drain callback.
+            retryFailedEnvelopeReleases();
+
             while (channel.drainOne(ActorOutputEnvelope::close)) {
                 // release all queued transport reservations on runtime teardown
+            }
+
+            // A drain callback can remove an envelope from the channel before
+            // its release throws. Retry that exact owner before certifying the
+            // stream as drained.
+            retryFailedEnvelopeReleases();
+            if (!retainedEnvelopes.isEmpty()) {
+                throw new IllegalStateException(
+                        "actor output stream retained unresolved envelopes");
             }
             actorOutputStreams.remove(this);
         }
     }
 
-    private static final class ActorOutputEnvelope implements AutoCloseable {
+    private final class ActorOutputEnvelope implements AutoCloseable {
+        private final ActorOutputStream<?> ownerStream;
         private final ActorOutput<Object> output;
         private final Runnable release;
-        private final AtomicBoolean closed = new AtomicBoolean();
+        /** Guarded by this envelope. */
+        private boolean closed;
+        /** Guarded by this envelope. */
+        private boolean releaseFailed;
 
         private ActorOutputEnvelope(
+                ActorOutputStream<?> ownerStream,
                 ActorOutput<Object> output,
                 Runnable release) {
+            this.ownerStream =
+                    Objects.requireNonNull(ownerStream, "ownerStream");
             this.output = Objects.requireNonNull(output, "output");
             this.release = Objects.requireNonNull(release, "release");
         }
@@ -1418,9 +1606,22 @@ public final class ActorRuntime implements AutoCloseable {
             return output;
         }
 
+        private synchronized boolean releaseFailed() {
+            return releaseFailed && !closed;
+        }
+
         @Override
-        public void close() {
-            if (closed.compareAndSet(false, true)) release.run();
+        public synchronized void close() {
+            if (closed) return;
+            try {
+                release.run();
+            } catch (RuntimeException | Error failure) {
+                releaseFailed = true;
+                throw failure;
+            }
+            releaseFailed = false;
+            closed = true;
+            ownerStream.releaseEnvelope(this);
         }
     }
 
@@ -1465,6 +1666,19 @@ public final class ActorRuntime implements AutoCloseable {
      * initializeActor after the ActorContext is installed, and subsequent
      * mailbox turns receive that actor-owned state explicitly.</p>
      */
+    /**
+     * Narrow compiler-issued proxy receive proof. The transport may encode
+     * only this exact primitive type; a digest alone is not type authority.
+     * Tags are stable ORM2 wire tags, never guest-supplied ordinals.
+     */
+    public enum ProxyWireScalarKind {
+        INT(1), BOOL(2), STRING(3);
+
+        private final int tag;
+        ProxyWireScalarKind(int tag) { this.tag = tag; }
+        public int tag() { return tag; }
+    }
+
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
@@ -1508,6 +1722,27 @@ public final class ActorRuntime implements AutoCloseable {
         default String actorMessageAbiSha256(String actorTypeName) {
             throw new UnsupportedOperationException(
                     "actor executor does not support hot-upgrade message ABI receipts");
+        }
+
+        /**
+         * Compiler-private, closed-world proof that the resolved actor's
+         * single receive handler accepts exactly ActorMail<int>. A matching
+         * message ABI digest alone proves version compatibility, NOT that
+         * a host-supplied signed-i64 message matches its declared type.
+         * Default DENY until an actual compiler implements the proof.
+         */
+        default boolean actorReceivesProxyLong(String actorTypeName) {
+            return false;
+        }
+
+        /**
+         * Compiler-private closed-world primitive receive type proof for
+         * bounded ORM2 actor mail. Default deny for unsupported compilers,
+         * inferred/aliased/unresolved types and arbitrary guest value graphs.
+         */
+        default Optional<ProxyWireScalarKind> actorProxyWireScalarKind(
+                String actorTypeName) {
+            return Optional.empty();
         }
 
         /**
@@ -1735,11 +1970,16 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 envelope = new ActorOutputEnvelope(
+                        cell.outputStream,
                         new ActorOutput<>(
                                 cell.ref.id(),
                                 sequence,
                                 prepared),
                         () -> cell.releaseOutput(bytes));
+                // Publish the exact resource owner before channel admission.
+                // If registration itself throws after insertion, the enclosing
+                // finally closes this same envelope and removes it on success.
+                cell.outputStream.retainEnvelope(envelope);
                 if (!cell.outputChannel.tryWrite(envelope)) {
                     throw new IllegalStateException(
                             "actor output stream limit exceeded for "
@@ -2124,6 +2364,31 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /**
+         * Conservative physical-retirement authority. Unlike the internal
+         * ActorCell.finalized transition this is published only AFTER all
+         * teardown observers, actor group bookkeeping, and unregisterActor.
+         * The ActorRef survives registry removal and cannot mistake an
+         * absent ActorCell for completed finalization.
+         */
+        private final AtomicBoolean physicallyFinalized = new AtomicBoolean();
+        // Remains reachable through ActorRef after the ActorCell is removed.
+        // Unlike lifecycleLock waiting, this does not depend on registry
+        // membership and releases only after the final teardown witness.
+        private final CountDownLatch physicalFinalizationLatch = new CountDownLatch(1);
+        // A runtime-owned synchronous terminal subscriber may run on the
+        // finalizer itself. It must not wait for its own pending completion.
+        private volatile Thread physicalFinalizationOwnerThread;
+        // Stop may settle receipt/cancellation callbacks before the finalizer
+        // can run. A synchronous callback must not join its own stop thread.
+        private volatile Thread terminalSettlementOwnerThread;
+        /**
+         * Non-allocating retry owner retained across primary-registry removal.
+         * A teardown fault after unregisterActor() must still leave an exact
+         * ActorCell handle that a later supervisor stop can resume until
+         * physicallyFinalized is published.
+         */
+        private volatile ActorCell<?> physicalFinalizationRecoveryCell;
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -2207,10 +2472,19 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            if (!physicallyFinalized.get()
+                    && (physicalFinalizationOwnerThread == Thread.currentThread()
+                            || terminalSettlementOwnerThread == Thread.currentThread())) {
+                throw new IllegalStateException(
+                        "actor terminal callback cannot join its own physical finalization");
+            }
+            // Registry removal intentionally precedes terminal callbacks.
+            // An ActorCell lookup cannot implement this wait: after removal
+            // the callback may still be running and a timeout must not turn
+            // into an immediate false (or a forged true).
+            if (physicallyFinalized.get()) return true;
+            return physicalFinalizationLatch.await(timeout, unit)
+                    && physicallyFinalized.get();
         }
 
         public void send(M message) {
@@ -2502,6 +2776,19 @@ public final class ActorRuntime implements AutoCloseable {
         // into a different supervisor before stop actually dispatches.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        /**
+         * Admission closure and close cleanup are distinct. Once groupClosed is
+         * visible, a throwing cleanup must retain enough exact state for a
+         * later supervisor/creator retry instead of treating the seal as proof
+         * that the group has been fully retired.
+         */
+        private boolean groupCloseActive; // guarded by authorityLock
+        private boolean groupCloseComplete; // guarded by authorityLock
+        private List<ActorRef<?>> groupCloseOwnedWorkers; // guarded by authorityLock
+        private boolean groupCloseObserversInstalled;
+        private boolean groupCloseObserverSetupAmbiguous;
+        // Package-runtime fault injection after the seal and durable snapshot.
+        private Runnable groupCloseAfterSealFaultForTesting;
         // Runtime-owned, non-cancellable observer; actor retirement may outlive
         // group admission revocation and clearing managed-worker references.
         private final OresFuture<Void> closedWorkersDone =
@@ -3004,78 +3291,149 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
-            List<ActorRef<?>> owned;
+            final List<ActorRef<?>> owned;
             synchronized (authorityLock) {
-                if (!groupClosed.compareAndSet(false, true)) return;
-                // Revocation is part of close: even a capability held by code
-                // racing teardown can no longer pass validation.
-                joinSecret = UUID.randomUUID();
-                owned = List.copyOf(managedWorkers.values());
-                managedWorkers.clear();
-                stoppingWorkers.clear();
-            }
-            // Revoke every membership before asynchronous worker cleanup. A
-            // room close frees membership quota without stopping unrelated
-            // members or tearing down their other room subscriptions.
-            synchronized (groupMembershipLock) {
-                for (ActorId member : members) {
-                    Set<ActorGroupId> joined = groupMemberships.get(member);
-                    if (joined != null) {
-                        joined.remove(id);
-                        if (joined.isEmpty()) groupMemberships.remove(member);
+                if (groupCloseComplete) return;
+                if (groupCloseActive) {
+                    throw new IllegalStateException(
+                            "ActorGroup close is already in progress; retry after the "
+                                    + "current cleanup attempt releases ownership");
+                }
+                groupCloseActive = true;
+                try {
+                    if (!groupClosed.get()) {
+                        // Prepare allocation-bearing recovery ownership BEFORE
+                        // publishing the admission seal. After this point a
+                        // retry never reconstructs workers from cleared maps.
+                        UUID revokedJoinSecret = UUID.randomUUID();
+                        List<ActorRef<?>> snapshot =
+                                List.copyOf(managedWorkers.values());
+                        groupCloseOwnedWorkers = snapshot;
+                        joinSecret = revokedJoinSecret;
+                        groupClosed.set(true);
+                        managedWorkers.clear();
+                        stoppingWorkers.clear();
                     }
-                }
-                members.clear();
-                if (creator != null) {
-                    Set<ActorGroupId> created = createdGroupsByActor.get(creator);
-                    if (created != null) {
-                        created.remove(id);
-                        if (created.isEmpty()) createdGroupsByActor.remove(creator);
+                    owned = groupCloseOwnedWorkers;
+                    if (owned == null) {
+                        throw new IllegalStateException(
+                                "ActorGroup close lost its durable worker snapshot");
                     }
+                } catch (RuntimeException | Error failure) {
+                    groupCloseActive = false;
+                    throw failure;
                 }
             }
-            // Attach completion handlers before requesting cancellation: an
-            // actor might finalize synchronously during the first stop call.
-            // Keep only a future, not strong actor heap/arena references.
-            if (owned.isEmpty()) {
-                closedWorkersDone.completeFromRuntime(null);
-            } else {
-                AtomicInteger pending = new AtomicInteger(owned.size());
-                AtomicReference<Throwable> firstFailure = new AtomicReference<>();
-                for (ActorRef<?> worker : owned) {
-                    worker.done().whenCompleteRuntime((ignored, failure) -> {
-                        if (failure != null) firstFailure.compareAndSet(null, failure);
-                        if (pending.decrementAndGet() == 0) {
-                            Throwable terminal = firstFailure.get();
-                            if (terminal == null) closedWorkersDone.completeFromRuntime(null);
-                            else closedWorkersDone.failFromRuntime(terminal);
-                        }
-                    });
-                }
-            }
-            // Closing a cooperating group never cancels ordinary members.
-            // Only explicitly managed workers are structurally cancelled.
-            // Never abort event-bus and Mailman teardown because one worker's
-            // cancellation hook failed. Preserve the failure for the manager.
+
             RuntimeException cancellationFailure = null;
-            for (ActorRef<?> worker : owned) {
-                try {
-                    worker.cancel();
-                } catch (RuntimeException failure) {
-                    if (worker.isAlive()) {
-                        if (cancellationFailure == null) cancellationFailure = failure;
-                        else cancellationFailure.addSuppressed(failure);
+            boolean completed = false;
+            try {
+                Runnable injected = groupCloseAfterSealFaultForTesting;
+                if (injected != null) injected.run();
+
+                // Revoke every membership before asynchronous worker cleanup.
+                // These removals are idempotent, so a retry can safely repeat
+                // this stage from the retained close owner.
+                synchronized (groupMembershipLock) {
+                    for (ActorId member : members) {
+                        Set<ActorGroupId> joined = groupMemberships.get(member);
+                        if (joined != null) {
+                            joined.remove(id);
+                            if (joined.isEmpty()) groupMemberships.remove(member);
+                        }
+                    }
+                    members.clear();
+                    if (creator != null) {
+                        Set<ActorGroupId> created = createdGroupsByActor.get(creator);
+                        if (created != null) {
+                            created.remove(id);
+                            if (created.isEmpty()) createdGroupsByActor.remove(creator);
+                        }
                     }
                 }
-            }
-            try {
-                GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
-                if (mailman != null) mailman.close();
-            } finally {
-                try {
-                    eventBus.closeFromGroup();
-                } finally {
+
+                // A partial observer-registration failure is ambiguous: replay
+                // could register the same worker twice and prematurely settle
+                // closedWorkersDone. Preserve the quarantine instead.
+                if (groupCloseObserverSetupAmbiguous) {
+                    throw new IllegalStateException(
+                            "ActorGroup close completion-observer setup is ambiguous; "
+                                    + "independent reconciliation is required");
+                }
+                if (!groupCloseObserversInstalled) {
+                    try {
+                        if (owned.isEmpty()) {
+                            closedWorkersDone.completeFromRuntime(null);
+                        } else {
+                            AtomicInteger pending = new AtomicInteger(owned.size());
+                            AtomicReference<Throwable> firstFailure =
+                                    new AtomicReference<>();
+                            for (ActorRef<?> worker : owned) {
+                                worker.done().whenCompleteRuntime((ignored, failure) -> {
+                                    if (failure != null) {
+                                        firstFailure.compareAndSet(null, failure);
+                                    }
+                                    if (pending.decrementAndGet() == 0) {
+                                        Throwable terminal = firstFailure.get();
+                                        if (terminal == null) {
+                                            closedWorkersDone.completeFromRuntime(null);
+                                        } else {
+                                            closedWorkersDone.failFromRuntime(terminal);
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        groupCloseObserversInstalled = true;
+                    } catch (RuntimeException | Error observerFailure) {
+                        groupCloseObserverSetupAmbiguous = true;
+                        throw observerFailure;
+                    }
+                }
+
+                // Closing a cooperating group never cancels membership-only
+                // actors. Managed workers are cancellation-idempotent, so this
+                // stage may safely replay after a later close-stage failure.
+                for (ActorRef<?> worker : owned) {
+                    try {
+                        worker.cancel();
+                    } catch (RuntimeException failure) {
+                        if (worker.isAlive()) {
+                            if (cancellationFailure == null) {
+                                cancellationFailure = failure;
+                            } else {
+                                cancellationFailure.addSuppressed(failure);
+                            }
+                        }
+                    }
+                }
+
+                // Retain each nested cleanup owner until that stage returns.
+                // In particular, do not remove this closed group from the
+                // runtime registry while Mailman/event-bus teardown or live
+                // worker cancellation still needs a retry authority.
+                GroupMailmanState<?> mailman = mailmanState.get();
+                if (mailman != null) {
+                    mailman.close();
+                    mailmanState.compareAndSet(mailman, null);
+                }
+                eventBus.closeFromGroup();
+
+                // A live worker whose cancellation failed is still owned by
+                // this closed group. Keep both the exact worker snapshot and
+                // the runtime registry entry so creator finalization/runtime
+                // teardown can find the same recovery authority again.
+                if (cancellationFailure == null) {
                     actorGroups.remove(id, this);
+                    completed = true;
+                }
+            } finally {
+                synchronized (authorityLock) {
+                    if (completed) {
+                        groupCloseComplete = true;
+                        groupCloseOwnedWorkers = null;
+                    }
+                    groupCloseActive = false;
                 }
             }
             if (cancellationFailure != null) throw cancellationFailure;
@@ -3821,13 +4179,20 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
+                || isActorCarrierThread()
                 || inActorGroupMailmanExecution()
-                || OresScheduler.current() != null) {
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()
+                || AsyncRuntime.isAsyncCarrierThread()) {
+            // A terminal/cancellation callback may execute after CURRENT
+            // actor/scheduler state has been cleared, but the native carrier
+            // is still owned by the runtime. Waiting on it can deadlock
+            // completion of the exact actor being joined.
             throw new SecurityException(
                     operation
                             + " is a host/embedder blocking operation; actor, Mailman CONTROL, "
-                            + "and scheduler turns must use nonblocking cancellation plus "
-                            + "Future/Awaitable suspension");
+                            + "scheduler and async carriers must use nonblocking "
+                            + "cancellation plus Future/Awaitable suspension");
         }
     }
 
@@ -4285,6 +4650,21 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             ActorCodeExecutor executor,
             String actorTypeName) {
+        return spawnCodeActor(kind, policy, executor, actorTypeName, null);
+    }
+
+    /**
+     * Internal source-supervisor pre-admission ownership handoff. The exact
+     * physical ActorRef is recorded before restoration or registry publication
+     * can fail, so the source generation pin is not dropped when registration
+     * returns no reference. This is NOT a guest-visible spawn API.
+     */
+    ActorRef<Object> spawnCodeActor(
+            ActorKind kind,
+            IsolatePolicy policy,
+            ActorCodeExecutor executor,
+            String actorTypeName,
+            java.util.function.Consumer<ActorRef<Object>> onAllocated) {
         Objects.requireNonNull(executor, "executor");
         if (actorTypeName == null || actorTypeName.isBlank()) {
             throw new IllegalArgumentException(
@@ -4305,7 +4685,8 @@ public final class ActorRuntime implements AutoCloseable {
                 image,
                 executor,
                 actorTypeName,
-                null);
+                null,
+                onAllocated);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -4338,6 +4719,20 @@ public final class ActorRuntime implements AutoCloseable {
             ActorCodeExecutor codeExecutor,
             String codeActorType,
             byte[] preloadedSourceSnapshot) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory,
+                codeImage, codeExecutor, codeActorType, preloadedSourceSnapshot, null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            byte[] preloadedSourceSnapshot,
+            java.util.function.Consumer<ActorRef<Object>> onAllocated) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -4426,6 +4821,16 @@ public final class ActorRuntime implements AutoCloseable {
                         codeExecutor,
                         codeActorType,
                         parent);
+                // The physical identity is already constructed, but no
+                // physical registry/dispatcher admission has occurred.
+                // Give the trusted source supervisor its pre-reserved
+                // retirement owner before restoration or actors.put can throw.
+                if (onAllocated != null) {
+                    @SuppressWarnings("unchecked")
+                    ActorRef<Object> sourceRef =
+                            (ActorRef<Object>) (ActorRef<?>) ref;
+                    onAllocated.accept(sourceRef);
+                }
                 if (preloadedSourceSnapshot != null) {
                     @SuppressWarnings("unchecked")
                     ActorContext<Object> restoreContext =
@@ -4495,13 +4900,19 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                                 cell.managedByGroup.set(inheritedId);
                                 inherited.managedWorkers.put(id, ref);
-                                parent.children.add(cell);
+                                // Mark cleanup authority BEFORE mutating the
+                                // parent's child set. A set implementation
+                                // can throw after inserting (e.g. injected
+                                // OOME); rollback must still remove the child.
                                 linkedToParent = true;
+                                parent.children.add(cell);
                                 actors.put(id, cell);
                             }
                         } else {
-                            parent.children.add(cell);
+                            // Publication into parent.children can
+                            // throw after taking effect. Pre-arm rollback.
                             linkedToParent = true;
+                            parent.children.add(cell);
                             actors.put(id, cell);
                         }
                     }
@@ -4510,26 +4921,87 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
-                // Roll back every registry when spawn admission fails. In
-                // particular, never strand an inherited group ownership ref.
-                if (cell != null) actors.remove(cell.ref.id(), cell);
-                if (linkedToParent && cell != null) parent.children.remove(cell);
-                if (cell != null) {
-                    ActorGroupId inheritedId = cell.managedByGroup.get();
-                    ActorGroup inherited = inheritedId == null
-                            ? null : actorGroups.get(inheritedId);
-                    if (inherited != null) {
-                        synchronized (inherited.authorityLock) {
-                            inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
+                // A constructor or registry mutation may throw even after
+                // partial admission. Always refund the reserved actor slot.
+                // Keep the original failure authoritative if teardown itself
+                // fails with an Error (including injected OOME).
+                // Each cleanup action must run even when another action
+                // throws after changing its collection (including an
+                // injected OOME). One enclosing try used to abandon the
+                // remaining parent/group/cell cleanup on the first error.
+                // Never mask the original registration failure.
+                // A failed removal is not proof of non-admission: if the
+                // exact cell remains registered, its physical owner and actor
+                // slot must stay live until a later runtime stop/reap.
+                boolean absentFromRegistry = cell == null;
+                try {
+                    if (cell != null) {
+                        try {
+                            actors.remove(cell.ref.id(), cell);
+                        } catch (RuntimeException | Error cleanupFailure) {
+                            if (cleanupFailure != failure)
+                                failure.addSuppressed(cleanupFailure);
                         }
                     }
-                    try {
-                        cell.abortUnregisteredConstruction();
-                    } catch (RuntimeException cleanupFailure) {
-                        failure.addSuppressed(cleanupFailure);
+                    if (cell != null) {
+                        try {
+                            absentFromRegistry = actors.get(cell.ref.id()) != cell;
+                        } catch (RuntimeException | Error observationFailure) {
+                            if (observationFailure != failure)
+                                failure.addSuppressed(observationFailure);
+                            absentFromRegistry = false;
+                        }
                     }
+                    // A failed registry rollback is a still-admitted
+                    // physical child. Keep parent and managed-group lineage
+                    // in place until its real terminal finalization; otherwise
+                    // the parent could complete and unload an image while a
+                    // surviving child remains registered.
+                    if (absentFromRegistry && linkedToParent && cell != null) {
+                        try {
+                            parent.children.remove(cell);
+                        } catch (RuntimeException | Error cleanupFailure) {
+                            if (cleanupFailure != failure)
+                                failure.addSuppressed(cleanupFailure);
+                        }
+                    }
+                    if (absentFromRegistry && cell != null) {
+                        try {
+                            ActorGroupId inheritedId = cell.managedByGroup.get();
+                            ActorGroup inherited = inheritedId == null
+                                    ? null : actorGroups.get(inheritedId);
+                            if (inherited != null) {
+                                synchronized (inherited.authorityLock) {
+                                    inherited.managedWorkers.remove(
+                                            cell.ref.id(), cell.ref);
+                                }
+                            }
+                        } catch (RuntimeException | Error cleanupFailure) {
+                            if (cleanupFailure != failure)
+                                failure.addSuppressed(cleanupFailure);
+                        }
+                        if (absentFromRegistry) {
+                            try {
+                                cell.abortUnregisteredConstruction();
+                                // No dispatcher admission ever occurred. This
+                                // precise pre-registration ref can now prove
+                                // finalization even if its creator never
+                                // received it as a return value.
+                                cell.ref.physicallyFinalized.set(true);
+                                cell.ref.physicalFinalizationLatch.countDown();
+                            } catch (RuntimeException | Error cleanupFailure) {
+                                if (cleanupFailure != failure)
+                                    failure.addSuppressed(cleanupFailure);
+                            }
+                        }
+                    }
+                } finally {
+                    // A ghost physical registration is still owned by the
+                    // runtime registry and must retain its actor slot. The
+                    // source supervisor also retains the exact ActorRef/code
+                    // lease until its physical finalization is proven.
+                    if (absentFromRegistry) actorCount.decrementAndGet();
                 }
-                actorCount.decrementAndGet();
                 throw failure;
             }
         }
@@ -4826,10 +5298,37 @@ public final class ActorRuntime implements AutoCloseable {
             ActorGroup group = actorGroups.get(groupId);
             if (group != null) group.actorTerminated(cell.ref.id());
         }
-        if (actors.remove(cell.ref.id(), cell)) {
+        boolean removed;
+        try {
+            removed = actors.remove(cell.ref.id(), cell);
+        } catch (RuntimeException | Error removalFailure) {
+            // A registry may remove this exact cell and then throw. Its
+            // physical teardown is otherwise complete here. Re-check the
+            // registry before either releasing its reserved slot or failing
+            // closed. A failed read or a still-present entry retains the
+            // original removal error and must NOT certify finalization.
+            try {
+                if (actors.get(cell.ref.id()) != null)
+                    throw removalFailure;
+            } catch (RuntimeException | Error observationFailure) {
+                if (observationFailure != removalFailure)
+                    removalFailure.addSuppressed(observationFailure);
+                throw removalFailure;
+            }
+            removed = true;
+        }
+        if (!removed && actors.get(cell.ref.id()) != null) {
+            throw new IllegalStateException(
+                    "physical actor unregister lost exact registry ownership");
+        }
+        // The cell itself owns exactly one counted slot. Another cleanup
+        // attempt can observe an already-absent registry entry; it must
+        // never debit the same slot twice.
+        if (cell.physicalActorSlotDebited.compareAndSet(false, true)) {
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
+                cell.physicalActorSlotDebited.set(false);
                 throw new IllegalStateException("actor count accounting underflow");
             }
         }
@@ -4993,8 +5492,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorInvalidReferenceException(
                     "ActorRef belongs to a different ActorRuntime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
-        return cell == null || cell.finalized();
+        // A missing registry entry is NOT itself a physical-completion
+        // witness. Teardown can be between unregisterActor and the final
+        // observer/ActorGroup accounting step, or may have aborted on OOME.
+        return ref.physicallyFinalized.get();
     }
 
 
@@ -5012,6 +5513,14 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("untrusted actors cannot stop other actors");
         }
         ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) {
+            // unregisterActor() intentionally precedes terminal observers.
+            // If one of those later teardown steps fails, the primary registry
+            // no longer owns the cell but physical retirement is still false.
+            // Resume through the exact non-allocating recovery owner retained
+            // on ActorRef rather than silently treating absence as completion.
+            cell = ref.physicalFinalizationRecoveryCell;
+        }
         if (cell == null) return;
 
         cell.stop();
@@ -5020,6 +5529,12 @@ public final class ActorRuntime implements AutoCloseable {
         // may stop self/descendants but must never park a bounded carrier while
         // waiting for another actor to finalize.
         if (currentActor.get() != null) return;
+        if (!ref.physicallyFinalized.get()
+                && (ref.physicalFinalizationOwnerThread == Thread.currentThread()
+                        || ref.terminalSettlementOwnerThread == Thread.currentThread())) {
+            throw new IllegalStateException(
+                    "actor terminal callback cannot join its own physical finalization");
+        }
 
         try {
             cell.awaitFinalized(CLOSE_WAIT_NANOS);
@@ -5113,7 +5628,8 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             attempt.root.cancel(new ActorCancelledException(
                     ref.id(),
-                    "actor " + ref.id() + " was force-cancelled"));
+                    "actor " + ref.id() + " was force-cancelled",
+                    CancellationMode.FORCE_ISOLATED));
             return true;
         } finally {
             clearForceKillFence(attempt, false);
@@ -5777,6 +6293,13 @@ public final class ActorRuntime implements AutoCloseable {
     public ActorRef<Object> spawnCodeActorFromTransfer(
             SourceActorTransfer transfer,
             ActorCodeExecutor candidate) {
+        return spawnCodeActorFromTransfer(transfer, candidate, null);
+    }
+
+    ActorRef<Object> spawnCodeActorFromTransfer(
+            SourceActorTransfer transfer,
+            ActorCodeExecutor candidate,
+            java.util.function.Consumer<ActorRef<Object>> onAllocated) {
         requireSupervisorContext("restore source actor transfer");
         policyCeiling.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
@@ -5831,12 +6354,31 @@ public final class ActorRuntime implements AutoCloseable {
                             candidateImage,
                             candidate,
                             transfer.actorTypeName,
-                            payload);
-                    transfer.bindStagedCandidateLocked(this, nextCode, restored);
+                            payload,
+                            preallocated -> {
+                                // Freeze ownership must cover the candidate
+                                // from its first allocated physical identity,
+                                // NOT only after registry admission returns.
+                                // A registry put can insert then throw, leaving
+                                // a still-registered child without a returned
+                                // reference. The exact transfer must retain
+                                // it until physical finalization is proven.
+                                transfer.bindStagedCandidateLocked(
+                                        this, nextCode, preallocated);
+                                if (onAllocated != null)
+                                    onAllocated.accept(preallocated);
+                            });
                     return restored;
                 } catch (RuntimeException | Error failure) {
-                    transfer.rollbackFailedRestoreLocked(this, nextCode);
-                    rollbackFreeze = true;
+                    // A failed restore with NO allocated candidate can safely
+                    // reopen old ingress. When a staged physical identity
+                    // exists, only SourceActorTransfer.close() can discharge
+                    // that lifetime and release the freeze, after verifying
+                    // actual physical retirement. Do not mask this failure.
+                    if (transfer.stagedCandidate == null) {
+                        transfer.rollbackFailedRestoreLocked(this, nextCode);
+                        rollbackFreeze = true;
+                    }
                     throw failure;
                 }
             }
@@ -5946,11 +6488,14 @@ public final class ActorRuntime implements AutoCloseable {
         @Override public void close() {
             synchronized (cell.lifecycleLock) {
                 if (released.get()) return;
-                // Validate accounting before retiring the only lease capable
-                // of releasing this pin. Failed close must remain retryable.
+                // Validate before revoking this lease. A corrupted counter
+                // must leave the lease live and retryable after repair; otherwise
+                // scheduler quiescence could falsely retire executable code.
                 if (cell.hotUpgradeExternalPins <= 0)
                     throw new IllegalStateException("actor external upgrade pin underflow");
                 cell.hotUpgradeExternalPins--;
+                // lifecycleLock serializes all release/permit/freeze observations;
+                // publish released only after successful accounting.
                 released.set(true);
                 cell.lifecycleLock.notifyAll();
             }
@@ -6075,8 +6620,101 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Runtime-minted LOCAL physical-message completion authority. Created
+     * before the physical mailbox accepts the message and linked to the
+     * actual accepted sequence under the same actor lifecycle monitor.
+     * Result cancellation is disabled. This is NOT a remote cryptographic
+     * mail.done signature or a durable exactly-once delivery record.
+     */
+    static final class PhysicalMailReceipt {
+        private final ActorRef<?> physical;
+        private final long acceptedSequence;
+        private final OresFuture<Void> terminal;
+        private final AtomicReference<PhysicalMailDisposition> disposition =
+                new AtomicReference<>();
+
+        private PhysicalMailReceipt(
+                ActorRef<?> physical, long acceptedSequence,
+                OresFuture<Void> terminal) {
+            this.physical = physical;
+            this.acceptedSequence = acceptedSequence;
+            this.terminal = terminal;
+        }
+
+        ActorRef<?> physical() { return physical; }
+        long acceptedSequence() { return acceptedSequence; }
+        OresFuture<Void> terminal() { return terminal; }
+
+        /**
+         * Null until terminal() is settled. The disposition is installed
+         * before the Future's terminal CAS, so observing terminal().isDone()
+         * implies this value is non-null.
+         */
+        PhysicalMailDisposition terminalDisposition() {
+            return terminal.isDone() ? disposition.get() : null;
+        }
+
+        private void completeProcessed() {
+            if (!disposition.compareAndSet(
+                    null, PhysicalMailDisposition.PROCESSED)) {
+                throw new IllegalStateException(
+                        "physical mail receipt already has terminal disposition");
+            }
+            if (!terminal.completeFromRuntime(null)) {
+                throw new IllegalStateException(
+                        "physical mail terminal Future settled before runtime disposition");
+            }
+        }
+
+        private void failTerminal(
+                PhysicalMailDisposition terminalDisposition,
+                Throwable failure) {
+            Objects.requireNonNull(terminalDisposition, "terminalDisposition");
+            Objects.requireNonNull(failure, "failure");
+            if (terminalDisposition == PhysicalMailDisposition.PROCESSED) {
+                throw new IllegalArgumentException(
+                        "processed physical mail cannot use failure settlement");
+            }
+            if (!disposition.compareAndSet(null, terminalDisposition)) {
+                throw new IllegalStateException(
+                        "physical mail receipt already has terminal disposition");
+            }
+            if (!terminal.failFromRuntime(failure)) {
+                throw new IllegalStateException(
+                        "physical mail terminal Future settled before runtime disposition");
+            }
+        }
+    }
+
+    /**
+     * Host/compiler-only tracked physical send. The returned terminal Future
+     * is backed by a dedicated exact-message ledger, independent of public
+     * cumulative drain observers. It settles only after this exact accepted
+     * message is processed, or fails on actor teardown before processing.
+     * No guest may mint its sequence.
+     */
+    <M> PhysicalMailReceipt sendWithPhysicalReceipt(
+            ActorRef<M> ref, M message) {
+        requireSupervisorContext("issue physical actor mail receipt");
+        if (isActorCarrierThread()
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()
+                || AsyncRuntime.isAsyncCarrierThread()) {
+            throw new SecurityException(
+                    "physical actor receipt admission requires a trusted "
+                            + "host/supervisor thread, not an execution carrier");
+        }
+        return sendInternal(ref, message, true);
+    }
+
     public <M> void send(ActorRef<M> ref, M message) {
+        sendInternal(ref, message, false);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> PhysicalMailReceipt sendInternal(
+            ActorRef<M> ref, M message, boolean tracked) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -6158,6 +6796,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorId sender = currentActorId().orElse(null);
         MessageEnvelope envelope = null;
+        PhysicalMailReceipt receipt = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
         try {
@@ -6187,10 +6826,45 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor mailbox sequence exhausted for " + ref.id(),
                                 exhausted);
                     }
+                    // Box before mailbox acceptance; both successful
+                    // registration and rollback reuse this exact key without
+                    // any post-mutation allocation.
+                    Long receiptKey = tracked ? Long.valueOf(sequence) : null;
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
-                    if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                    PhysicalMailReceipt trackedReceipt = null;
+                    if (tracked) {
+                        if (cell.pendingPhysicalReceipts.size()
+                                >= ActorCell.MAX_PENDING_PHYSICAL_RECEIPTS)
+                            throw new ActorResourceExhaustedException(ref.id());
+                        // Reserve the exact-message receipt metadata BEFORE
+                        // physical acceptance. HashMap growth/allocation
+                        // failure therefore cannot accept work without a
+                        // terminal witness. This quota is deliberately
+                        // independent of public cumulative drain observers.
+                        OresFuture<Void> trackedTerminal =
+                                new OresFuture<>(() -> false, () -> { });
+                        receipt = new PhysicalMailReceipt(
+                                ref, sequence, trackedTerminal);
+                        trackedReceipt = receipt;
+                        if (cell.pendingPhysicalReceipts.containsKey(receiptKey)) {
+                            throw new IllegalStateException(
+                                    "duplicate physical mail receipt sequence for "
+                                            + ref.id());
+                        }
+                        cell.pendingPhysicalReceipts.put(receiptKey, trackedReceipt);
+                    }
+                    boolean wrote = false;
+                    try {
+                        if (!cell.mailbox.tryWrite(envelope)) {
+                            throw new ActorMailboxFullException(ref.id());
+                        }
+                        wrote = true;
+                    } finally {
+                        if (!wrote && trackedReceipt != null) {
+                            cell.pendingPhysicalReceipts.remove(
+                                    receiptKey, trackedReceipt);
+                        }
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
@@ -6209,6 +6883,7 @@ public final class ActorRuntime implements AutoCloseable {
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
+        return receipt;
     }
 
     /**
@@ -6462,9 +7137,14 @@ public final class ActorRuntime implements AutoCloseable {
         long bytes() { return bytes; }
 
         @Override
-        public void close() {
-            ActorRuntime runtime = owner.getAndSet(null);
-            if (runtime != null) runtime.releaseSharedRuntimeBytes(bytes);
+        public synchronized void close() {
+            ActorRuntime runtime = owner.get();
+            if (runtime == null) return;
+            // Keep the exact accounting owner until the debit succeeds.
+            // An underflow/corruption failure may be repaired by the trusted
+            // supervisor and retried through the retained Event/Subscription.
+            runtime.releaseSharedRuntimeBytes(bytes);
+            owner.set(null);
         }
     }
 
@@ -7569,29 +8249,40 @@ public final class ActorRuntime implements AutoCloseable {
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
 
-        final boolean firstClose;
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
-            firstClose = closed.compareAndSet(false, true);
+            // Allocate the actor snapshot before publishing global close. If
+            // this allocation fails, no runtime lifecycle state has changed.
             snapshot = List.copyOf(actors.values());
+            closed.set(true);
         }
-        for (ActorCell<?> cell : snapshot) cell.stop();
+        // Each ActorCell prepares all fallible receipt/operation snapshots
+        // before publishing its own stopped state. A failure here intentionally
+        // leaves dispatcher shutdown unpublished so a later close() can retry.
+        for (ActorCell<?> cell : snapshot) cell.stopForRuntimeClose();
 
-        if (firstClose) {
-            // Stop executor carriers so queued work is rejected/removed and
-            // blocked host-side executor operations can wake. This interrupt is
-            // backend shutdown mechanics only; it is never an actor
-            // cancellation identity. Every ActorCell above was already marked
-            // stopped through the structured runtime lifecycle.
-            privateDispatcher.shutdownNow();
-            sharedDispatcher.shutdownNow();
-            untrustedDispatcher.shutdownNow();
+        synchronized (dispatcherShutdownLock) {
+            if (!dispatchersShutdown) {
+                // Stop executor carriers so queued work is rejected/removed and
+                // blocked host-side executor operations can wake. This interrupt is
+                // backend shutdown mechanics only; it is never an actor
+                // cancellation identity. Every ActorCell above was already marked
+                // stopped through the structured runtime lifecycle.
+                privateDispatcher.shutdownNow();
+                sharedDispatcher.shutdownNow();
+                untrustedDispatcher.shutdownNow();
 
-            // shutdownNow() removes queued tasks without invoking runBatch().
-            // Clear those cells' scheduled bits only when no carrier actually
-            // entered the TurnExecutor boundary. Active carriers retain the bit
-            // until their executor finally exits.
-            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
+                // shutdownNow() removes queued tasks without invoking runBatch().
+                // Clear those cells' scheduled bits only when no carrier actually
+                // entered the TurnExecutor boundary. Active carriers retain the bit
+                // until their executor finally exits.
+                for (ActorCell<?> cell : snapshot) {
+                    cell.cancelQueuedScheduleOnShutdown();
+                }
+                // Publish only after every shutdown/cancel-queued operation
+                // returned. If one throws, a later close attempt retries.
+                dispatchersShutdown = true;
+            }
         }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
@@ -7639,7 +8330,15 @@ public final class ActorRuntime implements AutoCloseable {
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
-        sharedMemoryBytes.set(0L);
+
+        // Keep the runtime-wide aggregate as a conservative shutdown owner
+        // until physical actor/carrier termination is proven. Per-owner shared
+        // releases intentionally stop mutating this counter after closed=true,
+        // so zeroing it before the final proof could falsely report no retained
+        // shared memory while executable actors/resources are still alive.
+        Runnable closeProofFault =
+                runtimeCloseBeforeTerminationProofFaultForTesting;
+        if (closeProofFault != null) closeProofFault.run();
 
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
@@ -7657,6 +8356,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         actors.clear();
         actorCount.set(0);
+        // Physical termination and all runtime-owned resource invalidation are
+        // now certified. The closed runtime owns the final aggregate reset.
+        sharedMemoryBytes.set(0L);
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
@@ -7756,6 +8458,12 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /**
+         * Unregistration can remove an actor and then throw (injected OOME).
+         * Its actor slot must be refunded only once even when finalization
+         * retries after a partially completed unregister operation.
+         */
+        private final AtomicBoolean physicalActorSlotDebited = new AtomicBoolean();
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
@@ -7817,7 +8525,17 @@ public final class ActorRuntime implements AutoCloseable {
         private long lastProcessedUserMessageSequence = -1L;
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
+        private static final int MAX_PENDING_PHYSICAL_RECEIPTS = 1_024;
+        /** Cumulative host drain observers; not physical-message authority. */
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
+        /**
+         * Exact runtime-minted per-message terminal witnesses. Kept separate
+         * from public cumulative drain observers so ActorRef.drain() quota
+         * exhaustion cannot starve supervisor/hot-reload receipt admission.
+         * Guarded by lifecycleLock and bounded independently.
+         */
+        private final HashMap<Long, PhysicalMailReceipt> pendingPhysicalReceipts =
+                new HashMap<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -7845,6 +8563,81 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
         private boolean finalized;
+        /**
+         * Exclusive physical-finalization owner. Unlike finalized, this is a
+         * retryable in-progress fence: a throwing cleanup clears it so a later
+         * supervisor stop can resume instead of mistaking partial teardown for
+         * a completed retirement.
+         */
+        private boolean finalizationActive;
+        /**
+         * actorExitHook is documented as exactly-once. Finalization itself may
+         * retry after a later teardown fault, so hook invocation needs its own
+         * durable fence independent of the retryable finalizationActive claim.
+         */
+        private boolean actorExitHookInvoked;
+        // Package-runtime fault injection at the finalization boundaries. Product
+        // code never installs these; regressions use them to prove retryability.
+        private Runnable finalizationFaultForTesting;
+        private Runnable finalizationAfterUnregisterFaultForTesting;
+        /** Teardown receipt/cancellation observers must settle before
+         * external physical finalization can certify code retirement. */
+        private boolean terminalSettlementPending;
+        private boolean terminalSettlementActive;
+        private TerminalSettlementBatch terminalSettlementBatch;
+        // Package-runtime fault injection read only by product regression tests.
+        // Never installed for an ordinary production actor.
+        private Runnable terminalTeardownFaultForTesting;
+        private Runnable terminalTeardownAfterFirstCloseFaultForTesting;
+
+        /**
+         * Immutable teardown ownership plus mutable progress indices. This
+         * survives a throwing terminal callback after the ordinary runtime
+         * ledgers have been cleared, so a later supervisor stop can resume
+         * settlement instead of leaving an ownerless permanent fence.
+         */
+        private final class TerminalSettlementBatch {
+            final Throwable drainFailure;
+            final Throwable stopCause;
+            final PhysicalMailDisposition receiptDisposition;
+            boolean physicalTeardownPrepared;
+            // Once reservation-draining begins, an exception may leave a
+            // removed envelope whose quota-release/close callback is not
+            // independently replayable. Do not mistake two certified channel
+            // closes for proof that this separate drain has completed.
+            boolean mailboxReservationDrainStarted;
+            // A channel close may mark itself closed before all pending
+            // completion callbacks run. Never replay an ambiguous partial
+            // close as though all notifications had settled.
+            boolean physicalTeardownAmbiguous;
+            final List<PhysicalMailReceipt> physicalReceipts;
+            final List<DrainWaiter> drainWaiters;
+            final List<OresFuture<?>> operations;
+            final List<ActorCell<?>> descendants;
+            int physicalReceiptIndex;
+            int drainWaiterIndex;
+            int operationIndex;
+            int descendantIndex;
+
+            TerminalSettlementBatch(
+                    Throwable drainFailure,
+                    Throwable stopCause,
+                    PhysicalMailDisposition receiptDisposition,
+                    List<PhysicalMailReceipt> physicalReceipts,
+                    List<DrainWaiter> drainWaiters,
+                    List<OresFuture<?>> operations,
+                    List<ActorCell<?>> descendants) {
+                this.drainFailure = Objects.requireNonNull(drainFailure);
+                this.stopCause = stopCause;
+                this.receiptDisposition =
+                        Objects.requireNonNull(receiptDisposition);
+                this.physicalReceipts =
+                        Objects.requireNonNull(physicalReceipts);
+                this.drainWaiters = Objects.requireNonNull(drainWaiters);
+                this.operations = Objects.requireNonNull(operations);
+                this.descendants = Objects.requireNonNull(descendants);
+            }
+        }
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -7887,11 +8680,35 @@ public final class ActorRuntime implements AutoCloseable {
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
                     ref.id(), outputChannel);
-            ref.outputStream = outputStream;
-            actorOutputStreams.add(outputStream);
+            // Finish all fallible actor-owned construction BEFORE publishing
+            // this stream in the runtime-wide registry. If a later memory
+            // allocation fails, there is no ActorCell for spawnInternal to
+            // abort; a published stream would otherwise be orphaned.
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+            ref.outputStream = outputStream;
+            try {
+                // Even an add-then-throw allocator/registry fault must not
+                // leave a reachable orphan output stream.
+                actorOutputStreams.add(outputStream);
+            } catch (RuntimeException | Error admissionFailure) {
+                try {
+                    outputStream.closeAndDrainFromRuntime();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (cleanupFailure != admissionFailure)
+                        admissionFailure.addSuppressed(cleanupFailure);
+                }
+                if (memorySlice != null) {
+                    try {
+                        memorySlice.close();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        if (cleanupFailure != admissionFailure)
+                            admissionFailure.addSuppressed(cleanupFailure);
+                    }
+                }
+                throw admissionFailure;
+            }
         }
 
         /**
@@ -8035,24 +8852,38 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void markMessageProcessed(long sequence) {
-            List<OresFuture<Void>> completed = new ArrayList<>();
+            final ArrayList<OresFuture<Void>> completedDrains;
+            PhysicalMailReceipt exactReceipt;
             synchronized (lifecycleLock) {
                 if (sequence != lastProcessedUserMessageSequence + 1L) {
                     throw new IllegalStateException(
                             "nonsequential actor message completion for " + ref.id());
                 }
+                // Reserve all allocation-bearing resources before advancing
+                // completion or unlinking ANY of its physical witnesses.
+                // A noncached boxed Long or growing drain observer list must
+                // not strand a receipt after publishing its processed epoch.
+                Long sequenceKey = Long.valueOf(sequence);
+                completedDrains = new ArrayList<>(pendingDrains.size());
                 lastProcessedUserMessageSequence = sequence;
+                // Exact-message authority is intentionally independent from
+                // cumulative prefix drains. Today actor user-mail completion
+                // is sequential; keeping these ledgers separate prevents a
+                // future drain implementation change from weakening receipts.
+                exactReceipt = pendingPhysicalReceipts.remove(sequenceKey);
                 for (int i = pendingDrains.size() - 1; i >= 0; --i) {
                     DrainWaiter waiter = pendingDrains.get(i);
                     if (waiter.sequence() <= sequence) {
                         pendingDrains.remove(i);
-                        completed.add(waiter.completion());
+                        completedDrains.add(waiter.completion());
                     }
                 }
             }
             // Complete outside the lifecycle monitor: Future callbacks may
             // synchronously request actor stop or another lifecycle operation.
-            for (OresFuture<Void> waiter : completed) waiter.completeFromRuntime(null);
+            if (exactReceipt != null) exactReceipt.completeProcessed();
+            for (OresFuture<Void> waiter : completedDrains)
+                waiter.completeFromRuntime(null);
         }
 
         private boolean hasQueuedWork() {
@@ -8167,51 +8998,91 @@ public final class ActorRuntime implements AutoCloseable {
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
+                    || finalizationActive
+                    || terminalSettlementPending
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
-            finalized = true;
-            OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
-            if (scheduler != null) {
-                try {
-                    scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
-                }
-            }
-            drainMailboxReservations();
-            staticSelectCursors.clear();
-            codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            finalizationActive = true;
+            // Publish a non-allocating recovery handle before any destructive
+            // teardown. It survives unregisterActor() and is cleared only after
+            // the final physical-retirement witness has been published.
+            ref.physicalFinalizationRecoveryCell = this;
+            ref.physicalFinalizationOwnerThread = Thread.currentThread();
             try {
-                actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
+                OresScheduler scheduler = sourceScheduler;
+                sourceScheduler = null;
+                if (scheduler != null) {
+                    try {
+                        scheduler.close();
+                    } catch (RuntimeException ignored) {
+                        // Actor teardown remains authoritative; source scheduler
+                        // cancellation is best-effort after the actor has finalized.
+                    }
+                }
+                drainMailboxReservations();
+                staticSelectCursors.clear();
+                codeActorState = null;
+                Throwable terminalOutput = ref.terminationCause.get();
+                outputStream.close(terminalOutput);
+                if (memorySlice != null) memorySlice.close();
+                if (!actorExitHookInvoked) {
+                    // Fence BEFORE invocation. A hook may have externally visible
+                    // one-shot effects even if a later finalization step fails.
+                    // Retrying physical teardown must never invoke it twice.
+                    actorExitHookInvoked = true;
+                    try {
+                        actorExitHook.accept(executionDomain);
+                    } catch (VirtualMachineError | ThreadDeath fatal) {
+                        throw fatal;
+                    } catch (Throwable ignored) {
+                        // Actor termination must still complete. Runtime cleanup
+                        // hooks are best-effort; external collectors own retries.
+                    }
+                }
+                Runnable injected = finalizationFaultForTesting;
+                if (injected != null) injected.run();
+                // Preserve Group CONTROL and parent termination ordering:
+                // registry removal precedes user terminal Future notifications.
+                // A missing registry entry is NOT physical completion authority.
+                unregisterActor(this);
+                Runnable afterUnregister = finalizationAfterUnregisterFaultForTesting;
+                if (afterUnregister != null) afterUnregister.run();
+                if (parent != null) parent.childFinalized(this);
+                Throwable terminal = ref.terminationCause.get();
+                if (!ref.readyFuture.isDone()) {
+                    // Preserve the initializer failure as the direct cause of
+                    // readiness rejection. Only a graceful stop-before-ready has
+                    // no underlying failure and needs a synthesized marker.
+                    ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(ref.id(), kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(terminal);
+                finalizedFuture.completeFromRuntime(null);
+                // Publish internal completion only after every fallible
+                // finalization action returned. A failed attempt remains
+                // retryable and cannot masquerade as physical retirement.
+                finalized = true;
+                // Teardown can invoke synchronous observers and perform
+                // allocation-bearing actor-group registry cleanup. Keep the
+                // ActorRef's physical retirement marker false until all of that
+                // work is complete. If cleanup throws, fail closed and pin code
+                // instead of certifying retirement from an absent registry entry.
+                ref.physicallyFinalized.set(true);
+                ref.physicalFinalizationLatch.countDown();
+                // No fallible work follows this assignment. Once the physical
+                // witness is visible, retaining the cell would only leak the
+                // emergency recovery owner.
+                ref.physicalFinalizationRecoveryCell = null;
+            } finally {
+                finalizationActive = false;
+                ref.physicalFinalizationOwnerThread = null;
+                lifecycleLock.notifyAll();
             }
-            unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
-            lifecycleLock.notifyAll();
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -8224,14 +9095,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean finalized() {
             synchronized (lifecycleLock) {
-                return finalized;
+                return ref.physicallyFinalized.get();
             }
         }
 
         private void awaitFinalized(long remainingNanos) throws InterruptedException {
             long deadline = System.nanoTime() + Math.max(0L, remainingNanos);
             synchronized (lifecycleLock) {
-                while (!finalized) {
+                while (!ref.physicallyFinalized.get()) {
                     long remaining = deadline - System.nanoTime();
                     if (remaining <= 0) return;
                     long millis = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
@@ -8309,8 +9180,11 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor output memory accounting underflow for "
                                     + ref.id());
                 }
-                outputBytes.set(current - bytes);
+                // Aggregate refund owns the fallible boundary. Keep the
+                // actor-local debit unchanged until it succeeds so a retry
+                // retains exact release authority.
                 releaseSharedRuntimeBytes(bytes);
+                outputBytes.set(current - bytes);
             }
         }
 
@@ -8345,8 +9219,11 @@ public final class ActorRuntime implements AutoCloseable {
                                     + ref.id()
                                     + ": release=" + bytes + " used=" + current);
                 }
-                sharedMailboxBytes.set(current - bytes);
+                // Preserve the actor-local debit until the aggregate
+                // refund returns normally; otherwise teardown/retry would lose
+                // the exact outstanding mailbox accounting owner.
                 releaseSharedRuntimeBytes(bytes);
+                sharedMailboxBytes.set(current - bytes);
             }
         }
 
@@ -8367,15 +9244,42 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     dispatcher.execute(dispatch);
                 }
-            } catch (RejectedExecutionException rejected) {
+            } catch (RuntimeException | Error submissionFailure) {
+                // A dispatch failure AFTER physical mailbox acceptance must
+                // terminally revoke the actor, not leave scheduled=true with
+                // accepted mail and unresolved exact-message receipts. This
+                // includes allocation errors and unexpected executor failures,
+                // not only RejectedExecutionException.
+                //
+                // An adversarial executor could enqueue the runnable and THEN
+                // throw. Do not retry that ticket: stop/fence the actor, and
+                // never convert an ambiguously accepted dispatch into a
+                // successful receipt. The carrier identity check prevents a
+                // stale runnable from impersonating a new turn.
                 synchronized (lifecycleLock) {
+                    // Teardown snapshots can themselves allocate. Fence user
+                    // ingress and all future carrier turns BEFORE attempting
+                    // that fallible retirement. If stop() also fails (e.g.
+                    // emergency OOME), the actor remains sealed for trusted
+                    // supervisor retry rather than accepting new mail.
+                    sealing = true;
+                    forceKillFenced = true;
                     if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
                         scheduledDispatchToken = null;
                         scheduled.set(false);
                     }
                 }
-                stop();
-                if (!closed.get()) throw rejected;
+                try {
+                    stop();
+                } catch (RuntimeException | Error stopFailure) {
+                    if (stopFailure != submissionFailure)
+                        submissionFailure.addSuppressed(stopFailure);
+                }
+                // Existing close shutdown may legitimately reject queued
+                // dispatch; only suppress that expected closed-runtime case.
+                if (submissionFailure instanceof RejectedExecutionException
+                        && closed.get()) return;
+                throw submissionFailure;
             }
         }
 
@@ -8749,61 +9653,260 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void fail(Throwable failure) {
-            terminateTree(failure, true);
+            terminateTree(
+                    failure, true, PhysicalMailDisposition.FAILED);
         }
 
         private void stop() {
-            terminateTree(null, false);
+            terminateTree(
+                    null, false, PhysicalMailDisposition.STOPPED);
+        }
+
+        private void stopForRuntimeClose() {
+            terminateTree(
+                    null, false, PhysicalMailDisposition.RUNTIME_CLOSED);
         }
 
         private void cancel(ActorCancelledException cancellation) {
-            terminateTree(cancellation, true);
+            PhysicalMailDisposition disposition =
+                    cancellation.mode() == CancellationMode.FORCE_ISOLATED
+                            ? PhysicalMailDisposition.FORCE_CANCELLED
+                            : PhysicalMailDisposition.CANCELLED;
+            terminateTree(cancellation, true, disposition);
         }
 
-        private void terminateTree(Throwable cause, boolean recordCause) {
-            List<ActorCell<?>> descendants;
-            List<OresFuture<?>> pending;
-            List<DrainWaiter> failedDrainWaiters;
-            synchronized (lifecycleLock) {
-                if (finalized) return;
-                if (recordCause && cause != null) {
-                    ref.terminationCause.compareAndSet(null, cause);
+        private void settleTerminalBatch(TerminalSettlementBatch batch) {
+            ref.terminalSettlementOwnerThread = Thread.currentThread();
+            boolean complete = false;
+            try {
+                while (batch.physicalReceiptIndex
+                        < batch.physicalReceipts.size()) {
+                    PhysicalMailReceipt exact = batch.physicalReceipts.get(
+                            batch.physicalReceiptIndex);
+                    OresFuture<Void> terminal = exact.terminal();
+                    if (!terminal.isDone()) {
+                        exact.failTerminal(
+                                batch.receiptDisposition, batch.drainFailure);
+                    }
+                    if (exact.terminalDisposition()
+                            != batch.receiptDisposition) {
+                        throw new IllegalStateException(
+                                "physical mail receipt has unexpected teardown disposition");
+                    }
+                    if (!terminal.retryNotificationDrainedFromRuntime()) {
+                        throw new IllegalStateException(
+                                "physical receipt notification drain is not ready");
+                    }
+                    batch.physicalReceiptIndex++;
                 }
-                stopped.set(true);
-                sealing = true;
-                upgradeIngressTicket = null;
-                // Detach pending observers under the actor monitor. Settling an
-                // OresFuture invokes runtime callbacks inline, so never settle
-                // one while holding lifecycleLock.
-                failedDrainWaiters = List.copyOf(pendingDrains);
-                pendingDrains.clear();
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                drainMailboxReservations();
-                descendants = List.copyOf(children);
-                pending = List.copyOf(pendingOperations);
-                pendingOperations.clear();
-                finalizeStopLocked();
-                lifecycleLock.notifyAll();
-            }
 
-            // Runtime Future callbacks can take other actor/lifecycle locks.
-            // Publish failure only after teardown has released lifecycleLock.
-            Throwable drainFailure = cause == null ? terminated(ref) : cause;
-            for (DrainWaiter waiter : failedDrainWaiters) {
-                waiter.completion().failFromRuntime(drainFailure);
-            }
+                while (batch.drainWaiterIndex < batch.drainWaiters.size()) {
+                    OresFuture<Void> completion = batch.drainWaiters.get(
+                            batch.drainWaiterIndex).completion();
+                    if (!completion.isDone()) {
+                        completion.failFromRuntime(batch.drainFailure);
+                    }
+                    if (!completion.isDone()
+                            || !completion.retryNotificationDrainedFromRuntime()) {
+                        throw new IllegalStateException(
+                                "actor drain notification did not settle");
+                    }
+                    batch.drainWaiterIndex++;
+                }
 
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
+                while (batch.operationIndex < batch.operations.size()) {
+                    OresFuture<?> operation =
+                            batch.operations.get(batch.operationIndex);
+                    if (!operation.isDone()) {
+                        operation.cancel(false);
+                    }
+                    if (!operation.isDone()
+                            || !operation.retryNotificationDrainedFromRuntime()) {
+                        throw new IllegalStateException(
+                                "actor operation cancellation did not settle");
+                    }
+                    batch.operationIndex++;
+                }
 
-            for (ActorCell<?> child : descendants) {
-                child.cancel(new ActorCancelledException(
-                        child.ref.id(),
-                        "parent actor " + ref.id() + " terminated"));
+                while (batch.descendantIndex < batch.descendants.size()) {
+                    ActorCell<?> child =
+                            batch.descendants.get(batch.descendantIndex);
+                    if (batch.receiptDisposition
+                            == PhysicalMailDisposition.RUNTIME_CLOSED) {
+                        child.terminateTree(
+                                null, false,
+                                PhysicalMailDisposition.RUNTIME_CLOSED);
+                    } else {
+                        CancellationMode childMode =
+                                batch.receiptDisposition
+                                                == PhysicalMailDisposition.FORCE_CANCELLED
+                                        ? CancellationMode.FORCE_ISOLATED
+                                        : CancellationMode.STRUCTURED;
+                        child.cancel(new ActorCancelledException(
+                                child.ref.id(),
+                                "parent actor " + ref.id() + " terminated",
+                                childMode));
+                    }
+                    synchronized (child.lifecycleLock) {
+                        if (!child.stopped.get()
+                                || child.terminalSettlementPending) {
+                            throw new IllegalStateException(
+                                    "child actor terminal settlement remains pending");
+                        }
+                    }
+                    batch.descendantIndex++;
+                }
+                complete = true;
+            } finally {
+                try {
+                    synchronized (lifecycleLock) {
+                        if (terminalSettlementBatch != batch) {
+                            throw new IllegalStateException(
+                                    "actor terminal settlement retry owner changed");
+                        }
+                        terminalSettlementActive = false;
+                        if (complete) {
+                            terminalSettlementBatch = null;
+                            terminalSettlementPending = false;
+                            if (stopped.get()) finalizeStopLocked();
+                        }
+                        lifecycleLock.notifyAll();
+                    }
+                } finally {
+                    ref.terminalSettlementOwnerThread = null;
+                }
             }
+        }
+
+        private void terminateTree(
+                Throwable cause,
+                boolean recordCause,
+                PhysicalMailDisposition receiptDisposition) {
+            Objects.requireNonNull(receiptDisposition, "receiptDisposition");
+            if (receiptDisposition == PhysicalMailDisposition.PROCESSED) {
+                throw new IllegalArgumentException(
+                        "actor teardown cannot publish PROCESSED receipts");
+            }
+            /*
+             * Prepare every allocation-bearing teardown witness BEFORE the
+             * irreversible stopped/sealed transition. In particular an OOME
+             * while copying observer ledgers must not make the actor externally
+             * dead while leaving an accepted physical-message receipt pending.
+             *
+             * These collections are all lifecycleLock-owned, so the snapshots
+             * remain exact until the lock is released.
+             */
+            final TerminalSettlementBatch batch;
+            synchronized (lifecycleLock) {
+                if (finalized || finalizationActive) return;
+                if (terminalSettlementPending) {
+                    // A previous stop already published stopped=true and
+                    // transferred every exact receipt/operation/child to one
+                    // immutable batch. Never snapshot emptied ledgers again.
+                    // Reentrant/concurrent stop cannot steal the active
+                    // settlement owner or release the actor's code image.
+                    if (terminalSettlementActive) return;
+                    batch = Objects.requireNonNull(
+                            terminalSettlementBatch,
+                            "pending teardown lost its retryable batch");
+                    terminalSettlementActive = true;
+                } else {
+                    // Every fallible snapshot and the retry owner are created
+                    // before the first irreversible stopped/sealed transition.
+                    // Failure leaves the live actor and pending ledgers intact.
+                    Throwable drainFailure =
+                            cause == null ? terminated(ref) : cause;
+                    List<DrainWaiter> failedDrainWaiters =
+                            List.copyOf(pendingDrains);
+                    List<PhysicalMailReceipt> failedPhysicalReceipts =
+                            List.copyOf(pendingPhysicalReceipts.values());
+                    List<ActorCell<?>> descendants = List.copyOf(children);
+                    List<OresFuture<?>> pending = List.copyOf(pendingOperations);
+                    batch = new TerminalSettlementBatch(
+                            drainFailure, cause, receiptDisposition,
+                            failedPhysicalReceipts, failedDrainWaiters,
+                            pending, descendants);
+
+                    // The batch is the durable settlement authority. Publish
+                    // before clearing pending ledgers or sealing user ingress.
+                    terminalSettlementBatch = batch;
+                    terminalSettlementPending = true;
+                    terminalSettlementActive = true;
+                    if (recordCause && cause != null) {
+                        ref.terminationCause.compareAndSet(null, cause);
+                    }
+                    stopped.set(true);
+                    sealing = true;
+                    upgradeIngressTicket = null;
+
+                    pendingDrains.clear();
+                    pendingPhysicalReceipts.clear();
+                    pendingOperations.clear();
+                }
+                // Teardown can itself fail after stopped/sealed publication:
+                // e.g. a channel-close listener or mailbox reservation release
+                // throws. Keep the same batch and permit a later supervisor
+                // stop to finish preparation, without re-snapshotting ledgers.
+                boolean preparationComplete = false;
+                try {
+                    if (!batch.physicalTeardownPrepared) {
+                        if (batch.physicalTeardownAmbiguous) {
+                            // A channel may set closed=true before its
+                            // arbitration and callbacks settle. Only its
+                            // original selector-free, normally completed
+                            // close witness may prove that retrying the
+                            // *remaining* teardown cannot lose a notification.
+                            // A partial reservation drain is separately
+                            // ambiguous and never automatically replayed.
+                            if (batch.mailboxReservationDrainStarted
+                                    || !mailbox.closeSettledWithoutSelectorsForTeardown()
+                                    || (continuationMailbox.isClosed()
+                                        && !continuationMailbox
+                                                .closeSettledWithoutSelectorsForTeardown())) {
+                                throw new IllegalStateException(
+                                        "physical mailbox teardown previously failed after "
+                                                + "a possibly irreversible close; retirement "
+                                                + "requires independent reconciliation");
+                            }
+                        }
+                        Runnable injected = terminalTeardownFaultForTesting;
+                        if (injected != null) injected.run();
+                        // Once close begins, a failed Channel.close may have
+                        // committed select decisions whose callbacks were not
+                        // notified. A second close can be a no-op, so keep the
+                        // code pin rather than falsely certifying settlement.
+                        batch.physicalTeardownAmbiguous = true;
+                        if (batch.stopCause == null) mailbox.close();
+                        else mailbox.close(batch.stopCause);
+                        Runnable afterFirstClose =
+                                terminalTeardownAfterFirstCloseFaultForTesting;
+                        if (afterFirstClose != null) afterFirstClose.run();
+                        continuationMailbox.close(batch.stopCause);
+                        // Drain is not transactionally replayable: advance
+                        // the durable fence BEFORE removing the first slot.
+                        // If anything throws, old actor code remains pinned.
+                        batch.mailboxReservationDrainStarted = true;
+                        drainMailboxReservations();
+                        batch.physicalTeardownPrepared = true;
+                        batch.physicalTeardownAmbiguous = false;
+                    }
+                    // terminalSettlementPending fences physical finalization
+                    // until every out-of-monitor terminal observer completes.
+                    finalizeStopLocked();
+                    preparationComplete = true;
+                } finally {
+                    if (!preparationComplete) {
+                        // A failed preparation must not permanently retain
+                        // exclusive settlement ownership: the batch is durable.
+                        terminalSettlementActive = false;
+                    }
+                    lifecycleLock.notifyAll();
+                }
+            }
+            // This retryable owner advances each index only after its exact
+            // terminal notification has completed. If a callback/retirement
+            // debit fails, the same batch remains for a later supervisor stop.
+            settleTerminalBatch(batch);
         }
     }
 }
