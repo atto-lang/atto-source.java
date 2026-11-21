@@ -86,3 +86,11 @@ and generation-owned scheduling without exporting memory.
 Reconcile .NET serial runtime/capability/budget branches and run .NET 10 NativeAOT.
 Reconcile Forge's host arena integration onto main, execute host tests, then add
 source lowering. Run the same end-to-end vectors on each resulting exact head.
+
+## 2026-11-21: JVM native CONTROL root admission (host/runtime candidate)
+
+The existing `ActorRuntime` now offers opt-in `enableNativeControlCounters()` for a single **CONTROL** root, distinct from all actor arenas. The root occupies 32 bytes of FFM record data and 12 bytes of native slot metadata (44 explicit logical quota bytes, charged to the existing aggregate shared-memory budget). Its 32-bit internal locator uses `control_generation12_slot20_v1`, independent of Java guest actor generational handles. Only a private 64-bit issuer-qualified host witness is retained.
+
+Actor-slot CAS admission, rollback, and physical actor deregistration now publish the current reservation count under a separate control lock, reading the live atomic count *inside* that lock to avoid outdated writes from concurrent carriers. The root is closed only after `ActorRuntime.close()` has observed full actor/carrier termination; a timeout/incomplete cleanup leaves native memory unreclaimed rather than causing a use-after-free. The default runtime does not allocate the optional CONTROL record.
+
+Test `ActorRuntimeNativeControlCountersTest` is a real JVM **host actor** spawn/STOP/close test (and duplicate-activation and aggregate-quota assertions); `control-plane-ref32-ffm.yml` includes a JDK25 Maven JUnit execution gate. **All current-head Java actor runtime test/zero-allocation results remain NOT_EXECUTED until a genuine nonzero-step successful run.** No compiled Atto actor graph, complete no-managed-allocation scheduler, or whole-JVM zero-GC claim follows from this prototype.
