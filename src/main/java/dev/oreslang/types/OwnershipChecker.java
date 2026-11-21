@@ -1577,6 +1577,12 @@ public final class OwnershipChecker {
             checkFormattingArguments(call.arguments(), scope);
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
         }
+        if (call.callee() instanceof Ast.MemberExpr cryptoCall
+                && cryptoCall.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("crypto")
+                && scope.lookup("crypto") == null) {
+            return checkBuiltinCryptoCall(cryptoCall.member(), call.arguments(), scope);
+        }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -1961,6 +1967,55 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private ValueInfo checkBuiltinCryptoCall(
+            String member,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        int arity;
+        Ast.TypeRef result;
+        switch (member) {
+            case "sha256" -> {
+                arity = 1;
+                result = new Ast.TypeRef("List", List.of(Ast.TypeRef.simple("int")), false);
+            }
+            case "hmac_sha256", "constant_time_equals" -> {
+                arity = 2;
+                result = member.equals("constant_time_equals")
+                        ? Ast.TypeRef.simple("bool")
+                        : new Ast.TypeRef("List", List.of(Ast.TypeRef.simple("int")), false);
+            }
+            case "pbkdf2_hmac_sha256" -> {
+                arity = 4;
+                result = new Ast.TypeRef("List", List.of(Ast.TypeRef.simple("int")), false);
+            }
+            case "base64_encode" -> {
+                arity = 1;
+                result = Ast.TypeRef.simple("String");
+            }
+            case "base64_decode", "secure_random_bytes" -> {
+                arity = 1;
+                result = new Ast.TypeRef("List", List.of(Ast.TypeRef.simple("int")), false);
+            }
+            default -> throw error("unknown crypto member '" + member + "'");
+        }
+        if (arguments.size() != arity) {
+            throw error("crypto." + member + " expects " + arity
+                    + " argument(s), got " + arguments.size());
+        }
+        // Crypto reads/copies its byte inputs and always returns a fresh value.
+        // Do not consume an affine List merely because it crossed a host
+        // intrinsic boundary; SCRAM must derive ClientKey and ServerKey from
+        // the same SaltedPassword.
+        for (Ast.Expr argument : arguments) {
+            ValueInfo info = checkExpr(argument, scope, false);
+            if (isBorrowValue(info) || containsMutexGuardType(info.type)) {
+                throw error("crypto." + member
+                        + " cannot retain a borrow or guard-bearing input");
+            }
+        }
+        return new ValueInfo(result, kindOfType(result), null);
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {

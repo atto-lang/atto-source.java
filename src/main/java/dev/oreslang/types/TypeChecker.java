@@ -324,7 +324,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env", "crypto",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
@@ -2430,7 +2430,8 @@ public final class TypeChecker {
                     || name.name().equals("network")
                     || name.name().equals("net")
                     || name.name().equals("http")
-                    || name.name().equals("env")) {
+                    || name.name().equals("env")
+                    || name.name().equals("crypto")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
@@ -4019,7 +4020,8 @@ public final class TypeChecker {
                         || name.name().equals("network")
                         || name.name().equals("net")
                         || name.name().equals("http")
-                        || name.name().equals("env"))) return Unknown.INSTANCE;
+                        || name.name().equals("env")
+                        || name.name().equals("crypto"))) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
@@ -5579,6 +5581,21 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        if (named.name().equals("crypto")) {
+            Type bytes = new ListType(Primitive.INT);
+            return switch (name) {
+                case "sha256" -> new Function(List.of(bytes), bytes);
+                case "hmac_sha256" -> new Function(List.of(bytes, bytes), bytes);
+                case "pbkdf2_hmac_sha256" ->
+                        new Function(List.of(bytes, bytes, Primitive.INT, Primitive.INT), bytes);
+                case "base64_encode" -> new Function(List.of(bytes), Primitive.STRING);
+                case "base64_decode" -> new Function(List.of(Primitive.STRING), bytes);
+                case "secure_random_bytes" -> new Function(List.of(Primitive.INT), bytes);
+                case "constant_time_equals" ->
+                        new Function(List.of(bytes, bytes), Primitive.BOOL);
+                default -> null;
+            };
+        }
         if (named.name().equals("env")) {
             switch (name) {
                 case "get": return new Function(List.of(Primitive.STRING),
