@@ -125,6 +125,19 @@ public final class ActorRuntime implements AutoCloseable {
         ActorId actorId() { return actorId; }
         ActorRuntime runtime() { return runtime; }
 
+        /**
+         * Two host-minted authority captures represent the same actor only
+         * when the exact ActorCell, runtime, and permission scope all agree.
+         * An actor ID or inherited permission scope alone is insufficient.
+         */
+        boolean sameIncarnation(NativeIoAuthority other) {
+            return other != null
+                    && runtime == other.runtime
+                    && ownerCell == other.ownerCell
+                    && scope == other.scope
+                    && actorId.equals(other.actorId);
+        }
+
         private void requireLiveIncarnationLocked(String operation) {
             // Caller must hold ownerCell.lifecycleLock. STOP sets stopped
             // under that same lock. A stale worker may finish an admitted

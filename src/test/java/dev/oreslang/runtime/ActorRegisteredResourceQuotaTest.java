@@ -184,6 +184,204 @@ final class ActorRegisteredResourceQuotaTest {
         }
     }
 
+    @Test
+    void contextShutdownRetainsNativeResourceWhenCloseThrowsErrorThenRetries()
+            throws Exception {
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var attempts = new AtomicInteger();
+        AutoCloseable physical = () -> {
+            if (attempts.incrementAndGet() == 1)
+                throw new AssertionError("fatal native close callback");
+        };
+        io.register(physical, 9);
+        try {
+            assertThrows(IllegalStateException.class, io::close,
+                    "Error must be aggregated instead of bypassing quarantine");
+            assertEquals(1, io.registeredResourceCount());
+            assertEquals(9L, io.registeredAccountedBytes());
+            io.close();
+            assertEquals(0, io.registeredResourceCount());
+            assertEquals(0L, io.registeredAccountedBytes());
+            assertEquals(2, attempts.get());
+        } finally {
+            try { io.close(); } catch (IllegalStateException ignored) { }
+        }
+    }
+
+    @Test
+    void actorGenericCloseFailureRetainsQuotaAndDeniesFutureLoansUntilTrustedRetry()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var attempts = new AtomicInteger();
+        var checked = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        AutoCloseable physical = () -> {
+            if (attempts.incrementAndGet() == 1)
+                throw new IllegalStateException("native close failed before retirement");
+        };
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        try {
+                            io.register(physical, 19);
+                            assertThrows(SecurityException.class,
+                                    () -> io.unregister(physical),
+                                    "unproven close may not refund actor budget");
+                            assertThrows(IllegalStateException.class,
+                                    () -> io.closeAndUnregister(physical));
+                            assertEquals(1, io.registeredResourceCount());
+                            assertEquals(19L, io.registeredAccountedBytes());
+                            assertThrows(RejectedExecutionException.class,
+                                    () -> io.borrow(physical),
+                                    "failed physical close must fence new loans");
+                            io.closeAndUnregister(physical);
+                            assertEquals(0, io.registeredResourceCount());
+                            assertEquals(0L, io.registeredAccountedBytes());
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+            actor.send("close/retry");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertEquals(2, attempts.get(), "retry must obtain actual close callback");
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
+    @Test
+    void nativeContextShutdownMustWaitForActiveTrustedCloseCallback()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var physicalCloseStarted = new CountDownLatch(1);
+        var releaseClose = new CountDownLatch(1);
+        var actorCompleted = new CountDownLatch(1);
+        var closeCount = new AtomicInteger();
+        var failure = new AtomicReference<Throwable>();
+        var contextCloseFailure = new AtomicReference<Throwable>();
+        AutoCloseable physical = () -> {
+            physicalCloseStarted.countDown();
+            if (!releaseClose.await(5, TimeUnit.SECONDS))
+                throw new IllegalStateException("trusted close gate timed out");
+            closeCount.incrementAndGet();
+        };
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        try {
+                            io.register(physical, 7);
+                            io.closeAndUnregister(physical);
+                        } catch (Throwable e) {
+                            failure.compareAndSet(null, e);
+                        } finally {
+                            actorCompleted.countDown();
+                        }
+                    });
+            actor.send("close slowly");
+            assertTrue(physicalCloseStarted.await(5, TimeUnit.SECONDS));
+            var joiner = Thread.ofVirtual().start(() -> {
+                try {
+                    io.close();
+                } catch (Throwable e) {
+                    contextCloseFailure.compareAndSet(null, e);
+                }
+            });
+            try {
+                Thread.sleep(50);
+                assertTrue(joiner.isAlive(),
+                        "context may not finish while physical close callback is active");
+                assertEquals(0, closeCount.get());
+                assertEquals(1, io.registeredResourceCount());
+            } finally {
+                releaseClose.countDown();
+            }
+            joiner.join(5000);
+            assertFalse(joiner.isAlive(), "native context join must complete after close");
+            assertTrue(actorCompleted.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertNull(contextCloseFailure.get(),
+                    () -> String.valueOf(contextCloseFailure.get()));
+            assertEquals(1, closeCount.get(), "native close callback must be exactly once");
+            assertEquals(0, io.registeredResourceCount());
+            runtime.close();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            releaseClose.countDown();
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
+    @Test
+    void nativeWorkerAuthorityWithoutOperationThreadLocalIsStillActorOwned()
+            throws Exception {
+        var policy = IsolatePolicy.developer();
+        var ceiling = RuntimePermissions.denyAll();
+        var io = new AsyncNativeIo(2, 1, 2, 1);
+        var captured = new AtomicReference<ActorRuntime.NativeIoAuthority>();
+        var ready = new CountDownLatch(1);
+        var resource = new Resource();
+        var runtime = new ActorRuntime(policy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(), null, ceiling);
+        runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+        io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+        try {
+            var actor = runtime.<String>spawnSharedTrusted(policy,
+                    ignored -> (message, turn) -> {
+                        captured.set(ActorRuntime.captureNativeIoAuthority());
+                        ready.countDown();
+                    });
+            actor.send("capture");
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            assertNotNull(captured.get());
+            // Simulate a trusted native worker carrying the captured actor
+            // authority outside the active operation-ID ThreadLocal.
+            ActorRuntime.enterNativeIoAuthority(captured.get());
+            try {
+                io.register(resource, 11);
+                assertEquals(1, io.outstandingActorOperations(actor.id()),
+                        "authority-only worker must still charge original actor");
+                assertThrows(SecurityException.class,
+                        () -> io.unregister(resource),
+                        "authority-only worker must not impersonate host ownership");
+                io.closeAndUnregister(resource);
+                assertEquals(0, io.outstandingActorOperations(actor.id()));
+            } finally {
+                ActorRuntime.exitNativeIoAuthority(captured.get());
+            }
+            assertEquals(1, resource.closed.get());
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            try { OresContext.joinActorsAndNativeIo(runtime, io); }
+            catch (IllegalStateException ignored) { }
+        }
+    }
+
     private static final AtomicReference<Probe> ACTIVE = new AtomicReference<>();
 
     private static final class Probe {
@@ -210,8 +408,10 @@ final class ActorRegisteredResourceQuotaTest {
                 } catch (RejectedExecutionException expected) {
                     p.deniedHandle = true;
                 }
-                p.io.unregister(p.first); // trusted host ownership transfer
-                p.first.close();
+                assertThrows(SecurityException.class, () -> p.io.unregister(p.first));
+                // Generic actor-owned resources must retire via a trusted
+                // adapter callback, not an unproven unregister receipt.
+                p.io.closeAndUnregister(p.first);
                 p.handlesAfterTransfer = p.io.registeredResourceCount();
                 try {
                     p.io.register(p.second, 17);
@@ -219,8 +419,7 @@ final class ActorRegisteredResourceQuotaTest {
                     p.deniedBytes = true;
                 }
                 p.io.register(p.second, 1);
-                p.io.unregister(p.second);
-                p.second.close();
+                p.io.closeAndUnregister(p.second);
             } catch (Throwable failure) {
                 p.failure.compareAndSet(null, failure);
             } finally {

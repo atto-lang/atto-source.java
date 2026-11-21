@@ -272,17 +272,34 @@ public final class NativeIo {
         }
         String endpoint = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.connect");
-        Socket socket = new Socket();
-        try {
-            context.nativeIo().register(socket);
-            try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
-                socket.connect(new InetSocketAddress(host, port), 15_000);
-                return new TcpConnection(context, endpoint, socket);
+        // Reserve an actual native handle credit before constructing a socket.
+        // A successfully registered credit moves to the context's physical
+        // resource ledger; constructor failures return the credit atomically.
+        try (AsyncNativeIo.ResourceCreationPermit credit =
+                context.nativeIo().reserveResourceCreation(0L)) {
+            Socket socket = new Socket();
+            try {
+                context.nativeIo().registerCreated(socket, credit);
+                try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
+                    socket.connect(new InetSocketAddress(host, port), 15_000);
+                    return new TcpConnection(context, endpoint, socket);
+                }
+            } catch (Exception failure) {
+                if (!credit.quarantined()) {
+                    // Never release the registered credit before physical
+                    // handle closure: a failed Socket.close remains owned by
+                    // the context's shutdown sweep.
+                    try {
+                        socket.close();
+                        context.nativeIo().unregister(socket);
+                    } catch (IOException cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                throw new IllegalStateException(
+                        "network connection failed for " + endpoint + ": "
+                                + failure.getMessage(), failure);
             }
-        } catch (Exception failure) {
-            context.nativeIo().unregister(socket);
-            try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
-            throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
         }
     }
 
@@ -290,6 +307,8 @@ public final class NativeIo {
         private final OresContext context;
         private final String endpoint;
         private final Socket socket;
+        /** Exact owner, not merely the permission scope inherited by siblings. */
+        private final ActorRuntime.NativeIoAuthority creatorAuthority;
         private final BufferedReader reader;
         private final BufferedWriter writer;
 
@@ -297,13 +316,25 @@ public final class NativeIo {
             this.context = context;
             this.endpoint = endpoint;
             this.socket = socket;
+            this.creatorAuthority = ActorRuntime.captureNativeIoAuthority();
             this.reader = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
             this.writer = new BufferedWriter(
                     new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
         }
 
+        private void requireOriginalActor(String operation) {
+            if (creatorAuthority == null) return; // trusted host-created socket
+            ActorRuntime.NativeIoAuthority current =
+                    ActorRuntime.captureNativeIoAuthority();
+            if (!creatorAuthority.sameIncarnation(current)) {
+                throw new SecurityException(
+                        "TCP socket belongs to a different actor incarnation: " + operation);
+            }
+        }
+
         public String readLine() {
+            requireOriginalActor("socket read");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 return reader.readLine();
@@ -313,6 +344,7 @@ public final class NativeIo {
         }
 
         public void writeText(String value) {
+            requireOriginalActor("socket write");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 writer.write(value);
@@ -324,6 +356,9 @@ public final class NativeIo {
 
         @Override
         public void close() {
+            // Check before the actual Socket.close(): resource accounting
+            // cannot undo a foreign actor's already-issued OS close.
+            requireOriginalActor("socket close");
             try {
                 socket.close();
                 context.nativeIo().unregister(socket);
