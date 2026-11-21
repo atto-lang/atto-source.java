@@ -268,3 +268,29 @@ Existing `define actor Worker as ... end` remains executable through its
 original `ClassDecl` AST and is unaffected. Parser acceptance is **not**
 compiler/typecheck/guest execution acceptance, and the seven new JUnit tests
 have not been executed. External `define mtd` bodies remain unsupported.
+
+## Stage 6 (draft): external actor receiver method is distinct from a free function
+
+```atto
+define pub mtd receive(Worker worker)(int value): void {
+  // This is an actor receiver body, not a free function.
+}
+define pub fnc bar(Worker worker): void {
+  // This is a normal function accepting an actor reference.
+}
+```
+
+The parser records external `mtd` definitions in an explicit
+`ExternalActorMethodDecl` with nominal actor type, receiver binding, value
+parameters, return type, visibility and parsed body. A `fnc` accepting the
+same actor type remains `FunctionDecl`. Structural or generic receiver types,
+receiver-name shadowing and fake `on_panic` / compiler-owned hooks are
+rejected early. No free-function adapter is synthesized.
+
+The compiler intentionally rejects execution with
+`EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED`: **the body cannot yet run**,
+and neither actor-state loans nor actor execution permits exist for external
+methods. Future lowering must prove module-local actor binding, static
+contract satisfaction, no capability escape, actor-turn nonreentrancy,
+generation-fenced invocation and cross-backend guest parity. This stage's
+seven added JUnit tests are authored but **not executed**.

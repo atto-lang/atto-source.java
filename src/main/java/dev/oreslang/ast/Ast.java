@@ -61,7 +61,8 @@ public final class Ast {
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl { }
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl,
+            ExternalActorMethodDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -142,6 +143,30 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "standalone actor AST currently supports only generic shared actors");
             }
+        }
+    }
+
+    /**
+     * Parsed external actor receiver method. The receiver is a nominal
+     * actor name, NOT a normal value parameter. Until compiler-controlled
+     * dispatch and execution permits exist, type checking must reject this
+     * node instead of lowering it as a free FunctionDecl.
+     */
+    public record ExternalActorMethodDecl(
+            String actorName, String receiverName, String name,
+            Visibility visibility, List<Param> parameters,
+            TypeRef returnType, List<Stmt> body) implements Decl {
+        public ExternalActorMethodDecl {
+            if (actorName == null || actorName.isBlank()
+                    || receiverName == null || receiverName.isBlank()
+                    || name == null || name.isBlank()) {
+                throw new IllegalArgumentException(
+                        "external actor method requires nominal actor, receiver and method names");
+            }
+            java.util.Objects.requireNonNull(visibility, "external method visibility");
+            java.util.Objects.requireNonNull(returnType, "external method return type");
+            parameters = List.copyOf(parameters);
+            body = List.copyOf(body);
         }
     }
 

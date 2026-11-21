@@ -159,6 +159,13 @@ public final class TypeChecker {
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ExternalActorMethodDecl method) {
+                    throw new IllegalArgumentException(
+                            "EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED: '" + method.name()
+                                    + "' on actor '" + method.actorName()
+                                    + "' requires actor-context authority, mailbox dispatch "
+                                    + "and activation-generation fencing");
+                }
                 if (declaration instanceof Ast.StandaloneActorDecl actor) {
                     throw new IllegalArgumentException(
                             "STANDALONE_ACTOR_LOWERING_UNSUPPORTED: '" + actor.name()
