@@ -43,10 +43,30 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         }
     }
 
-    public static final class PendingIo {
+    /**
+     * A physical I/O loan survives activation revocation. Close in finally,
+     * including on timeout, cancellation or disk failure. The queue ticket
+     * additionally requires a fresh check at actual callback execution.
+     */
+    public static final class PendingIo implements AutoCloseable {
+        private final SupervisorStorageEpochAuthority gate;
         private final Activation activation;
-        private boolean completed;
-        private PendingIo(Activation activation) { this.activation = activation; }
+        private boolean enqueued;
+        private boolean dispatched;
+        private boolean physicalDone;
+        private PendingIo(SupervisorStorageEpochAuthority gate, Activation activation) {
+            this.gate = gate;
+            this.activation = activation;
+        }
+        @Override public void close() { gate.releasePhysicalIo(this); }
+    }
+
+    /** Takeover revokes the old ticket but cannot activate until I/O drains. */
+    public static final class QuiescencePendingException extends IllegalStateException {
+        public QuiescencePendingException(int physicalIo, int executingCommits) {
+            super("supervisor takeover waiting for physical I/O=" + physicalIo
+                    + ", executing commits=" + executingCommits);
+        }
     }
 
     private final Object lock = new Object();
@@ -59,6 +79,9 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
     private Activation active;
     private boolean closed;
     private boolean poisoned;
+    // Guarded by lock; these are physical operation receipts, NOT guest state.
+    private int physicalIoInFlight;
+    private int executingCommits;
 
     SupervisorStorageEpochAuthority(ActorRuntime runtime,
             ActorRuntime.ActorSupervisor supervisor, String partition,
@@ -92,7 +115,11 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         synchronized (lock) {
             if (closed || poisoned)
                 throw new IllegalStateException("storage supervisor authority retired/poisoned");
+            // Revocation linearizes before quiescence check. A retry after
+            // all physical loans drain may safely reserve the next epoch.
             active = null;
+            if (physicalIoInFlight != 0 || executingCommits != 0)
+                throw new QuiescencePendingException(physicalIoInFlight, executingCommits);
             long expected = generation;
             if (expected == Long.MAX_VALUE - 1) {
                 poisoned = true;
@@ -127,14 +154,18 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         synchronized (lock) {
             if (!currentLocked(ticket))
                 throw new SecurityException("stale or foreign supervisor activation");
-            return new PendingIo(ticket);
+            if (physicalIoInFlight == Integer.MAX_VALUE)
+                throw new IllegalStateException("supervisor physical I/O receipt limit");
+            ++physicalIoInFlight;
+            return new PendingIo(this, ticket);
         }
     }
 
     /** Read-only status; possession of this result is NOT commit authority. */
     public boolean permits(PendingIo io) {
         synchronized (lock) {
-            return io != null && !io.completed && currentLocked(io.activation);
+            return io != null && io.gate == this && !io.physicalDone
+                    && !io.enqueued && currentLocked(io.activation);
         }
     }
 
@@ -147,9 +178,10 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         requireHost();
         Objects.requireNonNull(enqueueOnly);
         synchronized (lock) {
-            if (io == null || io.completed || !currentLocked(io.activation))
+            if (io == null || io.gate != this || io.physicalDone
+                    || io.enqueued || !currentLocked(io.activation))
                 return false;
-            io.completed = true;
+            io.enqueued = true;
             try {
                 enqueueOnly.run();
             } catch (RuntimeException | Error uncertain) {
@@ -158,6 +190,62 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
                 throw uncertain;
             }
             return true;
+        }
+    }
+
+    /**
+     * Recheck an already queued COMMIT when the executor actually starts it.
+     * A revoked callback never invokes guest code. The execution lease keeps
+     * takeover from admitting the next generation until physical dispatch
+     * has finished. Do not use for Kafka ACK; the actor still decides ACK.
+     */
+    public boolean dispatchCommitIfCurrent(PendingIo io, Runnable actorIngressOnly) {
+        requireHost();
+        Objects.requireNonNull(actorIngressOnly);
+        synchronized (lock) {
+            if (io == null || io.gate != this || !io.enqueued
+                    || io.dispatched || !currentLocked(io.activation))
+                return false;
+            if (executingCommits == Integer.MAX_VALUE)
+                throw new IllegalStateException("supervisor executing dispatch quota");
+            io.dispatched = true;
+            ++executingCommits;
+        }
+        try {
+            actorIngressOnly.run();
+            return true;
+        } catch (RuntimeException | Error uncertain) {
+            synchronized (lock) {
+                active = null;
+                poisoned = true;
+            }
+            throw uncertain;
+        } finally {
+            synchronized (lock) {
+                --executingCommits;
+                lock.notifyAll();
+            }
+        }
+    }
+
+    /**
+     * Release the physical operation receipt independently of activation
+     * revocation or runtime close. Idempotent, never resurrects authority.
+     */
+    private void releasePhysicalIo(PendingIo io) {
+        synchronized (lock) {
+            if (io == null || io.gate != this || io.physicalDone) return;
+            io.physicalDone = true;
+            if (--physicalIoInFlight < 0)
+                throw new IllegalStateException("physical I/O receipt underflow");
+            lock.notifyAll();
+        }
+    }
+
+    /** Only covers operations and callbacks registered at THIS gate. */
+    public boolean physicallyQuiescent() {
+        synchronized (lock) {
+            return physicalIoInFlight == 0 && executingCommits == 0;
         }
     }
 
