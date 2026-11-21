@@ -339,7 +339,7 @@ public final class ReturnCleanupChecker {
             expression(member.receiver(), scope, inDefer, state);
         } else if (expr instanceof Ast.IndexExpr index) {
             expression(index.receiver(), scope, inDefer, state);
-            expression(index.index(), scope, inDefer, state);
+            index.indices().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.NewExpr constructor) {
             constructor.arguments().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.AwaitExpr awaited) {

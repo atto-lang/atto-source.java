@@ -989,7 +989,33 @@ public final class Ast {
     }
 
     public record MemberExpr(Expr receiver, String member) implements Expr { }
-    public record IndexExpr(Expr receiver, Expr index) implements Expr { }
+
+    /**
+     * One bracket-index operation. Comma-separated indices remain in a
+     * single node so value[i, j] stays distinct from value[i][j].
+     */
+    public record IndexExpr(Expr receiver, List<Expr> indices) implements Expr {
+        public IndexExpr {
+            if (receiver == null) throw new IllegalArgumentException("index receiver cannot be null");
+            indices = List.copyOf(indices);
+            if (indices.isEmpty()) throw new IllegalArgumentException("indexing requires at least one index");
+            if (indices.stream().anyMatch(java.util.Objects::isNull)) {
+                throw new IllegalArgumentException("index expressions cannot contain null");
+            }
+        }
+
+        public IndexExpr(Expr receiver, Expr index) {
+            this(receiver, List.of(index));
+        }
+
+        public Expr index() {
+            return indices.getFirst();
+        }
+
+        public int arity() {
+            return indices.size();
+        }
+    }
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
         public NewExpr { arguments = List.copyOf(arguments); }
