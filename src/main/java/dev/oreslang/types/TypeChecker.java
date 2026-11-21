@@ -5738,14 +5738,11 @@ public final class TypeChecker {
                                 + " cannot satisfy " + structural.target());
             }
             if (structural.binding() != null) {
-                // A named interface target becomes a proven structural view of
-                // that interface; inline shapes retain their record type.
-                Type bindingType = resolvedTarget instanceof Named ? resolvedTarget : targetShape;
-                // Structural matching must not erase a record's readonly
-                // capability, including readonly members inside an explicit
-                // struct. A named structural contract needs the same shape
-                // overlay when the subject is a record.
-                if (subject instanceof Record) bindingType = targetShape;
+                // A structural match proves shape, never nominal identity or
+                // write authority. Keep a readonly CONTRACT view even for named
+                // class/interface/trait/Entry targets.
+                Type bindingType = readonlyStructuralProjection(new Record(
+                        targetShape.members(), true, AggregateKind.CONTRACT));
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
@@ -5809,22 +5806,19 @@ public final class TypeChecker {
             Type resolvedTarget,
             Set<String> generics) {
         if (resolvedTarget instanceof Record record) {
-            if (record.kind() == AggregateKind.STRUCT) {
-                throw new IllegalArgumentException(
-                        "structural pattern target must be a structural record, interface, or trait; concrete struct shapes require exact type matching");
-            }
-            // 'structural { ... }' is a contract view. Converting only the
-            // pattern target keeps ordinary RECORD and STRUCT values distinct.
-            if (record.kind() == AggregateKind.RECORD) {
-                return new Record(record.members(), true, AggregateKind.CONTRACT);
-            }
-            return record;
+            // The structural keyword is the explicit opt-in that turns either
+            // record{...} or struct{...} syntax into a readonly shape predicate.
+            // Plain struct typing remains closed/exact outside this pattern.
+            return new Record(record.members(), true, AggregateKind.CONTRACT);
         }
         if (!(resolvedTarget instanceof Named named)) {
             throw new IllegalArgumentException(
-                    "structural pattern target must be an inline record shape or named interface/trait, got "
-                            + sourceTarget);
+                    "structural pattern target must be a record/struct shape, Entry<K,V>, "
+                            + "or named class/interface/trait contract, got " + sourceTarget);
         }
+
+        Record builtinProduct = structuralBuiltinProductShape(named);
+        if (builtinProduct != null) return builtinProduct;
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass != null) {
@@ -5881,8 +5875,16 @@ public final class TypeChecker {
         if (subject instanceof SelfType selfType) {
             return structuralPatternMayMatch(selfType.bound(), targetShape);
         }
-        if (subject instanceof Record) return assignable(subject, targetShape);
+        if (subject instanceof Record sourceRecord) {
+            return assignable(
+                    sourceRecord,
+                    new Record(targetShape.members(), true, AggregateKind.CONTRACT));
+        }
         if (subject instanceof Named named) {
+            Record builtinProduct = structuralBuiltinProductShape(named);
+            if (builtinProduct != null) {
+                return structuralRecordAssignable(builtinProduct, targetShape);
+            }
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 // Open nominal classes may have a runtime subtype with a wider
@@ -6189,8 +6191,15 @@ public final class TypeChecker {
             // Runtime structural patterns check every field with oresTypeMatches,
             // not assignability. int -> float widening (including nested
             // record fields) must never prove structural coverage.
-            return subject instanceof Record record
-                    && runtimeRecordShapeCovered(record, shape);
+            if (subject instanceof Record record) {
+                return runtimeRecordShapeCovered(record, shape);
+            }
+            if (subject instanceof Named named) {
+                Record builtinProduct = structuralBuiltinProductShape(named);
+                return builtinProduct != null
+                        && runtimeRecordShapeCovered(builtinProduct, shape);
+            }
+            return false;
         }
         if (pattern instanceof Ast.TuplePattern tuplePattern
                 && subject instanceof Tuple tuple
@@ -6559,6 +6568,22 @@ public final class TypeChecker {
         return new Named(
                 "Entry",
                 List.of(widenCollectionElement(key), widenCollectionElement(value)));
+    }
+
+    /**
+     * Explicit structural use-sites may view compiler-known nominal products by
+     * their public, readonly shape without changing the product's ordinary
+     * nominal identity. Entry remains nominal everywhere the structural
+     * keyword is absent.
+     */
+    private Record structuralBuiltinProductShape(Named named) {
+        if (!named.name().equals("Entry") || named.arguments().size() != 2) {
+            return null;
+        }
+        LinkedHashMap<String, Type> members = new LinkedHashMap<>();
+        members.put("key", named.arguments().get(0));
+        members.put("value", named.arguments().get(1));
+        return new Record(members, true, AggregateKind.CONTRACT);
     }
 
     private static boolean isEntryType(Type type) {
@@ -7590,11 +7615,26 @@ public final class TypeChecker {
 
         Type concrete = resolve(param.type(), generics, self);
         if (concrete instanceof Record record) {
-            // The explicit structural modifier converts an inline record
-            // spelling into a non-storable contract view. Do not leave it as
-            // ordinary RECORD data: concrete structs are allowed to satisfy
-            // structural contracts without becoming records.
-            return new Record(record.members(), true, AggregateKind.CONTRACT);
+            // The explicit structural modifier converts either record{...} or
+            // struct{...} syntax into a readonly, non-storable shape contract.
+            // The underlying value keeps its concrete RECORD/STRUCT identity.
+            return readonlyStructuralProjection(
+                    new Record(record.members(), true, AggregateKind.CONTRACT));
+        }
+        if (concrete instanceof Tuple tuple) {
+            if (tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException(
+                        "structural positional products currently support Tuple/pair values only; "
+                                + "FixedArray/FixedList retain their concrete collection identity");
+            }
+            // A two-slot Tuple is the language's positional pair. Tuples are
+            // immutable products already, so structural preserves exact arity
+            // and element positions rather than inventing named row fields.
+            return readonlyStructuralProjection(tuple);
+        }
+        if (concrete instanceof Named named) {
+            Record builtinProduct = structuralBuiltinProductShape(named);
+            if (builtinProduct != null) return readonlyStructuralProjection(builtinProduct);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
@@ -7602,9 +7642,14 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural interface must resolve to a named type");
             }
             Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-            return substituteGenerics(
+            Type specialized = substituteGenerics(
                     shape,
                     genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+            if (!(specialized instanceof Record record)) {
+                throw new IllegalStateException("structural interface shape must remain a record");
+            }
+            return readonlyStructuralProjection(
+                    new Record(record.members(), true, AggregateKind.CONTRACT));
         }
 
         Ast.ClassDecl klass = findClass(param.type().name());
@@ -7618,11 +7663,17 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural class must resolve to a named type");
             }
             Type shape = publicClassShape(klass, new LinkedHashSet<>());
-            return substituteGenerics(shape, classGenericBindings(klass, named));
+            Type specialized = substituteGenerics(shape, classGenericBindings(klass, named));
+            if (!(specialized instanceof Record record)) {
+                throw new IllegalStateException("structural class shape must remain a record");
+            }
+            return readonlyStructuralProjection(
+                    new Record(record.members(), true, AggregateKind.CONTRACT));
         }
 
         throw new IllegalArgumentException(
-                "structural requires a known local class or interface contract, got '" + param.type().name() + "'");
+                "structural requires a record/struct shape, Tuple/pair, Entry<K,V>, "
+                        + "or known local class/interface/trait contract, got '" + param.type().name() + "'");
     }
 
     private void rejectStaticClassGenericReferences(
@@ -8823,9 +8874,29 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
+        if (actual instanceof Tuple sourceTuple && expected instanceof Tuple targetTuple) {
+            if (sourceTuple.kind() != targetTuple.kind()
+                    || sourceTuple.elements().size() != targetTuple.elements().size()) return false;
+            for (int i = 0; i < sourceTuple.elements().size(); i++) {
+                Type actualSlot = sourceTuple.elements().get(i);
+                Type expectedSlot = targetTuple.elements().get(i);
+                // Keep readonly positional slots representation preserving,
+                // while permitting proven nominal subtype elements through
+                // this checker's declaration-aware relation.
+                if (!readonlyStructuralMemberAssignable(actualSlot, expectedSlot)) return false;
+                if (sourceTuple.kind() != TupleKind.TUPLE
+                        && !readonlyStructuralMemberAssignable(expectedSlot, actualSlot)) return false;
+            }
+            return true;
+        }
+
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
+            Record builtinProduct = structuralBuiltinProductShape(actualNamed);
+            if (builtinProduct != null) {
+                return structuralRecordAssignable(builtinProduct, targetShape);
+            }
             Ast.InterfaceDecl actualContract = findInterface(actualNamed.name());
             if (actualContract != null && actualContract.moduleContract()) return false;
             Ast.ClassDecl klass = findClass(actualNamed.name());
@@ -8910,13 +8981,90 @@ public final class TypeChecker {
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
         if (!aggregateKindsCompatible(actual.kind(), expected.kind())) return false;
+        // A concrete struct can be projected by width only through an explicit
+        // readonly structural CONTRACT. A writable contract would discard the
+        // struct's exact storage identity and expose mutation without a loan.
+        if (actual.kind() == AggregateKind.STRUCT
+                && expected.kind() == AggregateKind.CONTRACT
+                && !expected.readOnly()) return false;
         if (expected.kind() == AggregateKind.STRUCT
                 && actual.members().size() != expected.members().size()) return false;
+        // Readonly structural views may covariantly read members, but writable
+        // destinations must remain invariant. Otherwise a widened alias could
+        // write a value that violates the concrete source slot.
+        if (!expected.readOnly() && actual.readOnly()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
-            if (candidate == null || !assignable(candidate, required.getValue())) return false;
+            if (candidate == null) return false;
+            if (expected.readOnly()) {
+                if (!readonlyStructuralMemberAssignable(candidate, required.getValue())) return false;
+            } else if (!candidate.equals(required.getValue())) {
+                return false;
+            }
         }
         return true;
+    }
+
+    /**
+     * A readonly structural slot is an alias of existing storage, not an implicit
+     * conversion. Reject numeric widening even when ordinary argument passing
+     * could convert int to float. Preserve safe nominal subtype and callable
+     * variance proofs using this checker's declaration metadata.
+     */
+    /**
+     * A borrowed structural contract does not grant writes to nested records.
+     * It projects nested structs into readonly CONTRACT types without changing
+     * the original aggregate's storage representation.
+     */
+    private Type readonlyStructuralProjection(Type value) {
+        if (value instanceof Record record) {
+            LinkedHashMap<String, Type> members = new LinkedHashMap<>();
+            record.members().forEach((name, field) ->
+                    members.put(name, readonlyStructuralProjection(field)));
+            return new Record(members, true,
+                    record.kind() == AggregateKind.STRUCT
+                            ? AggregateKind.CONTRACT : record.kind());
+        }
+        if (value instanceof Tuple tuple) {
+            return new Tuple(
+                    tuple.elements().stream().map(this::readonlyStructuralProjection).toList(),
+                    tuple.kind());
+        }
+        return value;
+    }
+
+    private boolean readonlyStructuralMemberAssignable(Type source, Type target) {
+        if (source.equals(target)) return true;
+        if (Types.containsUncertainType(source) || Types.containsUncertainType(target)) return false;
+        if (source instanceof StringLiteral && target == Primitive.STRING) return true;
+        if (source instanceof BoolLiteral && target == Primitive.BOOL) return true;
+        if (source instanceof Union union) {
+            return union.options().stream().allMatch(t -> readonlyStructuralMemberAssignable(t, target));
+        }
+        if (target instanceof Union union) {
+            return union.options().stream().anyMatch(t -> readonlyStructuralMemberAssignable(source, t));
+        }
+        if (source instanceof Record from && target instanceof Record to) {
+            return structuralRecordAssignable(from, to);
+        }
+        if (source instanceof Tuple from && target instanceof Tuple to) {
+            if (from.kind() != to.kind() || from.elements().size() != to.elements().size()) return false;
+            for (int i = 0; i < from.elements().size(); i++) {
+                Type actualSlot = from.elements().get(i);
+                Type expectedSlot = to.elements().get(i);
+                if (!readonlyStructuralMemberAssignable(actualSlot, expectedSlot)) return false;
+                if (from.kind() != TupleKind.TUPLE
+                        && !readonlyStructuralMemberAssignable(expectedSlot, actualSlot)) return false;
+            }
+            return true;
+        }
+        if (source instanceof Function && target instanceof Function) {
+            return assignable(source, target);
+        }
+        if (source instanceof Named && target instanceof Named) {
+            return assignable(source, target);
+        }
+        return false;
     }
 
     private Named concreteClassReference(Ast.TypeRef ref, Ast.ClassDecl owner, Named ownerType) {

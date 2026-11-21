@@ -8876,11 +8876,36 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean structuralPatternMatches(Object value, Ast.TypeRef target) {
-            if (target.isRecordType()) return structuralRecordMatches(value, target);
+            if (target.isClosedAggregateType()) {
+                return structuralAggregateMatches(value, target.aggregateMembers());
+            }
 
             Ast.TypeAliasDecl alias = findTypeAlias(target.name());
             if (alias != null && alias.genericParameters().isEmpty()) {
                 return structuralPatternMatches(value, alias.target());
+            }
+
+            // Entry<K,V> is nominal in ordinary typing, but an explicit
+            // structural pattern projects exactly its public key/value shape.
+            if (target.name().equals("Entry") && target.arguments().size() == 2) {
+                LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
+                members.put("key", target.arguments().get(0));
+                members.put("value", target.arguments().get(1));
+                return structuralAggregateMatches(value, members);
+            }
+
+            Ast.ClassDecl klass = findClass(target.name());
+            if (klass != null) {
+                if (klass.actorKind() != Ast.ActorKind.NONE
+                        || klass.genericParameters().size() != target.arguments().size()) {
+                    return false;
+                }
+                Map<String, Ast.TypeRef> bindings = new LinkedHashMap<>();
+                for (int i = 0; i < klass.genericParameters().size(); i++) {
+                    bindings.put(klass.genericParameters().get(i), target.arguments().get(i));
+                }
+                return structuralClassMatches(
+                        value, klass, bindings, new LinkedHashSet<>());
             }
 
             Ast.InterfaceDecl iface = findInterface(target.name());
@@ -8899,7 +8924,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean structuralRecordMatches(Object value, Ast.TypeRef recordType) {
-            for (Map.Entry<String, Ast.TypeRef> required : recordType.recordMembers().entrySet()) {
+            return structuralAggregateMatches(value, recordType.recordMembers());
+        }
+
+        private boolean structuralAggregateMatches(
+                Object value,
+                Map<String, Ast.TypeRef> requiredMembers) {
+            // An empty contract still proves an aggregate/capability boundary.
+            // In particular, neither scalar values nor actor identities satisfy
+            // structural {} merely because it has no required members.
+            if (!isStructuralValueCarrier(value)) return false;
+            for (Map.Entry<String, Ast.TypeRef> required : requiredMembers.entrySet()) {
                 Object member = publicStructuralMember(value, required.getKey());
                 if (member == Env.MISSING || !oresTypeMatches(member, required.getValue())) {
                     return false;
@@ -8908,7 +8943,21 @@ public final class OresEvalRootNode extends RootNode {
             return true;
         }
 
+        private boolean isStructuralValueCarrier(Object value) {
+            return value instanceof Map<?, ?>
+                    || value instanceof OresEntry
+                    || (value instanceof OresObject object
+                            && object.klass.actorKind() == Ast.ActorKind.NONE);
+        }
+
         private Object publicStructuralMember(Object value, String name) {
+            if (value instanceof OresEntry entry) {
+                return switch (name) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> Env.MISSING;
+                };
+            }
             if (value instanceof Map<?, ?> map) {
                 return map.containsKey(name) ? map.get(name) : Env.MISSING;
             }
@@ -8930,11 +8979,75 @@ public final class OresEvalRootNode extends RootNode {
             return Env.MISSING;
         }
 
+        private boolean structuralClassMatches(
+                Object value,
+                Ast.ClassDecl contract,
+                Map<String, Ast.TypeRef> bindings,
+                Set<Ast.ClassDecl> seen) {
+            if (!isStructuralValueCarrier(value)) return false;
+            if (!seen.add(contract)) return true;
+            // A field-only class is a valid readonly structural contract for
+            // records and structs. Only a method requirement needs an actual
+            // Oreslang object's dynamic method dispatch table.
+            OresObject object = value instanceof OresObject instance ? instance : null;
+
+            for (Ast.TypeRef parentRef : contract.parents()) {
+                Ast.TypeRef concreteParent = substituteStructuralType(parentRef, bindings);
+                Ast.ClassDecl parent = findClass(concreteParent.name());
+                if (parent == null
+                        || parent.actorKind() != Ast.ActorKind.NONE
+                        || parent.genericParameters().size() != concreteParent.arguments().size()) {
+                    return false;
+                }
+                Map<String, Ast.TypeRef> parentBindings = new LinkedHashMap<>();
+                for (int i = 0; i < parent.genericParameters().size(); i++) {
+                    parentBindings.put(
+                            parent.genericParameters().get(i),
+                            concreteParent.arguments().get(i));
+                }
+                if (!structuralClassMatches(value, parent, parentBindings, seen)) {
+                    return false;
+                }
+            }
+
+            for (Ast.FieldDecl field : contract.fields()) {
+                if (field.visibility() != Ast.Visibility.PUBLIC) continue;
+                Object actual = publicStructuralMember(value, field.name());
+                Ast.TypeRef expected = substituteStructuralType(field.type(), bindings);
+                if (actual == Env.MISSING || !oresTypeMatches(actual, expected)) {
+                    return false;
+                }
+            }
+
+            for (Ast.MethodDecl required : contract.methods()) {
+                if (required.visibility() != Ast.Visibility.PUBLIC || required.isStatic()) {
+                    continue;
+                }
+                if (object == null) return false;
+                Ast.MethodDecl actual = object.owner.findMethod(
+                        object.klass,
+                        CallableSelector.instance(required.name(), required.parameters().size()));
+                if (!structuralMethodMatches(
+                        actual,
+                        required.genericParameters(),
+                        required.parameters(),
+                        required.returnType(),
+                        required.async(),
+                        bindings)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         private boolean structuralInterfaceMatches(
                 Object value,
                 Ast.InterfaceDecl iface,
                 Map<String, Ast.TypeRef> bindings,
                 Set<Ast.InterfaceDecl> seen) {
+            // Even a zero-member interface remains an object-shape predicate.
+            // Otherwise scalars and actor identities could satisfy it vacuously.
+            if (!isStructuralValueCarrier(value)) return false;
             if (!seen.add(iface)) return true;
 
             for (Ast.TypeRef parentRef : iface.parents()) {
@@ -8973,27 +9086,122 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method = object.owner.findMethod(
                         object.klass,
                         CallableSelector.instance(fn.name(), fn.parameters().size()));
-                if (method == null
-                        || method.visibility() != Ast.Visibility.PUBLIC
-                        || method.isStatic()
-                        || method.isAbstract()
-                        || method.async()
-                        || method.genericParameters().size() != fn.genericParameters().size()) {
+                if (!structuralMethodMatches(
+                        method,
+                        fn.genericParameters(),
+                        fn.parameters(),
+                        fn.returnType(),
+                        false,
+                        bindings)) {
                     return false;
                 }
-                for (int i = 0; i < fn.parameters().size(); i++) {
-                    Ast.Param required = fn.parameters().get(i);
-                    Ast.Param actual = method.parameters().get(i);
-                    if (required.mutable() != actual.mutable()) return false;
-                    Ast.TypeRef expectedType =
-                            substituteStructuralType(required.type(), bindings);
-                    if (!actual.type().equals(expectedType)) return false;
-                }
-                Ast.TypeRef expectedReturn =
-                        substituteStructuralType(fn.returnType(), bindings);
-                if (!method.returnType().equals(expectedReturn)) return false;
             }
             return true;
+        }
+
+        private boolean structuralMethodMatches(
+                Ast.MethodDecl actual,
+                List<String> requiredGenerics,
+                List<Ast.Param> requiredParameters,
+                Ast.TypeRef requiredReturn,
+                boolean requiredAsync,
+                Map<String, Ast.TypeRef> bindings) {
+            if (actual == null
+                    || actual.visibility() != Ast.Visibility.PUBLIC
+                    || actual.isStatic()
+                    || actual.isAbstract()
+                    || actual.async() != requiredAsync
+                    || actual.genericParameters().size() != requiredGenerics.size()
+                    || actual.parameters().size() != requiredParameters.size()) {
+                return false;
+            }
+            Map<String, Ast.TypeRef> requiredBindings = new LinkedHashMap<>(bindings);
+            Map<String, Ast.TypeRef> candidateBindings = new LinkedHashMap<>();
+            // Generic methods are alpha-equivalent: binders match by index,
+            // not by their source-language spelling.
+            for (int i = 0; i < requiredGenerics.size(); i++) {
+                Ast.TypeRef canonical = new Ast.TypeRef("$callable" + i, List.of(), false);
+                requiredBindings.put(requiredGenerics.get(i), canonical);
+                candidateBindings.put(actual.genericParameters().get(i), canonical);
+            }
+            for (int i = 0; i < requiredParameters.size(); i++) {
+                Ast.Param required = requiredParameters.get(i);
+                Ast.Param candidate = actual.parameters().get(i);
+                if (required.mutable() != candidate.mutable()) return false;
+                Ast.TypeRef requiredType =
+                        substituteStructuralType(required.type(), requiredBindings);
+                Ast.TypeRef candidateType =
+                        substituteStructuralType(candidate.type(), candidateBindings);
+                // Contravariant parameters preserve the callable contract.
+                if (!runtimeDeclarationTypeAssignable(requiredType, candidateType)) {
+                    return false;
+                }
+            }
+            Ast.TypeRef expectedReturn =
+                    substituteStructuralType(requiredReturn, requiredBindings);
+            Ast.TypeRef actualReturn =
+                    substituteStructuralType(actual.returnType(), candidateBindings);
+            // Covariant results preserve the callable contract.
+            return runtimeDeclarationTypeAssignable(actualReturn, expectedReturn);
+        }
+
+        private boolean runtimeDeclarationTypeAssignable(
+                Ast.TypeRef actual,
+                Ast.TypeRef expected) {
+            if (actual.equals(expected)) return true;
+
+            Ast.TypeAliasDecl actualAlias = findTypeAlias(actual.name());
+            if (actualAlias != null && actualAlias.genericParameters().isEmpty()) {
+                return runtimeDeclarationTypeAssignable(actualAlias.target(), expected);
+            }
+            Ast.TypeAliasDecl expectedAlias = findTypeAlias(expected.name());
+            if (expectedAlias != null && expectedAlias.genericParameters().isEmpty()) {
+                return runtimeDeclarationTypeAssignable(actual, expectedAlias.target());
+            }
+
+            if (actual.isTupleType() || expected.isTupleType()) {
+                if (!actual.isTupleType() || !expected.isTupleType()
+                        || actual.arguments().size() != expected.arguments().size()) {
+                    return false;
+                }
+                for (int i = 0; i < actual.arguments().size(); i++) {
+                    if (!runtimeDeclarationTypeAssignable(
+                            actual.arguments().get(i), expected.arguments().get(i))
+                            || !runtimeDeclarationTypeAssignable(
+                                    expected.arguments().get(i), actual.arguments().get(i))) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            if (!actual.arguments().equals(expected.arguments())) {
+                // Native/generic declaration arguments are invariant here until
+                // runtime generic instantiations carry reified substitutions.
+                return false;
+            }
+
+            Ast.ClassDecl actualClass = findClass(actual.name());
+            Ast.ClassDecl expectedClass = findClass(expected.name());
+            if (actualClass != null && expectedClass != null) {
+                return classIsA(actualClass, expectedClass, new LinkedHashSet<>());
+            }
+
+            Ast.InterfaceDecl expectedInterface = findInterface(expected.name());
+            if (actualClass != null && expectedInterface != null) {
+                return classImplements(
+                        actualClass,
+                        expectedInterface,
+                        new LinkedHashSet<>(),
+                        new LinkedHashSet<>());
+            }
+
+            Ast.InterfaceDecl actualInterface = findInterface(actual.name());
+            if (actualInterface != null && expectedInterface != null) {
+                return interfaceExtends(
+                        actualInterface, expectedInterface, new LinkedHashSet<>());
+            }
+            return false;
         }
 
         private Ast.TypeRef substituteStructuralType(
