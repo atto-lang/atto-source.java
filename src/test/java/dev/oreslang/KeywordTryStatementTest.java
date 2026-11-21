@@ -86,6 +86,22 @@ final class KeywordTryStatementTest {
     }
 
     @Test
+    void catchAndFinallyTogetherUseExactlyOneEnd() throws Exception {
+        assertEquals("body|finally", run("""
+                pub fnc main(): void {
+                  try
+                    stdio.stdout.write("body");
+                  catch()
+                    stdio.stdout.write("never");
+                  finally
+                    stdio.stdout.write("|finally");
+                  end
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void typedErrorCatchIsParsedInBothStyles() throws Exception {
         assertEquals("ok", run("""
                 pub fnc main(): void {
