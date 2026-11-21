@@ -27,8 +27,11 @@ val route = spawn Source()
 ```
 
 A route contains 2..16 distinct SHARED source actors. All stages must have the
-same statically known `ActorMail<T>` payload domain. The result type is
-`ActorStream<T>`.
+**exact same** statically known `ActorMail<T>` payload domain (type identity,
+not merely bidirectional assignability or structural coercion). The result type
+is `ActorStream<T>`. An `ActorStream<any>` return annotation is not a safe way
+to erase a concrete graph's message type; use the concrete `T`. This initial
+single-flow stream has no dynamic heterogeneous-port routing contract.
 
 `ActorStream<T>` exposes only:
 
