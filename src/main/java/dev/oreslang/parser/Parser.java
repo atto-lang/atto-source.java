@@ -711,7 +711,9 @@ public final class Parser {
         String receiver = consume(IDENT, "expected critical actor receiver binding").lexeme();
         consume(RPAREN, "expected ')' after critical actor receiver");
         String name = consumeCallableName("expected critical actor method name");
-        if (java.util.Set.of("init", "receive", "handle_state", "on_panic").contains(name)) {
+        if (java.util.Set.of("init", "receive", "handle_state", "on_panic",
+                "on_throw", "on_raise", "on_recover",
+                "get_ready_signal", "get_done_signal").contains(name)) {
             throw error(previous(), "critical actor method cannot shadow runtime-owned ingress");
         }
         consume(LPAREN, "critical method parameter list requires '('");

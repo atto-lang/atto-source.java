@@ -9,6 +9,8 @@ on:
       - 'src/main/java/dev/oreslang/types/ActorStateBinder.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/NamespaceActorStateAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/AttoCriticalActorStaticAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/AttoCriticalActorMethodIdentityTest.java'
       - 'src/test/java/dev/oreslang/NamespaceActorIngressAdmissionTest.java'
       - 'contracts/namespace-actor-state-v1/**'
       - 'src/test/java/dev/oreslang/NamespaceActorHeaderAdmissionTest.java'
@@ -69,7 +71,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=NamespaceActorIngressAdmissionTest,NamespaceActorStateAdmissionTest,NamespaceActorHeaderAdmissionTest,CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=NamespaceActorIngressAdmissionTest,NamespaceActorStateAdmissionTest,NamespaceActorHeaderAdmissionTest,CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest,AttoCriticalActorStaticAdmissionTest,AttoCriticalActorMethodIdentityTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -81,7 +83,9 @@ jobs:
               NamespaceActorHeaderAdmissionTest \
               CrossFileActorReceiverBindingTest \
               ActorReceiverBinderTest \
-              ExternalActorReceiverAstAdmissionTest; do
+              ExternalActorReceiverAstAdmissionTest \
+              AttoCriticalActorStaticAdmissionTest \
+              AttoCriticalActorMethodIdentityTest; do
             report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
             test -s "$report"
             grep -q '<testcase ' "$report"
