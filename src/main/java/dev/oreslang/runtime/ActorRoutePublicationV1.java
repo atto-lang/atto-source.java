@@ -405,6 +405,23 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         }
     }
 
+    /**
+     * Bind an external host admission (for example an HTTP exchange lease) to
+     * the exact authoritative route observation in one critical section.
+     *
+     * The callback must perform bounded host bookkeeping only: no guest code,
+     * socket I/O, actor dispatch, waiting, or route mutation. A pending staged
+     * actor upgrade deliberately still admits against the currently published
+     * route until the single publication point changes {@code active}.
+     */
+    <T> T withCurrentAdmission(Function<Published<R>, T> admit) {
+        Objects.requireNonNull(admit, "trusted external admission");
+        synchronized (lock) {
+            requireOperational();
+            return admit.apply(active);
+        }
+    }
+
     Stage stage(ActorUpgradeEpochGate.Image candidateImage) {
         synchronized (lock) {
             requireOperational();

@@ -83,6 +83,7 @@ public final class NativeHttp implements AutoCloseable {
         private int cursor;
         private long created, reused;
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
+        boolean pooledGenerationMode() { supervisor(); return workers != null; }
         private void supervisor() {
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP pools belong to the supervisor");
         }
@@ -154,6 +155,9 @@ public final class NativeHttp implements AutoCloseable {
                 long spawnPerf = CorePerf.start();
                 actor = context.actors().spawnCodeActor(kind, code, type);
                 CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
+                ActorRuntime.ActorRef<Object> generationActor = actor;
+                generationActor.done().whenCompleteRuntime((ignored, failure) ->
+                        exchange.state.noteHotHandlerQuiescent());
                 actor.ready().whenCompleteRuntime((ignored, failure) -> {
                     long spawn;
                     long ready;
@@ -167,6 +171,7 @@ public final class NativeHttp implements AutoCloseable {
                 actor.send(exchange.moveTo(actor));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
+                else exchange.state.noteHotHandlerQuiescent();
                 exchange.state.abort(500);
             } finally {
                 CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
@@ -356,8 +361,41 @@ public final class NativeHttp implements AutoCloseable {
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
         Handler.Worker poolWorker;
+        HttpGenerationDrainV1.Exchange hotGeneration;
+        boolean hotHandlerQuiescent, hotTransportQuiescent;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
+        }
+        void bindHotGeneration(HttpGenerationDrainV1.Exchange lifetime) {
+            Objects.requireNonNull(lifetime, "HTTP generation lifetime");
+            synchronized (this) {
+                if (ActorRuntime.inActorExecution())
+                    throw new SecurityException("HTTP generation binding belongs to supervisor");
+                if (!owner.equals(context) || actor != null || busy || committed || terminal
+                        || hotGeneration != null)
+                    throw new IllegalStateException("HTTP exchange cannot bind generation now");
+                if (lifetime.finished())
+                    throw new IllegalStateException("HTTP generation lifetime already retired");
+                hotGeneration = lifetime;
+            }
+        }
+        void noteHotHandlerQuiescent() {
+            HttpGenerationDrainV1.Exchange lifetime;
+            synchronized (this) {
+                if (hotGeneration == null || hotHandlerQuiescent) return;
+                hotHandlerQuiescent = true;
+                lifetime = hotGeneration;
+            }
+            lifetime.handlerQuiescent();
+        }
+        void noteHotTransportQuiescent() {
+            HttpGenerationDrainV1.Exchange lifetime;
+            synchronized (this) {
+                if (hotGeneration == null || hotTransportQuiescent) return;
+                hotTransportQuiescent = true;
+                lifetime = hotGeneration;
+            }
+            lifetime.transportQuiescent();
         }
         // Linearize cancellation against success header emission. Never
         // hold this monitor while performing blocking socket I/O.
@@ -399,6 +437,7 @@ public final class NativeHttp implements AutoCloseable {
                     if (send) reject(raw, status); else raw.close();
                 } finally {
                     synchronized (this) { transportClosed = true; }
+                    noteHotTransportQuiescent();
                     release();
                 }
             });
@@ -411,7 +450,11 @@ public final class NativeHttp implements AutoCloseable {
                 HttpResponseWirePhase.requireLiveFinish(terminal);
                 terminal = true;
             }
-            try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
+            try { raw.close(); } finally {
+                synchronized (this) { transportClosed = true; }
+                noteHotTransportQuiescent();
+                release();
+            }
         }
         void release() {
             // Fresh handlers hold admission through actor finalization. Explicit
@@ -447,6 +490,17 @@ public final class NativeHttp implements AutoCloseable {
             if (generation != state.generation || !owner.equals(state.owner)) throw new IllegalStateException("HTTP exchange has moved");
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
+        void bindHotGeneration(HttpGenerationDrainV1.Exchange lifetime) {
+            synchronized (state) { checkOwner(); }
+            state.bindHotGeneration(lifetime);
+        }
+        long hotGenerationEpoch() {
+            synchronized (state) {
+                if (state.hotGeneration == null)
+                    throw new IllegalStateException("HTTP exchange has no hot generation");
+                return state.hotGeneration.generation();
+            }
+        }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
             synchronized (state) {
                 checkOwner();
@@ -459,7 +513,10 @@ public final class NativeHttp implements AutoCloseable {
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> {
+                    try { state.abort(500); }
+                    finally { state.noteHotHandlerQuiescent(); }
+                });
                 return token;
             }
         }
