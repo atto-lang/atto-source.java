@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Allocates the arena/segment host wrappers once at boot, not per operation.
  */
 public final class ControlPlaneArena32 implements AutoCloseable {
-    public static final String ABI = "control_generation20_slot12_v1";
+    public static final String ABI = "control_generation12_slot20_v1";
     public static final int RECORD_BYTES = 32;
     private static final int SLOT_BITS = 20;
     private static final int SLOT_MASK = (1 << SLOT_BITS) - 1;
