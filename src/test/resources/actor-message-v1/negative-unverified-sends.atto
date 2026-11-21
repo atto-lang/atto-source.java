@@ -1,4 +1,6 @@
-// Until transitive effects are implemented, explicit sends is fail-closed.
+// Until transitive effects are implemented, explicit sends is fail-closed for any
+// actor that may send: here only through a helper method, with no visible send.
 define actor Router receives String sends int as
-  receive(ActorMail<String> mail): void { return; }
+  receive(ActorMail<String> mail): void { self.relay(); return; }
+  relay(): void { return; }
 end

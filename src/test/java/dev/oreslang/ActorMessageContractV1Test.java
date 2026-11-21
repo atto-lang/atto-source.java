@@ -67,7 +67,8 @@ final class ActorMessageContractV1Test {
     @Test void sendsIsPreservedInAstButFailsClosedUntilTransitiveEffectChecker() {
         String source = """
                 define actor Router receives String sends int | bool as
-                  receive(ActorMail<String> mail): void { return; }
+                  receive(ActorMail<String> mail): void { self.relay(); return; }
+                  relay(): void { return; }
                 end
                 """;
         Ast.ActorMessageContract contract = actor(source).actorMessageContract();
@@ -77,6 +78,15 @@ final class ActorMessageContractV1Test {
                 () -> TypeChecker.check(Parser.parse(source)));
         assertTrue(bad.getMessage().contains("ACTOR_SENDS_EFFECT_UNSUPPORTED"),
                 bad::getMessage);
+    }
+
+    @Test void sendsBoundIsAdmittedWhenTheActorProvablySendsNothing() {
+        // No send, spawn, channel write, parent or non-stdio call: the bound holds trivially.
+        TypeChecker.check(Parser.parse("""
+                define actor Router receives String sends int as
+                  receive(ActorMail<String> mail): void { stdio.println("seen"); return; }
+                end
+                """));
     }
 
     @Test void headerOrderIsNotARecipientCount() {

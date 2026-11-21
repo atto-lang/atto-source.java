@@ -1569,7 +1569,8 @@ public final class TypeChecker {
             for (Object item : items) if (!sendsNothing(item)) return false;
             return true;
         }
-        if (node instanceof Record record) {
+        // java.lang.Record: in this package `Record` is the structural Types.Record.
+        if (node instanceof java.lang.Record record) {
             for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
                 Class<?> type = component.getType();
                 if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
