@@ -205,10 +205,17 @@ public final class IncrementalCompiler {
         cache.clear();
     }
 
-    private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
+    static String abiDigest(Ast.Program program) {
+        // Version bump invalidates older cache entries whose ABI omitted
+        // the authorization annotations on exported declarations.
+        StringBuilder abi = new StringBuilder("ores-abi-v7-cross-module-inherited-role-contracts\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
+        // Reachable private class dependencies may live in a DIFFERENT
+        // module of this source unit than the exported public subclass.
+        // Resolve the complete program graph before fingerprinting modules.
+        Map<String, List<Ast.ClassDecl>> inheritedByModule =
+                exportedPrivateAncestors(program);
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
             for (Ast.Annotation annotation : module.annotations()) {
@@ -218,12 +225,44 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+            // A private enum is part of the imported ABI ONLY if an exported
+            // callable explicitly references its cases in caller-role metadata.
+            // Including every private enum causes needless invalidation and
+            // exposes unrelated implementation-only schema changes.
+            List<Ast.ClassDecl> inheritedPrivateClasses =
+                    inheritedByModule.getOrDefault(module.name(), List.of());
+            java.util.Set<String> roleEnums =
+                    publicRoleEnumDependencies(module, inheritedPrivateClasses);
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.EnumDecl e
+                        && e.visibility() != Ast.Visibility.PUBLIC
+                        && roleEnums.contains(e.name())) {
+                    appendEnumAbi(abi, e);
+                } else appendAbi(abi, decl);
+            }
+            // Private parents can export public inherited methods through a
+            // public subclass. Their method signatures and caller-role policy
+            // are part of that subclass's effective external source ABI.
+            for (Ast.ClassDecl ancestor : inheritedPrivateClasses) {
+                abi.append("inherited-private-class ").append(ancestor.name()).append('\n');
+                for (Ast.TypeRef parent : ancestor.parents()) {
+                    abi.append(" parent ").append(typeRef(parent)).append('\n');
+                }
+                for (Ast.MethodDecl method : ancestor.methods()) {
+                    if (method.visibility() == Ast.Visibility.PUBLIC) {
+                        abi.append(classMethodAbi(method));
+                    }
+                }
+            }
         }
         return digest(abi.toString());
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        if (decl instanceof Ast.EnumDecl enumDecl) {
+            if (enumDecl.visibility() == Ast.Visibility.PUBLIC) appendEnumAbi(abi, enumDecl);
+            return;
+        }
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
@@ -233,7 +272,9 @@ public final class IncrementalCompiler {
             abi.append(fn.kind()).append(" pub ").append(fn.name());
             appendGenericSpecs(abi, fn.genericSpecs());
             appendParams(abi, fn.parameters());
-            abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+            abi.append("=>").append(typeRef(fn.returnType()));
+            appendCallerRoleAbi(abi, fn.annotations());
+            abi.append('\n');
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
@@ -315,6 +356,130 @@ public final class IncrementalCompiler {
         }
     }
 
+    private static void appendEnumAbi(StringBuilder abi, Ast.EnumDecl declaration) {
+        abi.append(declaration.visibility()).append(" enum ").append(declaration.name()).append('\n');
+        for (Ast.EnumCase variant : declaration.cases()) {
+            String name = variant.name();
+            String payload = variant.payload() == null
+                    ? "<nullary>" : typeRef(variant.payload());
+            abi.append(" enum-case ").append(name.length()).append(':')
+                    .append(name).append('#').append(variant.tag())
+                    .append('(').append(payload.length()).append(':')
+                    .append(payload).append(")\n");
+        }
+    }
+
+    /**
+     * Private class dependencies reachable from ANY public class within the
+     * same source program. Class owners are nominal module-qualified names.
+     * Without a global scan, a public Child in module B extending module
+     * A's private Base misses role-policy changes to A.Base in the exported ABI.
+     */
+    private static Map<String, List<Ast.ClassDecl>> exportedPrivateAncestors(
+            Ast.Program program) {
+        Map<String, Ast.ClassDecl> classes = new LinkedHashMap<>();
+        java.util.ArrayDeque<String> pending = new java.util.ArrayDeque<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.ClassDecl klass)) continue;
+                String qualified = module.name() + "." + klass.name();
+                classes.putIfAbsent(qualified, klass);
+                if (klass.visibility() == Ast.Visibility.PUBLIC) {
+                    pending.addLast(qualified);
+                }
+            }
+        }
+
+        Map<String, List<Ast.ClassDecl>> inherited = new LinkedHashMap<>();
+        java.util.Set<String> visited = new java.util.HashSet<>();
+        while (!pending.isEmpty()) {
+            String current = pending.removeFirst();
+            if (!visited.add(current)) continue;
+            Ast.ClassDecl klass = classes.get(current);
+            if (klass == null) continue;
+            String ownerModule = current.substring(0, current.lastIndexOf('.'));
+            if (klass.visibility() != Ast.Visibility.PUBLIC) {
+                inherited.computeIfAbsent(ownerModule, ignored -> new ArrayList<>())
+                        .add(klass);
+            }
+            for (Ast.TypeRef parent : klass.parents()) {
+                String rawName = parent.name();
+                if (rawName == null) continue;
+                String qualifiedParent = rawName.contains(".")
+                        ? rawName : ownerModule + "." + rawName;
+                if (classes.containsKey(qualifiedParent)) {
+                    pending.addLast(qualifiedParent);
+                }
+                // External ancestors still require the linker's fail-closed
+                // authenticated inheritance policy; the local ABI alone is
+                // not evidence that an external source is safe to import.
+            }
+        }
+        Map<String, List<Ast.ClassDecl>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Ast.ClassDecl>> entry : inherited.entrySet()) {
+            entry.getValue().sort(
+                    java.util.Comparator.comparing(Ast.ClassDecl::name));
+            result.put(entry.getKey(), List.copyOf(entry.getValue()));
+        }
+        return Map.copyOf(result);
+    }
+
+    /** Exact local enum dependencies of exported caller-role annotations. */
+    private static java.util.Set<String> publicRoleEnumDependencies(
+            Ast.ModuleDecl module, List<Ast.ClassDecl> inheritedPrivateClasses) {
+        java.util.Set<String> localEnumNames = new java.util.HashSet<>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.EnumDecl e) localEnumNames.add(e.name());
+        }
+        java.util.Set<String> referenced = new java.util.HashSet<>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
+                addRoleEnumDependencies(referenced, fn.annotations(), module.name(), localEnumNames);
+            } else if (decl instanceof Ast.ClassDecl klass
+                    && klass.visibility() == Ast.Visibility.PUBLIC) {
+                for (Ast.MethodDecl method : klass.methods()) {
+                    if (method.visibility() == Ast.Visibility.PUBLIC) {
+                        addRoleEnumDependencies(
+                                referenced, method.annotations(), module.name(), localEnumNames);
+                    }
+                }
+            }
+        }
+        for (Ast.ClassDecl ancestor : inheritedPrivateClasses) {
+            for (Ast.MethodDecl method : ancestor.methods()) {
+                if (method.visibility() == Ast.Visibility.PUBLIC) {
+                    addRoleEnumDependencies(
+                            referenced, method.annotations(), module.name(), localEnumNames);
+                }
+            }
+        }
+        return java.util.Set.copyOf(referenced);
+    }
+
+    private static void addRoleEnumDependencies(
+            java.util.Set<String> referenced, List<Ast.Annotation> annotations,
+            String moduleName, java.util.Set<String> localEnumNames) {
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("CallerRole")
+                    && !annotation.name().equals("CallableBy")) continue;
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                if (argument == null) continue; // Bad metadata is rejected by the type checker.
+                String role = argument.name();
+                if (role == null) continue;
+                int lastDot = role.lastIndexOf('.');
+                if (lastDot <= 0) continue;
+                String owner = role.substring(0, lastDot);
+                String localName = owner.startsWith(moduleName + ".")
+                        ? owner.substring(moduleName.length() + 1) : owner;
+                if (localEnumNames.contains(localName)
+                        && (owner.equals(localName)
+                            || owner.equals(moduleName + "." + localName))) {
+                    referenced.add(localName);
+                }
+            }
+        }
+    }
+
     private static String classMethodAbi(Ast.MethodDecl method) {
         StringBuilder out = new StringBuilder();
         if (method.async()) out.append("async ");
@@ -324,8 +489,31 @@ public final class IncrementalCompiler {
                 .append("#arity").append(method.arity());
         appendGenerics(out, method.genericParameters());
         appendParams(out, method.parameters());
-        out.append("=>").append(typeRef(method.returnType())).append('\n');
+        out.append("=>").append(typeRef(method.returnType()));
+        appendCallerRoleAbi(out, method.annotations());
+        out.append('\n');
         return out.toString();
+    }
+
+    /**
+     * Callable annotations affect which clients are allowed to call/export
+     * a symbol and therefore participate in public incremental ABI hashes.
+     * Treat these values as ABI *fingerprints*, not validated import proof:
+     * the linked declaration and its roles still require trusted resolution.
+     */
+    private static void appendCallerRoleAbi(StringBuilder out, List<Ast.Annotation> annotations) {
+        for (String annotationName : List.of("CallableBy", "CallerRole")) {
+            for (Ast.Annotation annotation : annotations) {
+                if (!annotation.name().equals(annotationName)) continue;
+                List<String> roles = annotation.arguments().stream()
+                        .map(IncrementalCompiler::typeRef).sorted().toList();
+                out.append(" @").append(annotationName).append('(');
+                for (String role : roles) {
+                    out.append(role.length()).append(':').append(role).append(',');
+                }
+                out.append(')');
+            }
+        }
     }
 
     private static String interfaceFunctionAbi(Ast.InterfaceFunctionDecl fn) {

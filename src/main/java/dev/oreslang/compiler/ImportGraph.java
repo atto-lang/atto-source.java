@@ -107,6 +107,10 @@ final class ImportGraph {
                 String targetId = resolveImportUnitId(importer, imported, available, importResolutions);
                 if (targetId == null) continue; // package resolver owns unresolved non-relative imports.
                 Ast.Program target = programs.get(targetId);
+                // Imported functions and module/class namespaces do not yet
+                // carry authenticated caller-role policy across source units.
+                // Never silently erase @CallableBy while creating an import.
+                rejectUnverifiedCallerRoleImports(importer, imported, targetId, target);
                 if (imported.wildcard()) continue;
                 for (String name : imported.names()) {
                     int matches = exportedMatches(target, imported.kind(), name);
@@ -123,6 +127,133 @@ final class ImportGraph {
                 }
             }
         }
+    }
+
+    private static void rejectUnverifiedCallerRoleImports(
+            String importer, Ast.ImportDecl imported, String targetId, Ast.Program target) {
+        boolean functions = imported.kind() == Ast.ImportKind.FUNCTION
+                || imported.kind() == Ast.ImportKind.ALL
+                || imported.kind() == Ast.ImportKind.MODULE;
+        boolean classes = imported.kind() == Ast.ImportKind.CLASS
+                || imported.kind() == Ast.ImportKind.ACTOR
+                || imported.kind() == Ast.ImportKind.ALL
+                || imported.kind() == Ast.ImportKind.MODULE;
+        if (!functions && !classes) return;
+        for (Ast.ModuleDecl module : target.modules()) {
+            // import module Selected restricts the namespace to Selected;
+            // import * and import fnc * select all matching exports.
+            if (imported.kind() == Ast.ImportKind.MODULE
+                    && !imported.wildcard()
+                    && !imported.names().contains(module.name())) continue;
+            for (Ast.Decl decl : module.declarations()) {
+                String symbol = null;
+                if (functions && decl instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        // Named "import fnc" only exports ordinary functions.
+                        // Whole-module / wildcard imports may also surface
+                        // other public callable kinds; do not let an actor
+                        // entry's CallerRole grant disappear in that path.
+                        && (imported.kind() != Ast.ImportKind.FUNCTION
+                            || fn.actorKind() == Ast.ActorKind.NONE)
+                        && (imported.kind() != Ast.ImportKind.FUNCTION
+                            || fn.kind() == Ast.CallableKind.FNC)
+                        && (imported.kind() == Ast.ImportKind.MODULE || imported.wildcard()
+                            || imported.names().contains(fn.name()))
+                        && hasCallerPolicy(fn.annotations())) {
+                    symbol = module.name() + "." + fn.name();
+                }
+                if (classes && decl instanceof Ast.ClassDecl klass
+                        && klass.visibility() == Ast.Visibility.PUBLIC
+                        && (imported.kind() != Ast.ImportKind.ACTOR
+                            || klass.actorKind() != Ast.ActorKind.NONE)
+                        && (imported.kind() != Ast.ImportKind.CLASS
+                            || klass.actorKind() == Ast.ActorKind.NONE)
+                        && (imported.kind() == Ast.ImportKind.MODULE
+                            || imported.wildcard() || imported.names().contains(klass.name()))) {
+                    // An imported class exposes inherited public static
+                    // functions too. Inspect local ancestry, and reject any
+                    // parent whose identity cannot be proven in this source.
+                    symbol = protectedClassSurface(
+                            target, module, klass, new HashSet<>());
+                }
+                if (symbol != null) {
+                    throw new IllegalArgumentException(
+                            "caller-role annotated import of '" + symbol + "' from '" + targetId
+                                    + "' into '" + importer
+                                    + "' requires linked declaration identity and verified caller-role ABI; "
+                                    + "unlinked role-policy imports are forbidden");
+                }
+            }
+        }
+    }
+
+    /**
+     * Find protected public methods reachable through a locally resolved
+     * class hierarchy. Unknown ancestors fail closed: a class import must
+     * not erase a protected inherited static function's linked identity.
+     * Imported parent schemas can be admitted once signed/verified class
+     * ancestry is available to this linker.
+     */
+    private static String protectedClassSurface(
+            Ast.Program program, Ast.ModuleDecl module, Ast.ClassDecl klass,
+            Set<String> visiting) {
+        String qualified = module.name() + "." + klass.name();
+        if (!visiting.add(qualified)) {
+            throw new IllegalArgumentException(
+                    "cyclic inherited class hierarchy in import of '" + qualified + "'");
+        }
+        try {
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.visibility() == Ast.Visibility.PUBLIC
+                        && hasCallerPolicy(method.annotations())) {
+                    return qualified + "." + method.name();
+                }
+            }
+            for (Ast.TypeRef parent : klass.parents()) {
+                String name = parent.name();
+                String parentQualified = name.contains(".")
+                        ? name : module.name() + "." + name;
+                Ast.ModuleDecl foundModule = null;
+                Ast.ClassDecl foundClass = null;
+                for (Ast.ModuleDecl candidateModule : program.modules()) {
+                    for (Ast.Decl declaration : candidateModule.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl candidate
+                                && (candidateModule.name() + "." + candidate.name())
+                                        .equals(parentQualified)) {
+                            if (foundClass != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous inherited class '" + parentQualified + "'");
+                            }
+                            foundModule = candidateModule;
+                            foundClass = candidate;
+                        }
+                    }
+                }
+                if (foundClass == null) {
+                    throw new IllegalArgumentException(
+                            "unverified inherited callable policy for class '"
+                                    + qualified + "': parent '" + name
+                                    + "' has no linked declaration identity");
+                }
+                String guarded = protectedClassSurface(
+                        program, foundModule, foundClass, visiting);
+                if (guarded != null) return guarded;
+            }
+            return null;
+        } finally {
+            visiting.remove(qualified);
+        }
+    }
+
+    private static boolean hasCallerPolicy(java.util.List<Ast.Annotation> annotations) {
+        for (Ast.Annotation annotation : annotations) {
+            // CallerRole is an authority-bearing grant just as CallableBy is
+            // an authority-bearing restriction. Importers cannot erase either
+            // until the linker verifies exact declaration and enum identities.
+            if (annotation.name().equals("CallableBy")
+                    || annotation.name().equals("CallerRole")) return true;
+        }
+        return false;
     }
 
     private static int exportedMatches(Ast.Program program, Ast.ImportKind kind, String name) {
