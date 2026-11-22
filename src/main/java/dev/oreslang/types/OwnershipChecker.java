@@ -3493,10 +3493,10 @@ public final class OwnershipChecker {
                     && target.arguments().size() == 1) {
                 throw error("Future.flatten cannot consume a borrowed Future");
             }
-            boolean borrowedSum = (target.name().equals("Option")
-                    && target.arguments().size() == 1)
-                    || (target.name().equals("Result")
-                    && target.arguments().size() == 2);
+            // Imported or implicitly visible core ADT names are the SAME
+            // compiler-owned owner/loan identity; never bypass this gate.
+            boolean borrowedSum = AutomaticPrelude.coreSumCarrier(
+                    target.name(), target.arguments().size());
             if (borrowedSum && extracting && !isCopyType(target)) {
                 throw error(member.member()
                         + " cannot consume an affine Option/Result through a borrow");
