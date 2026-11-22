@@ -473,6 +473,15 @@ public final class LinkedProgramRunner {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
 
+            if (CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
+                CoreLibrarySources.LibraryUnit library =
+                        CoreLibrarySources.libraryUnit(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), library.unitId());
+                collectLayeredLibraryClosure(library, units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
+
             if (CoreLibrarySources.isStdImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
@@ -520,6 +529,51 @@ public final class LinkedProgramRunner {
         }
     }
 
+
+    /**
+     * Collects a layered core/alloc/std v1 unit and its library-only closure.
+     * A unit may import only compiler-owned units of its own or a lower layer.
+     */
+    private static void collectLayeredLibraryClosure(
+            CoreLibrarySources.LibraryUnit library,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
+        String id = library.unitId();
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+        String source = CoreLibrarySources.librarySource(library);
+        budget.admit(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(id, library.fileName(), source);
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "compiler-owned library units must be native Atto: " + id);
+        }
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        java.util.List<CoreLibrarySources.LibraryUnit> dependencies = new java.util.ArrayList<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (!CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
+                throw new IllegalArgumentException("compiler-owned "
+                        + library.layer().label() + " modules may import only core/*, alloc/* or std/*: "
+                        + id + " -> " + imported.path());
+            }
+            CoreLibrarySources.LibraryUnit dependency =
+                    CoreLibrarySources.libraryUnit(imported.path());
+            if (!CoreLibrarySources.layerMayDependOn(library.layer(), dependency.layer())) {
+                throw new IllegalArgumentException("compiler-owned "
+                        + library.layer().label() + " modules may not depend on "
+                        + dependency.layer().label() + "/*: " + id + " -> " + imported.path());
+            }
+            dependencies.add(dependency);
+            recordImportResolution(importResolutions, id, imported.path(), dependency.unitId());
+        }
+        units.put(id, mixed);
+        for (CoreLibrarySources.LibraryUnit dependency : dependencies) {
+            collectLayeredLibraryClosure(dependency, units, importResolutions, budget, depth + 1);
+        }
+    }
 
     /**
      * Collects compiler-owned hosted source under ores.std/* (and the temporary

@@ -68,6 +68,13 @@
     <resources>
       <resource><directory>src/main/resources</directory></resource>
       <resource>
+        <directory>library</directory>
+        <targetPath>dev/oreslang/lib</targetPath>
+        <includes>
+          <include>**/*.atto</include>
+        </includes>
+      </resource>
+      <resource>
         <directory>stdlib</directory>
         <targetPath>dev/oreslang/std</targetPath>
         <includes>

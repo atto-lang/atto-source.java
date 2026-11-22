@@ -51,7 +51,10 @@ final class VirtualActorTerminalControlCurrentMainTest {
                     throw new IllegalStateException("PRIVATE GUEST DATA must not cross CONTROL");
                 });
         worker.getReady().get(5, TimeUnit.SECONDS);
-        return worker;
+        @SuppressWarnings("unchecked") ActorRuntime.ActorRef<String> typed =
+
+                (ActorRuntime.ActorRef<String>) (ActorRuntime.ActorRef<?>) worker;
+        return typed;
     }
 
     private static void failActor(ActorRuntime.ActorRef<String> worker) throws Exception {
