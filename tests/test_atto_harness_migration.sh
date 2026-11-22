@@ -15,6 +15,16 @@ die() { echo "AttoLang test migration admission: $*" >&2; exit 1; }
 grep -Fq 'native AttoLang test suite failed' "$root/stdlib/testing.atto" ||
   die "canonical .atto standard library was replaced with legacy content"
 
+# Source-only check for the canonical Atto CLI adapter. This does NOT execute
+# the Rust runner or prove that Maven compiled a guest.
+manifest="$root/atto-test.toml"
+[[ -f "$manifest" && ! -L "$manifest" ]] ||
+  die "Atto test adapter manifest missing or symlinked"
+grep -Fqx 'files = ["examples/native-testing-regressions-40.atto"]' "$manifest" ||
+  die "Atto test manifest no longer selects canonical 40-case guest"
+grep -Fqx 'command = ["mvn", "-q", "-B", "-ntp", "-DskipTests", "compile", "exec:java", "-Dexec.args={source}"]' "$manifest" ||
+  die "Atto test Maven adapter command changed without review"
+
 # Only canonical .atto guests may be used by the Java CI harness. Existing
 # .ores copies remain explicitly for transition and other backend fixtures.
 case_sources=(
