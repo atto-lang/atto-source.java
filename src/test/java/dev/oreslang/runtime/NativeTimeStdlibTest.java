@@ -83,7 +83,7 @@ final class NativeTimeStdlibTest {
                 import module time from "std/time";
                 pub routine main(): void {
                   val half = time.milliseconds(500).expect("half");
-                  val manual = time.manual_clock(9, 1000000000);
+                  let mut manual = time.manual_clock(9, 1000000000);
                   stdio.println(manual.now().ticks_ns);
                   stdio.println(manual.advance(half).expect("advance").ticks_ns);
                   stdio.println(manual.advance(time.nanoseconds(0).expect("zero")).expect("still").ticks_ns);
@@ -93,18 +93,18 @@ final class NativeTimeStdlibTest {
                   stdio.println(due.expired(start).expect("not due"));
                   stdio.println(due.expired(later).expect("due"));
                   stdio.println(due.expired(time.instant(10, 1500000000)).is_err());
-                  val timer = time.one_shot(due);
+                  let mut timer = time.one_shot(due);
                   stdio.println(timer.poll(start).expect("early"));
                   stdio.println(timer.poll(later).expect("fire"));
                   stdio.println(timer.poll(later).expect("once"));
                   stdio.println(timer.did_fire());
-                  val every = time.interval(later, half);
+                  let mut every = time.interval(later, half);
                   stdio.println(every.poll(later).expect("interval fire"));
                   stdio.println(every.poll(later).expect("interval no double fire"));
                   stdio.println(every.next_due().expect("interval next").ticks_ns);
                   stdio.println(every.cancel());
                   stdio.println(every.next_due().is_err());
-                  val at_limit = time.manual_clock(20, 9223372036854775807);
+                  let mut at_limit = time.manual_clock(20, 9223372036854775807);
                   stdio.println(at_limit.advance(time.nanoseconds(1).expect("one ns")).is_err());
                   stdio.println(at_limit.now().ticks_ns);
                   return;
