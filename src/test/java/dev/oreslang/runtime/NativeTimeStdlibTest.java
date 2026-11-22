@@ -162,6 +162,35 @@ final class NativeTimeStdlibTest {
     }
 
     @Test
+    void compiledGuestAllowsValConstMutReceiversForClockTimerAndInterval() throws Exception {
+        // Atto val means const mut: the binding is fixed, but its referent
+        // may be borrowed exclusively by a mut self method.
+        Path guest = temp.resolve("val_time_guest.atto");
+        Files.writeString(guest, """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val clock = time.manual_clock(7, 0);
+                  val one = time.nanoseconds(1).expect("one");
+                  stdio.println(clock.advance(one).expect("advance").ticks_ns);
+                  val due = time.deadline_after(clock.now(), one).expect("due");
+                  val timer = time.one_shot(due);
+                  stdio.println(timer.poll(time.instant(7, 2)).expect("fire"));
+                  val repeating = time.interval(time.instant(7, 2), one);
+                  stdio.println(repeating.cancel());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(guest, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), out, err);
+        assertTrue(linked.units().containsKey("@std/time.atto"));
+        assertEquals(String.join("\n", "1", "true", "true"),
+                out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                () -> err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void compilerRejectsConstReceiversForMutatingTimeMethods() throws Exception {
         // These must be rejected by the real compiler/ownership checker, not
         // merely by a source-text linter. Compilation of a positive mutable
