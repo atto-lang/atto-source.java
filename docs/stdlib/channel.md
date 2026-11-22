@@ -37,6 +37,14 @@ latter variants **return the original payload**. The caller must not discard
 this result or accidentally use the moved binding after admission. The
 ownership checker, not a library Boolean flag, must enforce this rule.
 
+The core borrow/move checker is exercised with the `std/channel`-importing
+`use_after_taken_try_send.atto` negative fixture: after `rt take payload`,
+using the original binding must fail with a deterministic moved-value
+diagnostic. Existing Java type checking permits non-`Send` channel
+payloads that stay within their execution domain, and rejects invalid
+async/actor escapes. This is broader than the provisional Rust/Wasm v2
+data-only construction gate; do not certify equivalent type acceptance yet.
+
 `try_receive` returns `None` only when currently not ready. Once closed
 and drained, the runtime's closed error is distinct from `None`. After
 close, new sends fail. Already committed buffered messages drain FIFO.
@@ -83,7 +91,8 @@ mvn -Dtest=ChannelStdlibAttoSourceTest test
 Expected fixtures: `buffered_fifo`, `rendezvous_pending`,
 `rendezvous_direct_read` (awaited ordinary receive on capacity zero),
 `immediate_probe`, `negative_capacity`, `owned_payload`,
-`close_drain`, `try_read`, `closed_move`, `pending_reader_close`
+`close_drain`, `try_read`, `closed_move`, `use_after_taken_try_send`
+(type-checking rejection), `pending_reader_close`
 (registered pending reader settles on closure), and
 `try_read_closed_drained` (terminal closed is not open-empty).
 The two new terminal-close fixtures intentionally expect guest exceptions,
