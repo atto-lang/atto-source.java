@@ -1,0 +1,66 @@
+name: Atto core-four real Java linked guest exact-head
+on:
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'pom.xml'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
+      - 'src/test/java/dev/oreslang/CoreFourGuestTest.java'
+      - 'tests/fixtures/core-four-v1/**'
+      - '.github/workflows/core-four-v1-java-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-core-four-real-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout immutable triggering PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact authored source and clean tracked tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "CORE_FOUR_JAVA_HEAD=$EXPECTED_HEAD"
+          echo "CORE_FOUR_JAVA_TREE=$(git rev-parse 'HEAD^{tree}')"
+          for name in range cell contracts num; do
+            echo "CORE_FOUR_JAVA_BLOB:$name=$(git rev-parse "HEAD:core/$name.atto")"
+          done
+      - name: Setup GraalVM JDK25 Maven toolchain
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile actual Java compiler and execute linked Atto guest tests
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreFourGuestTest -DfailIfNoTests=true test
+      - name: Require positive and negative compiled-guest test methods completed
+        run: |
+          set -euo pipefail
+          report='target/surefire-reports/TEST-dev.oreslang.CoreFourGuestTest.xml'
+          test -s "$report"
+          grep -F 'name="importsLinkAndGuestExecutesExactI64Vectors"' "$report"
+          grep -F 'name="requiresFalseRemainsTrappableInGuestExecution"' "$report"
+          grep -F 'name="coreImportsAreCompilerOwnedAndAliasToOneUnit"' "$report"
+          grep -F 'name="coreModulesParseAndTypecheck"' "$report"
+          grep -F 'skipped="0"' "$report"
+          grep -Eq 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
+          echo 'CORE_FOUR_JAVA_GUEST_JUNIT=EXECUTED; native-image=NOT_EXECUTED'
+      - name: Report evidence limitations
+        if: always()
+        run: |
+          echo 'JVM/Truffle linked guest only; this is NOT GraalVM native-image AOT.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Zero-step/queued jobs and source-only tests never count as guest passes.' >> "$GITHUB_STEP_SUMMARY"
