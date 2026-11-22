@@ -31,6 +31,15 @@ public final class CoreLibrarySources {
     private static final String STD_UNIT_PREFIX = "@std/";
     private static final String STD_RESOURCE_PREFIX = "dev/oreslang/std/";
 
+    // Atto's explicit alloc layer: a closed, source-owned namespace whose
+    // files are packaged from stdlib/alloc/*.atto by the existing Maven rule.
+    private static final String ATTO_ALLOC_IMPORT_PREFIX = "atto.alloc/";
+    private static final String ATTO_ALLOC_UNIT_PREFIX = "@atto.alloc/";
+    private static final String ATTO_ALLOC_RESOURCE_PREFIX = "dev/oreslang/std/alloc/";
+    private static final Set<String> ATTO_ALLOC_SOURCES = Set.of(
+            "allocator.atto", "set.atto", "drop.atto",
+            "pool.atto", "arc.atto", "weak.atto");
+
     private static final int MAX_SOURCE_BYTES = 1024 * 1024;
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
@@ -75,14 +84,53 @@ public final class CoreLibrarySources {
         return isStdImport(importPath);
     }
 
+    /** Only closed, authenticated compiler-packaged alloc modules are linkable. */
+    public static boolean isAttoAllocImport(String importPath) {
+        return importPath != null && importPath.startsWith(ATTO_ALLOC_IMPORT_PREFIX);
+    }
+
+    public static Set<String> packagedAttoAllocPaths() {
+        return ATTO_ALLOC_SOURCES;
+    }
+
+    public static String attoAllocUnitId(String importPath) {
+        return ATTO_ALLOC_UNIT_PREFIX + canonicalAttoAllocRelativePath(importPath);
+    }
+
+    public static String attoAllocFileName(String importPath) {
+        return fileNameFromRelative(canonicalAttoAllocRelativePath(importPath));
+    }
+
+    public static String attoAllocSource(String importPath) throws IOException {
+        String relative = canonicalAttoAllocRelativePath(importPath);
+        if (!ATTO_ALLOC_SOURCES.contains(relative)) {
+            throw new IllegalArgumentException(
+                    "unknown compiler-owned atto.alloc module: " + importPath);
+        }
+        return readPackagedSource(ATTO_ALLOC_RESOURCE_PREFIX + relative, importPath);
+    }
+
+    private static String canonicalAttoAllocRelativePath(String importPath) {
+        Objects.requireNonNull(importPath, "importPath");
+        if (!importPath.startsWith(ATTO_ALLOC_IMPORT_PREFIX)) {
+            throw new IllegalArgumentException(
+                    "canonical alloc imports must start with 'atto.alloc/': " + importPath);
+        }
+        // Explicit .atto is accepted but .ores and undeclared submodules
+        // never silently resolve to ambient project or host source.
+        return canonicalPathBody(importPath, ATTO_ALLOC_IMPORT_PREFIX, ATTO_ALLOC_SOURCES);
+    }
+
     /** Reserve canonical library roots before filesystem/ORESLANG_PATH fallback. */
     public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
         return normalized.equals("ores.core")
                 || normalized.equals("ores.std")
+                || normalized.equals("atto.alloc")
                 || normalized.startsWith(CORE_IMPORT_PREFIX)
-                || normalized.startsWith(STD_IMPORT_PREFIX);
+                || normalized.startsWith(STD_IMPORT_PREFIX)
+                || normalized.startsWith(ATTO_ALLOC_IMPORT_PREFIX);
     }
 
     public static Set<String> packagedCorePaths() {

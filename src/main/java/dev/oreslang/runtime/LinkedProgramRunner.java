@@ -489,6 +489,14 @@ public final class LinkedProgramRunner {
                 continue;
             }
 
+            if (CoreLibrarySources.isAttoAllocImport(imported.path())) {
+                String targetId = CoreLibrarySources.attoAllocUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAttoAllocImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
+
             if (CoreLibrarySources.isReservedOresLibraryImport(imported.path())) {
                 throw new IllegalArgumentException(
                         "reserved Oreslang library import must name a canonical module: "
@@ -575,6 +583,65 @@ public final class LinkedProgramRunner {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
                 collectStdImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            } else {
+                String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectOresCoreImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            }
+        }
+    }
+
+    /**
+     * Collects a reviewed, source-owned atto.alloc module without ambient
+     * lookup. Alloc may depend only on other atto.alloc modules or ores.core
+     * protocols, never on project source, std I/O or host-language islands.
+     */
+    private static void collectAttoAllocImportClosure(
+            String importPath,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
+        String id = CoreLibrarySources.attoAllocUnitId(importPath);
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+
+        String source = CoreLibrarySources.attoAllocSource(importPath);
+        budget.admit(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id, CoreLibrarySources.attoAllocFileName(importPath), source);
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "atto.alloc modules must contain only Atto source: " + importPath);
+        }
+
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException(
+                        "atto.alloc cannot import Java host classes: "
+                                + importPath + " -> " + imported.path());
+            }
+            if (CoreLibrarySources.isAttoAllocImport(imported.path())) {
+                CoreLibrarySources.attoAllocSource(imported.path());
+            } else if (CoreLibrarySources.isOresCoreImport(imported.path())) {
+                CoreLibrarySources.oresCoreSource(imported.path());
+            } else {
+                throw new IllegalArgumentException(
+                        "atto.alloc cannot import std, project or ambient modules: "
+                                + importPath + " -> " + imported.path());
+            }
+        }
+
+        units.put(id, mixed);
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (CoreLibrarySources.isAttoAllocImport(imported.path())) {
+                String targetId = CoreLibrarySources.attoAllocUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAttoAllocImportClosure(imported.path(), units, importResolutions,
                         budget, depth + 1);
             } else {
                 String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());

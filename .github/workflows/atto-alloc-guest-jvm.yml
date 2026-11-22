@@ -1,0 +1,56 @@
+name: Atto alloc source real linked guest JVM exact-head
+on:
+  pull_request:
+    paths:
+      - 'stdlib/alloc/**'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
+      - 'src/test/java/dev/oreslang/AttoAllocGuestTest.java'
+      - '.github/workflows/atto-alloc-guest-jvm.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linked-atto-alloc-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Exact PR head checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Assert immutable source HEAD
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code
+          echo "ATTO_ALLOC_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_ALLOC_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Setup GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run source-linked guest execution and negative import tests
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AttoAllocGuestTest -DfailIfNoTests=true test
+          report=target/surefire-reports/TEST-dev.oreslang.AttoAllocGuestTest.xml
+          test -s "$report"
+          grep -F 'name="importedAttoAllocSelfTestsExecuteAsGuestPrograms"' "$report"
+          grep -F 'name="rejectTraversalUnlistedSuffixesAndNamespaceShadowing"' "$report"
+          grep -F 'name="missingOrForgedAllocExportsRejectAtLink"' "$report"
+          grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
+          echo 'ATTO_ALLOC_LINKED_GUEST_TEST=EXECUTED'
+      - name: Evidence classification
+        if: always()
+        run: |
+          echo 'JVM linked Atto guest only; this is not physical allocation, atomic Arc, AOT or cross-backend evidence.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Queued/zero-step runs are NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"
