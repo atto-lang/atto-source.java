@@ -39,9 +39,14 @@ public final class ActorProtocolTypestateV1 {
     public record NominalMessage(Mode mode, String responseType) { }
 
     /** A typed, purely static send obligation. It conveys NO runtime authority. */
-    public record CheckedSend(Mode mode, String responseType,
+    public record CheckedSend(Mode mode, String payloadType, String responseType,
                               List<String> nextStates, boolean consumesAuthority) {
         public CheckedSend { nextStates = List.copyOf(nextStates); }
+        /** Older source-only callers did not carry the payload identity. */
+        public CheckedSend(Mode mode, String responseType,
+                           List<String> nextStates, boolean consumesAuthority) {
+            this(mode, null, responseType, nextStates, consumesAuthority);
+        }
     }
 
     public record Catalog(List<Protocol> protocols, List<ActorBinding> actorBindings) {
@@ -76,6 +81,8 @@ public final class ActorProtocolTypestateV1 {
             LinkedHashSet<String> next = new LinkedHashSet<>();
             Mode mode = null;
             String response = null;
+            String payload = null;
+            boolean first = true;
             for (String state : possibleStates) {
                 if (!protocol.states().contains(state))
                     throw error("E_PROTOCOL_UNPROVEN_STATE", "unknown state " + state);
@@ -92,13 +99,18 @@ public final class ActorProtocolTypestateV1 {
                     throw error("E_PROTOCOL_RESPONSE_MODE", "mixed unary/stream response cardinality");
                 if (response != null && !response.equals(selected.responseType()))
                     throw error("E_PROTOCOL_RESPONSE_TYPE", "mixed reply/item types across possible states");
+                if (!first && !java.util.Objects.equals(payload, selected.parameterType()))
+                    throw error("E_PROTOCOL_MESSAGE_PAYLOAD",
+                            "mixed request payload types across possible states");
+                first = false;
                 mode = selected.mode();
                 response = selected.responseType();
+                payload = selected.parameterType();
                 next.add(selected.to());
             }
             List<String> sorted = new ArrayList<>(next);
             Collections.sort(sorted);
-            return new CheckedSend(mode, response, sorted, true);
+            return new CheckedSend(mode, payload, response, sorted, true);
         }
     }
 
