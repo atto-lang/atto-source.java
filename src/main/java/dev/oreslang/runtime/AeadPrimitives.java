@@ -37,9 +37,15 @@ public final class AeadPrimitives {
         checkAlgorithm(algorithm);
         byte[] key = new byte[KEY_BYTES];
         byte[] prefix = new byte[4];
-        RANDOM.nextBytes(key);
-        RANDOM.nextBytes(prefix);
-        return new Key(algorithm, key, prefix);
+        try {
+            RANDOM.nextBytes(key);
+            RANDOM.nextBytes(prefix);
+            return new Key(algorithm, key, prefix);
+        } catch (RuntimeException | Error failure) {
+            Arrays.fill(key, (byte) 0);
+            Arrays.fill(prefix, (byte) 0);
+            throw failure;
+        }
     }
 
     private static void checkAlgorithm(int algorithm) {
@@ -127,14 +133,20 @@ public final class AeadPrimitives {
             checkLength(plaintext, 0, MAX_MESSAGE_BYTES, "plaintext");
             byte[] nonce = reserveNonce();
             byte[] input = plaintext.clone();
+            byte[] additionalData = aad.clone();
+            byte[] encrypted = null;
             try {
                 Cipher c = cipher(Cipher.ENCRYPT_MODE, algorithm, material, nonce);
-                c.updateAAD(aad.clone());
-                return new Sealed(nonce, c.doFinal(input));
+                c.updateAAD(additionalData);
+                encrypted = c.doFinal(input);
+                return new Sealed(nonce, encrypted);
             } catch (GeneralSecurityException e) {
                 throw new IllegalStateException("AEAD encryption unavailable", e);
             } finally {
                 Arrays.fill(input, (byte) 0);
+                Arrays.fill(additionalData, (byte) 0);
+                Arrays.fill(nonce, (byte) 0);
+                if (encrypted != null) Arrays.fill(encrypted, (byte) 0);
             }
         }
 
@@ -146,9 +158,11 @@ public final class AeadPrimitives {
             checkLength(ciphertext, TAG_BYTES, MAX_MESSAGE_BYTES + TAG_BYTES,
                     "ciphertext and tag");
             byte[] input = ciphertext.clone();
+            byte[] nonceSnapshot = nonce.clone();
+            byte[] additionalData = aad.clone();
             try {
-                Cipher c = cipher(Cipher.DECRYPT_MODE, algorithm, material, nonce.clone());
-                c.updateAAD(aad.clone());
+                Cipher c = cipher(Cipher.DECRYPT_MODE, algorithm, material, nonceSnapshot);
+                c.updateAAD(additionalData);
                 return c.doFinal(input);
             } catch (AEADBadTagException e) {
                 throw new AuthenticationException();
@@ -156,6 +170,8 @@ public final class AeadPrimitives {
                 throw new IllegalStateException("AEAD decryption unavailable", e);
             } finally {
                 Arrays.fill(input, (byte) 0);
+                Arrays.fill(nonceSnapshot, (byte) 0);
+                Arrays.fill(additionalData, (byte) 0);
             }
         }
 
