@@ -1,6 +1,6 @@
 // expect-exit: 42
 // Compiled guest contract fixture; this source never spawns an OS process.
-import module Process from "ores.std/process";
+import module Process from "std/process";
 pub fnc main(): int {
   if Process.valid_stdio(Process.command("/usr/bin/echo")) == false then return 1; fi
   if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 2, 2, 2)) == false then return 2; fi
