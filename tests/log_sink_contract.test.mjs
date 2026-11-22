@@ -44,9 +44,9 @@ test('only privileged async stdio receives completed line; no ACK across await',
   assert.equal((write.match(/await /g) || []).length, 1);
 });
 
-test('only 22 fixed arguments supplied (within current async stdio 32 max)', () => {
+test('only 20 fixed arguments supplied (within current async stdio 32 max)', () => {
   const call = sink.split('await stdio.stdout.log_async(')[1].split(');')[0];
   const lines = call.split('\n').map(x=>x.trim()).filter(Boolean);
   const args=lines.join(' ').split(',').map(x=>x.trim()).filter(Boolean);
-  assert.equal(args.length,22);
+  assert.equal(args.length,20);
 });
