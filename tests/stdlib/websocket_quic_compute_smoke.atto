@@ -55,5 +55,6 @@ pub routine main(): int {
   if quic_decode_varint_8(191, 255, 255, 255, 255, 255, 255, 255) != -1 then return 35; fi
   if quic_varint_octet(4611686018427387903, 8, 0) != 255 then return 36; fi
   if quic_varint_octet(16384, 2, 0) != -1 then return 37; fi
+  stdio.stdout.write("ATTO_STD_PROTOCOL_37_OK");
   return 0;
 }
