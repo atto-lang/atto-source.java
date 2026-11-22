@@ -1,5 +1,7 @@
 // Proposed compiler guest fixture for Java's crypto AEAD intrinsic.
 // Hash/HMAC integration and actual std.crypto path registration remain separate.
+import * as crypto from "std.crypto";
+
 pub routine main(): void {
   val key = crypto.aead_new_key(1);
   val plaintext = [65, 66, 67];
