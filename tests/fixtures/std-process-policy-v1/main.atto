@@ -1,6 +1,6 @@
 // expect-exit: 42
 // Compiled guest regression for pure admission; never spawns.
-import module ProcessPolicy from "ores.std/process_policy";
+import module ProcessPolicy from "atto.std/process_policy";
 pub fnc main(): int {
   if ProcessPolicy.stdio_shape_admissible(2, 2, 2) == false then return 1; fi
   if ProcessPolicy.stdio_shape_admissible(3, 2, 2) then return 2; fi
