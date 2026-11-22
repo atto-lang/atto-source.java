@@ -1,39 +1,63 @@
-# Atto core/convert, core/fmt and std/collections — v1
+# Core/alloc/std memory and borrow contract (v2 candidate)
 
-The backend owns these source files. This change does not move code to
-atto-common-source and does not claim a compiler-independent implementation.
+These compiler-owned `.atto` files are a staged implementation, not an
+attestation of guest execution, AOT or nine-backend parity.
 
-* `core/convert`: strict ASCII decimal -> signed-i64 Result; bool and u8
-  checked conversions; ASCII digit decoding. Signed minimum and maximum are
-  accepted, out-of-range inputs rejected. No implicit casts.
-* `core/fmt`: canonical signed-i64 decimal, bool text and checked two-digit
-  lowercase hex byte. No locale, host reflection, or format-string evaluator.
-* `std/collections`: borrowed int-array lookup, sorted lower bound, stable
-  uniqueness (4096-item CPU cap), and stable sorted merge (65536-item cap).
-  These allocate **owned** result arrays, never mutate borrowed input.
-  No HashMap, allocation primitives, generic Clone, or trait dispatch claimed.
+## Allocation boundary
 
-## Conformance cases required before promotion
+- `stdlib/core/convert.atto`: purely scalar conversions and negative decimal
+  step; `Result<T,int>` uses integer error codes 1..6 and must be represented
+  by the compiler without heap allocation.
+- `stdlib/core/fmt.atto`: signed-i64 digit count, ASCII digit-by-position,
+  boolean ASCII scalar access and hexadecimal nibble encoding. It neither
+  formats strings nor touches an allocator. Return code 7 denotes an invalid
+  index; code 4 denotes an invalid nibble.
+- `stdlib/alloc/text_convert.atto`: `String.codepoints()` allocations,
+  strict signed decimal and boolean text parsing with string errors.
+- `stdlib/alloc/text_fmt.atto`: string-producing formatting and hex bytes.
+- `stdlib/std/collections.atto`: borrowed array queries and new owned array
+  results, with bounded CPU cost and element count; it never creates mutable
+  aliases to caller storage.
 
-- convert: 0, -0, 9223372036854775807, -9223372036854775808;
-  overflow 9223372036854775808 and -9223372036854775809;
-  empty, lone minus, plus sign, whitespace, non-ASCII numerals;
-  bool only lowercase true/false; byte -1/0/255/256.
-- fmt: i64 extremes, zero, +/-1, powers of 10, bool, hex 0/15/16/255;
-  negative and 256 rejected.
-- collections: empty, duplicates, already sorted, reverse sorted,
-  unsorted lower bound rejected; stable unique; merge equal cross-input
-  elements; budget 0, 65536, 65537; disallow over-budget before allocation.
+String literals in alloc may be interned; core must not depend on allocation.
+The compiler/runtime must demonstrate that scalar `Result` representation is
+non-allocating; otherwise core Result APIs are NOT core/noalloc compliant.
 
-## Integration and safety gates
+## Compiler-enforced borrow obligations (not library heuristics)
 
-This is a **staged surface**, not a claim of passing compiled-guest
-conformance or general-purpose collections. `String.codepoints()`, the
-`Array<int>` runtime primitive, `Result`, generic borrow syntax,
-`while ... done` and module-path import must be compiled on each backend.
-The full mutable collection families in existing stacked Java PR #522
-remain separate and must be reconciled before merging overlapping names.
+1. `borrow Array<int>` is a shared, read-only loan. Mutation or `rt take`
+   of this object inside the function is a semantic error.
+2. An immutable borrowed input may be used by simultaneous reads but must
+   never gain Send/Sync merely through a wrapper or `Result`.
+3. A returned `Array<int>` in `Ok(output)` must transfer owned authority
+   exactly once. The caller must not observe a borrowed alias or double drop.
+4. A borrow may not escape through a `Result`, a closure, a task, a message,
+   an iterator or a later suspension; enforce during HIR/MIR lowering.
+5. Allocation failure during `unique_int` or `merge_sorted_int` must unwind
+   owned temporaries and leave borrowed inputs unchanged.
+6. Non-actor code uses the same borrow rules as actor code. Actor state and
+   critical-read/write guards retain additional sealed-state restrictions.
+7. Compiler rejection for unsupported `.atto` syntax is NOT proof of borrow
+   checking. For negative fixtures, require a semantic ownership diagnostic.
+8. Signed division must truncate toward zero, or the core ASCII digit
+   positional implementation must be backend-adapted before claiming parity.
 
-No runtime privilege, FFI, OS, scheduler or arbitrary host collection use.
-Actor sendability, borrow loan lifetimes, failure-safe allocation, and AOT
-packaging must be tested on exact branch heads before claiming parity.
+## Compatibility and dependency audit
+
+Existing Java #522 owns generic `std/collections` implementation on stacked
+legacy `.ores` source; do not merge a collision or claim its functionality.
+These integer-array algorithms are a narrower non-generic surface.
+Cross-backend APIs can match while implementations remain independent.
+No unsupported host-language fallback, no source export without the reviewed
+private-carrier gate, no `steps=null` evidence counted as executed CI.
+
+## Required execution
+
+- Parse/import/typecheck each of five modules on exact branch head.
+- Run core i64 extreme vectors, format ASCII position and negative indices,
+  alloc string round-trips, collection budget, duplicates and stability.
+- Run positive borrowed read/owned result cases and negative mutation, escape,
+  post-take and suspend cases with *semantic*, not parser, diagnostics.
+- Verify no core heap use in JVM, GraalVM AOT and LLVM native.
+- Verify full compilation, runtime and parity for each other backend before
+  elevating its PR from Draft.
