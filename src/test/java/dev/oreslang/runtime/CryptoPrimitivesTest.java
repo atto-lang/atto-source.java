@@ -29,6 +29,27 @@ final class CryptoPrimitivesTest {
     }
 
     @Test
+    void pbkdf2MultipleBlocksAndTruncationMatchIndependentVectors() {
+        byte[] password = "password".getBytes(StandardCharsets.UTF_8);
+        byte[] salt = "salt".getBytes(StandardCharsets.UTF_8);
+        assertEquals(
+                "120fb6cffcf8b32c43e7225256c4f837"
+                        + "a86548c92ccc35480805987cb70be17b"
+                        + "4dbf3a2f3dad3377264bb7b8e8330d4e"
+                        + "fc7451418617dabef683735361cdc18c",
+                HexFormat.of().formatHex(
+                        CryptoPrimitives.pbkdf2HmacSha256(password, salt, 1, 64)));
+        assertEquals(
+                "ae4d0c95af6b46d32d0adff928f06dd0"
+                        + "2a303f8ef3c251dfd6e2d85a95474c"
+                        + "43830651afcb5c862f0b249bd031f7a6",
+                HexFormat.of().formatHex(
+                        CryptoPrimitives.pbkdf2HmacSha256(password, salt, 2, 47)));
+        assertEquals("12", HexFormat.of().formatHex(
+                CryptoPrimitives.pbkdf2HmacSha256(password, salt, 1, 1)));
+    }
+
+    @Test
     void base64IsCanonicalAndSecureRandomIsBounded() {
         byte[] bytes = new byte[] {0, 1, 2, (byte) 0xff};
         String encoded = CryptoPrimitives.base64Encode(bytes);
