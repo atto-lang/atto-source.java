@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+actor fnc good(): void { val Channel<int> ch = Channel.new<int>(1); val Box box = new Box(); val borrow Box view = rt borrow box; nb select { case readch ch: val n { stdio.println(n); } } stdio.println(view.value); return; }
