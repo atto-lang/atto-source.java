@@ -75,8 +75,8 @@ final class PersistentScalarActorV1Test {
         var plan = compile();
         try (var store = SqliteDurableActorStore.open(temp.resolve("inbox.db"))) {
             assertTrue(store.bootstrap(ID, plan.initial_snapshot()));
-            assertTrue(store.enqueue(ID, new DurableActorStore.Inbound("first", plan.encode(4))));
-            assertTrue(store.enqueue(ID, new DurableActorStore.Inbound("second", plan.encode(3))));
+            assertTrue(store.enqueue(ID, new DurableActorStore.Inbound("first", plan.encode_increment_message(4))));
+            assertTrue(store.enqueue(ID, new DurableActorStore.Inbound("second", plan.encode_increment_message(3))));
             try (var actor = PersistentScalarActorV1.open(plan, store, ID)) {
                 assertEquals(7L, actor.get_count());
                 assertEquals(2L, actor.state_version());
