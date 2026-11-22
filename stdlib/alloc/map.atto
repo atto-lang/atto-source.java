@@ -4,7 +4,7 @@
 // fixed: allocations finish in the constructor, so updates do not allocate.
 // Generic K/V + user Hash/Eq will follow compiler ownership/trait admission.
 define module map as
-  pub define class Map as
+  pub define class IntMap as
     let mut Array<int> keys = new Array<int>();
     let mut Array<int> values = new Array<int>();
     // 0: never used; 1: occupied; 2: tombstone.
@@ -158,7 +158,7 @@ define module map as
     }
   end
 
-  pub fnc new_map(int capacity): Map {
-    return new Map(capacity);
+  pub fnc new_map(int capacity): IntMap {
+    return new IntMap(capacity);
   }
 end
