@@ -78,3 +78,33 @@ parsing/import linking/guest execution, compiler-generated drop glue, atomic
 race tests, ASan/UBSan, and AOT are **NOT_EXECUTED** on this increment.
 This source-only implementation must not be represented as safe release-grade
 physical allocation, generic Set<T>, or shared Arc<T>.
+
+
+## Java host atomic control integration (2026-11-22)
+
+The package-private `src/main/java/dev/oreslang/runtime/AtomicSharedCellV1.java`
+implements the **host runtime** strong/weak control-block transitions with
+`AtomicInteger` CAS, implicit weak sentinel, destructor attempted exactly
+once by the final strong owner, and domain/generation checks before upgrade.
+`Strong<T>` and `Weak<T>` are distinct closeable host handles. A weak
+handle can no longer upgrade after strong reaches zero; final weak release
+marks the control logically retired. Mutable payload access is not exposed.
+An exception thrown by a destructor does not skip detaching the payload or
+retiring the implicit weak sentinel, but the throwing destructor cannot be
+claimed to have completed successfully.
+
+Executed locally under **OpenJDK 21** using
+`bash scripts/run-atomic-arc-host-v1.sh`:
+`ATTO_ARC_ATOMIC_JAVA_HOST_PASS`. The probe covers last-strong destruction,
+weak-after-drop, wrong domain/generation, double-close, destructor throw,
+and 100 rounds of eight concurrent weak-upgrade workers. A JUnit entry
+`AtomicSharedCellV1Test` wraps the same real host probe; its JUnit
+execution is **NOT EXECUTED** in this local run. A focused exact-branch CI
+workflow is committed but requires a real runner with nonempty job steps.
+
+**Not implemented:** guest-visible `Arc<T>`/`Weak<T>` lowering, deep freeze,
+compiled guest ownership/drop checks, Native Image AOT evidence, deterministic
+physical reclamation of Java host control objects. Host Java GC may reclaim
+control objects, and this class is not proof of zero-GC operation. The
+`.atto` `ArcLedger` remains a separate serial policy model; user guest
+source cannot directly call `AtomicSharedCellV1`.
