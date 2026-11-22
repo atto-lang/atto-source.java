@@ -46,7 +46,7 @@ jobs:
       - name: Execute checked scalar and IEEE ordering unit + real guest JUnit
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=NumericValueOrderingTest,NumericValueEqualityExactTest,NumericGuestOrderingV1Test,TreeShakerNumericEqualityTest,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest \
+            -Dtest=NumericValueOrderingTest,NumericExactIndependentOracleTest,NumericValueEqualityExactTest,NumericGuestOrderingV1Test,TreeShakerNumericEqualityTest,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest \
             test
-      - name: Require all eight numerical JVM guest suites to have actually run
+      - name: Require all nine numerical JVM and guest suites to have actually run
         run: python3 scripts/verify_numeric_junit_receipts.py target/surefire-reports
