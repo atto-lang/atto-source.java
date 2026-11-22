@@ -1,0 +1,29 @@
+// Real Atto guest candidate: std/path, std/sync and std/telemetry.
+// A source fixture is not a CI PASS; run with a linked compiler and exact SHA.
+import module path from "std/path";
+import module sync from "std/sync";
+import module Telemetry from "std/telemetry";
+
+pub routine main(): void {
+  stdio.println(path.normalized_depth("a/./b/../c", false));
+  stdio.println(path.normalized_depth("../escape", false));
+  stdio.println(path.normalized_depth("a//b", false));
+  stdio.println(path.normalized_depth("CON.txt", true));
+  stdio.println(path.normalized_depth("C:/a", true));
+  stdio.println(path.is_canonical_relative("a/b", false));
+  stdio.println(path.is_canonical_relative("a/../b", false));
+  stdio.println(path.is_portable_relative("safe_file/sub.dir"));
+  stdio.println(sync.mutex_acquire_admissible(false, false, 0, 8));
+  stdio.println(sync.mutex_acquire_admissible(true, false, 0, 8));
+  stdio.println(sync.rw_read_admissible(2, false, 0, 8));
+  stdio.println(sync.rw_read_admissible(2, false, 1, 8));
+  stdio.println(sync.semaphore_acquire_admissible(3, 2, 5, false));
+  stdio.println(sync.semaphore_release_admissible(4, 2, 5, false));
+  stdio.println(sync.barrier_is_last(3, 4, false));
+  stdio.println(sync.generation_successor_admissible(2147483647, 0));
+  stdio.println(Telemetry.traceparent_v00_header_valid("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"));
+  stdio.println(Telemetry.traceparent_v00_header_valid("00-0123456789ABCDEF0123456789abcdef-0123456789abcdef-01"));
+  stdio.println(Telemetry.traceparent_v00_header_valid("00-00000000000000000000000000000000-0123456789abcdef-01"));
+  stdio.println(Telemetry.traceparent_v00_header_valid("00-0123456789abcdef0123456789abcdef-0000000000000000-01"));
+  return;
+}
