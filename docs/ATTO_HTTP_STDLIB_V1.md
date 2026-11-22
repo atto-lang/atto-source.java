@@ -80,8 +80,13 @@ explicit disambiguation alias by future compiler import work.
 * No reflection or dynamic dependency discovery is required, so the pure
   `.atto` policy layer is suitable for AOT once actual guest compilation passes.
 
-The guest parity fixture now has **66** executable expressions
-(18 existing plus 48 new), including malformed status,
+The guest parity fixture now has **71** executable expressions
+(18 existing plus 53 new), including malformed status,
 Content-Length overflow, CRLF injection and route-normalization cases.
 As of this edit these tests are **NOT_EXECUTED**: the source-org exact-head
 workflow has failed with zero admitted steps. Do not interpret this as a pass.
+
+The origin-target validator now rejects requests above 8192 ASCII bytes,
+raw backslashes, malformed/truncated percent encodings, and fragments. Valid
+percent-encoded octets remain permitted in generic HTTP targets but are not
+routable by the conservative route matcher until canonicalized and authorized.
