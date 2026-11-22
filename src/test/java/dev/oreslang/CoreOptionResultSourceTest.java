@@ -95,6 +95,25 @@ final class CoreOptionResultSourceTest {
     }
 
     @Test
+    void linkedBorrowedCoreQueriesMustNotConsumeOwner() throws Exception {
+        Path entry = Path.of("tests/core_option_result/borrowed_queries.atto")
+                .toAbsolutePath();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                stdout,
+                stderr);
+        assertEquals("42", stdout.toString(StandardCharsets.UTF_8)
+                .replace("\r\n", "\n").strip(),
+                "borrowed core query must not move the original Option owner");
+    }
+
+    @Test
     void resultAndOptionMustRemainNominalDisjointVariants() {
         String wrongOption = """
                 fnc invalid(): Option<int> {
