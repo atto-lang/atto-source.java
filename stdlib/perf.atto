@@ -1,0 +1,121 @@
+// AttoLang-owned perf hooks. No host Java interop, runtime source compiler,
+// stdout, network, shared mutable buffer or background GC/tracing thread.
+// An AOT compiler may erase calls whose enabled argument is statically false.
+define module Perf as
+  // Wire kinds: 1=span, 2=counter, 3=gauge, 4=instant.
+  // Probe IDs are fixed by the AOT probe manifest, never runtime strings.
+  pub define class Event as
+    pub val int kind;
+    pub val int trace_id;
+    pub val int span_id;
+    pub val int parent_span_id;
+    pub val int probe_id;
+    pub val int elapsed_ns;
+    pub val int value;
+  end
+
+  // Clock read is strictly behind the guard; disabled path returns sentinel 0.
+  pub fnc begin_ns(bool enabled) -> int {
+    if !enabled; do
+      return 0;
+    fi
+    return process.monotonic_ns();
+  }
+
+  pub fnc duration_ns(int started_ns) -> int {
+    if started_ns <= 0; do
+      return 0;
+    fi
+    val int finished = process.monotonic_ns();
+    if finished < started_ns; do
+      return 0;
+    fi
+    return finished - started_ns;
+  }
+
+  // Sampling is deterministic for a caller-provided non-secret correlation key.
+  // Do not select based on payloads or actor-private identifiers.
+  pub fnc should_sample(int sample_key, int every_n) -> bool {
+    if sample_key < 0 || every_n < 1 || every_n > 65536; do
+      return false;
+    fi
+    return (sample_key % every_n) == 0;
+  }
+
+  // Actor/supervisor-owned bounded buffer; NEVER share a mutable instance
+  // across actors. Single owner serializes all calls. Export elsewhere.
+  pub define class Buffer as
+    let mut Array<Event> items = new Array<Event>();
+    let int capacity;
+    let mut int dropped = 0;
+
+    pub constructor(int capacity) {
+      if capacity < 1 || capacity > 65536; do
+        rt fail("Perf.Buffer: capacity must be 1..65536");
+      fi
+      self.capacity = capacity;
+    }
+
+    pub record_event(mut self)(Event event) -> bool {
+      if event.kind < 1 || event.kind > 4 || event.probe_id <= 0
+        || event.trace_id < 0 || event.span_id < 0
+        || event.parent_span_id < 0 || event.elapsed_ns < 0; do
+        return false;
+      fi
+      if self.items.size >= self.capacity; do
+        if self.dropped < 2147483647; do
+          self.dropped = self.dropped + 1;
+        fi
+        return false;
+      fi
+      self.items.add(event);
+      return true;
+    }
+
+    // NO clock or Event allocation when start_ns was disabled.
+    // Caller emits exactly one exit hook on normal/throw/raise/cancel paths.
+    pub record_span(mut self)(int trace_id, int span_id, int parent_span_id,
+                               int probe_id, int started_ns, int outcome) -> bool {
+      if started_ns <= 0; do
+        return false;
+      fi
+      val int finished = process.monotonic_ns();
+      let int elapsed = 0;
+      if finished >= started_ns; do
+        elapsed = finished - started_ns;
+      fi
+      return self.record_event(new Event(1, trace_id, span_id, parent_span_id,
+                                         probe_id, elapsed, outcome));
+    }
+
+    pub record_counter(mut self)(bool enabled, int trace_id, int probe_id, int delta) -> bool {
+      if !enabled; do
+        return false;
+      fi
+      return self.record_event(new Event(2, trace_id, 0, 0, probe_id, 0, delta));
+    }
+
+    pub record_gauge(mut self)(bool enabled, int trace_id, int probe_id, int amount) -> bool {
+      if !enabled; do
+        return false;
+      fi
+      return self.record_event(new Event(3, trace_id, 0, 0, probe_id, 0, amount));
+    }
+
+    pub count() -> int {
+      return self.items.size;
+    }
+
+    pub dropped_count() -> int {
+      return self.dropped;
+    }
+
+    pub at(int index) -> Event {
+      return self.items.get(index);
+    }
+  end
+
+  pub fnc buffer(int capacity) -> Buffer {
+    return new Buffer(capacity);
+  }
+end
