@@ -6,5 +6,5 @@
 # Proposed narrow private carrier for v3 exact-tree tests; requires exact independent review before merge.
 # Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
 
-# Proposed Java #2048 carrier; effective only after the required independent review.
-beamscale/bmscl-compiler 1383937120
+# Unreviewed destination proposal from PR #2137 was deactivated.
+# See Git history and PR #2137 for immutable candidate details; no live grant.

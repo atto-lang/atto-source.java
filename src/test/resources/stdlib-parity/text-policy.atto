@@ -1,0 +1,28 @@
+// Compiler-backed native text validation against the legacy Java policy.
+import module text from "ores.std/text";
+pub routine main(): void {
+  stdio.println(text.is_identifier("abc_9") == "abc_9".is_identifier());
+  stdio.println(text.is_identifier("_") == "_".is_identifier());
+  stdio.println(text.is_identifier("9abc") == "9abc".is_identifier());
+  stdio.println(text.is_identifier("a-b") == "a-b".is_identifier());
+  stdio.println(text.is_identifier("é") == "é".is_identifier());
+  stdio.println(text.is_identifier("😀") == "😀".is_identifier());
+  stdio.println(text.is_identifier("") == "".is_identifier());
+  stdio.println(text.is_identifier("ab\\u0000cd") == "ab\\u0000cd".is_identifier());
+  stdio.println(text.is_route_segment("api-22") == "api-22".is_route_segment());
+  stdio.println(text.is_route_segment("[item_id]") == "[item_id]".is_route_segment());
+  stdio.println(text.is_route_segment("[9bad]") == "[9bad]".is_route_segment());
+  stdio.println(text.is_route_segment("[a-b]") == "[a-b]".is_route_segment());
+  stdio.println(text.is_route_segment("a/b") == "a/b".is_route_segment());
+  stdio.println(text.is_route_segment("😀") == "😀".is_route_segment());
+  stdio.println(text.is_route_segment("") == "".is_route_segment());
+  stdio.println(text.is_identifier("_id4"));
+  stdio.println(text.is_route_segment("[id_4]"));
+  stdio.println(text.is_identifier("É"));
+  val points = "A😀中".codepoints();
+  stdio.println(points.size);
+  stdio.println(points.get(0));
+  stdio.println(points.get(1));
+  stdio.println(points.get(2));
+  return;
+}

@@ -1,0 +1,42 @@
+# Non-authorizing, source-free diagnostics. This workflow runs untrusted PR-head
+# test input only with a read-only token; never use pull_request_target here.
+name: Source-free strict GitHub evidence parser diagnostics
+on:
+  pull_request:
+    paths:
+      - 'scripts/strict_github_evidence_20261106.mjs'
+      - 'scripts/merge_readiness_probe_20261106.mjs'
+      - 'tests/strict_github_evidence_20261106.test.mjs'
+      - 'tests/merge_readiness_probe_20261106.test.mjs'
+      - '.github/workflows/source-free-strict-evidence-parser.yml'
+  push:
+    paths:
+      - 'scripts/strict_github_evidence_20261106.mjs'
+      - 'scripts/merge_readiness_probe_20261106.mjs'
+      - 'tests/strict_github_evidence_20261106.test.mjs'
+      - 'tests/merge_readiness_probe_20261106.test.mjs'
+      - '.github/workflows/source-free-strict-evidence-parser.yml'
+permissions:
+  contents: read
+jobs:
+  strict-parser-negative-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - name: Require exact source head before diagnostic
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Run strict JSON parsing and read-only merge diagnostics
+        run: |
+          set -euo pipefail
+          node --test tests/strict_github_evidence_20261106.test.mjs tests/merge_readiness_probe_20261106.test.mjs

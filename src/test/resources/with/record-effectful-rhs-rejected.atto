@@ -1,0 +1,6 @@
+fnc next_x(int arg): int { return arg; }
+pub routine main(): void {
+    const point = record{x: 1};
+    const next = point with {x => next_x(3)};
+    return;
+}

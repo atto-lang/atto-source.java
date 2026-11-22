@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 /** Shared invariants for source imports and capability-gated Java host imports. */
 public final class ImportRules {
     public static final String JAVA_PREFIX = "java:";
+    public static final String PACKAGE_PREFIX = "pkg:";
     private static final Pattern JAVA_BINARY_NAME =
             Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
 
@@ -72,6 +73,13 @@ public final class ImportRules {
         if (imported == null) throw new IllegalArgumentException("import declaration cannot be null");
         if (imported.path() == null || imported.path().isBlank()) {
             throw new IllegalArgumentException("import path cannot be empty");
+        }
+        // Import grammar admission does not authorize linking. A synthetic
+        // package identity must never fall through to a relative-file
+        // resolver or host interop lookup.
+        if (imported.path().startsWith(PACKAGE_PREFIX)) {
+            throw new IllegalArgumentException(
+                    "package namespace imports require a validated package-export graph linker");
         }
         if (imported.path().length() > 4096 || imported.path().chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("import path contains invalid control characters or is too long");

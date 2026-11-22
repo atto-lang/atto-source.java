@@ -47,7 +47,7 @@ final class TenantIsolateManagerTest {
     @Test
     void actualSourceActorsRunInIndependentTenantContexts() throws Exception {
         try (TenantIsolateManager manager = new TenantIsolateManager(3, 4096)) {
-            var a = manager.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
+            TenantIsolateManager.TenantHandle a = manager.open_trusted_tenant_vm("tenant-a", IsolatePolicy.developer());
             var b = manager.open_trusted_tenant("tenant-b", IsolatePolicy.developer());
             assertEquals(2, manager.tenant_count());
             Source guest = source(TWO_ACTORS, "tenant-counters.ores");
@@ -112,6 +112,22 @@ final class TenantIsolateManagerTest {
                         () -> manager.open_trusted_tenant(blocked, IsolatePolicy.developer()),
                         "tenant isolation v1 must reject " + blocked);
             }
+        }
+    }
+
+    @Test
+    void confidentialComputeCannotBeDowngradedToTrustedOrUntrustedContext() {
+        try (TenantIsolateManager manager = new TenantIsolateManager(2, 256)) {
+            for (IsolatePolicy policy : new IsolatePolicy[] {
+                    IsolatePolicy.developer(), IsolatePolicy.untrustedActor() }) {
+                SecurityException denied = assertThrows(SecurityException.class,
+                        () -> manager.open_confidential_tenant_vm("confidential", policy));
+                assertTrue(denied.getMessage().contains("CONFIDENTIAL_COMPUTE_UNAVAILABLE"));
+                assertEquals(0, manager.tenant_count());
+            }
+            // Existing explicitly trusted admission remains unchanged.
+            assertNotNull(manager.open_trusted_tenant_vm("trusted", IsolatePolicy.developer()));
+            assertEquals(1, manager.tenant_count());
         }
     }
 

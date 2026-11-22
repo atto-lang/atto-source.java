@@ -589,4 +589,60 @@ final class OresSchedulerTest {
         assertEquals(1, pc.get(),
                 "detached continuation must never resume after producer completion");
     }
+
+    @Test
+    void unresolvedAwaitReleasesSingleCarrierForUnrelatedTaskThenResumes() throws Exception {
+        // Exercise the actual scheduler state machine, not a placement model.
+        // An unresolved Future must free the sole worker before its producer
+        // reports readiness; completion must never execute guest code inline.
+        try (OresScheduler scheduler = new OresScheduler(1, 16)) {
+            OresFuture<Integer> pending = new OresFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicInteger resumes = new AtomicInteger();
+            AtomicReference<Thread> before = new AtomicReference<>();
+            AtomicReference<Thread> after = new AtomicReference<>();
+            AtomicLong initialDispatch = new AtomicLong();
+            OresFuture<Integer> first = scheduler.start(resume -> {
+                int turn = resumes.getAndIncrement();
+                if (turn == 0) {
+                    assertTrue(resume.initial());
+                    before.set(Thread.currentThread());
+                    initialDispatch.set(OresScheduler.currentDispatchId());
+                    suspended.countDown();
+                    return OresScheduler.await(pending);
+                }
+                assertEquals(1, turn, "continuation may resume only once");
+                assertFalse(resume.initial());
+                assertEquals(41, resume.value());
+                assertNull(resume.failure());
+                after.set(Thread.currentThread());
+                assertNotEquals(initialDispatch.get(), OresScheduler.currentDispatchId());
+                return OresScheduler.done(42);
+            });
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            CountDownLatch peerProgress = new CountDownLatch(1);
+            OresFuture<Integer> peer = scheduler.start(resume -> {
+                assertTrue(resume.initial());
+                peerProgress.countDown();
+                return OresScheduler.done(7);
+            });
+            assertTrue(peerProgress.await(5, TimeUnit.SECONDS),
+                    "unresolved await must release the only carrier");
+            assertEquals(7, peer.get(5, TimeUnit.SECONDS));
+            assertFalse(first.isDone(), "unresolved producer must not complete the task");
+            AtomicReference<Thread> publisher = new AtomicReference<>();
+            Thread completionThread = Thread.ofPlatform().start(() -> {
+                publisher.set(Thread.currentThread());
+                pending.completeFromRuntime(41);
+            });
+            completionThread.join();
+            assertEquals(42, first.get(5, TimeUnit.SECONDS));
+            assertEquals(2, resumes.get());
+            assertSame(before.get(), after.get(),
+                    "one-worker scheduler reuses a worker, not necessarily a CPU core");
+            assertNotSame(publisher.get(), after.get(),
+                    "completion publisher must not run the resumed guest turn");
+        }
+    }
+
 }

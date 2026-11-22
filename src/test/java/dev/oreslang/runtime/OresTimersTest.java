@@ -14,6 +14,45 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class OresTimersTest {
+
+    @Test
+    void observerTimeoutDoesNotCancelSharedProducer() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<Integer> observer = timers.timeoutNanos(0, source);
+            java.util.concurrent.ExecutionException expired =
+                    assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> observer.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.TimeoutException.class, expired.getCause());
+            assertFalse(source.isDone());
+            source.completeFromRuntime(17);
+            assertEquals(17, source.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void cancellingTimeoutObserverDetachesWithoutCancellingProducer() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<Integer> observer = timers.timeoutNanos(
+                    TimeUnit.HOURS.toNanos(1), source);
+            assertTrue(observer.cancel(false));
+            assertFalse(source.isDone());
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void alreadyCompletedTimeoutSourceRequiresNoClockRegistration() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            assertEquals(7, timers.timeoutNanos(0, OresFuture.completed(7))
+                    .get(5, TimeUnit.SECONDS));
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+
     @Test
     void timeoutObservesCompletedSourceWithoutArmingTimer() throws Exception {
         try (OresTimers timers = new OresTimers()) {

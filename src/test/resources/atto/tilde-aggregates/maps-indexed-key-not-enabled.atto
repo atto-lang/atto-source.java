@@ -1,0 +1,4 @@
+fnc pending(): void {
+    const flags = ~(key.parts[0] => true);
+    return;
+}
