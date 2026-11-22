@@ -281,13 +281,18 @@ final class RuntimeGarbageCollectorTest {
 
     @Test
     void actorCollectionReportsOnlyItsOwnIndexedDomain() throws Exception {
+        // Both callback bodies await the same two-party barrier. Reserve at
+        // least two physical private-actor carriers rather than depending
+        // on a CPU-quota-derived default that may have only one worker.
         AtomicReference<RuntimeGarbageCollector.CollectionReport> firstReport = new AtomicReference<>();
         AtomicReference<RuntimeGarbageCollector.CollectionReport> secondReport = new AtomicReference<>();
         CountDownLatch registered = new CountDownLatch(2);
         CountDownLatch done = new CountDownLatch(2);
 
         try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
-             ActorRuntime runtime = new ActorRuntime()) {
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(2, 2, 8))) {
             var first = runtime.<String>spawn(() -> (message, context) -> {
                 Object owner = new Object();
                 gc.track(owner, () -> {});

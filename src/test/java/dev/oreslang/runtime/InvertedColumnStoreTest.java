@@ -483,4 +483,125 @@ final class InvertedColumnStoreTest {
         }
     }
 
+
+    @Test
+    void closeScrubsRowCapabilityMetadataEvenWhenColumnLoanRemainsOutstanding() throws Exception {
+        var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
+                                            InvertedColumnStore.Kind.BOOL);
+        var first = store.push(11, true);
+        var second = store.push(22, false);
+        store.reserve(8);
+        store.eraseSwap(first);
+
+        var rowSlotsField = InvertedColumnStore.class.getDeclaredField("rowSlots");
+        var slotRowsField = InvertedColumnStore.class.getDeclaredField("slotRows");
+        var generationsField = InvertedColumnStore.class.getDeclaredField("generations");
+        var liveField = InvertedColumnStore.class.getDeclaredField("live");
+        var reusableField = InvertedColumnStore.class.getDeclaredField("reusable");
+        for (var field : new java.lang.reflect.Field[]{
+                rowSlotsField, slotRowsField, generationsField, liveField, reusableField}) {
+            field.setAccessible(true);
+        }
+        int[] oldRowSlots = (int[]) rowSlotsField.get(store);
+        int[] oldSlotRows = (int[]) slotRowsField.get(store);
+        long[] oldGenerations = (long[]) generationsField.get(store);
+        boolean[] oldLive = (boolean[]) liveField.get(store);
+        int[] oldReusable = (int[]) reusableField.get(store);
+        assertTrue(oldGenerations[second.slot()] != 0);
+        assertTrue(oldLive[second.slot()]);
+
+        var outstanding = store.borrowRead(0);
+        store.close();
+        store.close(); // idempotent teardown
+        assertThrows(IllegalStateException.class, () -> store.get(second, 0));
+        assertThrows(IllegalStateException.class, () -> outstanding.get(0));
+
+        for (int v : oldRowSlots) assertEquals(0, v);
+        for (int v : oldSlotRows) assertEquals(0, v);
+        for (long v : oldGenerations) assertEquals(0L, v);
+        for (boolean v : oldLive) assertFalse(v);
+        for (int v : oldReusable) assertEquals(0, v);
+        assertEquals(0, ((int[]) rowSlotsField.get(store)).length);
+        assertEquals(0, ((int[]) slotRowsField.get(store)).length);
+        assertEquals(0, ((long[]) generationsField.get(store)).length);
+        assertEquals(0, ((boolean[]) liveField.get(store)).length);
+        assertEquals(0, ((int[]) reusableField.get(store)).length);
+        // Loan retirement after owner teardown must not underflow accounting.
+        outstanding.close();
+        outstanding.close();
+    }
+
+    @Test
+    void guardedDenseAccessUsesSameLockForIdentityEpochBoundsAndFieldLoans() {
+        var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
+                                            InvertedColumnStore.Kind.BOOL);
+        try (store;
+             var other = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
+                                                  InvertedColumnStore.Kind.BOOL)) {
+            var first = store.push(42, true);
+            var initial = store.captureLayoutGuard();
+            assertEquals(42, store.readIndexGuarded(initial, 0, 0));
+            store.writeIndexGuarded(initial, 0, 0, 43);
+            assertEquals(43, store.get(first, 0));
+
+            other.push(7, false);
+            var foreign = other.captureLayoutGuard();
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(foreign, 0, 0));
+            assertThrows(IllegalStateException.class,
+                    () -> store.writeIndexGuarded(foreign, 0, 0, 999));
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(null, 0, 0));
+
+            try (var read = store.borrowRead(0)) {
+                assertEquals(43, store.readIndexGuarded(initial, 0, 0));
+                assertThrows(IllegalStateException.class,
+                        () -> store.writeIndexGuarded(initial, 0, 0, 999));
+            }
+            try (var write = store.borrowWrite(1)) {
+                assertThrows(IllegalStateException.class,
+                        () -> store.readIndexGuarded(initial, 0, 1));
+                assertThrows(IllegalStateException.class,
+                        () -> store.writeIndexGuarded(initial, 0, 1, false));
+            }
+            assertEquals(43, store.get(first, 0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> store.readIndexGuarded(initial, -1, 0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> store.writeIndexGuarded(initial, 1, 0, 1));
+
+            store.reserve(8);
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(initial, 0, 0));
+            assertThrows(IllegalStateException.class,
+                    () -> store.writeIndexGuarded(initial, 0, 0, 888));
+            var afterReserve = store.captureLayoutGuard();
+            assertTrue(afterReserve.epoch() > initial.epoch());
+            store.reserve(8); // Java host no-op reserve preserves physical layout
+            store.set(first, 0, 44); // ordinary value write does not move columns
+            assertEquals(44, store.readIndexGuarded(afterReserve, 0, 0));
+
+            // Failure must not alter row values; the guard fails closed even
+            // if an allocator changes capacity before a later failure.
+            assertThrows(ArithmeticException.class,
+                    () -> store.reserve(Integer.MAX_VALUE));
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(afterReserve, 0, 0));
+            assertEquals(44, store.get(first, 0));
+
+            var beforePush = store.captureLayoutGuard();
+            var second = store.push(99, false);
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(beforePush, 0, 0));
+            var beforeErase = store.captureLayoutGuard();
+            store.eraseSwap(first);
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(beforeErase, 0, 0));
+            assertEquals(99, store.readIndexGuarded(store.captureLayoutGuard(), 0, 0));
+            assertEquals(99, store.get(second, 0));
+            assertThrows(IllegalArgumentException.class, () -> store.get(first, 0));
+        }
+        assertThrows(IllegalStateException.class, store::captureLayoutGuard);
+    }
+
 }

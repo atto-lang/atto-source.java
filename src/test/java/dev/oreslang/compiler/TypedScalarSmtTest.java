@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Real typed Oreslang frontend admission; real installed Z3 required. */
 public final class TypedScalarSmtTest {
     private static String core() throws Exception {
-        return Files.readString(Path.of("stdlib/core.ores"), StandardCharsets.UTF_8);
+        return Files.readString(Path.of("stdlib/core.atto"), StandardCharsets.UTF_8);
     }
 
     private static String evaluateWithZ3(String smt) throws Exception {

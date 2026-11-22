@@ -49,4 +49,18 @@ final class SoftLaneSelectorTest {
         assertThrows(IllegalStateException.class,
                 () -> SoftLaneSelector.select(0, 2, queues, 1));
     }
+
+    @Test
+    void paddedColumnsReadOnlyLaneSlotsAndRespectTheSpan() {
+        int pad = 32;
+        var queues = new java.util.concurrent.atomic.AtomicIntegerArray(8 * pad);
+        for (int lane = 0; lane < 8; lane++) queues.set(lane * pad, 9);
+        queues.set(5 * pad, 1);
+        queues.set(6 * pad + 1, 0); // padding slot: never a lane
+        assertEquals(5, SoftLaneSelector.select(0, 9, queues, pad, 8, 1));
+        // Lanes past the span (not yet started) are never chosen.
+        assertEquals(0, SoftLaneSelector.select(0, 9, queues, pad, 4, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> SoftLaneSelector.select(0, 9, queues, pad, 9, 0));
+    }
 }

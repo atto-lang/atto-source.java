@@ -45,8 +45,19 @@ public final class SingletonCheckOnly {
     }
 
     private static void checkFields(Ast.SingletonDecl singleton) {
+        // Parser quotas and duplicate checks do not protect callers that create ASTs
+        // directly (including annotation expansion and future compiler passes).
+        if (singleton.fields().size() > 64) {
+            throw at("ORES-SINGLETON-FIELD-BUDGET", singleton.line(), singleton.column(),
+                    "singleton field budget exceeded");
+        }
+        Set<String> fieldNames = new HashSet<>();
         for (Ast.SingletonField positioned : singleton.fields()) {
             Ast.FieldDecl field = positioned.declaration();
+            if (!fieldNames.add(field.name())) {
+                throw at("ORES-SINGLETON-DUPLICATE", positioned.line(), positioned.column(),
+                        "duplicate singleton field '" + field.name() + "'");
+            }
             int line = positioned.line();
             int column = positioned.column();
             if (field.bindingKind() != Ast.BindingKind.CONST || field.mutableReferent()
@@ -84,7 +95,8 @@ public final class SingletonCheckOnly {
         if (value == null) return false;
         return switch (typeName) {
             case "int", "i64", "long" -> value instanceof Long;
-            case "float", "double" -> value instanceof Double || value instanceof Long;
+            case "float", "double" -> (value instanceof Double d && Double.isFinite(d))
+                    || value instanceof Long;
             case "bool", "boolean" -> value instanceof Boolean;
             case "string" -> value instanceof String;
             default -> false;

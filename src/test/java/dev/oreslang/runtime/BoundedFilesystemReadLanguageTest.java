@@ -62,6 +62,41 @@ final class BoundedFilesystemReadLanguageTest {
     }
 
     @Test
+    void canonicalInScopePathWorksButSymlinkAliasIsDeniedBeforeResolution() throws Exception {
+        // A symlink that points *inside* the granted scope is still refused
+        // under this strict no-symlink-components policy. Callers may pass
+        // the canonical path instead. This matters on hosts with /var -> /private/var.
+        Path scope = Files.createDirectory(temp.resolve("alias-policy")).toRealPath();
+        Path actual = Files.createDirectory(scope.resolve("actual")).toRealPath();
+        Path resource = actual.resolve("resource.txt");
+        Files.writeString(resource, "canonical-ok", StandardCharsets.UTF_8);
+        Path alias = scope.resolve("alias");
+        Files.createSymbolicLink(alias, actual);
+        Path sourceFile = scope.resolve("main.atto");
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, scope.toString());
+
+        ByteArrayOutputStream accepted = new ByteArrayOutputStream();
+        guest(sourceFile, resource, 8192, permissions, accepted);
+        assertEquals("canonical-ok", accepted.toString(StandardCharsets.UTF_8).trim());
+
+        for (Path aliasTarget : java.util.List.of(
+                alias.resolve("resource.txt"), alias.resolve("missing.txt"))) {
+            RuntimeException denied = assertThrows(RuntimeException.class, () ->
+                    guest(sourceFile, aliasTarget, 8192, permissions,
+                            new ByteArrayOutputStream()));
+            StringBuilder errors = new StringBuilder();
+            for (Throwable cause = denied; cause != null; cause = cause.getCause()) {
+                errors.append(cause.getMessage()).append(' ');
+            }
+            assertTrue(errors.toString().contains("refuses symlink component: " + alias),
+                    "even an in-scope ancestor alias must be rejected before resolution: " + errors);
+        }
+        assertEquals("canonical-ok", Files.readString(resource, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(actual.resolve("missing.txt")));
+    }
+
+    @Test
     void existingMissingAndSymlinkParentCannotEscapeReadScope() throws Exception {
         Path allowed = Files.createDirectory(temp.resolve("allowed")).toRealPath();
         Path outside = Files.createDirectory(temp.resolve("outside")).toRealPath();
@@ -74,7 +109,8 @@ final class BoundedFilesystemReadLanguageTest {
         RuntimePermissions permissions = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.READ, allowed.toString());
 
-        for (Path forbidden : java.util.List.of(secret, missing, link.resolve("secret.txt"))) {
+        for (Path forbidden : java.util.List.of(
+                secret, missing, link.resolve("secret.txt"), link.resolve("missing.txt"))) {
             RuntimeException thrown = assertThrows(RuntimeException.class, () ->
                     guest(sourceFile, forbidden, 8192, permissions, new ByteArrayOutputStream()));
             StringBuilder message = new StringBuilder();
@@ -82,8 +118,15 @@ final class BoundedFilesystemReadLanguageTest {
             for (int i = 0; cause != null && i < 12; i++, cause = cause.getCause()) {
                 message.append(cause.getMessage()).append(' ');
             }
-            assertTrue(message.toString().contains("Oreslang permission denied"),
-                    "READ authority must deny both lexical and resolved escapes: " + message);
+            if (forbidden.startsWith(link)) {
+                // The denial must occur at the symlink ancestor, even for a
+                // nonexistent restricted target, before canonical resolution.
+                assertTrue(message.toString().contains("refuses symlink component: " + link),
+                        "READ must not probe behind an out-of-scope parent symlink: " + message);
+            } else {
+                assertTrue(message.toString().contains("Oreslang permission denied"),
+                        "out-of-scope lexical READ must deny before probing: " + message);
+            }
         }
         assertEquals("private", Files.readString(secret, StandardCharsets.UTF_8));
         assertFalse(Files.exists(missing));

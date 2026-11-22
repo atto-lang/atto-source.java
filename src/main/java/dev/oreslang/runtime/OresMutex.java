@@ -43,8 +43,10 @@ public final class OresMutex {
     }
 
     public static <T> Shared<T> shared(T value) {
-        if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.PRIVATE) {
-            throw new SecurityException("private actors cannot create SharedMutex<T>");
+        ActorRuntime.ActorKind actorKind = ActorRuntime.currentActorKind();
+        if (actorKind != null && actorKind != ActorRuntime.ActorKind.SHARED) {
+            throw new SecurityException(
+                    actorKind + " actors cannot create SharedMutex<T>; explicit runtime-shared memory is SHARED-actor/root authority");
         }
         IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
         if (actorPolicy != null) {
@@ -146,8 +148,9 @@ public final class OresMutex {
     // Guards created and not yet released, process-wide. The interpreter
     // deep-scans lexical slots for live guards on every statement; when this
     // is zero no live guard exists anywhere, so the scan can be skipped.
-    // Increment happens before any release path can run, so the count never
-    // under-reports; a guard whose construction fails only over-reports.
+    // Increment before publishing a guard to Task lease cleanup, so count
+    // never under-reports. Both local and shared guard acquisition roll back
+    // this increment if Task lease registration rejects the new guard.
     private static final java.util.concurrent.atomic.AtomicLong LIVE_GUARDS =
             new java.util.concurrent.atomic.AtomicLong();
 
@@ -384,6 +387,9 @@ public final class OresMutex {
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
+        // Make publication + cycle inspection atomic across competing waiters.
+        // Never hold this monitor across semaphore waiting or guest execution.
+        private static final Object WAIT_GRAPH_MONITOR = new Object();
         private static final ScheduledExecutorService ASYNC_TIMEOUTS =
                 Executors.newSingleThreadScheduledExecutor(
                         Thread.ofPlatform()
@@ -424,6 +430,18 @@ public final class OresMutex {
             }
             publishedToRuntime = true;
             return true;
+        }
+
+        /**
+         * Allocation provenance once this SharedMutex has been bound/published
+         * into an ActorRuntime. Before first publication/use by an actor it is
+         * deliberately unbound rather than pretending to belong to a root or
+         * arbitrary runtime.
+         */
+        public synchronized Optional<ActorRuntime.AllocationDomain> allocationDomain() {
+            return owningRuntime == null
+                    ? Optional.empty()
+                    : Optional.of(owningRuntime.runtimeSharedAllocationDomain());
         }
 
         synchronized boolean reserveRuntimePublication(ActorRuntime runtime) {
@@ -479,8 +497,10 @@ public final class OresMutex {
         }
 
         private void requireActorAccess() {
-            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.PRIVATE) {
-                throw new SecurityException("private actors cannot access SharedMutex<T>");
+            ActorRuntime.ActorKind actorKind = ActorRuntime.currentActorKind();
+            if (actorKind != null && actorKind != ActorRuntime.ActorKind.SHARED) {
+                throw new SecurityException(
+                        actorKind + " actors cannot access SharedMutex<T>; explicit runtime-shared memory is SHARED-actor/root authority");
             }
             IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
             if (actorPolicy != null) {
@@ -573,23 +593,30 @@ public final class OresMutex {
         }
 
         private void beginWait(Object domain) {
-            Shared<?> existing = WAITING_ON.putIfAbsent(domain, this);
-            if (existing != null) {
-                if (existing == this) {
-                    throw new RecursiveLockException("SharedMutex<T>");
+            synchronized (WAIT_GRAPH_MONITOR) {
+                Shared<?> existing = WAITING_ON.putIfAbsent(domain, this);
+                if (existing != null) {
+                    if (existing == this) {
+                        throw new RecursiveLockException("SharedMutex<T>");
+                    }
+                    throw new IllegalStateException(
+                            "execution domain is already waiting on another SharedMutex");
                 }
-                throw new IllegalStateException(
-                        "execution domain is already waiting on another SharedMutex");
-            }
 
-            if (wouldCreateDeadlock(domain)) {
-                WAITING_ON.remove(domain, this);
-                throw new DeadlockDetectedException();
+                if (wouldCreateDeadlock(domain)) {
+                    WAITING_ON.remove(domain, this);
+                    ConcurrencyTestProbe.deadlock("mutex-cycle");
+                    throw new DeadlockDetectedException();
+                }
             }
         }
 
         private void endWait(Object domain) {
-            if (domain != null) WAITING_ON.remove(domain, this);
+            if (domain != null) {
+                synchronized (WAIT_GRAPH_MONITOR) {
+                    WAITING_ON.remove(domain, this);
+                }
+            }
         }
 
         private boolean wouldCreateDeadlock(Object requesterDomain) {
@@ -606,18 +633,26 @@ public final class OresMutex {
         }
 
         private void markOwner(Object domain) {
-            if (!currentOwnerDomain.compareAndSet(null, domain)) {
-                throw new IllegalStateException("SharedMutex permit acquired while another owner is recorded");
+            // Owner transitions and waiter graph publication share one
+            // linearization point; otherwise concurrent cycle checks can read
+            // a half-published ownership path.
+            synchronized (WAIT_GRAPH_MONITOR) {
+                if (!currentOwnerDomain.compareAndSet(null, domain)) {
+                    throw new IllegalStateException(
+                            "SharedMutex permit acquired while another owner is recorded");
+                }
             }
         }
 
         private void clearOwner(Object domain) {
             if (domain == null) return;
-            if (!currentOwnerDomain.compareAndSet(domain, null)) {
-                Object recorded = currentOwnerDomain.get();
-                if (recorded != null) {
-                    throw new IllegalStateException(
-                            "SharedMutex owner-domain accounting mismatch");
+            synchronized (WAIT_GRAPH_MONITOR) {
+                if (!currentOwnerDomain.compareAndSet(domain, null)) {
+                    Object recorded = currentOwnerDomain.get();
+                    if (recorded != null) {
+                        throw new IllegalStateException(
+                                "SharedMutex owner-domain accounting mismatch");
+                    }
                 }
             }
         }
@@ -1320,11 +1355,22 @@ public final class OresMutex {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
                 this.requestingActorDomain = requestingActorDomain;
-                this.taskLease = registerCurrentTask
-                        ? TaskOwnedLeases.registerIfTracked(
-                                () -> releaseFromRuntime(false),
-                                () -> releaseFromRuntime(true))
-                        : inheritedLease;
+                // The live counter is incremented before lease registration:
+                // a concurrently retiring tracked Task must never release a
+                // registered guard before the increment becomes visible. But
+                // admission can fail (e.g. 4,096 live leases), so restore the
+                // counter on failure. checkedGuardAfterAcquire() owns physical
+                // permit/domain rollback and must remain the sole releaser.
+                try {
+                    this.taskLease = registerCurrentTask
+                            ? TaskOwnedLeases.registerIfTracked(
+                                    () -> releaseFromRuntime(false),
+                                    () -> releaseFromRuntime(true))
+                            : inheritedLease;
+                } catch (RuntimeException | Error admissionFailure) {
+                    LIVE_GUARDS.decrementAndGet();
+                    throw admissionFailure;
+                }
             }
 
             private void requireOwnerDomain() {

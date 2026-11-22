@@ -1,0 +1,6 @@
+pub fnc main(): void {
+  val int x = 41;
+  val int y = copy! x;
+  stdio.stdout.write(y + 1);
+  return;
+}
