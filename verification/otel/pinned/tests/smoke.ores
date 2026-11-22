@@ -1,0 +1,27 @@
+import module otel from "../src/otel";
+pub routine main(): void {
+  val span = otel.start("test", "ores-trace-test", "", "request");
+  span.event("INFO", "quote\" slash\\ newline\n nul\u0000 tab\t emoji😀");
+  span.event("INFO", "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f");
+  span.event("INFO", otel.integer(-9223372036854775807 - 1) + "|" + otel.integer(9223372036854775807) + "|" + otel.integer(0) + "|" + otel.integer(-1) + "|" + otel.integer(100));
+  // Only whitelisted severities at or above a caller-supplied threshold emit.
+  if otel.should_log("DEBUG", "INFO"); then span.event("DEBUG", "filtered debug"); fi
+  if otel.should_log("WARN", "INFO"); then span.event("WARN", "visible warning"); fi
+  if otel.should_log("ERROR", "OFF"); then span.event("ERROR", "filtered off"); fi
+  if otel.should_log("INFO", "ALL"); then span.event("INFO", "visible all"); fi
+  if otel.should_log("INFO", "INFO"); then span.event("INFO", "visible equal"); fi
+  if otel.should_log("CUSTOM", "INFO"); then span.event("CUSTOM", "filtered unknown level"); fi
+  if otel.should_log("WARN", "CUSTOM"); then span.event("WARN", "filtered unknown threshold"); fi
+
+  // Assert severity thresholds independently of emitted log snapshots.
+  if otel.should_log("DEBUG", "INFO") then panic("DEBUG escaped INFO threshold"); fi
+  if !otel.should_log("WARN", "INFO") then panic("WARN filtered at INFO"); fi
+  if otel.should_log("ERROR", "OFF") then panic("OFF accepted an event"); fi
+  val child = otel.start("test", span.trace_id(), span.span_id(), "child");
+  child.finish("ok", 0);
+  span.finish("ok", 200);
+  span.event("INFO", "ignored after finish");
+  span.finish("error", 500);
+  otel.metric("test", "ores-trace-test", "requests", "counter", "1", 1);
+  return;
+}

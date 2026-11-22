@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+pub async routine main(): void { val Channel<int> ch = Channel.new<int>(1); writech ch, 1; val Box box = new Box(); val future = nb readch ch; block { val view = rt borrow box; stdio.stdout.write(view.value); } stdio.stdout.write(await future); return; }

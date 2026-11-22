@@ -152,7 +152,10 @@ public final class SendSyncTraits {
                 }
                 // Do not derive Task Send/Sync from an unverified runtime
                 // authority, including a user class spoofing its type name.
-                case "Rc", "MutexGuard", "RwLockGuard", "ActorState", "RawPointer",
+                // A local Atomic<int> is thread-safe, but its guest shared-domain
+                // authority/transport and lifetime have not been lowered yet.
+                // Refuse implicit cross-actor transfer until that proof exists.
+                case "Atomic", "AtomicCompareExchange", "Rc", "MutexGuard", "RwLockGuard", "ActorState", "RawPointer",
                         "Pointer", "OresPointer", "ThreadLocal", "ThreadBound",
                         "NativeHandle", "FfiHandle", "ExecutionPermit",
                         "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",

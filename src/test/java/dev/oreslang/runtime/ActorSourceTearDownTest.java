@@ -243,8 +243,9 @@ final class ActorSourceTearDownTest {
             ref.stop();
             CompletionException rejected = assertThrows(
                     CompletionException.class, () -> ref.done().join());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, rejected.getCause());
             assertEquals("native isolate exit cleanup failed",
-                    rejected.getCause().getMessage());
+                    ref.failure().orElseThrow().getMessage());
             assertEquals(1, executor.teardowns.get(),
                     "guest teardown remains exactly once even when trusted close fails");
             assertFalse(ref.isAlive());
@@ -379,7 +380,8 @@ final class ActorSourceTearDownTest {
             ref.stop();
             CompletionException failure =
                     assertThrows(CompletionException.class, () -> ref.done().join());
-            assertEquals("teardown failure", failure.getCause().getMessage());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failure.getCause());
+            assertEquals("teardown failure", ref.failure().orElseThrow().getMessage());
             assertFalse(ref.isAlive());
             assertEquals(1, executor.teardowns.get());
         }

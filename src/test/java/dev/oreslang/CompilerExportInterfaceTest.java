@@ -39,6 +39,26 @@ final class CompilerExportInterfaceTest {
                         """, ENV));
     }
 
+    @Test void changingOnlyProtocolKindInvalidatesExportedAbi() {
+        String trait = """
+                define pub trait Operation as
+                    fnc apply(int value): int;
+                end
+                """;
+        String iface = """
+                define pub interface Operation as
+                    fnc apply(int value): int;
+                end
+                """;
+        var traitAbi = OresCompiler.emitPublicInterface(trait, ENV);
+        var interfaceAbi = OresCompiler.emitPublicInterface(iface, ENV);
+        assertNotEquals(traitAbi.sha256(), interfaceAbi.sha256(),
+                "identical method shapes cannot let trait/interface changes reuse a trusted ABI");
+        assertArrayEquals(traitAbi.bytes(), ExportInterfaceCodec.decode(traitAbi.bytes()).bytes());
+        assertArrayEquals(interfaceAbi.bytes(),
+                ExportInterfaceCodec.decode(interfaceAbi.bytes()).bytes());
+    }
+
     @Test void mismatchedNamespaceIsRejected() {
         assertThrows(IllegalArgumentException.class, () ->
                 OresCompiler.emitPublicInterface(

@@ -1,0 +1,14 @@
+import class Chart from '../stdlib/behavior/statechart';
+import fnc checked from '../stdlib/behavior/statechart';
+
+pub routine main(): void {
+  val Chart chart = checked(
+    arr[#root, #idle],
+    arr[-1, 99],
+    arr[#idle],
+    arr[#ping],
+    arr[#root]
+  );
+  stdio.println("INVALID_PARENT_ACCEPTED");
+  return;
+}

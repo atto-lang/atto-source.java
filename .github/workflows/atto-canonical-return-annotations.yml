@@ -1,0 +1,72 @@
+name: Atto explicit callable-result Java admission
+
+on:
+  push:
+    branches:
+      - fix/atto-explicit-callable-returns-20261120
+    paths:
+      - '.github/workflows/atto-canonical-return-annotations.yml'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/**'
+      - 'tests/parity/class-fields-v2/**'
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalCallableReturnAnnotationTest.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalImplicitValClassFieldTest.java'
+      - 'src/test/java/dev/oreslang/AttoClassFieldV2ConformanceSourceTest.java'
+      - 'tests/parity/class-fields-v2/**'
+      - '.github/workflows/atto-canonical-return-annotations.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  named-callable-return:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source-head and tree identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'RECEIPT sha=%s tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+      - name: GraalVM 25 / Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run canonical Java parser and typechecker tests
+        run: >-
+          mvn -B -ntp '-P!native-thread-unix'
+          -Dtest=AttoCanonicalCallableReturnAnnotationTest,AttoCanonicalImplicitValClassFieldTest,AttoClassFieldV2ConformanceSourceTest
+          -Dsurefire.failIfNoSpecifiedTests=true clean test
+      - name: Require real nonempty JUnit test suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in 'AttoCanonicalCallableReturnAnnotationTest:11' 'AttoCanonicalImplicitValClassFieldTest:7' 'AttoClassFieldV2ConformanceSourceTest:5'; do
+            name="${pair%%:*}"
+            minimum="${pair##*:}"
+            report="target/surefire-reports/TEST-dev.oreslang.${name}.xml"
+            test -s "$report"
+            test "$(grep -c '<testcase' "$report")" -ge "$minimum"
+            if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then exit 1; fi
+            echo "RECEIPT suite=$name minimum_executed=$minimum"
+          done
+          echo 'RECEIPT scope=java_parser_typechecker guest_runtime=NOT_EXECUTED'

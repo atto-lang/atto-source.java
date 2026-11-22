@@ -1,0 +1,49 @@
+name: Atto affine Map V1 exact-head JVM
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/runtime/OresKeyedMap.java'
+      - 'src/test/java/dev/oreslang/AttoAffineMapOwnershipV1Test.java'
+      - '.github/workflows/atto-affine-map-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  map-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify immutable head and tree before build
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse --verify HEAD^{tree} > atto-map-tree-sha.txt
+          echo "HEAD=$EXPECTED_SHA"
+          cat atto-map-tree-sha.txt
+          rm atto-map-tree-sha.txt
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute compiler, Map guest, runtime and ownership tests
+        run: >-
+          mvn -B -ntp
+          -Dtest=AttoAffineMapOwnershipV1Test,AttoRedisScalarMapMutationGuestTest,TypedEmptyMapGuestTest,OresKeyedMapTest,PointerlessFncOwnershipTest
+          -Dsurefire.failIfNoSpecifiedTests=true
+          test

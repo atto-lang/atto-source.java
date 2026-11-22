@@ -1,0 +1,39 @@
+// A failed bounded log_async admission must not permanently finish a Span.
+// Deliberately exceed the 65,536-byte UTF-8 per-record admission limit
+// without requiring a blocked host pipe or nondeterministic scheduling.
+import module otel from "../src/otel";
+
+pub routine main(): void {
+  val span = otel.start("retry-test", "ores-trace-retry", "", "admission-retry");
+  let String huge = "0123456789abcdef";
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+  huge = huge + huge;
+
+  let bool rejected = false;
+  try {
+    span.finish(huge, 503);
+  } catch (err) {
+    rejected = true;
+  }
+  if !rejected; then panic("oversized span unexpectedly admitted"); fi
+
+  // A rejected enqueue must leave the same actor-local span open.
+  if !span.finish("ok", 200); then panic("span was finalized on rejected enqueue"); fi
+  if span.finish("duplicate", 503); then panic("successful finish was not idempotent"); fi
+  span.event("INFO", "ignored after admitted finish");
+  // This checkpoint is awaited so the oracle sees a physically flushed
+  // record, not just a successful admission into the bounded queue.
+  await stdio.flush_async_logs();
+  return;
+}
