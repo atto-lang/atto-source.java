@@ -1740,6 +1740,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        /** Closed with the owner slice; outstanding host leases defer payload drops. */
+        private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
         private final Set<PrivateLinearArena> linearArenas = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
@@ -1761,6 +1763,38 @@ public final class ActorRuntime implements AutoCloseable {
         public MemoryReservation reserveHeap(long bytes) {
             requireCurrentOwner();
             return reserve(bytes, "private actor heap");
+        }
+
+        /**
+         * Bounded host-managed graph with owner-checked handles and non-owning
+         * links. This is NOT source-heap lowering or physical GC isolation.
+         * Initially available only to PRIVATE and UNTRUSTED actors.
+         */
+        public <T extends AutoCloseable> ActorOwnedGraphArena<T> newGraphArena(
+                int maxNodes, int maxEdgesPerNode) {
+            requireCurrentOwner();
+            long metadataBytes = ActorOwnedGraphArena.estimatedMetadataBytes(
+                    maxNodes, maxEdgesPerNode);
+            synchronized (this) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap retired");
+                MemoryReservation reservation = reserve(metadataBytes, "actor graph metadata");
+                try {
+                    ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
+                            maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
+                            retired -> {
+                                ownedGraphs.remove(retired);
+                                // Once the slice is closed its bulk refund owns
+                                // the charge. release() itself is a synchronized
+                                // no-op after close; avoid a second refund.
+                                reservation.close();
+                            });
+                    ownedGraphs.add(graph);
+                    return graph;
+                } catch (RuntimeException | Error failure) {
+                    reservation.close();
+                    throw failure;
+                }
+            }
         }
 
         /**
@@ -1835,9 +1869,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            if (sliceClosed.get() || cell == null || !isPrivateKind(cell.kind)
+                    || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
-                        "private actor memory slice may only be reserved by its owning actor");
+                        "private actor memory slice may only be accessed by its live owning actor");
             }
         }
 
@@ -1857,14 +1892,58 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            for (PrivateLinearArena arena : List.copyOf(linearArenas)) arena.invalidateFromSlice();
-            linearArenas.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+        public void close() {
+            final List<ActorOwnedGraphArena<?>> graphs;
+            final List<PrivateMemoryBlock> ownedBlocks;
+            final List<PrivateLinearArena> ownedArenas;
+            final long bytes;
+            synchronized (this) {
+                if (!sliceClosed.compareAndSet(false, true)) return;
+                graphs = List.copyOf(ownedGraphs);
+                ownedGraphs.clear();
+                ownedBlocks = List.copyOf(blocks);
+                blocks.clear();
+                ownedArenas = List.copyOf(linearArenas);
+                linearArenas.clear();
+                bytes = usedBytes.getAndSet(0);
+            }
+            // Do not hold the slice monitor while invoking graph drop hooks:
+            // graph.close() can invoke a reservation refund through this slice.
+            Throwable failure = null;
+            for (ActorOwnedGraphArena<?> graph : graphs) {
+                try { graph.retireFromActor(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            for (PrivateMemoryBlock block : ownedBlocks) {
+                try { block.invalidateFromSlice(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            for (PrivateLinearArena arena : ownedArenas) {
+                try { arena.invalidateFromSlice(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            try {
+                if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            } catch (Throwable problem) {
+                failure = recordTeardownFailure(failure, problem);
+            }
+            if (failure instanceof Error fatal) throw fatal;
+            if (failure instanceof RuntimeException problem) throw problem;
+            if (failure != null) throw new IllegalStateException("actor slice retirement failed", failure);
+        }
+
+        private static Throwable recordTeardownFailure(Throwable previous, Throwable next) {
+            if (previous == null) return next;
+            boolean oldFatal = previous instanceof VirtualMachineError
+                    || previous instanceof ThreadDeath;
+            boolean newFatal = next instanceof VirtualMachineError
+                    || next instanceof ThreadDeath;
+            if (newFatal && !oldFatal) {
+                next.addSuppressed(previous);
+                return next;
+            }
+            if (previous != next) previous.addSuppressed(next);
+            return previous;
         }
 
         private void unregister(PrivateMemoryBlock block) {
