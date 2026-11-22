@@ -12,6 +12,12 @@ final class NativeAttoHttpStdlibTest {
     void httpPolicyIsCompilerOwnedAttoAndGuestExecutable() throws Exception {
         assertTrue(CoreLibrarySources.packagedSourcePaths().contains("http.atto"));
         assertEquals("@std/http.atto", CoreLibrarySources.unitId("std/http"));
+        assertEquals(CoreLibrarySources.unitId("std/http"), CoreLibrarySources.unitId("std.http"));
+        assertEquals(CoreLibrarySources.source("std/http"), CoreLibrarySources.source("std.http"));
+        assertTrue(CoreLibrarySources.isStdImport("std.http"));
+        assertTrue(CoreLibrarySources.isReservedOresLibraryImport("std.unknown"));
+        assertFalse(CoreLibrarySources.isStdImport("std.unknown"));
+        assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source("std.unknown"));
         assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source("std/http.ores"));
         String source = CoreLibrarySources.source("std/http");
         assertTrue(source.contains("use namespace http;"));
