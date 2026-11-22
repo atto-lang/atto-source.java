@@ -88,4 +88,50 @@ final class NativeTraceStdlibTest {
             Files.deleteIfExists(entry);
         }
     }
+    @Test
+    void independentlyPackagedTelemetryPolicyAndBatchExecuteInGuest() throws Exception {
+        String source = CoreLibrarySources.source("std/telemetry");
+        MixedSourceUnit parsed = MixedSourceUnit.parse(
+                CoreLibrarySources.unitId("std/telemetry"),
+                CoreLibrarySources.fileName("std/telemetry"), source);
+        assertTrue(parsed.hasOresSource());
+        assertFalse(parsed.hasJavaSource());
+        assertFalse(source.contains("java:"));
+        assertFalse(source.contains("stdio."));
+        assertFalse(source.contains("await "));
+
+        Path entry = Files.createTempFile("atto-telemetry-guest-", ".atto");
+        try {
+            Files.writeString(entry, """
+                    import module Telemetry from "std/telemetry";
+                    pub routine main(): void {
+                      stdio.println(Telemetry.traceparent_v00_fields_valid(0, 1, 0, 7, 1));
+                      stdio.println(Telemetry.traceparent_v00_fields_valid(0, 0, 0, 7, 1));
+                      stdio.println(Telemetry.sampled_flag(3));
+                      stdio.println(Telemetry.sampling_decision(1, false));
+                      stdio.println(Telemetry.decision_is_recording(1));
+                      stdio.println(Telemetry.decision_is_sampled(1));
+                      stdio.println(Telemetry.dormant_probe_admissible(3, 2, true));
+                      stdio.println(Telemetry.dormant_probe_admissible(0, 1, true));
+                      val batch = Telemetry.batch(1);
+                      stdio.println(batch.record(1, 0, 7, 0, 1, 0, 1, 0, 100, 120, 0));
+                      stdio.println(batch.record(1, 0, 8, 0, 2, 0, 1, 0, 100, 120, 0));
+                      stdio.println(batch.count());
+                      stdio.println(batch.dropped_count());
+                      return;
+                    }
+                    """);
+            ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+            ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+            LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                    ExecutionProfile.serverJit(), stdout, stderr);
+            assertEquals("true\\nfalse\\ntrue\\n1\\ntrue\\nfalse\\ntrue\\nfalse\\ntrue\\nfalse\\n1\\n1"
+                            .replace("\\n", "\n"),
+                    stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                    () -> stderr.toString(StandardCharsets.UTF_8));
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
 }
