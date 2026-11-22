@@ -74,6 +74,13 @@
           <include>**/*.atto</include>
           <include>**/*.ores</include>
         </includes>
+        <excludes><exclude>alloc/**</exclude></excludes>
+      </resource>
+      <!-- The alloc tier has a separate closed, compiler-owned registry. -->
+      <resource>
+        <directory>stdlib/alloc</directory>
+        <targetPath>dev/oreslang/alloc</targetPath>
+        <includes><include>*.atto</include></includes>
       </resource>
     </resources>
     <plugins>
