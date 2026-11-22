@@ -6110,13 +6110,19 @@ public final class OwnershipChecker {
             return none;
         }
 
-        if (name.equals("Option") || name.equals("IteratorResult")) {
+        if (CoreTypeRegistry.coreSumCarrier(name, type.arguments().size())
+                && name.equals("Option")) {
+            return taskCaptureCapabilities(
+                    type.arguments().getFirst(), visitingClasses, budget, depth + 1);
+        }
+        if (name.equals("IteratorResult")) {
             return type.arguments().size() == 1
                     ? taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1)
                     : none;
         }
-        if (name.equals("Result")) {
-            if (type.arguments().size() != 2) return none;
+        if (CoreTypeRegistry.coreSumCarrier(name, type.arguments().size())
+                && name.equals("Result")) {
+            
             AutoTraitRules.Capabilities left =
                     taskCaptureCapabilities(type.arguments().get(0), visitingClasses, budget, depth + 1);
             AutoTraitRules.Capabilities right =
@@ -6885,8 +6891,9 @@ public final class OwnershipChecker {
                     -> type.arguments().isEmpty();
             case "SharedMutex", "Channel" -> type.arguments().size() == 1;
             case "ActorRef" -> isVerifiedActorReference(type);
-            case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
-            case "Result" -> type.arguments().size() == 2
+            case "Option" -> CoreTypeRegistry.coreSumCarrier("Option", type.arguments().size())
+                    && isCopyType(type.arguments().getFirst());
+            case "Result" -> CoreTypeRegistry.coreSumCarrier("Result", type.arguments().size())
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
             default -> false;
