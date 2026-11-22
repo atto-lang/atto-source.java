@@ -79,7 +79,8 @@ final class CoreFourGuestTest {
         // These are real linked-source compiler negatives, not checks of
         // the core/cell integer-state model. Policy helpers do not issue loans.
         for (String fixture : new String[] {
-                "borrow-use-after-take.atto", "borrow-escape.atto"
+                "borrow-use-after-take.atto", "borrow-escape.atto",
+                "borrow-conflicting-loans.atto", "borrow-cross-suspend.atto"
         }) {
             Path source = FIXTURES.resolve(fixture);
             assertTrue(Files.isRegularFile(source), source.toString());
@@ -89,6 +90,18 @@ final class CoreFourGuestTest {
             String diagnostic = String.valueOf(failure.getMessage()).toLowerCase();
             if (fixture.equals("borrow-use-after-take.atto")) {
                 assertTrue(diagnostic.contains("moved") || diagnostic.contains("move"),
+                        fixture + ": " + failure.getMessage());
+            } else if (fixture.equals("borrow-conflicting-loans.atto")) {
+                assertTrue(diagnostic.contains("borrow") &&
+                        (diagnostic.contains("mutably") ||
+                         diagnostic.contains("active") ||
+                         diagnostic.contains("overlapping")),
+                        fixture + ": " + failure.getMessage());
+            } else if (fixture.equals("borrow-cross-suspend.atto")) {
+                assertTrue(diagnostic.contains("borrow") &&
+                        (diagnostic.contains("suspend") ||
+                         diagnostic.contains("await") ||
+                         diagnostic.contains("across")),
                         fixture + ": " + failure.getMessage());
             } else {
                 assertTrue(diagnostic.contains("borrow") && (
