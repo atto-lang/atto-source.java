@@ -88,6 +88,13 @@ final class NativeAttoMetricsJsonZordeTest {
     @Test
     void coreBorrowAdmissionGuestIsFreestandingAndExact() throws Exception {
         assertTrue(CoreLibrarySources.packagedCorePaths().contains("borrow_admission.atto"));
+        assertTrue(CoreLibrarySources.packagedCorePaths().contains("collections.atto"),
+                "main's freestanding collections module must survive integration");
+        for (String hosted : Set.of("telemetry.atto", "metrics.atto", "json.atto",
+                "zorde.atto", "task_parallel_policy.atto", "source_budget_policy.atto")) {
+            assertTrue(CoreLibrarySources.packagedSourcePaths().contains(hosted),
+                    "existing hosted module was lost during integration: " + hosted);
+        }
         assertEquals("@ores.core/borrow_admission.atto",
                 CoreLibrarySources.oresCoreUnitId("ores.core/borrow_admission"));
         String source = CoreLibrarySources.oresCoreSource("ores.core/borrow_admission");
@@ -123,12 +130,16 @@ final class NativeAttoMetricsJsonZordeTest {
         for (int i = 0; i < examples.length; i++) {
             final String fixture = examples[i];
             final String diagnostic = expected[i];
+            ByteArrayOutputStream guestOut = new ByteArrayOutputStream();
+            ByteArrayOutputStream diagnosticOut = new ByteArrayOutputStream();
             Throwable failure = assertThrows(Throwable.class, () ->
                     LinkedProgramRunner.run(
                             Path.of("tests/fixtures/core-borrow-v1/" + fixture),
                             IsolatePolicy.developer(), ExecutionProfile.serverJit(),
-                            new ByteArrayOutputStream(), new ByteArrayOutputStream()),
+                            guestOut, diagnosticOut),
                     "compiler must reject invalid ownership: " + fixture);
+            assertEquals(0, guestOut.size(),
+                    "rejected source must not execute guest stdout: " + fixture);
             StringBuilder details = new StringBuilder();
             for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
                 details.append(cursor).append("\n");
