@@ -4,7 +4,7 @@
 // See docs/STD_PROCESS_PLAN_V1.md for the pending guest/runtime bridge.
 define module Process as
 
-  // An immutable launch request. Argument vector elements are NOT shell syntax.
+  // A launch-request value. Its Array remains mutable; it is not a sealed\n  // capability. Argument vector elements are NOT shell syntax.
   // The host takes an owned snapshot of arguments and validates UTF-8 bytes,
   // embedded NUL, command grants, executable identity, cwd and environment.
   pub define class Command as
