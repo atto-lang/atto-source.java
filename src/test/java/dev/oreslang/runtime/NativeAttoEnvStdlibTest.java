@@ -78,6 +78,27 @@ final class NativeAttoEnvStdlibTest {
     }
 
     @Test
+    void independentlyCreatedGuestContextsDoNotShareEnvironment() throws Exception {
+        var entry = Path.of("src/test/resources/stdlib-parity/env-context-isolation.atto");
+        var policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.ENVIRONMENT);
+        var permissions = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.ENV);
+        for (String identity : new String[] {"actor-a", "actor-b", "actor-a"}) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ByteArrayOutputStream err = new ByteArrayOutputStream();
+            var built = LinkedProgramRunner.run(entry, policy, permissions,
+                    PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(),
+                    Set.of(), java.util.Map.of("ATTO_CONTEXT_KEY", identity),
+                    out, err);
+            assertTrue(built.units().containsKey("@std/env.atto"));
+            assertEquals(identity + "\nfalse",
+                    out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                    () -> err.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
     void snapshotDoesNotInspectDeniedHostValues() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.ENVIRONMENT);
