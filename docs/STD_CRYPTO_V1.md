@@ -31,6 +31,70 @@ This host primitive is not yet guest-callable, and its opaque key handle
 will need actor-lifecycle ownership, no-log, capabilities and memory gates
 when integrated. Avoid claiming it is a released `std.crypto` API.
 
+## Java guest intrinsic prototype (current branch)
+
+The Java evaluator now recognizes a compiler-owned **`crypto` namespace**
+in guest source. This is deliberately separate from a validated file import:
+`import * as crypto from "std.crypto";` is **not wired to a trusted
+stdlib import resolver yet** and must not be advertised as production syntax.
+
+Working implementation targets in this PR:
+
+```atto
+val key = crypto.aead_new_key(1);   // 1=AES-256-GCM, 2=ChaCha20-Poly1305
+val sealed = crypto.aead_seal(key, [1], [65, 66, 67]);
+val envelope = sealed.unwrap();      // [12-byte nonce | ciphertext | 16-byte tag]
+val opened = crypto.aead_open(key, [1], envelope);
+crypto.aead_close(key);
+```
+
+`aead_new_key` produces an opaque, non-copyable `AeadKey`.
+`aead_seal/open` accept a reusable borrowed key and return
+`Result<List<int>, String>`; `aead_close` consumes its key.
+`String` is a **temporary** error payload until `CryptoError` and the
+checked error ABI are integrated. AAD and plaintext are currently represented
+as byte-valued `List<int>`, with a stricter **1 MiB guest message limit**
+to bound `List<Long>` allocation overhead. Native implementation has a
+16 MiB primitive maximum; the two must not be confused.
+`aead_open` returns `Err("authentication failed")` for malformed
+envelopes and bad tags/AAD, and never exposes unauthenticated plaintext.
+
+The guest interface is capability-gated through `CRYPTO`, granted in the
+developer isolate profile but **not** by strict/adversarial profiles.
+Opaque keys belong to the exact context and actor incarnation. A rejected
+cross-context or cross-actor handle cannot decrypt. Context shutdown seals
+new key admission before quiescence and scrubs tracked keys **after** actor
+and native-I/O physical joins; on failed quiescence keys remain quarantined
+with the context rather than being freed while a carrier may still run.
+Actor-specific early retirement remains future work.
+
+The opaque key has no import/export or persistence facility. Per-key
+random four-byte prefixes with synchronized 64-bit monotonic counters
+ensure unique nonce reservations **within one freshly generated key**.
+Because the key is lost on process termination, this first prototype
+does not require persisted counter replay protection; persistent keys
+will require crash-safe nonce reservation before any durable API.
+
+`HkdfSha256.derive` is now a trusted Java host implementation of
+RFC 5869 using the platform `HmacSHA256` provider with bounded work
+and transient secret-buffer scrubbing. The guest API intentionally does
+not expose raw HKDF secret output until an owned, zeroizing `SecretBytes`
+type exists.
+
+**Executed checks, not guest parity:** isolated Java 21 `javac` +
+direct runtime smoke passed AES-256-GCM and ChaCha20-Poly1305 round trips,
+nonce uniqueness, wrong key/AAD/nonce/tag and key close on the exact
+`AeadPrimitives.java` blob
+`4a7c7e9774c4f3109c876895011ea748bfa331e2`.
+Isolated Java 21 `javac` + direct runtime RFC 5869 test case 1
+and output-limit rejection passed on exact `HkdfSha256.java` blob
+`27dec43d6c60478f36d8e8cb551d424e572bd6f1`.
+New `CryptoAeadGuestSourceTest`, `HkdfSha256Test` and
+`AeadPrimitivesTest` have **NOT been executed** via repository Maven,
+the real Atto interpreter, GraalVM 25/Native Image, LLVM, .NET or Wasm.
+The separate Java SHA/HMAC/PBKDF2 PR #1367 remains unmerged and requires
+manual integration, not a duplicate implementation.
+
 ## Public API to implement
 
 - `hash.sha256(bytes) -> Bytes` and `mac.hmac_sha256(secret, bytes) -> Bytes`.
