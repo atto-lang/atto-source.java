@@ -49,7 +49,8 @@ final class StdPathSyncTelemetryGuestTest {
                 "true", "false", "true", "false", "true", "false",
                 "true", "false", "true", "false", "false", "false", "false", "true",
                 "9", "1", "99", "-1",
-                "9", "14", "12", "11", "-1", "4", "1", "-1", "true", "false", "false", "-1", "false", "true");
+                "9", "14", "12", "11", "-1", "4", "1", "-1", "true", "false", "false", "-1", "false", "true",
+                "true", "false", "false", "false", "true", "false");
         assertEquals(expected,
                 stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                 () -> stderr.toString(StandardCharsets.UTF_8));
