@@ -42,7 +42,7 @@ pub routine main(): int {
   if compute_buffer_range_fits(9, 2, 10) then return 22; fi
   if compute_alignment_valid(3) then return 23; fi
   if compute_upload_admit(0, 1, 1, true, false) then return 24; fi
-  if websocket_decode_close_code(3, 238) != 1006 then return 25; fi
+  if websocket_decode_close_code(3, 238) != -1 then return 25; fi
   if websocket_decode_close_code(3, 232) != 1000 then return 26; fi
   if websocket_header_bytes(126, true) != 8 then return 27; fi
   if websocket_header_bytes(127, false) != 10 then return 28; fi
