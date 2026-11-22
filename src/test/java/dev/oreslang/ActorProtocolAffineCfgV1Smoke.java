@@ -162,6 +162,16 @@ public final class ActorProtocolAffineCfgV1Smoke {
         manyPlaces.add(new Return());
         fails("moved handles still count against bounded proof budget", "E_PROTOCOL_HANDLE_BUDGET",
                 p(false,b(0,manyPlaces)));
+        fails("two returned owners are not one function result",
+                "E_PROTOCOL_MULTIPLE_RETURN_HANDLES", p(false,
+                b(0, List.of(init(), new Init(2,"Connection"),
+                        new ReturnHandle(1), new ReturnHandle(2), new Return()))));
+        fails("returned authority must agree at join",
+                "E_PROTOCOL_RETURN_JOIN", p(false,
+                b(0,List.of(init()),1,2),
+                b(1,List.of(new ReturnHandle(1)),3),
+                b(2,List.of(),3),
+                ret(3)));
         System.out.println("ATTO_PROTOCOL_AFFINE_CFG_SOURCE_ONLY=PASS|cases="+passed);
         System.out.println("ATTO_PROTOCOL_GUEST_EXECUTION=NOT_EXECUTED");
     }
