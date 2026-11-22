@@ -64,6 +64,31 @@ public final class PersistentScalarMirV1 {
                 throw new IllegalStateException("PERSISTENT_ACTOR_INVALID_I64_CODEC");
             return ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN).getLong();
         }
+
+        /** AOT metadata derived from the verified source AST, not host reflection. */
+        public DurableScalarSchemaV1.Descriptor state_schema() {
+            return DurableScalarSchemaV1.forState(actorName, stateField);
+        }
+
+        public DurableScalarSchemaV1.Descriptor increment_schema() {
+            return DurableScalarSchemaV1.forIncrement(actorName);
+        }
+
+        /** All newly admitted increment commands carry a versioned typed header. */
+        public byte[] encode_increment_message(long delta) {
+            return DurableScalarSchemaV1.encode(increment_schema(), delta);
+        }
+
+        /**
+         * The earlier pre-versioned eight-byte scalar inbox format is pinned as
+         * a single explicit v0 -> v1 compatibility path. It is NOT a generic
+         * best-effort fallback for unknown versions or other actor types.
+         */
+        public long decode_increment_message(byte[] originalWire) {
+            if (originalWire != null && originalWire.length == Long.BYTES)
+                return decode(originalWire);
+            return DurableScalarSchemaV1.decode(increment_schema(), originalWire);
+        }
     }
 
     private static IllegalArgumentException invalid(String reason) {
