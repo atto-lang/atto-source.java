@@ -125,6 +125,7 @@ public final class StandardCryptoNamespace {
         if (signatures.isEmpty()) {
             throw new IllegalStateException("missing std.crypto source policy functions");
         }
+        checkPurePolicyBodies(all, signatures);
         Ast.Program merged = new Ast.Program(
                 REQUIRED_NAMESPACE,
                 List.of(),
@@ -137,6 +138,120 @@ public final class StandardCryptoNamespace {
         OwnershipChecker.check(
                 checked.program(), checked.shortInferredAliases());
         return new Bundle(checked.program(), signatures);
+    }
+
+    /**
+     * Host-independent policy must be a finite, side-effect-free call graph
+     * of integer/boolean expressions. Prevent a privileged builtin or a
+     * future source edit from slipping I/O, FFI, actor operations, allocation,
+     * mutation, loops, or scheduling into this internally invoked code.
+     */
+    private static void checkPurePolicyBodies(
+            List<Ast.Decl> declarations, Map<String, Signature> signatures) {
+        var edges = new HashMap<String, java.util.Set<String>>();
+        for (Ast.Decl declaration : declarations) {
+            Ast.FunctionDecl function = (Ast.FunctionDecl) declaration;
+            var names = new java.util.HashSet<String>();
+            for (Ast.Param parameter : function.parameters()) {
+                if (!names.add(parameter.name())) {
+                    throw new IllegalStateException("duplicate crypto policy parameter");
+                }
+            }
+            var calls = new java.util.HashSet<String>();
+            for (Ast.Stmt statement : function.body()) {
+                checkPureStatement(statement, names, calls, signatures, 0);
+            }
+            edges.put(function.name(), calls);
+        }
+        var completed = new java.util.HashSet<String>();
+        var active = new java.util.HashSet<String>();
+        for (String name : edges.keySet()) {
+            verifyAcyclic(name, edges, active, completed);
+        }
+    }
+
+    private static void verifyAcyclic(
+            String member, Map<String, java.util.Set<String>> edges,
+            java.util.Set<String> active, java.util.Set<String> completed) {
+        if (completed.contains(member)) return;
+        if (!active.add(member)) {
+            throw new IllegalStateException("recursive std.crypto policy callable: " + member);
+        }
+        for (String dependency : edges.getOrDefault(member, java.util.Set.of())) {
+            verifyAcyclic(dependency, edges, active, completed);
+        }
+        active.remove(member);
+        completed.add(member);
+    }
+
+    private static void checkPureStatement(
+            Ast.Stmt statement, java.util.Set<String> names,
+            java.util.Set<String> calls, Map<String, Signature> signatures,
+            int depth) {
+        if (depth > 256) throw new IllegalStateException("std.crypto policy too deeply nested");
+        if (statement instanceof Ast.ReturnStmt returned) {
+            checkPureExpr(returned.value(), names, calls, signatures, depth + 1);
+            return;
+        }
+        if (statement instanceof Ast.IfStmt conditional) {
+            for (Ast.IfBranch branch : conditional.branches()) {
+                checkPureExpr(branch.condition(), names, calls, signatures, depth + 1);
+                for (Ast.Stmt child : branch.body()) {
+                    checkPureStatement(child, names, calls, signatures, depth + 1);
+                }
+            }
+            for (Ast.Stmt child : conditional.elseBody()) {
+                checkPureStatement(child, names, calls, signatures, depth + 1);
+            }
+            return;
+        }
+        if (statement instanceof Ast.BlockStmt block) {
+            for (Ast.Stmt child : block.body()) {
+                checkPureStatement(child, names, calls, signatures, depth + 1);
+            }
+            return;
+        }
+        throw new IllegalStateException(
+                "effectful or mutable statement in std.crypto source policy: "
+                        + statement.getClass().getSimpleName());
+    }
+
+    private static void checkPureExpr(
+            Ast.Expr expression, java.util.Set<String> names,
+            java.util.Set<String> calls, Map<String, Signature> signatures,
+            int depth) {
+        if (depth > 256) throw new IllegalStateException("std.crypto policy expression too deep");
+        if (expression instanceof Ast.LiteralExpr) return;
+        if (expression instanceof Ast.NameExpr name) {
+            if (!names.contains(name.name())) {
+                throw new IllegalStateException(
+                        "std.crypto policy attempted to read nonparameter " + name.name());
+            }
+            return;
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            checkPureExpr(unary.operand(), names, calls, signatures, depth + 1);
+            return;
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            checkPureExpr(binary.left(), names, calls, signatures, depth + 1);
+            checkPureExpr(binary.right(), names, calls, signatures, depth + 1);
+            return;
+        }
+        if (expression instanceof Ast.CallExpr call
+                && !call.typeArgumentsPresent()
+                && call.callee() instanceof Ast.NameExpr target
+                && signatures.containsKey(target.name())
+                && call.arguments().size() == signatures.get(target.name()).arguments().size()) {
+            calls.add(target.name());
+            for (Ast.Expr arg : call.arguments()) {
+                checkPureExpr(arg, names, calls, signatures, depth + 1);
+            }
+            return;
+        }
+        throw new IllegalStateException(
+                "effectful or dynamic expression in std.crypto source policy: "
+                        + expression.getClass().getSimpleName());
     }
 
     private static boolean isInteger(Ast.TypeRef type) {
