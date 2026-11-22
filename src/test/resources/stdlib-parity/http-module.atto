@@ -1,5 +1,5 @@
 // Compiler-backed hosted std/http module; every printed line must be true.
-import module http from "std/http.atto";
+import http from "std/http.atto";
 pub routine main(): void {
   stdio.println(http.status_valid(200) && !http.status_valid(99));
   stdio.println(http.status_is_success(299) && !http.status_is_success(300));
