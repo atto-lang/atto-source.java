@@ -1,0 +1,11 @@
+define class Box as
+  pub let int value = 1;
+end
+pub async fnc main(): void {
+  val mutex = Mutex.new(new Box());
+  val lock_guard = mutex.lock();
+  let Future<int> task_handle = task { return lock_guard.value; };
+  lock_guard.release();
+  stdio.stdout.write(await task_handle);
+  return;
+}

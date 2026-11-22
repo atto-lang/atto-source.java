@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Stable logical execution identity for one Oreslang task.
@@ -63,6 +64,63 @@ public final class ExecutionContext {
         }
     }
 
+    /**
+     * One VM-wide space for {@link ExecutionId#runtimeDomain()} values. Both
+     * OresScheduler task domains and ActorRuntime actor domains draw from it,
+     * so an execution id never collides across the two execution kinds.
+     */
+    private static final AtomicLong NEXT_RUNTIME_DOMAIN = new AtomicLong();
+
+    static long allocateRuntimeDomain() {
+        return nextPositive(NEXT_RUNTIME_DOMAIN, "execution runtime-domain");
+    }
+
+    /**
+     * Allocate a monotonically increasing positive identity without mutating
+     * the counter on exhaustion. A plain incrementAndGet() wraps Long.MAX_VALUE
+     * to a negative value before throwing; after a complete wraparound that
+     * could eventually reissue old positive identities. Saturation is
+     * permanent and therefore fail-closed.
+     */
+    static long nextPositive(AtomicLong counter, String kind) {
+        Objects.requireNonNull(counter, "counter");
+        Objects.requireNonNull(kind, "kind");
+        for (;;) {
+            long current = counter.get();
+            if (current < 0 || current == Long.MAX_VALUE) {
+                throw new IllegalStateException(kind + " id space exhausted");
+            }
+            long next = current + 1;
+            if (counter.compareAndSet(current, next)) {
+                return next;
+            }
+        }
+    }
+
+    /**
+     * Reserve a positive, non-overlapping range and return its exclusive upper
+     * bound. The counter stores the last reserved ID; saturation is checked
+     * before CAS so an exhausted range allocator can never wrap and reuse IDs.
+     */
+    static long reservePositiveRangeExclusive(
+            AtomicLong counter, int count, String kind) {
+        Objects.requireNonNull(counter, "counter");
+        Objects.requireNonNull(kind, "kind");
+        if (count <= 0) {
+            throw new IllegalArgumentException("range size must be positive");
+        }
+        for (;;) {
+            long current = counter.get();
+            if (current < 0 || current > Long.MAX_VALUE - (long) count - 1L) {
+                throw new IllegalStateException(kind + " id space exhausted");
+            }
+            long last = current + count;
+            if (counter.compareAndSet(current, last)) {
+                return last + 1L;
+            }
+        }
+    }
+
     private final ExecutionId id;
     private final AllocationDomain allocationDomain;
     private final long parentExecution;
@@ -83,10 +141,24 @@ public final class ExecutionContext {
     }
 
     static ExecutionContext task(long runtimeDomain, long execution) {
+        return task(runtimeDomain, execution, 0);
+    }
+
+    /**
+     * Mint a scheduler-owned Task identity with optional same-scheduler
+     * parentage. Parentage is immutable diagnostic lineage, never inherited
+     * allocation, cancellation, actor-state or scheduler authority.
+     */
+    static ExecutionContext task(long runtimeDomain, long execution,
+            long parentExecution) {
+        if (parentExecution < 0 || parentExecution == execution) {
+            throw new IllegalArgumentException(
+                    "task parent execution must be nonnegative and distinct");
+        }
         return new ExecutionContext(
                 new ExecutionId(runtimeDomain, execution),
                 AllocationDomain.none(),
-                0,
+                parentExecution,
                 0);
     }
 
@@ -117,7 +189,7 @@ public final class ExecutionContext {
         return allocationDomain;
     }
 
-    /** Zero until compiler-lowered causal ancestry is attached. */
+    /** Scheduler-admitted same-domain parent Task, or zero for a root/unrelated task. */
     public long parentExecution() {
         return parentExecution;
     }

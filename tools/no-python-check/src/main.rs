@@ -35,30 +35,89 @@ fn is_execution_surface(path: &str) -> bool {
         || p.ends_with(".zsh")
 }
 
+// Recognize an executable name at a command boundary, not incidental prose
+// (for example an echoed migration notice or a workflow step title).
+fn python_executable_name(word: &str) -> bool {
+    let base = word
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(word)
+        .trim_end_matches(".exe");
+    if matches!(
+        base,
+        "python" | "python2" | "python3" | "pypy" | "pypy3"
+            | "pip" | "pip2" | "pip3" | "pipenv" | "pytest" | "poetry" | "pdm"
+    ) {
+        return true;
+    }
+    for prefix in ["python", "pypy", "pip"] {
+        if let Some(version) = base.strip_prefix(prefix) {
+            if version.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+                && version.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// This is a conservative static guard for executable positions in shell/YAML,
+// not an interpreter for arbitrary shell or dynamically assembled commands.
+fn python_command_boundary(line: &str) -> bool {
+    for segment in line.split([';', '|', '&']) {
+        let tokens: Vec<&str> = segment
+            .split(|ch: char| {
+                ch.is_whitespace()
+                    || matches!(
+                        ch,
+                        ':' | '"' | '\'' | '<' | '>' | '(' | ')' | '{' | '}' | '[' | ']'
+                            | '`'
+                    )
+            })
+            .filter(|token| !token.is_empty())
+            .collect();
+        let env_wrapper = tokens.first().is_some_and(|first| {
+            matches!(*first, "env" | "sudo" | "command" | "exec" | "time")
+        });
+        for (index, token) in tokens.iter().enumerate() {
+            if !python_executable_name(token) {
+                continue;
+            }
+            let predecessor = index.checked_sub(1).and_then(|previous| tokens.get(previous));
+            let command_position = index == 0
+                || predecessor.is_some_and(|previous| {
+                    matches!(
+                        *previous,
+                        "run" | "exec" | "command" | "env" | "sudo" | "time" | "xargs"
+                            | "shell" | "if" | "then" | "-c" | "-lc" | "-euc"
+                            | "-xec" | "-s" | "$"
+                    )
+                })
+                || env_wrapper;
+            if command_position {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn forbidden_execution_line(line: &str) -> bool {
-    let l = line.trim().to_ascii_lowercase();
+    let l = line.trim().to_ascii_lowercase().replace('\t', " ");
     if l.starts_with('#') {
         return false;
     }
     [
         "actions/setup-python@",
-        "python -m ",
-        "python3 -m ",
-        "python -c ",
-        "python3 -c ",
-        "python ",
-        "python3 ",
-        "pypy ",
-        "pypy3 ",
-        "pip install",
-        "pip3 install",
         "uv run ",
-        "pytest ",
+        "uv pip ",
         "poetry run ",
         "pdm run ",
     ]
     .iter()
     .any(|needle| l.contains(needle))
+        || python_command_boundary(&l)
 }
 
 fn python_shebang(body: &str) -> bool {
@@ -116,7 +175,15 @@ fn main() {
         let file = Path::new(&root).join(name.as_ref());
 
         // Path-only checks still apply even when the content is binary or unreadable.
-        let body = fs::read_to_string(&file).unwrap_or_default();
+        let body = match fs::read_to_string(&file) {
+            Ok(body) => body,
+            Err(err) if is_execution_surface(&name) => {
+                eprintln!("{name}: cannot read execution surface: {err}");
+                found += 1;
+                continue;
+            }
+            Err(_) => String::new(),
+        };
         for problem in violations(&name, &body) {
             eprintln!("{name}: {problem}");
             found += 1;
@@ -184,5 +251,57 @@ mod tests {
     fn prose_is_not_treated_as_execution() {
         let body = "Python is prohibited; replace Python tooling with Rust.";
         assert!(violations("README.md", body).is_empty());
+    }
+
+    #[test]
+    fn rejects_python_heredocs_and_tab_separated_commands() {
+        assert!(forbidden_execution_line("python3 - <<'PY'"));
+        assert!(forbidden_execution_line("- run: python3\t-c 'pass'"));
+        assert!(forbidden_execution_line("  - uses: actions/setup-python@v5"));
+    }
+
+    #[test]
+    fn rejects_boundary_only_shell_invocations_without_whitespace() {
+        for line in [
+            "python3",
+            "python3<<'PY'",
+            "python3; echo complete",
+            "python3|| true",
+            "/usr/bin/python3.12 -B",
+            "env -S python3.13",
+            "bash -c 'python3'",
+            "bash -lc 'python3 -V'",
+            "sh -euc 'python3 -V'",
+            "- shell: /usr/bin/python3",
+            "pip3 install package",
+            "- run: /usr/local/bin/pypy3",
+            "- run: $(python3)",
+        ] {
+            assert!(forbidden_execution_line(line), "missed command: {line}");
+        }
+    }
+
+    #[test]
+    fn permits_nonexecuting_python_policy_prose() {
+        for line in [
+            "name: No Python tooling",
+            "echo 'Python is prohibited; use Rust'",
+            "printf 'migrate Python scripts to Rust'",
+            "cargo test",
+            "echo python3",
+            "printf 'migrate python3 to Rust'",
+            "name: Python commands are banned",
+        ] {
+            assert!(!forbidden_execution_line(line), "false positive: {line}");
+        }
+    }
+
+    #[test]
+    fn synthetic_runner_smoke_is_source_free_and_python_free() {
+        let smoke = include_str!("../../../.github/workflows/synthetic-ci-runner-smoke.yml");
+        assert!(smoke.contains("permissions: {}"));
+        assert!(smoke.contains("SOURCE_FREE_RUNNER_STEP_EXECUTED"));
+        assert!(!smoke.contains("actions/checkout@"));
+        assert!(smoke.lines().all(|line| !forbidden_execution_line(line)));
     }
 }

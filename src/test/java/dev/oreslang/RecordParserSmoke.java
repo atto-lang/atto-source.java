@@ -86,6 +86,43 @@ public final class RecordParserSmoke {
                 }
                 """), "duplicate parsed record fields");
 
+        // Stage-one spread syntax is represented explicitly in the AST, and
+        // type/ownership/execution must still reject it until lowering lands.
+        Ast.FunctionDecl spreadFunction = firstFunction("""
+                fnc spread(): int {
+                    const base = infer struct{x: 1};
+                    const next = record{...base, y: 2, ...base};
+                    return next.x;
+                }
+                """);
+        Ast.BindingStmt next = (Ast.BindingStmt) spreadFunction.body().get(1);
+        Ast.ObjectExpr parsedSpread = (Ast.ObjectExpr) next.initializer();
+        check(parsedSpread.kind() == Ast.ObjectKind.RECORD, "record kind survives spread");
+        check(parsedSpread.fields().size() == 3, "spread and named items retain order");
+        check(parsedSpread.fields().get(0).spread()
+                && parsedSpread.fields().get(0).name() == null,
+                "first spread has no fake field name");
+        check(!parsedSpread.fields().get(1).spread()
+                && parsedSpread.fields().get(1).name().equals("y"),
+                "named initializer stays statically named");
+        check(parsedSpread.fields().get(2).spread(), "repeated spread is AST-representable");
+        denied(() -> new Ast.ObjectField(null, new Ast.LiteralExpr(1)),
+                "named initializer with null name");
+        denied(() -> new Ast.ObjectField("fake", new Ast.LiteralExpr(1), true),
+                "spread with injected name");
+        denied(() -> Parser.parse("""
+                fnc bad(): void {
+                    const row = record{x: 1, ...base, x: 2};
+                    return;
+                }
+                """), "explicit duplicate named field around spread");
+        denied(() -> Parser.parse("""
+                fnc bad(): void {
+                    const row = infer struct{...};
+                    return;
+                }
+                """), "missing spread operand");
+
         // This smoke deliberately does not assert that user code type-checks.
         // Type checking, ownership and interpreter execution are separate gates.
     }

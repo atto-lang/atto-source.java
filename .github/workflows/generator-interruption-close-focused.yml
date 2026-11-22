@@ -1,0 +1,49 @@
+name: Generator interruption close (exact-head JVM)
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/GeneratorRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/GeneratorCancellationInterruptionTest.java'
+      - '.github/workflows/generator-interruption-close-focused.yml'
+      - 'scripts/VerifyGeneratorCloseReports.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generator-interrupt-close-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generator-close:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact PR head and tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'HEAD=%s TREE=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute real generator lifecycle regression tests
+        run: |
+          set -euo pipefail
+          java scripts/VerifyGeneratorCloseReports.java --selftest
+          mvn -B -ntp -Dtest=GeneratorCancellationInterruptionTest,GeneratorRuntimeTest -DfailIfNoTests=true test
+          java scripts/VerifyGeneratorCloseReports.java \
+            target/surefire-reports/TEST-dev.oreslang.runtime.GeneratorCancellationInterruptionTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.GeneratorRuntimeTest.xml

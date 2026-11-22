@@ -147,3 +147,41 @@ proves the same contract; see the LLVM parity issue.
 Future default parameters or variadic callables must not introduce a
 second method matching a source-call arity. A future desugaring into
 explicit arity slots must check collision before code generation.
+
+## Class and actor method spelling
+
+The following instance methods all use the identical AST, receiver model and
+`(owner, INSTANCE, name, value-arity)` overload selector:
+
+```ores
+define class One as
+  foo(): void {}
+end
+
+define class Two as
+  foo() -> void ::
+  end
+end
+
+define class Three as
+  mtd foo(): void {}
+end
+
+define class Four as
+  mtd foo() -> void ::
+  end
+end
+```
+
+The `mtd` and older `method` prefixes are **optional, contextual markers**,
+not globally reserved tokens. Inside a class or actor they are interchangeable
+with bare method declarations and do not affect binding or overloading. The
+separate type-alias extension spelling `define mtd ... on Alias` retains its
+existing meaning outside class-member position. A member called `mtd()` stays
+legal without a marker. Static class functions still use `static fnc`, never
+`static mtd`.
+
+End-delimited method bodies require an explicit `-> ReturnType ::` header and
+consume exactly their own `end`; the enclosing class/actor consumes a separate
+`end`. Colon-return braced bodies remain valid. Neither `mtd` nor `::` changes
+explicit/implicit `self` or its exclusion from source-call arity.

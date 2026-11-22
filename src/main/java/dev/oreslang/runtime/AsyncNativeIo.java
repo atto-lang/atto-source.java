@@ -236,43 +236,114 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submitControl(operation, work);
     }
 
-    synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
-        return admit(operation, work, controls, CONTROL_CAPACITY, controlWorkers);
+    <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
+        return admit(operation, work, controls, CONTROL_CAPACITY,
+                controlWorkers, null, null);
     }
 
-    synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
-        return admit(operation, work, pending, capacity, workers);
+    /**
+     * Host-only physical-retirement callback. Unlike an OresFuture terminal
+     * callback, this runs AFTER all completion subscribers and the worker's
+     * actor loan/operation have physically retired. Never call guest code.
+     * A never-admitted/never-started CONTROL task has NO retirement receipt.
+     */
+    <T> OresFuture<T> submitControlWithRetirementHook(
+            String operation, Callable<T> work, Runnable onPhysicallyRetired) {
+        Objects.requireNonNull(onPhysicallyRetired);
+        return admit(operation, work, controls, CONTROL_CAPACITY,
+                controlWorkers, null, onPhysicallyRetired);
+    }
+
+    <T> OresFuture<T> submit(String operation, Callable<T> work) {
+        return admit(operation, work, pending, capacity, workers, null, null);
+    }
+
+    /**
+     * Internal physical I/O admission hook. The callback runs exactly once
+     * only if the operation provably never entered its worker. It runs outside
+     * the admission monitor, must be short and nonblocking, and NEVER reports
+     * cancellation of work that started or may have written.
+     */
+    <T> OresFuture<T> submitWithNonStartHook(
+            String operation, Callable<T> work, Runnable onNeverStarted) {
+        Objects.requireNonNull(onNeverStarted);
+        return admit(operation, work, pending, capacity,
+                workers, onNeverStarted, null);
     }
 
     private <T> OresFuture<T> admit(String operation, Callable<T> work,
-            Set<Operation<?>> admitted, int limit, ThreadPoolExecutor executor) {
+            Set<Operation<?>> admitted, int limit, ThreadPoolExecutor executor,
+            Runnable onNeverStarted, Runnable onPhysicallyRetired) {
         Objects.requireNonNull(operation);
         Objects.requireNonNull(work);
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        if (closed || admitted.size() >= limit) {
-            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
-            result.failFromRuntime(new RejectedExecutionException(
-                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
-            return result;
+        RuntimeException rejected = null;
+        ActorRuntime.ActorId lastRetired = null;
+        synchronized (this) {
+            if (closed || admitted.size() >= limit) {
+                CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
+                rejected = new RejectedExecutionException(
+                        closed ? "I/O context closed" : "I/O admission capacity exhausted");
+            } else {
+                Operation<T> op = new Operation<>(
+                        operation, work, result, admitted,
+                        ActorRuntime.currentActorId().orElse(null),
+                        onNeverStarted, onPhysicallyRetired);
+                admitted.add(op); // Reserve before publishing work to any executor.
+                incrementActorOperationLocked(op.admittedActor);
+                op.queuedAt = CorePerf.start();
+                try {
+                    executor.execute(op);
+                } catch (RuntimeException failure) {
+                    CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
+                    // An executor may enqueue/start a runnable and then throw.
+                    // Only ADMITTED -> CANCELLED_BEFORE_START proves that no
+                    // worker can still touch actor-owned state. If RUNNING
+                    // already won the claim, the physical operation must own
+                    // its Future, loan and final completion notification.
+                    if (op.state.compareAndSet(
+                            OperationState.ADMITTED, OperationState.CANCELLED_BEFORE_START)) {
+                        admitted.remove(op);
+                        lastRetired = decrementActorOperationLocked(op.admittedActor);
+                        rejected = failure;
+                    }
+                }
+            }
         }
-
-        Operation<T> op = new Operation<>(
-                operation, work, result, admitted,
-                ActorRuntime.currentActorId().orElse(null));
-        admitted.add(op); // Reserve before publishing work to any executor.
-        incrementActorOperationLocked(op.admittedActor);
-        long queuedAt = CorePerf.start();
-        op.queuedAt = queuedAt;
+        // Never invoke Future subscribers or actor-finalization callbacks
+        // under the native I/O admission lock. Their callbacks may reenter
+        // actor shutdown and would otherwise deadlock or expose a partial
+        // receipt. A genuine post-entry submitter failure leaves the worker
+        // solely responsible for this Future's physical completion.
         try {
-            executor.execute(op);
-        } catch (RuntimeException failure) {
-            // Rejected admission never owns a worker or physical resource.
-            admitted.remove(op);
-            decrementActorOperationLocked(op.admittedActor);
-            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
-            result.failFromRuntime(failure);
+            if (rejected != null) {
+                // Rejection proves the operation never entered a worker.
+                try {
+                    notifyNeverStarted(onNeverStarted);
+                } finally {
+                    result.failFromRuntime(rejected);
+                }
+            }
+        } finally {
+            notifyActorRetirement(lastRetired);
         }
         return result;
+    }
+
+    private void notifyNeverStarted(Runnable callback) {
+        if (callback == null) return;
+        try {
+            callback.run();
+        } catch (RuntimeException | Error failure) {
+            recordIncomplete(failure);
+            throw failure;
+        }
+    }
+
+    /** For post-seal registration failure: a retained handle is owned by
+     * the quarantined I/O context and must not be closed by its creator. */
+    synchronized boolean retainsRegisteredResource(AutoCloseable resource) {
+        return resourceLoans.containsKey(resource);
     }
 
     private final class Operation<T> implements Runnable {
@@ -281,17 +352,22 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final OresFuture<T> completion;
         private final Set<Operation<?>> owner;
         private final ActorRuntime.ActorId admittedActor;
+        private final Runnable onNeverStarted;
+        private final Runnable onPhysicallyRetired;
         private final AtomicReference<OperationState> state =
                 new AtomicReference<>(OperationState.ADMITTED);
         private long queuedAt;
 
         private Operation(String operation, Callable<T> work, OresFuture<T> completion,
-                Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor) {
+                Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor,
+                Runnable onNeverStarted, Runnable onPhysicallyRetired) {
             this.operation = operation;
             this.work = work;
             this.completion = completion;
             this.owner = owner;
             this.admittedActor = admittedActor;
+            this.onNeverStarted = onNeverStarted;
+            this.onPhysicallyRetired = onPhysicallyRetired;
         }
 
         @Override public void run() {
@@ -336,6 +412,15 @@ public final class AsyncNativeIo implements AutoCloseable {
                 }
                 executingWorker.remove();
                 notifyActorRetirement(retireActor);
+                if (onPhysicallyRetired != null) {
+                    try {
+                        onPhysicallyRetired.run();
+                    } catch (RuntimeException | Error callbackFailure) {
+                        recordIncomplete(callbackFailure);
+                        // An unverified callback must quarantine the context
+                        // rather than convert a file close to an ACK.
+                    }
+                }
             }
             if (failure instanceof VirtualMachineError fatal) throw fatal;
             if (failure instanceof ThreadDeath fatal) throw fatal;
@@ -345,6 +430,14 @@ public final class AsyncNativeIo implements AutoCloseable {
         private void cancelledBeforeStart(Throwable failure) {
             if (!state.compareAndSet(OperationState.ADMITTED,
                     OperationState.CANCELLED_BEFORE_START)) return;
+            // Only the ADMITTED -> CANCELLED_BEFORE_START winner knows
+            // a worker never began. A failed hook quarantines this context
+            // (recordIncomplete) but must not strand the Future's settlement.
+            try {
+                notifyNeverStarted(onNeverStarted);
+            } catch (RuntimeException | Error hookFailure) {
+                // already recorded as incomplete
+            }
             // A Future terminal subscriber may block indefinitely. Deliver
             // never-started cancellation from a detached host notification
             // carrier, never on the close() caller or CONTROL thread. At most

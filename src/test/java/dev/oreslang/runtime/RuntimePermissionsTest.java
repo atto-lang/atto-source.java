@@ -13,6 +13,58 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class RuntimePermissionsTest {
+
+    @Test
+    void lexicalFilesystemPreflightIsMetadataFreeAndFailClosed() throws Exception {
+        Path root = Files.createTempDirectory("ores-lexical-pref-").toRealPath();
+        Path granted = Files.createDirectory(root.resolve("granted")).toRealPath();
+        Path outside = Files.createDirectory(root.resolve("outside")).toRealPath();
+        Files.writeString(outside.resolve("existing.txt"), "secret");
+        Path alias = Files.createSymbolicLink(granted.resolve("redirect"), outside);
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, granted.toString())
+                .withAllowed(RuntimePermissions.Permission.WRITE, granted.toString());
+        // Preflight does not follow a symlink: it can grant *lexical* scope,
+        // while the existing canonical/realpath check independently refuses it.
+        for (String target : java.util.List.of("existing.txt", "missing.txt")) {
+            Path throughAlias = alias.resolve(target);
+            assertDoesNotThrow(() -> permissions.requireLexicalFilesystemPath(
+                    RuntimePermissions.Permission.READ, throughAlias.toString(), "test"));
+            assertFalse(permissions.allows(
+                    RuntimePermissions.Permission.READ, throughAlias.toString()));
+            assertDoesNotThrow(() -> permissions.requireLexicalFilesystemPath(
+                    RuntimePermissions.Permission.WRITE, throughAlias.toString(), "test"));
+        }
+        for (Path denied : java.util.List.of(
+                outside.resolve("existing.txt"), outside.resolve("missing.txt"),
+                root.resolve("granted-other").resolve("missing.txt"))) {
+            for (RuntimePermissions.Permission permission : java.util.List.of(
+                    RuntimePermissions.Permission.READ, RuntimePermissions.Permission.WRITE)) {
+                SecurityException error = assertThrows(SecurityException.class,
+                        () -> permissions.requireLexicalFilesystemPath(
+                                permission, denied.toString(), "test"));
+                assertTrue(error.getMessage().contains("Oreslang permission denied"));
+            }
+        }
+        RuntimePermissions narrowed = permissions.withDenied(
+                RuntimePermissions.Permission.READ, granted.resolve("denied").toString());
+        assertThrows(SecurityException.class, () -> narrowed.requireLexicalFilesystemPath(
+                RuntimePermissions.Permission.READ, granted.resolve("denied/token.txt").toString(),
+                "test"));
+        assertDoesNotThrow(() -> narrowed.requireLexicalFilesystemPath(
+                RuntimePermissions.Permission.READ, granted.resolve("safe.txt").toString(), "test"));
+        assertThrows(SecurityException.class, () -> RuntimePermissions.denyAll()
+                .requireLexicalFilesystemPath(
+                        RuntimePermissions.Permission.READ, granted.resolve("safe.txt").toString(), "test"));
+        assertThrows(IllegalArgumentException.class, () -> permissions.requireLexicalFilesystemPath(
+                RuntimePermissions.Permission.NET, "example.com", "test"));
+        SecurityException invalid = assertThrows(SecurityException.class,
+                () -> permissions.requireLexicalFilesystemPath(RuntimePermissions.Permission.READ,
+                        granted + ((char) 0x1b) + "[31m", "test"));
+        assertTrue(invalid.getMessage().contains("<invalid>"));
+        assertFalse(invalid.getMessage().contains(String.valueOf((char) 0x1b)));
+    }
+
     @Test
     void denyRuleOverridesBroadAllow() throws Exception {
         Path root = Files.createTempDirectory("ores-perm-root-");
@@ -129,8 +181,8 @@ final class RuntimePermissionsTest {
         assertEquals("allowed", Files.readString(allowed));
 
         Files.writeString(source, """
-                pub fnc main(): void {
-                  fs.write_text("%s", "blocked");
+                pub routine main(): void {
+                  await fs.write_text("%s", "blocked");
                   return;
                 }
                 """.formatted(escape(denied)));

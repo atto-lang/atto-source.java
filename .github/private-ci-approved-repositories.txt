@@ -5,3 +5,6 @@
 # Slug or numeric-ID changes require a new exact independent review.
 # Proposed narrow private carrier for v3 exact-tree tests; requires exact independent review before merge.
 # Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+
+# Unreviewed destination proposal from PR #2137 was deactivated.
+# See Git history and PR #2137 for immutable candidate details; no live grant.

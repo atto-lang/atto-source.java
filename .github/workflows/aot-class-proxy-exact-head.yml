@@ -1,0 +1,51 @@
+name: AOT class proxy exact-head guest gate
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/StaticProxySynthesis.java'
+      - 'src/main/java/dev/oreslang/ast/StaticProxyHookEffectClosure.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/test/java/dev/oreslang/AotClassProxyLanguageTest.java'
+      - 'scripts/VerifyAotProxyReports.java'
+      - '.github/workflows/aot-class-proxy-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proxy-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact checked revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          printf 'ATTO_PROXY_HEAD=%s\n' "$ACTUAL_SHA"
+          git rev-parse HEAD^{tree}
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute compiler-backed proxy guest and negative tests
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true -Dtest=AotClassProxyLanguageTest test
+      - name: Require a nonempty Surefire receipt
+        run: |
+          set -euo pipefail
+          test -s target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml
+          java scripts/VerifyAotProxyReports.java

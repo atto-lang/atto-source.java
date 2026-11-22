@@ -1,0 +1,5 @@
+define module workers as
+  pub define actor Worker as worker;
+  define pub mtd get_count(Worker w)(int value): int { return value; }
+  define pub mtd get_count(Worker w)(String value): int { return 42; }
+end

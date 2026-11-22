@@ -100,7 +100,7 @@ final class GeneratorLanguageTest {
                   val IteratorResult<int> pulled = await asynchronous.next();
                   stdio.stdout.write(pulled.value.unwrap());
                   stdio.stdout.write(":");
-                  asynchronous.close();
+                  await asynchronous.close();
                   val IteratorResult<int> closed = await asynchronous.next();
                   stdio.stdout.write(closed.done);
                   stdio.stdout.write(":");
@@ -492,12 +492,65 @@ final class GeneratorLanguageTest {
                   pub val int value = 1;
                 end
 
-                generator fnc bad(&Box box): int {
+                generator fnc bad(borrow Box box): int {
                   yield box.value;
                   return;
                 }
                 """));
     }
+
+    @Test
+    void yieldExpressionCannotCreateOrDelegateBorrowAcrossSuspension() {
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                          pub val int value = 1;
+                        end
+                        fnc gen* bad(Box box): Iterator<borrow Box> {
+                          yield rt borrow box;
+                          return;
+                        }
+                        """));
+        assertTrue(direct.getMessage().contains("borrowed references cannot be yielded"),
+                direct::getMessage);
+
+        IllegalArgumentException delegated = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                          pub val int value = 1;
+                        end
+                        fnc gen* bad(Iterator<borrow Box> source): Iterator<borrow Box> {
+                          yield* source;
+                          return;
+                        }
+                        """));
+        assertTrue(delegated.getMessage().contains("borrowed yield*")
+                        || delegated.getMessage().contains("borrowed iterables"),
+                delegated::getMessage);
+    }
+
+
+    @Test
+    void yieldingMoveOnlyValueTransfersOwnershipExactlyOnce() {
+        IllegalArgumentException moved = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Box as
+                          pub val int value = 1;
+                        end
+                        fnc gen* bad(Box box): Iterator<Box> {
+                          yield box;
+                          yield box;
+                          return;
+                        }
+                        """));
+        assertTrue(moved.getMessage().contains("moved")
+                        || moved.getMessage().contains("move"),
+                moved::getMessage);
+    }
+
 
     @Test
     void synchronousForAwaitAdapterStillRejectsLiveBorrows() {
@@ -507,7 +560,7 @@ final class GeneratorLanguageTest {
                 end
                 async fnc bad(): void {
                   val Box box = new Box();
-                  val &Box borrowed = &box;
+                  val borrow Box borrowed = rt borrow box;
                   for await const value of [1, 2] { stdio.stdout.write(value); }
                   stdio.stdout.write(borrowed.value);
                   return;
@@ -515,6 +568,208 @@ final class GeneratorLanguageTest {
                 """));
         assertTrue(error.getMessage().contains("cannot suspend for async iteration"), error::getMessage);
     }
+
+    @Test
+    void canonicalBareGenStarExecutesWithoutFncKeyword() throws Exception {
+        assertEquals("42", run("""
+                pub gen* values(): Iterator<int> {
+                  yield 20;
+                  yield 22;
+                  return;
+                }
+                pub routine main(): void {
+                  let int total = 0;
+                  for const value of values() {
+                    total = total + value;
+                  }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void canonicalAsyncGenStarExecutesAsAsyncIterator() throws Exception {
+        assertEquals("42", run("""
+                pub async gen* values(): AsyncIterator<int> {
+                  yield 20;
+                  yield 22;
+                  return;
+                }
+                pub async routine main(): void {
+                  let int total = 0;
+                  for await const value of values() {
+                    total = total + value;
+                  }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void canonicalSuspendGenStarUsesAsyncIteratorAndCanCooperate() throws Exception {
+        assertEquals("42", run("""
+                pub suspend gen* values(): AsyncIterator<int> {
+                  rt cooperate;
+                  yield 20;
+                  rt cooperate;
+                  yield 22;
+                  return;
+                }
+                pub async routine main(): void {
+                  let int total = 0;
+                  for await const value of values() {
+                    total = total + value;
+                  }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void suspendGeneratorCanCallSuspendingFunctionWithoutFutureWrapping() throws Exception {
+        assertEquals("42", run("""
+                suspend fnc later(int value): int {
+                  rt cooperate;
+                  return value;
+                }
+                pub suspend gen* values(): AsyncIterator<int> {
+                  yield later(20);
+                  yield later(22);
+                  return;
+                }
+                pub async routine main(): void {
+                  let int total = 0;
+                  for await const value of values() {
+                    total = total + value;
+                  }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void structuralParameterCannotSurvivePlainSuspendCallableOrMethod() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                  pub val int value = 1;
+                end
+                suspend fnc bad(structural Box box): int {
+                  rt cooperate;
+                  return box.value;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                  pub val int value = 1;
+                end
+                define class Worker as
+                  pub suspend use(structural Box box): int {
+                    rt cooperate;
+                    return box.value;
+                  }
+                end
+                """));
+    }
+
+
+    @Test
+    void genericGeneratorTypingIsExplicitAndContinuationSafe() {
+        OresCompiler.parseAndTypeCheck("""
+                pub gen* one<T>(T value): Iterator<T> {
+                  yield value;
+                  return;
+                }
+                """);
+
+        IllegalArgumentException asynchronous = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async gen* one<T>(T value): AsyncIterator<T> {
+                          yield value;
+                          return;
+                        }
+                        """));
+        assertTrue(asynchronous.getMessage().contains("generic continuation-backed"),
+                asynchronous::getMessage);
+
+        IllegalArgumentException suspendable = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub suspend gen* one<T>(T value): AsyncIterator<T> {
+                          yield value;
+                          return;
+                        }
+                        """));
+        assertTrue(suspendable.getMessage().contains("generic continuation-backed"),
+                suspendable::getMessage);
+
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub gen* missing_type() {
+                  yield 1;
+                  return;
+                }
+                """));
+    }
+
+
+    @Test
+    void canonicalGeneratorProtocolMismatchesStillFailClosed() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub gen* values(): AsyncIterator<int> {
+                  yield 1;
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async gen* values(): Iterator<int> {
+                  yield 1;
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub suspend gen* values(): Iterator<int> {
+                  yield 1;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void legacyGeneratorCompatibilitySpellingsRemainExecutable() throws Exception {
+        assertEquals("42", run("""
+                fnc gen* first(): Iterator<int> {
+                  yield 10;
+                  return;
+                }
+                generator routine second(): int {
+                  yield 10;
+                  return;
+                }
+                routine generator* third(): Iterator<int> {
+                  yield 10;
+                  return;
+                }
+                async fnc gen* fourth(): AsyncIterator<int> {
+                  yield 12;
+                  return;
+                }
+                pub async routine main(): void {
+                  let int total = 0;
+                  for const value of first() { total = total + value; }
+                  for const value of second() { total = total + value; }
+                  for const value of third() { total = total + value; }
+                  for await const value of fourth() { total = total + value; }
+                  stdio.stdout.write(total);
+                  return;
+                }
+                """));
+    }
+
 
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();

@@ -13,3 +13,18 @@ The modifier pair `async suspends` is invalid. The synchronous-looking `*_blocki
 **Compatibility caveat:** Legacy unannotated `fnc` bodies containing an explicit `await`, `readch`, or blocking `select` are still accepted; strict enforcement of no-suspension for all ordinary functions requires migration of existing source files and tests. Dynamic callable effects, imported signature effects, and callbacks are not fully enforced yet.
 
 **Runtime caveat:** Existing Java/Graal source task lowering recognizes actual `await`/channel/select suspension and recursively checks called function bodies. Explicit suspends metadata is not yet used as a guaranteed independent suspension-lowering trigger. Host I/O can currently be offloaded to virtual threads and is not guaranteed kernel-level nonblocking. The native LLVM frontend still rejects unsupported suspension constructs. No end-to-end native LLVM support is implied by this change.
+
+## Staged strict-effect migration — nested-wrapper test coverage
+
+The guest programs in `FutureCompositionLanguageTest` and the positive
+`NestedWrapperSemanticsContractTest` Future cases now explicitly annotate
+their suspending `main` callable. These are source-level test changes and
+must pass an exact-head guest/JUnit run before certification.
+
+Do **not** turn on a global `await` rejection for ordinary `fnc` yet:
+the compatibility caveat above remains in force for legacy source.
+The separate semantic-reconciliation target
+`ordinary-fnc-await` expects `E_SUSPENSION_EFFECT` eventually, but that
+diagnostic and the required migration/inference for imported callables,
+callback effects, and existing tests are not implemented. A parser rejection
+or zero-step CI job cannot satisfy that target.

@@ -1,0 +1,99 @@
+// Optional Oreslang-native, pure static-layout advisory predicates.
+// This package consumes typed/compiler-proven evidence supplied by callers.
+// It does NOT parse source text, change a physical layout, or grant access.
+// Unknown facts must be rejected or withheld by the producer before calling.
+// These are preliminary semantic kernels for eventual self-hosted analysis.
+define module LayoutAdvice as
+
+  // Returns a stable diagnostic code or "" if evidence is insufficient.
+  pub fnc selective_aos_candidate(
+    bool hot, int rows, int fields, int accessed_bytes, int record_bytes,
+    bool dense, bool sequential, bool relocatable,
+    bool stable_address, bool whole_record
+  ): String {
+    if !hot; do return ""; fi
+    if rows < 128; do return ""; fi
+    if fields < 4; do return ""; fi
+    if accessed_bytes <= 0 || record_bytes <= 0; do return ""; fi
+    if accessed_bytes > record_bytes; do return ""; fi
+    if !dense || !sequential || !relocatable; do return ""; fi
+    if stable_address || whole_record; do return ""; fi
+    // Divide instead of multiplying accessed_bytes: no overflow.
+    if accessed_bytes <= record_bytes / 2; do
+      return "ORES-LAYOUT101";
+    fi
+    return "";
+  }
+
+  pub fnc soa_whole_record_candidate(
+    bool hot, int rows, bool dense, bool sequential, bool whole_record
+  ): String {
+    if !hot || rows < 128; do return ""; fi
+    if dense && sequential && whole_record; do
+      return "ORES-LAYOUT131";
+    fi
+    return "";
+  }
+
+  // Unknown tile/vector widths are *not* represented by plausible defaults.
+  // A typed producer computes the vector-width-only candidate tile.
+  pub fnc aosoa_tile_candidate(
+    bool hot, int rows, int current_tile, int candidate_tile
+  ): String {
+    if !hot || rows < 128; do return ""; fi
+    if current_tile < 2 || candidate_tile < 2 || candidate_tile > 64; do return ""; fi
+    if current_tile < candidate_tile / 2; do
+      return "ORES-LAYOUT133";
+    fi
+    // candidate_tile is bounded to 64, so multiplying by 4 is safe.
+    if current_tile > candidate_tile * 4; do
+      return "ORES-LAYOUT133";
+    fi
+    return "";
+  }
+
+  // SoAoS is intentionally distinct from AoSoA: rows contain fixed-width
+  // subrecords inside independent arrays of groups. This advisory only flags
+  // a known touched group wider than a known cache line for selective streams.
+  pub fnc soaos_group_candidate(
+    bool hot, int rows, bool dense, bool sequential, bool whole_record,
+    int touched_group_bytes, int cache_line_bytes
+  ): String {
+    if !hot || rows < 128 || !dense || !sequential || whole_record; do return ""; fi
+    if touched_group_bytes <= 0 || cache_line_bytes < 16; do return ""; fi
+    if touched_group_bytes > cache_line_bytes; do
+      return "ORES-LAYOUT136";
+    fi
+    return "";
+  }
+
+  pub fnc dense_ecs_candidate(
+    bool hot, int rows, bool dense, bool sequential,
+    bool stable_membership, bool independent_component_passes
+  ): String {
+    if !hot || rows < 128; do return ""; fi
+    if dense && sequential && stable_membership; do
+      if !independent_component_passes; do
+        return "ORES-LAYOUT134";
+      fi
+    fi
+    return "";
+  }
+
+  // Compare using division and a bounded product to avoid overflow.
+  pub fnc structural_churn_candidate(
+    bool hot, bool ecs_layout, int rows, int changes
+  ): String {
+    if !hot || !ecs_layout || rows < 128 || changes < 0; do return ""; fi
+    if changes > rows / 8; do
+      return "ORES-LAYOUT135";
+    fi
+    if changes == rows / 8; do
+      if rows / 8 * 8 == rows; do
+        return "ORES-LAYOUT135";
+      fi
+    fi
+    return "";
+  }
+
+end

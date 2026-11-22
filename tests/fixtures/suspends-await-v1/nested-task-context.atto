@@ -1,0 +1,27 @@
+// Canonical AttoLang spelling: suspends/await; no second async effect.
+suspends fnc leaf(): int {
+  let Future<int> pending = task {
+    rt cooperate;
+    return 40;
+  };
+  return await pending;
+}
+
+suspends fnc middle(): int {
+  val int base = leaf();
+  return base + 2;
+}
+
+pub suspends fnc main(): void {
+  task context(#request, "req-7") {
+    let Future<int> child = task {
+      rt cooperate;
+      return middle();
+    };
+    val int answer = await child;
+    stdio.stdout.write(answer);
+    stdio.stdout.write("|");
+    stdio.stdout.write(task_context(#request).unwrap_or("missing"));
+  }
+  return;
+}

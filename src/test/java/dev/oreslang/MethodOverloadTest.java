@@ -1184,4 +1184,44 @@ final class MethodOverloadTest {
         }
         return output.toString(StandardCharsets.UTF_8);
     }
+    @Test
+    void contextualMtdAndEndDelimitedBodiesDispatchByValueArityAtRuntime() throws Exception {
+        String output = run("""
+                define module demo
+                  define class Choice as
+                    pub mtd select(): int { return 2; }
+                    pub mtd select(int value) -> int ::
+                      return value + 3;
+                    end
+                    pub select(int first, int second): int {
+                      return first + second;
+                    }
+                  end
+                end
+
+                pub routine main(): void {
+                  val c = new demo.Choice();
+                  stdio.stdout.write(c.select());
+                  stdio.stdout.write(c.select(4));
+                  stdio.stdout.write(c.select(5, 6));
+                }
+                """);
+        assertEquals("2711", output);
+    }
+
+    @Test
+    void optionalMtdCannotCreateDuplicateReceiverOrReturnTypeOverloads() {
+        for (String members : new String[] {
+                "foo(): int { return 1; } mtd foo() -> int :: return 2; end",
+                "mtd foo(self): int { return 1; } foo(): int { return 2; }",
+                "foo(int value): int { return value; } mtd foo(int value) -> String :: return \"x\"; end",
+                "mtd foo(self, int value): int { return value; } foo(int value): int { return value; }"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "define class Conflict as " + members + " end")), members);
+            assertTrue(error.getMessage().contains("arity"), error::getMessage);
+        }
+    }
+
 }
