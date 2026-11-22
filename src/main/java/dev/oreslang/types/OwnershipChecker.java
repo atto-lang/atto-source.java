@@ -4,6 +4,7 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.imports.StandardCryptoNamespace;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -1692,6 +1693,21 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr builtin
+                    && builtin.name().equals("crypto")
+                    && scope.lookup("crypto") == null
+                    && checkedProgram.imports().stream().anyMatch(
+                            StandardCryptoNamespaceImportPredicate.INSTANCE)) {
+                if (Set.of("authentication_failed", "invalid_input",
+                        "key_exhausted").contains(member.member())) {
+                    Ast.TypeRef error = Ast.TypeRef.simple("CryptoError");
+                    return new ValueInfo(error, ValueKind.COPY, null);
+                }
+                // Policy and host functions must be invoked through checked
+                // direct calls; no affine key-bearing callable may escape.
+                throw error("std.crypto member '" + member.member()
+                        + "' is direct-call-only");
+            }
             if (member.receiver() instanceof Ast.NameExpr qualifier
                     && (qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
                             || qualifier.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE))) {
@@ -2556,6 +2572,12 @@ public final class OwnershipChecker {
                 return new ValueInfo(result, ValueKind.COPY, null);
             }
         }
+        if (call.callee() instanceof Ast.MemberExpr cryptoCall
+                && cryptoCall.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("crypto")
+                && scope.lookup("crypto") == null) {
+            return checkBuiltinAeadCall(cryptoCall.member(), call.arguments(), scope);
+        }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -3167,6 +3189,85 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private enum StandardCryptoNamespaceImportPredicate
+            implements java.util.function.Predicate<Ast.ImportDecl> {
+        INSTANCE;
+        @Override public boolean test(Ast.ImportDecl imported) {
+            return ImportRules.isStandardCryptoImport(imported);
+        }
+    }
+
+    private ValueInfo checkBuiltinAeadCall(
+            String member, List<Ast.Expr> args, Scope scope) {
+        if (checkedProgram.imports().stream().noneMatch(
+                dev.oreslang.imports.ImportRules::isStandardCryptoImport)) {
+            throw error("crypto namespace requires explicit import from std.crypto");
+        }
+        // Library policy is authored in two separate .atto units and
+        // compiled into one source-owned namespace; ownership semantics
+        // come from their checked signatures rather than host guesses.
+        StandardCryptoNamespace.Signature policy =
+                StandardCryptoNamespace.signature(member);
+        if (policy != null) {
+            if (args.size() != policy.arguments().size()) {
+                throw error("crypto." + member + " expects "
+                        + policy.arguments().size() + " argument(s)");
+            }
+            for (int i = 0; i < args.size(); i++) {
+                ValueInfo value = checkExpr(args.get(i), scope, false);
+                if (isBorrowValue(value) || containsBorrowType(value.type)
+                        || containsMutexGuardType(value.type)
+                        || !value.type.name().equals(policy.arguments().get(i).name())
+                        || !value.type.arguments().isEmpty()) {
+                    throw error("crypto." + member + " requires primitive int input at " + i);
+                }
+            }
+            Ast.TypeRef result = policy.result();
+            return new ValueInfo(result, kindOfType(result), null);
+        }
+        Ast.TypeRef key = Ast.TypeRef.simple("AeadKey");
+        Ast.TypeRef bytes = new Ast.TypeRef(
+                "List", List.of(Ast.TypeRef.simple("int")), false);
+        Ast.TypeRef resultType = new Ast.TypeRef(
+                "Result", List.of(bytes, Ast.TypeRef.simple("CryptoError")), false);
+        int arity;
+        Ast.TypeRef returnType;
+        switch (member) {
+            case "sha256" -> { arity = 1; returnType = bytes; }
+            case "hmac_sha256", "constant_time_equals" -> {
+                arity = 2;
+                returnType = member.equals("constant_time_equals")
+                        ? Ast.TypeRef.simple("bool") : bytes;
+            }
+            case "pbkdf2_hmac_sha256" -> { arity = 4; returnType = bytes; }
+            case "base64_encode" -> { arity = 1; returnType = Ast.TypeRef.simple("String"); }
+            case "base64_decode", "secure_random_bytes" -> { arity = 1; returnType = bytes; }
+            case "aead_new_key" -> { arity = 1; returnType = key; }
+            case "aead_seal", "aead_open" -> { arity = 3; returnType = resultType; }
+            case "aead_close" -> { arity = 1; returnType = Ast.TypeRef.simple("void"); }
+            default -> throw error("unknown std.crypto member '" + member + "'");
+        }
+        if (args.size() != arity) throw error("crypto." + member
+                + " expects " + arity + " argument(s)");
+        for (int i = 0; i < args.size(); i++) {
+            // All guest crypto payload reads are non-consuming. Sealing/opening
+            // uses the same owned key, and aead_close retires it explicitly.
+            boolean consuming = member.equals("aead_close") && i == 0;
+            ValueInfo value = checkExpr(args.get(i), scope, consuming);
+            if (isBorrowValue(value) || containsBorrowType(value.type)
+                    || containsMutexGuardType(value.type)) {
+                throw error("crypto." + member + " cannot retain a borrow or guard");
+            }
+            if (i == 0 && (member.equals("aead_seal")
+                    || member.equals("aead_open")
+                    || member.equals("aead_close"))
+                    && !value.type.name().equals("AeadKey")) {
+                throw error("crypto." + member + " requires an opaque AeadKey");
+            }
+        }
+        return new ValueInfo(returnType, kindOfType(returnType), null);
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
@@ -6857,7 +6958,7 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void",
-                    "SelectCase","SelectSet","OptionUnwrapError"
+                    "SelectCase","SelectSet","OptionUnwrapError","CryptoError"
                     -> type.arguments().isEmpty();
             case "SharedMutex", "Channel" -> type.arguments().size() == 1;
             case "ActorRef" -> isVerifiedActorReference(type);

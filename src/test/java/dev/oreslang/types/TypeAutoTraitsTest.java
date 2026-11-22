@@ -9,6 +9,25 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class TypeAutoTraitsTest {
     @Test
+    void cryptoSecretsCannotBeCopiedOrMovedAcrossActorsOrTasks() {
+        for (String opaque : List.of("AeadKey", "SecretBytes")) {
+            var secret = new Types.Named(opaque, List.of());
+            var traits = TypeAutoTraits.inferClosed(secret);
+            assertFalse(traits.send(), opaque + " cannot cross actor/task boundaries");
+            assertFalse(traits.sync(), opaque + " is not synchronously shareable");
+            assertFalse(traits.share(), opaque + " has no share/serialization ABI");
+            var wrapped = TypeAutoTraits.inferClosed(
+                    new Types.Named("Result", List.of(secret, Types.Primitive.STRING)));
+            assertFalse(wrapped.send(), "Result must not launder " + opaque);
+            assertFalse(wrapped.sync(), "Result must not launder " + opaque);
+        }
+        var error = TypeAutoTraits.inferClosed(new Types.Named("CryptoError", List.of()));
+        assertFalse(error.send(), "CryptoError actor wire identity is not verified yet");
+        assertFalse(error.sync());
+        assertFalse(error.share());
+    }
+
+    @Test
     void unloweredOwnershipAndAtomicTypesCannotGrantWorkerPrivileges() {
         var integer = Types.Primitive.INT;
         for (String intrinsic : List.of(

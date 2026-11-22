@@ -142,6 +142,12 @@ public final class TypeAutoTraits {
             return Optional.of(NONE);
 
         return switch (named.name()) {
+            // Actor-affine, context-owned secret handles are never Send/Sync/Serializable.
+            // Container auto-traits must not launder either one into a message.
+            case "AeadKey", "SecretBytes" -> Optional.of(NONE);
+            // Immutable locally copyable error, but no serialized actor wire
+            // identity has been admitted yet, so do not infer Send/Sync.
+            case "CryptoError" -> Optional.of(NONE);
             case "$builtin$Symbol", "ActorId", "ActorKind" ->
                     Optional.of(named.arguments().isEmpty() ? SCALAR : NONE);
             case "ActorRef" ->

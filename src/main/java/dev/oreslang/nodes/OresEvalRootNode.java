@@ -7,12 +7,15 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.imports.StandardCryptoNamespace;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.types.ReadonlyShapeProjectionV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.AeadPrimitives;
+import dev.oreslang.runtime.CryptoPrimitives;
 import dev.oreslang.runtime.OresVector;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -338,6 +341,11 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> hostFunctionImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
+        private boolean standardCryptoImported;
+        // Lazily materialized checked Atto source functions. Never looked up
+        // from a caller-controlled path and never registered as an importable
+        // user code image.
+        private volatile Evaluator bundledCryptoPolicy;
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
         private final Map<String, HostClassFacade> hostSymbols = new HashMap<>();
@@ -449,6 +457,13 @@ public final class OresEvalRootNode extends RootNode {
         private void indexImports() {
             for (Ast.ImportDecl imported : program.imports()) {
                 ImportRules.validate(imported);
+                if (ImportRules.isStandardCryptoImport(imported)) {
+                    // Dedicated compiler-managed standard namespace. It is
+                    // resolved by CryptoAeadFacade, never via host lookup or
+                    // a user-supplied code-unit/file path.
+                    standardCryptoImported = true;
+                    continue;
+                }
                 if (ImportRules.isJavaPath(imported.path())) {
                     indexHostImport(imported);
                     continue;
@@ -9239,6 +9254,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                if (name.name().equals("crypto") && standardCryptoImported)
+                    return new CryptoAeadFacade(context, this);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -10716,6 +10733,30 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
             }
+            if (receiver instanceof CryptoAeadFacade crypto) {
+                return switch (name) {
+                    case "sha256" -> (Invokable) crypto::sha256;
+                    case "hmac_sha256" -> (Invokable) crypto::hmacSha256;
+                    case "pbkdf2_hmac_sha256" -> (Invokable) crypto::pbkdf2HmacSha256;
+                    case "base64_encode" -> (Invokable) crypto::base64Encode;
+                    case "base64_decode" -> (Invokable) crypto::base64Decode;
+                    case "secure_random_bytes" -> (Invokable) crypto::secureRandomBytes;
+                    case "constant_time_equals" -> (Invokable) crypto::constantTimeEquals;
+                    case "aead_new_key" -> (Invokable) crypto::newKey;
+                    case "aead_seal" -> (Invokable) crypto::seal;
+                    case "aead_open" -> (Invokable) crypto::open;
+                    case "aead_close" -> (Invokable) crypto::close;
+                    case "authentication_failed" -> CryptoError.AUTHENTICATION_FAILED;
+                    case "invalid_input" -> CryptoError.INVALID_INPUT;
+                    case "key_exhausted" -> CryptoError.KEY_EXHAUSTED;
+                    default -> {
+                        if (StandardCryptoNamespace.hasPolicyMember(name)) {
+                            yield (Invokable) arguments -> crypto.sourcePolicy(name, arguments);
+                        }
+                        throw new IllegalArgumentException("unknown crypto member " + name);
+                    }
+                };
+            }
             if (receiver instanceof EnvFacade environment) {
                 return switch (name) {
                     case "get" -> (Invokable) environment::get;
@@ -11951,6 +11992,51 @@ public final class OresEvalRootNode extends RootNode {
                 return null;
             }
             return exported instanceof ClassFacade klass ? klass : null;
+        }
+
+        private Object invokeBundledCryptoPolicy(String name, List<Object> arguments) {
+            StandardCryptoNamespace.Signature signature =
+                    StandardCryptoNamespace.signature(name);
+            if (signature == null) {
+                throw new IllegalArgumentException("unknown std.crypto source policy " + name);
+            }
+            if (arguments.size() != signature.arguments().size()) {
+                throw new IllegalArgumentException(
+                        "std.crypto." + name + " expects "
+                                + signature.arguments().size() + " argument(s)");
+            }
+            // Full frontend admission is required for source callers, but a
+            // direct host CallTarget invocation could supply unchecked Java
+            // values. Enforce the same closed scalar ABI at this final boundary.
+            for (int i = 0; i < arguments.size(); i++) {
+                Object argument = arguments.get(i);
+                if (!(argument instanceof Long || argument instanceof Integer)) {
+                    throw new IllegalArgumentException(
+                            "std.crypto." + name + " expects owned integer at argument " + i);
+                }
+            }
+            // The source program is parsed, typechecked, and ownership checked
+            // exactly once from the Maven-packaged .atto source resources.
+            // Each guest evaluator gets its own pure policy evaluator and
+            // cannot replace its immutable code with a linked user unit.
+            Evaluator policy = bundledCryptoPolicy;
+            if (policy == null) {
+                synchronized (this) {
+                    policy = bundledCryptoPolicy;
+                    if (policy == null) {
+                        Ast.Program checked = StandardCryptoNamespace.checkedProgram();
+                        policy = new Evaluator(
+                                checked, context, "builtin/std.crypto.policy.atto",
+                                Ast.CheckedTaskCaptures.requireProgramEpoch(checked),
+                                checkedI64Arithmetic);
+                        bundledCryptoPolicy = policy;
+                    }
+                }
+            }
+            // These are exclusively ordinary, synchronous, public Atto fncs,
+            // so invoking the checked body does not require code-unit linking,
+            // untrusted filesystem resolution, or startup scheduling.
+            return policy.invokePublic(name, arguments.toArray());
         }
 
         private Object importedValue(String name) {
@@ -14489,6 +14575,18 @@ public final class OresEvalRootNode extends RootNode {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
         @Override public String toString(){return CycleSafeDisplay.render(this);}
     }
+    // Nonforgeable, finite guest-facing error identities; provider exception
+    // messages and key material never become an Err payload.
+    private enum CryptoError {
+        AUTHENTICATION_FAILED,
+        INVALID_INPUT,
+        KEY_EXHAUSTED;
+
+        @Override public String toString() {
+            return "crypto." + name().toLowerCase(java.util.Locale.ROOT);
+        }
+    }
+
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){
             return value == null ? List.of() : List.of(value);
@@ -14630,6 +14728,275 @@ public final class OresEvalRootNode extends RootNode {
                     context,
                     requireString(args.get(0), "http.post_text url"),
                     requireString(args.get(1), "http.post_text body"));
+        }
+    }
+
+    // The host implementation is not an arbitrary FFI export. The only guest
+    // entrypoints are these four immutable, typed compiler-owned calls.
+    private record CryptoAeadFacade(OresContext context, Evaluator evaluator) {
+        private Object sourcePolicy(String member, List<Object> arguments) {
+            return evaluator.invokeBundledCryptoPolicy(member, arguments);
+        }
+
+        private static final int GUEST_MAX_BYTES = 1024 * 1024;
+        private static final int NONCE_BYTES = AeadPrimitives.NONCE_BYTES;
+        private static final int TAG_BYTES = AeadPrimitives.TAG_BYTES;
+
+        private static int integer(Object value, String label) {
+            if (!(value instanceof Integer || value instanceof Long)) {
+                throw new IllegalArgumentException(label + " must be an int");
+            }
+            long number = ((Number) value).longValue();
+            if (number < Integer.MIN_VALUE || number > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(label + " out of range");
+            }
+            return (int) number;
+        }
+
+        private static byte[] byteList(Object value, int max, String label) {
+            if (!(value instanceof List<?> values) || values.size() > max) {
+                throw new IllegalArgumentException(label + " must be a bounded List<int>");
+            }
+            byte[] out = new byte[values.size()];
+            try {
+                for (int i = 0; i < values.size(); i++) {
+                    Object element = values.get(i);
+                    if (!(element instanceof Integer || element instanceof Long)) {
+                        throw new IllegalArgumentException(label + " must contain integer bytes");
+                    }
+                    long octet = ((Number) element).longValue();
+                    if (octet < 0 || octet > 255) {
+                        throw new IllegalArgumentException(label + " byte outside 0..255");
+                    }
+                    out[i] = (byte) octet;
+                }
+                return out;
+            } catch (RuntimeException ex) {
+                java.util.Arrays.fill(out, (byte) 0);
+                throw ex;
+            }
+        }
+
+        private static ArrayList<Long> guestBytes(byte[] bytes) {
+            ArrayList<Long> out = new ArrayList<>(bytes.length);
+            for (byte b : bytes) out.add((long) (b & 255));
+            return out;
+        }
+
+        private void requireCrypto(String operation) {
+            context.requireCapability(IsolatePolicy.Capability.CRYPTO, operation);
+        }
+
+        // These functions preserve the exact bounded cryptographic primitive
+        // implementations from PR #1367; the guest-facing byte conversions
+        // are intentionally the only adaptation. Never fall through to Java FFI.
+        private Object sha256(List<Object> arguments) {
+            requireCrypto("crypto.sha256");
+            requireOne(arguments, "crypto.sha256");
+            byte[] message = byteList(arguments.getFirst(),
+                    GUEST_MAX_BYTES, "SHA-256 input");
+            byte[] digest = null;
+            try {
+                digest = CryptoPrimitives.sha256(message);
+                return guestBytes(digest);
+            } finally {
+                java.util.Arrays.fill(message, (byte) 0);
+                if (digest != null) java.util.Arrays.fill(digest, (byte) 0);
+            }
+        }
+
+        private Object hmacSha256(List<Object> arguments) {
+            requireCrypto("crypto.hmac_sha256");
+            requireTwo(arguments, "crypto.hmac_sha256");
+            byte[] key = byteList(arguments.get(0),
+                    CryptoPrimitives.MAX_KEY_BYTES, "HMAC key");
+            byte[] message = null;
+            byte[] digest = null;
+            try {
+                message = byteList(arguments.get(1),
+                        GUEST_MAX_BYTES, "HMAC message");
+                digest = CryptoPrimitives.hmacSha256(key, message);
+                return guestBytes(digest);
+            } finally {
+                java.util.Arrays.fill(key, (byte) 0);
+                if (message != null) java.util.Arrays.fill(message, (byte) 0);
+                if (digest != null) java.util.Arrays.fill(digest, (byte) 0);
+            }
+        }
+
+        private Object pbkdf2HmacSha256(List<Object> arguments) {
+            requireCrypto("crypto.pbkdf2_hmac_sha256");
+            if (arguments.size() != 4) throw new IllegalArgumentException(
+                    "crypto.pbkdf2_hmac_sha256 expects password,salt,iterations,output_bytes");
+            byte[] password = byteList(arguments.get(0),
+                    CryptoPrimitives.MAX_KEY_BYTES, "PBKDF2 password");
+            byte[] salt = null;
+            byte[] output = null;
+            try {
+                salt = byteList(arguments.get(1),
+                        CryptoPrimitives.MAX_SALT_BYTES, "PBKDF2 salt");
+                int iterations = integer(arguments.get(2), "PBKDF2 iterations");
+                int count = integer(arguments.get(3), "PBKDF2 output bytes");
+                output = CryptoPrimitives.pbkdf2HmacSha256(password, salt, iterations, count);
+                return guestBytes(output);
+            } finally {
+                java.util.Arrays.fill(password, (byte) 0);
+                if (salt != null) java.util.Arrays.fill(salt, (byte) 0);
+                if (output != null) java.util.Arrays.fill(output, (byte) 0);
+            }
+        }
+
+        private Object base64Encode(List<Object> arguments) {
+            requireCrypto("crypto.base64_encode");
+            requireOne(arguments, "crypto.base64_encode");
+            byte[] source = byteList(arguments.getFirst(),
+                    GUEST_MAX_BYTES, "Base64 input");
+            try {
+                return CryptoPrimitives.base64Encode(source);
+            } finally {
+                java.util.Arrays.fill(source, (byte) 0);
+            }
+        }
+
+        private Object base64Decode(List<Object> arguments) {
+            requireCrypto("crypto.base64_decode");
+            requireOne(arguments, "crypto.base64_decode");
+            String encoded = requireString(arguments.getFirst(), "Base64 input");
+            // Preflight encoded string length before decoding to prevent
+            // enormous boxed List<int> results in small actor heaps.
+            if (encoded.length() > (GUEST_MAX_BYTES * 4L / 3L) + 8L) {
+                throw new IllegalArgumentException("Base64 decoded output exceeds guest budget");
+            }
+            byte[] result = CryptoPrimitives.base64Decode(encoded);
+            try {
+                if (result.length > GUEST_MAX_BYTES) {
+                    throw new IllegalArgumentException(
+                            "Base64 decoded output exceeds guest budget");
+                }
+                return guestBytes(result);
+            } finally {
+                java.util.Arrays.fill(result, (byte) 0);
+            }
+        }
+
+        private Object secureRandomBytes(List<Object> arguments) {
+            requireCrypto("crypto.secure_random_bytes");
+            requireOne(arguments, "crypto.secure_random_bytes");
+            byte[] result = CryptoPrimitives.secureRandomBytes(
+                    integer(arguments.getFirst(), "random byte count"));
+            try {
+                return guestBytes(result);
+            } finally {
+                java.util.Arrays.fill(result, (byte) 0);
+            }
+        }
+
+        private Object constantTimeEquals(List<Object> arguments) {
+            requireCrypto("crypto.constant_time_equals");
+            requireTwo(arguments, "crypto.constant_time_equals");
+            byte[] a = byteList(arguments.get(0),
+                    GUEST_MAX_BYTES, "comparison left");
+            byte[] b = null;
+            try {
+                b = byteList(arguments.get(1),
+                        GUEST_MAX_BYTES, "comparison right");
+                return CryptoPrimitives.constantTimeEquals(a, b);
+            } finally {
+                java.util.Arrays.fill(a, (byte) 0);
+                if (b != null) java.util.Arrays.fill(b, (byte) 0);
+            }
+        }
+
+        private AeadPrimitives.Key ownedKey(Object value, String operation) {
+            if (!(value instanceof AeadPrimitives.Key key)) {
+                throw new IllegalArgumentException(operation + " needs an opaque AeadKey");
+            }
+            context.requireCryptoKey(key, operation);
+            return key;
+        }
+
+        private Object newKey(List<Object> arguments) {
+            requireOne(arguments, "crypto.aead_new_key");
+            return context.newCryptoKey(integer(arguments.getFirst(), "AEAD algorithm"));
+        }
+
+        // Returns Result<List<int>,CryptoError> containing [nonce | ciphertext | full tag].
+        private Object seal(List<Object> arguments) {
+            if (arguments.size() != 3) throw new IllegalArgumentException(
+                    "crypto.aead_seal expects key, aad, plaintext");
+            AeadPrimitives.Key key = ownedKey(arguments.get(0), "crypto.aead_seal");
+            byte[] aad = null;
+            byte[] plaintext = null;
+            byte[] nonce = null;
+            byte[] ciphertext = null;
+            byte[] envelope = null;
+            try {
+                aad = byteList(arguments.get(1), AeadPrimitives.MAX_AAD_BYTES, "AEAD AAD");
+                plaintext = byteList(arguments.get(2), GUEST_MAX_BYTES, "AEAD plaintext");
+                AeadPrimitives.Sealed sealed = key.seal(aad, plaintext);
+                nonce = sealed.nonce();
+                ciphertext = sealed.ciphertext();
+                envelope = new byte[nonce.length + ciphertext.length];
+                System.arraycopy(nonce, 0, envelope, 0, nonce.length);
+                System.arraycopy(ciphertext, 0, envelope, nonce.length, ciphertext.length);
+                return new ResultValue(true, guestBytes(envelope));
+            } catch (AeadPrimitives.NonceExhaustedException exhausted) {
+                return new ResultValue(false, CryptoError.KEY_EXHAUSTED);
+            } catch (IllegalArgumentException malformed) {
+                return new ResultValue(false, CryptoError.INVALID_INPUT);
+            } finally {
+                if (aad != null) java.util.Arrays.fill(aad, (byte) 0);
+                if (plaintext != null) java.util.Arrays.fill(plaintext, (byte) 0);
+                if (nonce != null) java.util.Arrays.fill(nonce, (byte) 0);
+                if (ciphertext != null) java.util.Arrays.fill(ciphertext, (byte) 0);
+                if (envelope != null) java.util.Arrays.fill(envelope, (byte) 0);
+            }
+        }
+
+        // Returns Result<List<int>,CryptoError>; malformed data and tampered tags
+        // are indistinguishable to the caller. No unauthenticated plaintext leaks.
+        private Object open(List<Object> arguments) {
+            if (arguments.size() != 3) throw new IllegalArgumentException(
+                    "crypto.aead_open expects key, aad, sealed_envelope");
+            AeadPrimitives.Key key = ownedKey(arguments.get(0), "crypto.aead_open");
+            byte[] aad = null;
+            byte[] envelope = null;
+            byte[] nonce = null;
+            byte[] ciphertext = null;
+            byte[] plaintext = null;
+            try {
+                aad = byteList(arguments.get(1), AeadPrimitives.MAX_AAD_BYTES, "AEAD AAD");
+                envelope = byteList(arguments.get(2),
+                        GUEST_MAX_BYTES + NONCE_BYTES + TAG_BYTES, "AEAD envelope");
+                if (envelope.length < NONCE_BYTES + TAG_BYTES) {
+                    return new ResultValue(false, CryptoError.AUTHENTICATION_FAILED);
+                }
+                nonce = java.util.Arrays.copyOfRange(envelope, 0, NONCE_BYTES);
+                ciphertext = java.util.Arrays.copyOfRange(envelope, NONCE_BYTES, envelope.length);
+                try {
+                    plaintext = key.open(nonce, aad, ciphertext);
+                } catch (AeadPrimitives.AuthenticationException badTag) {
+                    return new ResultValue(false, CryptoError.AUTHENTICATION_FAILED);
+                }
+                return new ResultValue(true, guestBytes(plaintext));
+            } catch (IllegalArgumentException malformed) {
+                return new ResultValue(false, CryptoError.AUTHENTICATION_FAILED);
+            } finally {
+                if (aad != null) java.util.Arrays.fill(aad, (byte) 0);
+                if (envelope != null) java.util.Arrays.fill(envelope, (byte) 0);
+                if (nonce != null) java.util.Arrays.fill(nonce, (byte) 0);
+                if (ciphertext != null) java.util.Arrays.fill(ciphertext, (byte) 0);
+                if (plaintext != null) java.util.Arrays.fill(plaintext, (byte) 0);
+            }
+        }
+
+        private Object close(List<Object> arguments) {
+            requireOne(arguments, "crypto.aead_close");
+            if (!(arguments.getFirst() instanceof AeadPrimitives.Key key)) {
+                throw new IllegalArgumentException("crypto.aead_close needs an AeadKey");
+            }
+            context.closeCryptoKey(key);
+            return null;
         }
     }
 

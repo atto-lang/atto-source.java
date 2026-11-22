@@ -45,6 +45,64 @@ public final class OresContext implements AutoCloseable {
     private final SourceActorPubSub actorPubSub;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
+    // Crypto handles are tied to both a context and an actor incarnation.
+    // An untrusted actor cannot borrow a key created in another actor turn
+    // or in the root. Actor cleanup can later use the same owner metadata.
+    private record CryptoKeyOwner(Object actorId, long generation) { }
+
+    private static CryptoKeyOwner currentCryptoOwner() {
+        return new CryptoKeyOwner(
+                ActorRuntime.currentActorId().orElse(null),
+                ActorRuntime.currentActorGeneration().orElse(-1L));
+    }
+
+    private static final int MAX_ACTIVE_CRYPTO_KEYS = 1024;
+    private static final int MAX_CRYPTO_KEYS_PER_OWNER = 32;
+    private final java.util.Map<AeadPrimitives.Key, CryptoKeyOwner> cryptoKeys =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private boolean cryptoAdmissionSealed;
+
+    public synchronized AeadPrimitives.Key newCryptoKey(int algorithm) {
+        requireCapability(IsolatePolicy.Capability.CRYPTO, "crypto.aead_new_key");
+        if (cryptoAdmissionSealed) throw new IllegalStateException("crypto context closed");
+        CryptoKeyOwner owner = currentCryptoOwner();
+        if (cryptoKeys.size() >= MAX_ACTIVE_CRYPTO_KEYS) {
+            throw new IllegalStateException("AEAD context key quota exceeded");
+        }
+        int actorKeys = 0;
+        for (CryptoKeyOwner candidate : cryptoKeys.values()) {
+            if (candidate.equals(owner)) actorKeys++;
+        }
+        if (actorKeys >= MAX_CRYPTO_KEYS_PER_OWNER) {
+            throw new IllegalStateException("AEAD actor key quota exceeded");
+        }
+        AeadPrimitives.Key key = AeadPrimitives.generateKey(algorithm);
+        cryptoKeys.put(key, owner);
+        return key;
+    }
+
+    public void requireCryptoKey(AeadPrimitives.Key key, String operation) {
+        requireCapability(IsolatePolicy.Capability.CRYPTO, operation);
+        CryptoKeyOwner actual = cryptoKeys.get(key);
+        if (actual == null || !actual.equals(currentCryptoOwner())) {
+            throw new SecurityException("AEAD key is not owned by this actor/context");
+        }
+    }
+
+    public void closeCryptoKey(AeadPrimitives.Key key) {
+        requireCryptoKey(key, "crypto.aead_close");
+        if (cryptoKeys.remove(key) == null) {
+            throw new IllegalStateException("AEAD key already released");
+        }
+        key.close();
+    }
+
+    private synchronized void retireCryptoKeys() {
+        cryptoAdmissionSealed = true;
+        for (AeadPrimitives.Key key : cryptoKeys.keySet()) key.close();
+        cryptoKeys.clear();
+    }
+
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     // Host-provisioned at context creation; default is DENY with no service.
     private final WorkflowHostServiceRegistry workflowHostServices;
@@ -597,6 +655,9 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        // Disallow new key allocation as soon as shutdown begins, not only
+        // after actor quiescence. Existing keys remain live until joins finish.
+        synchronized (this) { cryptoAdmissionSealed = true; }
         // Revoke new WAL shard-grant admission before actors/physical I/O
         // begin their shutdown joins. Keep issued grants through quiescence.
         dbWalGrants.seal();
@@ -630,6 +691,10 @@ public final class OresContext implements AutoCloseable {
                     "Oreslang context cleanup incomplete; physical state quarantined",
                     incomplete);
         }
+        // The actor/native-I/O join is complete; no actor can use its keys.
+        // Explicitly destroy all remaining secret bytes, even if the guest
+        // omitted a close call. A quarantined failed join keeps keys live.
+        retireCryptoKeys();
         RuntimeException failure = null;
         try {
             http.close();

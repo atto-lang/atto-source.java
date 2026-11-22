@@ -49,6 +49,8 @@ public record IsolatePolicy(
         JAVA_SOURCE_INTEROP,
         FFI,
         NATIVE,
+        // CSPRNG and opaque guest-held AEAD keys (independent of FFI/JAVA_INTEROP).
+        CRYPTO,
         // Explicit guest-to-host workflow service grant; never implied by FFI.
         WORKFLOW_STORAGE,
         REFLECTION,
@@ -125,7 +127,7 @@ public record IsolatePolicy(
         return new IsolatePolicy(
                 Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO, Capability.PROCESS_EXIT, Capability.GC_CONTROL,
                         Capability.ACTOR_SHARE_READONLY, Capability.ACTOR_SPAWN,
-                        Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD),
+                        Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD, Capability.CRYPTO),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
     }
 

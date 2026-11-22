@@ -3,6 +3,7 @@ package dev.oreslang.types;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.imports.StandardCryptoNamespace;
 import dev.oreslang.compiler.LinkedFunctionContract;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
@@ -740,7 +741,7 @@ public final class TypeChecker {
         Set<String> rootFunctions = new HashSet<>();
         Set<String> nonFunctionDeclarations = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env", "crypto",
                 "print", "Some", "None", "Ok", "Err", "task_context", "task_cancel_requested", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Atomic", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
@@ -807,6 +808,21 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (ImportRules.isStandardCryptoImport(imported)) {
+                // A sealed, compiler-owned namespace already admitted to the
+                // builtin table. Do not materialize a mutable imported value
+                // or invoke the source graph linker for this exact path.
+                if (!exposed.add("crypto")) {
+                    throw new IllegalArgumentException("duplicate std.crypto import");
+                }
+                if (nonFunctionDeclarations.contains("crypto")
+                        || rootFunctions.contains("crypto")) {
+                    throw new IllegalArgumentException(
+                            "local crypto declaration shadows the standard crypto import");
+                }
+                importedNames.add("crypto");
+                continue;
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
@@ -860,6 +876,7 @@ public final class TypeChecker {
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
         if ("Symbol".equals(name) || "Newable".equals(name)
+                || "AeadKey".equals(name) || "SecretBytes".equals(name) || "CryptoError".equals(name)
                 || "Atomic".equals(name) || "AtomicCompareExchange".equals(name)) {
             throw new IllegalArgumentException(name
                     + " is a reserved compiler-owned nominal type; cannot declare "
@@ -3736,6 +3753,13 @@ public final class TypeChecker {
                 }
                 return local.type();
             }
+            if (name.name().equals("crypto")) {
+                if (!importedNames.contains("crypto")) {
+                    throw new IllegalArgumentException(
+                            "crypto namespace requires explicit import * as crypto from \"std.crypto\"");
+                }
+                return new Named("crypto", List.of());
+            }
             if (name.name().equals("stdio")
                     || name.name().equals("std")
                     || name.name().equals("process")
@@ -6189,7 +6213,8 @@ public final class TypeChecker {
                         || name.name().equals("network")
                         || name.name().equals("net")
                         || name.name().equals("http")
-                        || name.name().equals("env"))) return Unknown.INSTANCE;
+                        || name.name().equals("env")
+                        || name.name().equals("crypto"))) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
@@ -8296,6 +8321,53 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        // Opaque key is compiler-created only. It has no user constructor or
+        // byte-array extraction and never receives a Copy/Send proof.
+        if (named.name().equals("crypto")) {
+            Type key = new Named("AeadKey", List.of());
+            Type bytes = new ListType(Primitive.INT);
+            // CryptoError is an opaque, compiler-owned immutable error code,
+            // not an arbitrary String or a guest-constructible host exception.
+            Type error = new Named("CryptoError", List.of());
+            Type result = new Named("Result", List.of(bytes, error));
+            return switch (name) {
+                case "sha256" -> new Function(List.of(bytes), bytes);
+                case "hmac_sha256" -> new Function(List.of(bytes, bytes), bytes);
+                case "pbkdf2_hmac_sha256" ->
+                        new Function(List.of(bytes, bytes, Primitive.INT, Primitive.INT), bytes);
+                case "base64_encode" -> new Function(List.of(bytes), Primitive.STRING);
+                case "base64_decode" -> new Function(List.of(Primitive.STRING), bytes);
+                case "secure_random_bytes" -> new Function(List.of(Primitive.INT), bytes);
+                case "constant_time_equals" ->
+                        new Function(List.of(bytes, bytes), Primitive.BOOL);
+                case "aead_new_key" -> new Function(List.of(Primitive.INT), key);
+                case "aead_seal", "aead_open" ->
+                        new Function(List.of(key, bytes, bytes), result);
+                case "aead_close" -> new Function(List.of(key), Primitive.VOID);
+                case "authentication_failed", "invalid_input",
+                        "key_exhausted" -> error;
+                default -> {
+                    StandardCryptoNamespace.Signature policy =
+                            StandardCryptoNamespace.signature(name);
+                    if (policy == null) yield null;
+                    java.util.List<Type> inputs = new java.util.ArrayList<>();
+                    for (Ast.TypeRef parameter : policy.arguments()) {
+                        if (!"int".equals(parameter.name())) {
+                            throw new IllegalStateException(
+                                    "unverified std.crypto source policy argument");
+                        }
+                        inputs.add(Primitive.INT);
+                    }
+                    Type output = switch (policy.result().name()) {
+                        case "int" -> Primitive.INT;
+                        case "bool" -> Primitive.BOOL;
+                        default -> throw new IllegalStateException(
+                                "unverified std.crypto source policy return type");
+                    };
+                    yield new Function(inputs, output);
+                }
+            };
+        }
         // Bytes methods are synchronous: never mis-type them as Future<T>.
         if (named.name().equals("Bytes")) {
             return switch (name) {
@@ -8758,6 +8830,11 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
+        }
+        if (named.name().equals("AeadKey") || named.name().equals("SecretBytes")
+                || named.name().equals("CryptoError")) {
+            throw new IllegalArgumentException(
+                    where + " cannot transfer opaque crypto secrets across actor boundaries");
         }
         if (named.name().equals("Map")) {
             throw new IllegalArgumentException(
@@ -13545,6 +13622,14 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Bytes is a non-generic linear value type");
                 }
                 yield new Named("Bytes", List.of());
+            }
+            case "AeadKey", "CryptoError", "SecretBytes" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "compiler-owned crypto nominal " + ref.name()
+                                    + " does not accept type arguments");
+                }
+                yield new Named(ref.name(), List.of());
             }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
