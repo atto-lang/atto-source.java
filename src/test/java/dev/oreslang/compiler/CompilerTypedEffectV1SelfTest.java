@@ -73,6 +73,27 @@ public final class CompilerTypedEffectV1SelfTest {
         rejected("allocation inside a recursive cycle", recursion,
                 CompilerTypedEffectV1.Profile.NO_ALLOC, "E_HARD_RT_ALLOCATION:");
 
+        // Mutually exclusive branch-local identifiers may share names, and
+        // neither binding escapes into the enclosing callable.
+        Ast.IfStmt disjointBindings = new Ast.IfStmt(
+                List.of(new Ast.IfBranch(new Ast.LiteralExpr(true),
+                        List.of(new Ast.BindingStmt(Ast.BindingKind.CONST,
+                                Ast.TypeRef.simple("int"), "branch_value", num(1))))),
+                List.of(new Ast.BindingStmt(Ast.BindingKind.CONST,
+                        Ast.TypeRef.simple("int"), "branch_value", num(2))));
+        analyze(program(fn("main", disjointBindings, ret(num(42)))),
+                CompilerTypedEffectV1.Profile.PURE);
+        rejected("branch-local value cannot escape a lexical arm",
+                program(fn("main", disjointBindings,
+                        ret(new Ast.NameExpr("branch_value")))),
+                CompilerTypedEffectV1.Profile.PURE, "E_EFFECT_UNKNOWN:");
+        rejected("block-local value cannot escape its lexical scope",
+                program(fn("main", new Ast.BlockStmt(List.of(
+                        new Ast.BindingStmt(Ast.BindingKind.CONST,
+                                Ast.TypeRef.simple("int"), "block_value", num(1)))),
+                        ret(new Ast.NameExpr("block_value")))),
+                CompilerTypedEffectV1.Profile.PURE, "E_EFFECT_UNKNOWN:");
+
         rejected("unresolved callee", program(fn("main", ret(call("missing")))),
                 CompilerTypedEffectV1.Profile.PURE, "E_EFFECT_UNKNOWN:");
         rejected("ambient clock call has no authenticated target summary",
