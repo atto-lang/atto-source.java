@@ -5,7 +5,7 @@ import module arena from "atto.alloc/arena";
 import module region from "atto.alloc/region";
 
 pub fnc main(): int {
-  let b = heap.budget(16);
+  let mut b = heap.budget(16);
   if !b.try_reserve(6) then return 1; fi
   if !b.commit(6) then return 2; fi
   if b.used_bytes() != 6 then return 3; fi
@@ -20,7 +20,7 @@ pub fnc main(): int {
   if !b.is_drained() then return 12; fi
   if b.try_reserve(1) then return 13; fi
 
-  let a = arena.cursor(32);
+  let mut a = arena.cursor(32);
   if a.try_reserve(3, 1) != 0 then return 14; fi
   if a.try_reserve(2, 8) != 8 then return 15; fi
   if a.used_bytes() != 10 then return 16; fi
@@ -33,7 +33,7 @@ pub fnc main(): int {
   if !a.seal() then return 23; fi
   if a.try_reserve(1, 1) != -1 then return 24; fi
 
-  let r = region.lifecycle(7, 1);
+  let mut r = region.lifecycle(7, 1);
   if !r.belongs_to(7, 1) then return 25; fi
   if r.belongs_to(7, 2) then return 26; fi
   if r.mark_drops_complete() then return 27; fi
