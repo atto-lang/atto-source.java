@@ -235,6 +235,9 @@ public final class NativeChildProcesses implements AutoCloseable {
 
     public int reservedCount() { return reserved.get(); }
 
+    /** Package-private deterministic CI proof hook; never guest-reachable. */
+    boolean isAdmissionClosed() { return closed; }
+
     public CompletableFuture<Child> spawn(
             String executable, List<String> arguments, String cwd, Authorizer authorizer) {
         return spawn(executable, arguments, cwd, authorizer, MAX_LIFETIME);
