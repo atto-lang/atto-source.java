@@ -17,14 +17,31 @@ pub routine main(): void {
   fi
 
   let mut logger = log.buffer(2, 30);
-  val record = log.entry(30, "guest", "hello", 0, 12, 34, 56);
-  if logger.offer(record) != 1; do rt fail("offer failed"); fi
-  if logger.pending_count() != 1; do rt fail("pending count failed"); fi
-  if logger.peek().message neq "hello"; do rt fail("peek mismatch"); fi
-  if !logger.ack_one(); do rt fail("ack failed"); fi
-  if !logger.is_drained(); do rt fail("not drained"); fi
+  val ignored = log.entry(20, "guest", "debug", 0, 12, 34, 56);
+  val first = log.entry(30, "guest", "first", 0, 12, 34, 56);
+  val second = log.entry(40, "guest", "second", 0, 12, 34, 56);
+  val third = log.entry(50, "guest", "third", 0, 12, 34, 56);
+  val bad = log.entry_with_fields(30, "guest", "invalid", 0, 12, 34, 56,
+                                   "", "orphan", "", "");
+  if logger.offer(ignored) != 0; do rt fail("filtered event admitted"); fi
+  if logger.offer(bad) != 4; do rt fail("invalid field accepted"); fi
+  if logger.offer(first) != 1; do rt fail("first offer failed"); fi
+  if logger.offer(second) != 1; do rt fail("second offer failed"); fi
+  if logger.offer(third) != 2; do rt fail("full queue accepted"); fi
+  if logger.dropped_count() != 1; do rt fail("FULL counter mismatch"); fi
+  if logger.pending_count() != 2; do rt fail("pending count mismatch"); fi
+  if logger.peek().message neq "first"; do rt fail("first ordering mismatch"); fi
+  if !logger.ack_one(); do rt fail("first ACK failed"); fi
+  // This offer must reclaim the acknowledged prefix at full capacity.
+  if logger.offer(third) != 1; do rt fail("compaction failed"); fi
+  if logger.peek().message neq "second"; do rt fail("second ordering mismatch"); fi
+  if !logger.ack_one(); do rt fail("second ACK failed"); fi
+  if logger.peek().message neq "third"; do rt fail("third ordering mismatch"); fi
   logger.close();
-  if logger.offer(record) != 3; do rt fail("close admission failed"); fi
+  if logger.offer(first) != 3; do rt fail("close admission failed"); fi
+  if !logger.ack_one(); do rt fail("third ACK failed"); fi
+  if !logger.is_drained(); do rt fail("closed buffer did not drain"); fi
+  if logger.ack_one(); do rt fail("double ACK accepted"); fi
   // Only the test harness writes a result; the std/log module itself has no IO.
   stdio.stdout.write("ATTO_STD_LOG_GUEST_OK");
   return;
