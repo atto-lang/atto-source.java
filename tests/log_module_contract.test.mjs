@@ -1,37 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { atto_pure } from './atto_pure_subset.mjs';
 
 // These tests execute ONLY a narrow pure-subset translation of the .atto
 // severity functions and statically inspect queue safety invariants.
 // They DO NOT execute the Atto compiler, guest runtime, AOT, or sink I/O.
 const source = readFileSync(new URL('../stdlib/log.atto', import.meta.url), 'utf8');
 
-function pureFunction(name, dependencies = {}) {
-  const pattern = new RegExp('pub fnc ' + name +
-    '\\(([^)]*)\\) -> (?:bool|String) \\{([\\s\\S]*?)\\n\\}');
-  const found = source.match(pattern);
-  assert.ok(found, 'missing native Atto function ' + name);
-  const parameters = found[1].split(',').map((p) => p.trim().split(/\s+/).at(-1));
-  const body = found[2]
-    .replace(/\bif\s+([^;]+);\s*do/g, (_, condition) => 'if (' + condition + ') {')
-    .replace(/\bfi\b/g, '}');
-  // Fail on unsupported Atto constructs rather than executing a JS rewrite
-  // whose semantics might silently diverge from the .atto source.
-  assert.doesNotMatch(body, /\b(?:await|spawn|rt|new|self|for|while|match)\b/);
-  const dependenciesNames = Object.keys(dependencies);
-  const js = new Function(...dependenciesNames, ...parameters, '"use strict";\n' + body);
-  return (...args) => js(...dependenciesNames.map((key) => dependencies[key]), ...args);
-}
-
-const validSeverity = pureFunction('valid_severity');
-const validThreshold = pureFunction('valid_threshold', { valid_severity: validSeverity });
-const enabled = pureFunction('enabled', {
+const validSeverity = atto_pure(source, 'valid_severity');
+const validThreshold = atto_pure(source, 'valid_threshold', { valid_severity: validSeverity });
+const enabled = atto_pure(source, 'enabled', {
   valid_severity: validSeverity,
   valid_threshold: validThreshold
 });
-const severityName = pureFunction('severity_name');
-const sinkByteBudgetOk = pureFunction('sink_byte_budget_ok');
+const severityName = atto_pure(source, 'severity_name');
+const sinkByteBudgetOk = atto_pure(source, 'sink_byte_budget_ok');
 
 test('standard numeric severities and OFF are disjoint', () => {
   assert.deepEqual([10,20,30,40,50,60].map(validSeverity), [true,true,true,true,true,true]);
@@ -144,4 +128,19 @@ test('source files use one flat namespace and no runtime module wrapper', () => 
   assert.ok(source.indexOf('namespace log;') < source.indexOf('pub fnc enabled'));
   assert.ok(source.indexOf('pub define class LogEntry as') < source.indexOf('pub define class Buffer as'));
   assert.doesNotMatch(source,/define namespace|define module|use namespace .*\\./);
+});
+
+test('source interpreter rejects arbitrary host code, globals and unsupported statements', () => {
+  assert.throws(() => atto_pure('pub fnc evil() -> bool { process.exit(1);\\n}', 'evil'));
+  assert.throws(() => atto_pure('pub fnc evil() -> bool { return globalThis;\\n}', 'evil')());
+  assert.throws(() => atto_pure('pub fnc evil() -> bool { while true; do return true; fi\\n}', 'evil'));
+});
+
+test('source mutation changes the checked policy rather than relying on a JS oracle', () => {
+  const changed = source.replace('return severity >= threshold;', 'return severity < threshold;');
+  const broken = atto_pure(changed, 'enabled', {
+    valid_severity: validSeverity, valid_threshold: validThreshold
+  });
+  assert.equal(enabled(40,30),true);
+  assert.equal(broken(40,30),false);
 });
