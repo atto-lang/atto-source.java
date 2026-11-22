@@ -6,8 +6,9 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Experimental persistence port for future durable actors. No implementation is
- * installed by ActorRuntime yet. Storage drivers must provide atomic fencing,
+ * Experimental persistence port for the checked scalar actor bridge only.
+ * General guest durable actor lowering is not installed. Providers must
+ * provide atomic fencing,
  * inbox consumption, state CAS and outbox creation in ONE transaction.
  * Events and durable timers are deliberately outside this v0 API until their
  * typed payload and cancellation semantics are specified.
