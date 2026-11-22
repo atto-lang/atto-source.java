@@ -6,7 +6,7 @@
 
 This revision adds a package-private `ActorRuntime.DispatcherFactoryForTesting` constructor seam. Only Java host-runtime tests in `dev.oreslang.runtime` may opt into a bounded, manually driven `ExecutorService`. Production constructors continue constructing the exact same private/shared/untrusted actor dispatchers with no injected overhead. The test does not expose scheduler authority to .atto guest code or accept guest-written trace files.
 
-`DeterministicActorDispatchTest` drives the actual `ActorRuntime` mailbox scheduling/dispatch lifecycle, physical-turn checks, `TurnExecutor` callback and `ActorRef` API. Two shared actors each receive one admitted message, assert real actor context/generation, and terminate from the receiver. The test driver queues accepted physical turns and selects their order explicitly without invoking guest code on producer or scheduler callbacks.
+`DeterministicActorDispatchTest` drives the actual `ActorRuntime` mailbox scheduling/dispatch lifecycle, physical-turn checks, `TurnExecutor` callback and `ActorRef` API. Two shared actors each receive one admitted message, assert real actor context/generation, and terminate from the receiver. A separate FIFO regression sends two messages to one actor and checks in-order delivery across physically controlled turns. The test driver queues accepted physical turns and selects their order explicitly without invoking guest code on producer or scheduler callbacks.
 
 The test proves *bounded host-runtime order controllability*, not end-to-end deterministic guest scheduling, virtual time, scheduler task continuation replay, hot upgrades or cross-backend parity. It does not assert full scheduler identity from arbitrary actor UUIDs. Test-generated ticket `turn-N` identifiers are unique within one isolated run and are stable only when runnable admission repeats in the same deterministic scenario.
 
@@ -26,7 +26,7 @@ mvn -B -ntp -Dtest=DeterministicActorDispatchTest \
   -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
 ```
 
-An exact-head CI job must execute all three tests without skips, failures or errors. No `compiled_atto_guest` badge can be given to these tests: the receivers are Java host callbacks, not a compiled `.atto` module.
+An exact-head CI job must execute all four tests without skips, failures or errors. No `compiled_atto_guest` badge can be given to these tests: the receivers are Java host callbacks, not a compiled `.atto` module.
 
 ## Successive gates
 
