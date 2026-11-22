@@ -85,4 +85,26 @@ final class NativeAttoMetricsJsonZordeTest {
                 "true", "true", "true", "true", "5", "false", "5",
                 "false", "5", "true", "true", "true", "true");
     }
+    @Test
+    void coreBorrowAdmissionGuestIsFreestandingAndExact() throws Exception {
+        assertTrue(CoreLibrarySources.packagedCorePaths().contains("borrow_admission.atto"));
+        assertEquals("@ores.core/borrow_admission.atto",
+                CoreLibrarySources.oresCoreUnitId("ores.core/borrow_admission"));
+        String source = CoreLibrarySources.oresCoreSource("ores.core/borrow_admission");
+        assertTrue(source.contains("define module borrow_admission as"));
+        assertFalse(source.contains("java:"));
+        assertFalse(source.contains("import java"));
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var program = LinkedProgramRunner.run(
+                Path.of(DIR + "core-borrow-admission.atto"),
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(), out, err);
+        assertTrue(program.units().containsKey("@ores.core/borrow_admission.atto"),
+                "core module must be linked as real guest source");
+        assertEquals(String.join("\n", "true", "false", "false", "true", "false", "true", "false", "true", "false", "true", "true", "false", "false", "false", "false", "false"),
+                out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                () -> err.toString(StandardCharsets.UTF_8));
+    }
+
 }
