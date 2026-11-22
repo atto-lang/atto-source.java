@@ -591,6 +591,18 @@ public final class Ast {
         }
     }
 
+    /**
+     * Actor application DATA contract. Supervisor CONTROL has a separate runtime
+     * authority; no source declaration may grant it.
+     * Null means absent, never permission to bypass typed mailbox checking.
+     */
+    public record ActorMessageContract(TypeRef receives, TypeRef sends) {
+        public static ActorMessageContract unspecified() {
+            return new ActorMessageContract(null, null);
+        }
+        public boolean declared() { return receives != null || sends != null; }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -604,9 +616,13 @@ public final class Ast {
             List<MethodDecl> methods,
             ActorConcurrency actorConcurrency,
             List<ProtectedStateField> sealedStateFields,
-            List<Annotation> annotations) implements Decl {
+            List<Annotation> annotations,
+            ActorMessageContract actorMessageContract) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            actorMessageContract = java.util.Objects.requireNonNull(actorMessageContract);
+            if (actorKind == ActorKind.NONE && actorMessageContract.declared())
+                throw new IllegalArgumentException("ordinary class cannot declare actor receives/sends");
             annotations = List.copyOf(annotations);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
@@ -622,6 +638,19 @@ public final class Ast {
                 if (!fields.isEmpty())
                     throw new IllegalArgumentException("sealed actor state cannot mix ordinary actor fields");
             }
+        }
+
+        /** Preserve the exact pre-contract canonical constructor ABI for all callers. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields, List<Annotation> annotations) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, annotations,
+                    ActorMessageContract.unspecified());
         }
 
         /** Existing actor concurrency call sites default to no sealed state or annotations. */

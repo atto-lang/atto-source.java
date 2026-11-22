@@ -190,6 +190,26 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        // State-indexed actor protocols are parsed to bounded metadata, but no
+        // guest code path may erase their unary/stream cardinality or claim
+        // unverified runtime-issued affine authority.
+        if (ActorProtocolTypestateV1.containsProtocol(tokens)) {
+            ActorProtocolTypestateV1.Catalog protocol =
+                    ActorProtocolTypestateV1.parseTokens(tokens);
+            List<Token> withoutProtocol =
+                    ActorProtocolTypestateV1.withoutProtocolPrelude(tokens);
+            // Use the REAL Parser and source-local nominal class/interface AST;
+            // never manufacture reply modes from user-supplied string maps.
+            Ast.Program nominalAst = new Parser(withoutProtocol,
+                    attoCallableVersion, canonicalAttoSource).parseProgram();
+            ActorProtocolNominalResolverV1.resolve(protocol, nominalAst);
+            // The declaration proof is not a runtime-owned affine handle,
+            // a stream continuation, or a validated guest backend.
+            throw new IllegalArgumentException("E_UNSUPPORTED_PROTOCOL_LOWERING: "
+                    + "source-local nominal response modes verified, but affine "
+                    + "ownership, generation-fenced stream replies and guest AOT "
+                    + "lowering are not implemented");
+        }
         // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
         // execution regions and quantum fail-closed, but allow canonical task
         // forms (plus legacy nb aliases) to reach typed lowering. GPU task is
@@ -1684,6 +1704,20 @@ public final class Parser {
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
+        // Contextual actor DATA headers: do not globally reserve receives/sends.
+        Ast.TypeRef receives = null;
+        Ast.TypeRef sends = null;
+        while (isContextualIdentifier("receives") || isContextualIdentifier("sends")) {
+            Token clause = advance();
+            Ast.TypeRef payload = parseTypeRef();
+            if (clause.lexeme().equals("receives")) {
+                if (receives != null) throw error(clause, "duplicate actor receives clause");
+                receives = payload;
+            } else {
+                if (sends != null) throw error(clause, "duplicate actor sends clause");
+                sends = payload;
+            }
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         // Actors have one runtime-owned mailbox, one lifecycle and one state
         // ownership domain. Multiple actor superclasses would merge those
@@ -1984,7 +2018,7 @@ public final class Parser {
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
                         prefix.serial()),
-                sealedStateFields);
+                sealedStateFields, List.of(), new Ast.ActorMessageContract(receives, sends));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {

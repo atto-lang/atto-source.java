@@ -1,0 +1,4 @@
+// CONTROL-only actors require a verified separate runtime control route.
+define actor ControlOnly receives never as
+  on_start(): void { return; }
+end

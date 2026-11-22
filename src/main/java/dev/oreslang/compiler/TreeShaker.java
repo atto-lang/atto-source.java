@@ -690,7 +690,10 @@ public final class TreeShaker {
                         fields,
                         constructor,
                         methods,
-                        klass.actorConcurrency());
+                        klass.actorConcurrency(),
+                        klass.sealedStateFields(),
+                        klass.annotations(),
+                        klass.actorMessageContract());
             }
             return declaration;
         }
@@ -1251,6 +1254,16 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 for (Ast.TypeRef parent : klass.parents()) scanType(parent);
                 for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
+                // Actor DATA contracts and sealed-state types are part of its
+                // immutable public/behavioral ABI. They must keep their nominal
+                // dependencies reachable even when no body mentions them.
+                scanType(klass.actorMessageContract().receives());
+                scanType(klass.actorMessageContract().sends());
+                for (Ast.ProtectedStateField field : klass.sealedStateFields()) {
+                    scanType(field.type());
+                    scanExpression(module, field.initializer(), Set.of("self"));
+                }
+                for (Ast.Annotation annotation : klass.annotations()) scanAnnotation(annotation);
                 for (Ast.FieldDecl field : klass.fields()) {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));

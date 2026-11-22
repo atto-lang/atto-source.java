@@ -1,0 +1,181 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.ActorProtocolNominalResolverV1;
+import dev.oreslang.parser.ActorProtocolTypestateV1;
+import dev.oreslang.parser.Lexer;
+import dev.oreslang.parser.Parser;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Real-parser declaration admission only; no guest or affine runtime proof. */
+final class ActorProtocolNominalResolverV1Test {
+    private static final String SOURCE = """
+            define protocol Subscription as
+              initial Idle
+              state Idle as
+                on Connect(Config) -> Active replies Ack
+              end
+              state Active as
+                on Subscribe(Topic) -> Active streams Event
+                on Close -> Finished replies Ack
+              end
+              terminal state Finished
+            end
+            define class Config as end
+            define class Topic as end
+            define class Ack as end
+            define class Event as end
+            define interface ConnectContract extends UnaryRequest<Ack> as end
+            define interface EventContract extends StreamRequest<Event> as end
+            define class Connect implements ConnectContract as end
+            define class Subscribe implements EventContract as end
+            define class Close implements UnaryRequest<Ack> as end
+            define actor Client implements Subscription as end
+            """;
+
+    private static ActorProtocolNominalResolverV1.ResolvedDeclarations resolve(String source) {
+        var tokens = new Lexer(source).scan();
+        var catalog = ActorProtocolTypestateV1.parseTokens(tokens);
+        var withoutProtocol = ActorProtocolTypestateV1.withoutProtocolPrelude(tokens);
+        return ActorProtocolNominalResolverV1.resolve(catalog,
+                new Parser(withoutProtocol).parseProgram());
+    }
+
+    private static void denied(String source, String code) {
+        var err = assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(err.getMessage().contains(code),
+                () -> "expected " + code + ", found " + err.getMessage());
+    }
+
+    @Test void realParserResolvesTransitiveSourceLocalReplyModes() {
+        var ir = resolve(SOURCE);
+        assertEquals(3, ir.messages().size());
+        assertEquals(ActorProtocolTypestateV1.Mode.UNARY, ir.messages().get("Connect").mode());
+        assertEquals(ActorProtocolTypestateV1.Mode.STREAM, ir.messages().get("Subscribe").mode());
+        assertEquals("Event", ir.messages().get("Subscribe").responseType());
+        assertEquals(List.of(new ActorProtocolTypestateV1.ActorBinding("Client", "Subscription")),
+                ir.actors());
+        denied(SOURCE, "E_UNSUPPORTED_PROTOCOL_LOWERING");
+    }
+
+    @Test void nominalCardinalityAndResponseAreCheckedBeforeGuestGate() {
+        denied(SOURCE.replace("StreamRequest<Event>", "UnaryRequest<Event>"),
+                "E_PROTOCOL_RESPONSE_MODE");
+        denied(SOURCE.replace("StreamRequest<Event>", "StreamRequest<Ack>"),
+                "E_PROTOCOL_RESPONSE_TYPE");
+        denied(SOURCE.replace("StreamRequest<Event>", "OneWayMessage"),
+                "E_PROTOCOL_RESPONSE_MODE");
+        denied(SOURCE.replace("StreamRequest<Event>", "StreamRequest"),
+                "E_PROTOCOL_RESPONSE_TYPE");
+        denied(SOURCE.replace("StreamRequest<Event>", "StreamRequest<Any>"),
+                "E_PROTOCOL_UNVERIFIED_TYPE");
+    }
+
+    @Test void unresolvedOrForgedNominalDeclarationsNeverMintModes() {
+        denied(SOURCE.replace("define class Subscribe implements EventContract as end",
+                        "define class Subscribe as end"),
+                "E_PROTOCOL_UNVERIFIED_MESSAGE");
+        denied(SOURCE.replace("define interface EventContract extends StreamRequest<Event> as end",
+                        "define interface EventContract extends MissingBase as end"),
+                "E_PROTOCOL_UNVERIFIED_MESSAGE");
+        denied(SOURCE.replace("define class Subscribe implements EventContract as end",
+                        "define class Subscribe implements EventContract<T> as end"),
+                "E_PROTOCOL_UNVERIFIED_MESSAGE");
+        denied(SOURCE.replace("define class Event as end",
+                        "define class Event<T> as end"),
+                "E_PROTOCOL_UNVERIFIED_TYPE");
+        denied(SOURCE.replace("define class Event as end",
+                        "define interface Event as end"),
+                "E_PROTOCOL_UNVERIFIED_TYPE");
+        denied(SOURCE.replace("define class Event as end",
+                        "define class StreamRequest as end"),
+                "E_PROTOCOL_FORGED_MARKER");
+    }
+
+    @Test void inheritedModeConflictsAndCyclesRejectRatherThanPickFirst() {
+        denied(SOURCE.replace("define class Subscribe implements EventContract as end",
+                        "define class Subscribe implements EventContract, ConnectContract as end"),
+                "E_PROTOCOL_RESPONSE_MODE");
+        denied(SOURCE.replace("define interface EventContract extends StreamRequest<Event> as end",
+                        "define interface EventContract extends Another as end\n"
+                        + "define interface Another extends EventContract as end"),
+                "E_PROTOCOL_CYCLE");
+    }
+
+    @Test void repeatedDiamondInheritanceUsesOneConsistentMode() {
+        StringBuilder graph = new StringBuilder();
+        graph.append("define interface E0 extends StreamRequest<Event> as end\n");
+        graph.append("define interface E1 extends E0 as end\n");
+        for (int i = 2; i <= 12; i++)
+            graph.append("define interface E").append(i)
+                    .append(" extends E").append(i - 1)
+                    .append(", E").append(i - 2).append(" as end\n");
+        graph.append("define interface EventContract extends E12 as end");
+        String source = SOURCE.replace(
+                "define interface EventContract extends StreamRequest<Event> as end",
+                graph.toString());
+        assertEquals(ActorProtocolTypestateV1.Mode.STREAM,
+                resolve(source).messages().get("Subscribe").mode());
+    }
+
+    @Test void deeplyNestedInheritancesFailAtTheDeclaredBudget() {
+        StringBuilder graph = new StringBuilder();
+        graph.append("define interface E0 extends StreamRequest<Event> as end\n");
+        for (int i = 1; i <= 19; i++)
+            graph.append("define interface E").append(i)
+                    .append(" extends E").append(i - 1).append(" as end\n");
+        graph.append("define interface EventContract extends E19 as end");
+        denied(SOURCE.replace(
+                "define interface EventContract extends StreamRequest<Event> as end",
+                graph.toString()), "E_PROTOCOL_LIMIT");
+    }
+
+    @Test void nestedOrTrailingProtocolCannotBeErasedFromSource() {
+        denied("define class Prior as end\n" + SOURCE, "E_PROTOCOL_SCOPE");
+        denied(SOURCE + "\ndefine protocol Late as initial Start "
+                + "state Start as on Go -> End replies Ack end "
+                + "terminal state End end", "E_PROTOCOL_SCOPE");
+    }
+
+    @Test void namespaceHeaderAndPublicActorBindFromAstNotLexicalGuessing() {
+        var namespaced = resolve("use namespace service;\n"
+                + SOURCE.replace("define actor Client", "define pub actor Client"));
+        assertEquals(1, namespaced.actors().size());
+        assertEquals("Client", namespaced.actors().getFirst().actor());
+    }
+
+    @Test void repeatedOrGenericNominalModesCannotBypassValidation() {
+        denied(SOURCE.replace("extends StreamRequest<Event> as end",
+                        "extends StreamRequest<Event>, StreamRequest<Ack> as end"),
+                "E_PROTOCOL_RESPONSE_MODE");
+        denied(SOURCE.replace("define class Subscribe implements EventContract as end",
+                        "define class Subscribe<T> implements EventContract as end"),
+                "E_PROTOCOL_UNVERIFIED_MESSAGE");
+        denied(SOURCE.replace("define class Subscribe implements EventContract as end",
+                        "define class Subscribe implements EventContract, UnknownImported as end"),
+                "E_PROTOCOL_UNVERIFIED_MESSAGE");
+    }
+
+    @Test void oneNominalMessageCannotChangePayloadSchemaBetweenStates() {
+        denied(SOURCE.replace("state Active as\n",
+                        "state Active as\n                on Connect(Topic) -> Active replies Ack\n"),
+                "E_PROTOCOL_MESSAGE_PAYLOAD");
+    }
+
+    @Test void missingPayloadOrReplyTypesRejectBeforeRuntimeGate() {
+        denied(SOURCE.replace("on Subscribe(Topic) ->", "on Subscribe(MissingType) ->"),
+                "E_PROTOCOL_UNVERIFIED_TYPE");
+        denied(SOURCE.replace("on Subscribe(Topic) -> Active streams Event",
+                        "on Subscribe(Topic) -> Active streams MissingResponse"),
+                "E_PROTOCOL_UNVERIFIED_TYPE");
+    }
+
+    @Test void otherNominalClassesCannotCollideAcrossModules() {
+        denied(SOURCE + "\ndefine module Other\n"
+                        + "define class Event as end\nend",
+                "E_PROTOCOL_AMBIGUOUS_TYPE");
+    }
+}
