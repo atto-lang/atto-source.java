@@ -60,6 +60,12 @@ public final class ActorProtocolSourceCfgV1 {
         Objects.requireNonNull(ast);
         Objects.requireNonNull(declarations);
         Objects.requireNonNull(trustedEntryHandles);
+        // A map of two source names does not prove two distinct owning roots.
+        // Admit one actor root only until typed alias/actor-generation provenance
+        // is authenticated by the compiler's ownership checker.
+        if (trustedEntryHandles.size() != 1)
+            throw error("E_PROTOCOL_SOURCE_ALIAS_PROVENANCE",
+                    "exactly one authenticated entry owner is supported by source V1");
         if (!ast.imports().isEmpty())
             throw error("E_PROTOCOL_SOURCE_UNLINKED_IMPORT",
                     "cross-file type identities require checked linker metadata");
