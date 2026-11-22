@@ -1,6 +1,6 @@
 // expect-exit: 42
 // Actual AttoLang guest fixture; not a host-language model.
-import module bitset from "atto.alloc/bitset.atto";
+import module bitset from "../../../stdlib/alloc/bitset.atto";
 
 pub fnc main(): int {
   let mut bits = bitset.new_bitset(128);
