@@ -16,10 +16,11 @@ import java.util.Set;
 /**
  * Loads compiler-owned Oreslang library source from packaged resources.
  *
- * <p>Oreslang exposes exactly two public library namespaces:
- * {@code ores.core/*} is freestanding/no-OS source and {@code ores.std/*}
- * is hosted/platform source. Legacy {@code std/*} remains a compatibility
- * spelling for {@code ores.std/*}; it is not a third library layer.</p>
+ * <p>AttoLang exposes three compiler-owned library tiers:
+ * {@code ores.core/*} is freestanding/no-OS source, {@code atto.alloc/*}
+ * is allocator-policy source, and {@code ores.std/*} is hosted/platform
+ * source. Legacy {@code alloc/*} and {@code std/*} are import aliases,
+ * not ambient filesystem paths or separate module identities.</p>
  */
 public final class CoreLibrarySources {
     private static final String CORE_IMPORT_PREFIX = "ores.core/";
