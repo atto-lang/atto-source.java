@@ -2772,6 +2772,30 @@ public final class Parser {
         return true;
     }
 
+    /**
+     * Consume the contextual continuous pipeline operator, including a
+     * contiguous optional bang suffix, without changing the typed graph
+     * admission boundary. Both bare and bang forms still fail closed until
+     * Java can lower the owned, bounded actor pipeline runtime.
+     */
+    private boolean matchContextualPipelineKeyword(String keyword) {
+        if (!check(IDENT) || !peek().lexeme().equals(keyword)) return false;
+        Token word = advance();
+        if (check(BANG) && adjacent(word, peek())) {
+            Token bang = peek();
+            if (current + 1 < tokens.size()) {
+                Token suffix = tokens.get(current + 1);
+                if (adjacent(bang, suffix)
+                        && (suffix.type() == IDENT || suffix.type() == BANG)) {
+                    throw error(bang, "E_PIPE_BANG_BOUNDARY: contiguous pipeline bang requires a token boundary");
+                }
+            }
+            advance();
+        }
+        return true;
+    }
+
+
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
         return a.name().equals(b.name()) && a.arguments().equals(b.arguments()) && a.inferArguments() == b.inferArguments();
     }
@@ -3543,6 +3567,21 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // This compiler has no admitted standalone actor stop control.
+        // Keep stop and contiguous stop! on the same explicit unsupported
+        // boundary; do not synthesize a method call or bypass actor CONTROL.
+        if (check(STOP) && (checkNext(IDENT) || checkNext(BANG))) {
+            Token start = advance();
+            if (check(BANG) && adjacent(start, peek())) {
+                Token bang = advance();
+                if (current < tokens.size() && adjacent(bang, peek())
+                        && (peek().type() == IDENT || peek().type() == BANG)) {
+                    throw error(bang, "E_STOP_BANG_BOUNDARY: stop! requires an operand boundary");
+                }
+            }
+            throw error(start, "E_STOP_BACKEND_UNSUPPORTED: actor stop/stop! require checked "
+                    + "graceful shutdown, lifecycle ownership and supervisor lowering");
+        }
         if (attoCallableVersion != null && match(CARET)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
                     ? null : parseExpression();
@@ -5798,9 +5837,9 @@ public final class Parser {
         int stages = 0;
         while (true) {
             boolean functional = match(PIPE_FORWARD);
-            boolean actorPipe = !functional && matchContextualKeyword("pipe");
+            boolean actorPipe = !functional && matchContextualPipelineKeyword("pipe");
             boolean reverseActorPipe = !functional && !actorPipe
-                    && matchContextualKeyword("rpipe");
+                    && matchContextualPipelineKeyword("rpipe");
             if (!functional && !actorPipe && !reverseActorPipe) break;
             Token operator = previous();
             if (actorPipe || reverseActorPipe) {
