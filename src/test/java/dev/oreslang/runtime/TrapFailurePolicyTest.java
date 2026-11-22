@@ -106,6 +106,45 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
 
+    @Test void jvmImplementationFaultsNeverBecomeGuestErrors() {
+        RuntimeException[] faults = {
+                new NullPointerException("host dereference"),
+                new ClassCastException("untrusted host cast"),
+                new IndexOutOfBoundsException("host index"),
+                new ArrayStoreException("host array store"),
+                new NegativeArraySizeException("host array size"),
+                new ArithmeticException("checked i64 overflow"),
+                new IllegalMonitorStateException("host monitor")
+        };
+        for (RuntimeException fault : faults) {
+            assertFalse(TrapFailurePolicy.isTrappable(fault, GuestPanic.class),
+                    fault::toString);
+            assertFalse(TrapFailurePolicy.isGuestCatchable(fault, GuestPanic.class),
+                    fault::toString);
+            assertFalse(TrapFailurePolicy.isTrappable(
+                    new CompletionException(new IllegalStateException("async wrapper", fault)),
+                    GuestPanic.class), fault::toString);
+            assertFalse(TrapFailurePolicy.isGuestCatchable(
+                    new CompletionException(new IllegalStateException("async wrapper", fault)),
+                    GuestPanic.class), fault::toString);
+            IllegalStateException ordinary = new IllegalStateException("ordinary source error");
+            ordinary.addSuppressed(fault);
+            assertFalse(TrapFailurePolicy.isTrappable(ordinary, GuestPanic.class),
+                    fault::toString);
+            assertFalse(TrapFailurePolicy.isGuestCatchable(ordinary, GuestPanic.class),
+                    fault::toString);
+        }
+    }
+
+    @Test void arithmeticOverflowDoesNotEraseAnOtherwiseTrappableFailure() {
+        assertTrue(TrapFailurePolicy.isTrappable(
+                new IllegalArgumentException("guest validation failure"), GuestPanic.class));
+        IllegalStateException outer = new IllegalStateException("ordinary");
+        outer.initCause(new ArithmeticException("long overflow"));
+        assertFalse(TrapFailurePolicy.isTrappable(outer, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(outer, GuestPanic.class));
+    }
+
     @Test void sourceTraceMarkersCannotAlterTrapOrCatchAdmission() {
         IllegalStateException ordinary = new IllegalStateException("ordinary");
         for (int index = 0; index < 1000; index++) {

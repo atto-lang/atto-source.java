@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
@@ -84,10 +85,15 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    // Ownership must agree with the typed nominal HasFuture<T> projection:
+    // awaiting a capability yields T, not the move-only wrapper object.
+    private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
+    private final Set<String> ambiguousInterfaces = new HashSet<>();
     /** Imported layouts are type-only metadata; their private fields remain inaccessible. */
     private final Set<Ast.ClassDecl> linkedClassLayouts =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<String> modules = new HashSet<>();
+    private final Set<String> importedFncs = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
@@ -96,6 +102,8 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    // Only the compiler's actual instance-method frame may bind implicit self.
+    private Ast.ClassDecl currentInstanceMethodOwner;
     private final List<String> copyWarnings = new ArrayList<>();
     /** Opt-in in-pass trace; never permits guest code emission. */
     private BorrowMirAuditV1.Collector borrowMirAudit;
@@ -246,11 +254,19 @@ public final class OwnershipChecker {
     }
 
     private void index(Ast.Program program) {
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
+                for (String source : imported.names()) {
+                    importedFncs.add(dev.oreslang.imports.ImportRules.localName(imported, source));
+                }
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.InterfaceDecl iface) index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
             }
         }
     }
@@ -289,6 +305,10 @@ public final class OwnershipChecker {
     private void validate(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.SingletonDecl) {
+                    throw error("ORES-SINGLETON-UNSUPPORTED: singleton check-only AST "
+                            + "cannot acquire ownership or executable Task admission");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
             }
@@ -453,8 +473,14 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            Ast.ClassDecl previousInstanceOwner = currentInstanceMethodOwner;
+            currentInstanceMethodOwner = method.isStatic() ? null : klass;
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentInstanceMethodOwner = previousInstanceOwner;
+                scope.close();
+            }
         }
     }
 
@@ -646,6 +672,11 @@ public final class OwnershipChecker {
                         && scope.lookup(named.name()) == null) {
                     borrowMirAudit.unsupported("return refers to an untracked global or module");
                 }
+                if (returnType != null && returnType.name().equals("Map")
+                        && returnType.arguments().size() == 2
+                        && ret.value() instanceof Ast.NameExpr) {
+                    throw error("returning a named affine Map<K,V> requires explicit rt take");
+                }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
@@ -702,6 +733,9 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(value.type)) {
                 throw error("guard-bearing values cannot be discarded; bind the result with val and release/await it");
             }
+            if (isTryWriteResult(value.type)) {
+                throw error("try writech result cannot be discarded: Full/Closed must preserve the rejected owned payload; bind and match the result");
+            }
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
@@ -756,8 +790,18 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.MatchStmt matched) {
-            ValueInfo subject = checkExpr(matched.subject(), scope, false);
-            VarState source = matched.subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
+            // Recoverable immediate write results are affine. Destructuring
+            // consumes the result once; each selected arm independently owns
+            // its extracted payload. It must never retain an alias to the
+            // consumed wrapper or allow a second match/use of that wrapper.
+            Ast.TypeRef scrutineeType = syntacticType(matched.subject(), scope);
+            boolean recoverableWrite = isTryWriteResult(scrutineeType);
+            if (recoverableWrite && matched.arms().stream().anyMatch(a -> a.guard() != null)) {
+                throw error("TryWriteResult match guards are not supported until guarded ownership rollback is proven");
+            }
+            ValueInfo subject = checkExpr(matched.subject(), scope, recoverableWrite);
+            VarState source = recoverableWrite ? null
+                    : matched.subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
             Map<VarState, StateSnapshot> nextArm = base;
@@ -1076,6 +1120,14 @@ public final class OwnershipChecker {
             scope.define(binding.name(), placeholder);
         }
 
+        if (binding.initializer() instanceof Ast.NameExpr sourceName) {
+            VarState source = scope.lookup(sourceName.name());
+            if (source != null && source.type != null
+                    && !source.type.isBorrow() && source.type.name().equals("Map")
+                    && source.type.arguments().size() == 2) {
+                throw error("affine Map<K,V> aliases require explicit rt take");
+            }
+        }
         ValueInfo value;
         if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
                 && runtime.operation().equals("borrow")) {
@@ -1198,9 +1250,14 @@ public final class OwnershipChecker {
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
         if (expr instanceof Ast.MatchExpr match) {
-            ValueInfo subject = checkExpr(match.subject(), scope, false);
-            VarState source = match.subject() instanceof Ast.NameExpr name
-                    ? scope.lookup(name.name()) : null;
+            Ast.TypeRef scrutineeType = syntacticType(match.subject(), scope);
+            boolean recoverableWrite = isTryWriteResult(scrutineeType);
+            if (recoverableWrite && match.arms().stream().anyMatch(a -> a.guard() != null)) {
+                throw error("TryWriteResult match guards are not supported until guarded ownership rollback is proven");
+            }
+            ValueInfo subject = checkExpr(match.subject(), scope, recoverableWrite);
+            VarState source = recoverableWrite ? null
+                    : match.subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
             Map<VarState, StateSnapshot> nextArm = base;
@@ -1635,6 +1692,13 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr qualifier
+                    && (qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
+                            || qualifier.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE))) {
+                throw error((qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
+                        ? "imports::" : "pkg::")
+                        + member.member() + " is direct-call-only without a checked callable value ABI");
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1907,10 +1971,22 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
-            ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            // HasFuture.get_future() is a synchronous immutable receiver loan,
+            // not an implicit ownership transfer of the capability object.
+            // Preserve reusability of named capabilities across two awaits.
+            // Unknown expressions keep the existing conservative move rule.
+            Ast.TypeRef operandType = syntacticType(awaited.expression(), scope);
+            boolean borrowCapability = hasFutureResult(
+                    operandType, new LinkedHashSet<>()) != null;
+            ValueInfo awaitedValue = checkExpr(
+                    awaited.expression(), scope, borrowCapability ? false : consuming);
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
+            }
+            Ast.TypeRef projected = hasFutureResult(awaitedValue.type, new LinkedHashSet<>());
+            if (projected != null) {
+                return new ValueInfo(projected, kindOfType(projected), null);
             }
             return awaitedValue;
         }
@@ -1925,9 +2001,14 @@ public final class OwnershipChecker {
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
-                // Channel enqueue/registration takes ownership of move-only payloads.
-                // Waiting writers and failed immediate probes conservatively retain
-                // transferred ownership until the runtime supplies a recoverable send.
+                // An immediate write now returns a move-only TryWriteResult<T>
+                // which contains the exact rejected owner on Full/Closed.
+                // Its payload is evaluated/consumed exactly once as for
+                // blocking writes. The caller owns the result and must handle
+                // the rejected payload, not recover an invalidated old binding.
+                // Blocking/async channel writes transfer the payload to the
+                // operation; their completion, failure and cancellation have
+                // separate lifecycle contracts.
                 ValueInfo payload = checkExpr(channelOp.value(), scope, true);
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
@@ -1959,7 +2040,8 @@ public final class OwnershipChecker {
                     case BLOCKING -> Ast.TypeRef.simple("void");
                     case NONBLOCKING -> new Ast.TypeRef(
                             "Future", List.of(Ast.TypeRef.simple("void")), false);
-                    case IMMEDIATE -> Ast.TypeRef.simple("bool");
+                    case IMMEDIATE -> new Ast.TypeRef(
+                            "TryWriteResult", List.of(element), false);
                 };
                 return new ValueInfo(result, kindOfType(result), null);
             }
@@ -2039,7 +2121,7 @@ public final class OwnershipChecker {
             return new ValueInfo(witness, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
-            throw error("unresolved ~map() cannot pass ownership admission");
+            throw error("unresolved Map.of() cannot pass ownership admission");
         }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // Mirror the concrete-only TypeChecker admission. This also
@@ -2100,8 +2182,48 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                throw error("aggregate spread requires field-wise ownership, borrow and exception-path proof; "
-                        + "unsupported at this frontend stage");
+                if (object.explicitStruct()) {
+                    throw error("explicit struct spread needs declared-field initialization proof");
+                }
+                LinkedHashMap<String, Ast.TypeRef> expanded = new LinkedHashMap<>();
+                for (Ast.ObjectField field : object.fields()) {
+                    if (field.spread()) {
+                        // Read the source without consuming it. Only a closed
+                        // aggregate with statically proved Copy scalar fields
+                        // can be shallow-expanded without shared mutable aliasing.
+                        ValueInfo source = checkExpr(field.value(), scope, false);
+                        Ast.TypeRef sourceType = source.type.isBorrow()
+                                ? source.type.borrowedTarget() : source.type;
+                        if (!sourceType.isClosedAggregateType()) {
+                            throw error("aggregate spread requires a statically known closed record or struct");
+                        }
+                        for (Map.Entry<String, Ast.TypeRef> member
+                                : sourceType.aggregateMembers().entrySet()) {
+                            Ast.TypeRef fieldType = member.getValue();
+                            if (!isCopyType(fieldType)
+                                    || !(Set.of("i8", "i16", "i32", "i64",
+                                            "u8", "u16", "u32", "u64", "int", "uint",
+                                            "bigint", "f32", "f64", "float",
+                                            "bool", "Bool", "string", "String")
+                                            .contains(fieldType.name())
+                                        && fieldType.arguments().isEmpty())) {
+                                throw error("aggregate spread field '" + member.getKey()
+                                        + "' is not a proven scalar Copy field");
+                            }
+                            expanded.put(member.getKey(), fieldType);
+                        }
+                    } else {
+                        ValueInfo fieldValue = checkExpr(field.value(), scope, true);
+                        if (containsMutexGuardType(fieldValue.type) || isBorrowValue(fieldValue)) {
+                            throw error("aggregate field '" + field.name()
+                                    + "' cannot store a guard or escaping borrow");
+                        }
+                        expanded.put(field.name(), fieldValue.type);
+                    }
+                }
+                return new ValueInfo(object.structuralRecord()
+                        ? Ast.TypeRef.readonlyRecordType(expanded)
+                        : Ast.TypeRef.structType(expanded), ValueKind.MOVE_ONLY, null);
             }
             LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
             if (object.explicitStruct()) {
@@ -2154,6 +2276,81 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.origin() == Ast.CallOrigin.DIRECT
+                && currentInstanceMethodOwner != null
+                && currentInstanceMethodOwner.actorKind() != Ast.ActorKind.NONE
+                && call.callee() instanceof Ast.NameExpr stateCall
+                && stateCall.name().equals("handle_state")) {
+            throw error("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare handle_state "
+                    + "must use a compiler-owned actor-critical loan, never a free/imported fnc");
+        }
+        if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)) {
+            if (!importedFncs.contains(qualified.member())) {
+                throw error("imports::" + qualified.member()
+                        + " requires an explicitly named import fnc binding");
+            }
+            if (call.typeArgumentsPresent()) {
+                throw error("imports::" + qualified.member()
+                        + " cannot specialize an opaque imported fnc");
+            }
+            // The other source unit's effects and parameter lifetimes are not
+            // yet linked. An active borrow or MutexGuard cannot escape.
+            checkSuspensionBorrows(scope, "call imports::" + qualified.member());
+            for (Ast.Expr arg : call.arguments()) {
+                ValueInfo passed = checkExpr(arg, scope, true);
+                if (isBorrowValue(passed) || passed.borrowSource != null
+                        || containsMutexGuardType(passed.type)) {
+                    throw error("imports::" + qualified.member()
+                            + " cannot transfer a borrow or MutexGuard without a linked lifetime ABI");
+                }
+            }
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE)) {
+            if (qualified.member().equals("init")) {
+                throw error("pkg::init is a lifecycle hook and cannot be called");
+            }
+            Ast.FunctionDecl fn = findFunction(
+                    dev.oreslang.parser.Parser.ROOT_MODULE + "." + qualified.member(),
+                    syntacticCallArgumentTypes(call.arguments(), scope).size());
+            if (fn == null || fn.actorKind() != Ast.ActorKind.NONE) {
+                throw error("pkg::" + qualified.member()
+                        + " has no ordinary file-root callable at this arity");
+            }
+            CallSignature signature = specializeCall(
+                    fn.genericParameters(), fn.genericParameters(),
+                    fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+            if (fn.suspends() && !fn.generator()) {
+                checkSuspensionBorrows(scope, "suspends call pkg::" + qualified.member());
+            }
+            checkArguments(call.arguments(), signature.parameters(), scope,
+                    "function pkg::" + qualified.member());
+            Ast.TypeRef result = callableResultType(
+                    signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
+            return new ValueInfo(result, kindOfType(result), null);
+        }
+        // Resolve names in the same order as TypeChecker: a lexical local
+        // wins, then the *entire* implicit receiver method family, only then
+        // file/import callables. Do not let wrong arity fall through.
+        if (currentInstanceMethodOwner != null
+                && call.origin() == Ast.CallOrigin.DIRECT
+                && call.callee() instanceof Ast.NameExpr implicit
+                && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
+                && scope.lookup(implicit.name()) == null
+                && scope.lookup("self") != null
+                && hasMethodNamed(
+                        currentInstanceMethodOwner, implicit.name(),
+                        new LinkedHashSet<>())) {
+            return checkCall(
+                    call.rewrite(
+                            new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                            call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                    scope);
+        }
         if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                 && call.callee() instanceof Ast.LambdaExpr lambda) {
             int arity = lambda.parameters().size();
@@ -2248,6 +2445,22 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
         }
+        // flush_async_logs is a runtime-owned Future<void>, not a generic
+        // unknown member result. Preserve its move-only Future type when
+        // checking locally held/awaited flush receipts. Shadowed "stdio"
+        // values must continue through normal user-defined call analysis.
+        if (call.callee() instanceof Ast.MemberExpr flush
+                && flush.member().equals("flush_async_logs")
+                && flush.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("stdio")
+                && scope.lookup("stdio") == null) {
+            if (!call.arguments().isEmpty()) {
+                throw error("stdio.flush_async_logs requires zero arguments");
+            }
+            return new ValueInfo(
+                    new Ast.TypeRef("Future", List.of(Ast.TypeRef.simple("void")), false),
+                    ValueKind.MOVE_ONLY, null);
+        }
         // Bytes v1 constructors return a fresh, uniquely owned immutable value.
         if (call.callee() instanceof Ast.MemberExpr bytesCtor
                 && bytesCtor.receiver() instanceof Ast.NameExpr bytesName
@@ -2300,7 +2513,18 @@ public final class OwnershipChecker {
         }
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
-            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            boolean async = isBuiltinStdoutCall(call, "log_async", scope)
+                    || isBuiltinStdoutCall(call, "logList_async", scope)
+                    || isBuiltinStdoutCall(call, "println_async", scope)
+                    || (call.callee() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr namespace
+                        && namespace.name().equals("stdio")
+                        && member.member().equals("println_async")
+                        && scope.lookup("stdio") == null);
+            return async
+                    ? new ValueInfo(new Ast.TypeRef("Future", List.of(Ast.TypeRef.simple("void")), false),
+                                    ValueKind.MOVE_ONLY, null)
+                    : new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
         }
         if (call.callee() instanceof Ast.MemberExpr spanCall
                 && spanCall.receiver() instanceof Ast.NameExpr spanName) {
@@ -2530,6 +2754,21 @@ public final class OwnershipChecker {
                     Ast.TypeRef receiverType = receiverState.type;
                     if ((receiverType.name().equals("Mutex") || receiverType.name().equals("SharedMutex"))
                             && receiverType.arguments().size() == 1) {
+                        // Invariant-level mutual exclusion is only safe to compose when
+                        // nested acquisitions have a statically proven order. Until
+                        // ordered multi-lock capabilities are implemented, reject
+                        // re-acquisition (including try/async forms) while a guard
+                        // or an inline protected-state callback is still active.
+                        // A second handle may alias the first mutex, so merely
+                        // comparing receiver names would be unsound.
+                        boolean acquiringMutex = switch (member.member()) {
+                            case "lock", "try_lock", "lock_async", "with_lock", "recover" -> true;
+                            default -> false;
+                        };
+                        if (acquiringMutex && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
+                            throw error("nested mutex acquisition requires a proven lock order; "
+                                    + "release the current MutexGuard before acquiring another mutex");
+                        }
                         Ast.TypeRef element = receiverType.arguments().getFirst();
                         if (member.member().equals("lock") && call.arguments().isEmpty()) {
                             return new ValueInfo(new Ast.TypeRef("MutexGuard", List.of(element), false), ValueKind.MOVE_ONLY, null);
@@ -2649,6 +2888,60 @@ public final class OwnershipChecker {
                 concreteReceiver = receiverValue.type.isBorrow()
                         ? receiverValue.type.borrowedTarget() : receiverValue.type;
             }
+            // Do not let a chained factory call or a projected mutex receiver
+            // evade the nested-lock gate above, which handles named locals.
+            // TypeChecker already recognizes these builtin receiver types.
+            boolean acquiringMutex = switch (member.member()) {
+                case "lock", "try_lock", "lock_async", "with_lock", "recover" -> true;
+                default -> false;
+            };
+            if (acquiringMutex && concreteReceiver != null
+                    && (concreteReceiver.name().equals("Mutex")
+                            || concreteReceiver.name().equals("SharedMutex"))
+                    && concreteReceiver.arguments().size() == 1
+                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
+                throw error("nested mutex acquisition requires a proven lock order; "
+                        + "release the current MutexGuard before acquiring another mutex");
+            }
+            // Non-name receivers (e.g. Mutex.new(3).with_lock(...)) must
+            // receive the same lexical protected-state treatment as named
+            // mutex locals. Otherwise their callbacks run through the
+            // generic call fallback without a critical-section admission fence.
+            if (concreteReceiver != null
+                    && (concreteReceiver.name().equals("Mutex")
+                            || concreteReceiver.name().equals("SharedMutex"))
+                    && concreteReceiver.arguments().size() == 1
+                    && (member.member().equals("with_lock")
+                            || member.member().equals("recover"))
+                    && call.arguments().size() == 1) {
+                if (member.member().equals("recover")
+                        && !concreteReceiver.name().equals("SharedMutex")) {
+                    throw error("recover is only available on SharedMutex<T>");
+                }
+                if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                    throw error(member.member()
+                            + " requires an inline lambda so protected mutex state remains lexical");
+                }
+                if (lambda.parameters().size() != 1) {
+                    throw error(member.member()
+                            + " callback must accept exactly one protected-value parameter");
+                }
+                Ast.Param original = lambda.parameters().getFirst();
+                Ast.Param protectedParam = new Ast.Param(
+                        Ast.TypeRef.borrowed(concreteReceiver.arguments().getFirst(), true),
+                        original.name(),
+                        original.structural(),
+                        false);
+                Ast.LambdaExpr protectedLambda = new Ast.LambdaExpr(
+                        List.of(protectedParam), lambda.expressionBody(), lambda.blockBody());
+                mutexCriticalSectionDepth++;
+                try {
+                    checkLambda(protectedLambda, scope, null);
+                } finally {
+                    mutexCriticalSectionDepth--;
+                }
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            }
             // Bytes v1 (spec chapter 26): read-only members never consume the
             // receiver; equals/concat only read their argument. Results are
             // fresh owned values (move-only Bytes/List) or copyable scalars.
@@ -2699,24 +2992,38 @@ public final class OwnershipChecker {
                                 Ast.TypeRef.simple("NioReader"), Ast.TypeRef.simple("NioWriter"))),
                         ValueKind.MOVE_ONLY, null);
             }
-            // Typed Map lookups only READ their key: a move-only Bytes key is
-            // borrowed, never consumed. Map.set still moves key and value in.
+            // Direct guest Map methods share indexed-assignment's exclusive
+            // receiver proof. Never fall through to an unchecked Java method.
             if (concreteReceiver != null
                     && concreteReceiver.name().equals("Map")
                     && concreteReceiver.arguments().size() == 2
                     && findClass("Map") == null
-                    && call.arguments().size() == 1
-                    && (member.member().equals("get_optional")
-                            || member.member().equals("delete"))) {
-                checkExpr(call.arguments().getFirst(), scope, false);
-                if (member.member().equals("delete")) {
-                    return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
-                }
+                    && Set.of("get_optional", "delete", "put", "set").contains(member.member())) {
                 Ast.TypeRef mapValue = concreteReceiver.arguments().get(1);
-                return new ValueInfo(
-                        new Ast.TypeRef("Option", List.of(mapValue), false),
-                        isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY,
-                        null);
+                boolean mutating = !member.member().equals("get_optional");
+                int expected = member.member().equals("put") || member.member().equals("set") ? 2 : 1;
+                if (call.arguments().size() != expected) {
+                    throw error("Map." + member.member() + " requires " + expected + " argument(s)");
+                }
+                if (mutating) {
+                    ensureMapMutationReceiver(member.receiver(), scope);
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    // Lookup/delete borrow a key; put/set transfer the new
+                    // scalar key/value. Do not consume a Bytes key on lookup.
+                    ValueInfo checked = checkExpr(argument, scope,
+                            member.member().equals("put") || member.member().equals("set"));
+                    if (isBorrowValue(checked) || containsBorrowType(checked.type)) {
+                        throw error("Map keys and values must be owned; borrowed payloads cannot escape");
+                    }
+                }
+                return switch (member.member()) {
+                    case "set" -> new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                    case "delete" -> new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    default -> new ValueInfo(
+                            new Ast.TypeRef("Option", List.of(mapValue), false),
+                            isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+                };
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
@@ -2885,12 +3192,20 @@ public final class OwnershipChecker {
         if (!(call.callee() instanceof Ast.MemberExpr member)) return false;
         if (member.receiver() instanceof Ast.NameExpr namespace
                 && namespace.name().equals("stdio") && scope.lookup("stdio") == null) {
-            return member.member().equals("print") || member.member().equals("println");
+            return member.member().equals("print") || member.member().equals("print_blocking")
+                    || member.member().equals("println") || member.member().equals("println_blocking")
+                    || member.member().equals("println_async");
         }
         return isBuiltinStdoutCall(call, "write", scope)
+                || isBuiltinStdoutCall(call, "write_blocking", scope)
                 || isBuiltinStdoutCall(call, "println", scope)
+                || isBuiltinStdoutCall(call, "println_blocking", scope)
+                || isBuiltinStdoutCall(call, "println_async", scope)
                 || isBuiltinStdoutCall(call, "log", scope)
-                || isBuiltinStdoutCall(call, "logList", scope);
+                || isBuiltinStdoutCall(call, "log_blocking", scope)
+                || isBuiltinStdoutCall(call, "log_async", scope)
+                || isBuiltinStdoutCall(call, "logList", scope)
+                || isBuiltinStdoutCall(call, "logList_async", scope);
     }
 
     private void checkFormattingArguments(List<Ast.Expr> arguments, Scope scope) {
@@ -3130,8 +3445,13 @@ public final class OwnershipChecker {
                 || member.member().equals("unwrap_all") || member.member().equals("flatten")
                 || member.member().equals("expect") || member.member().equals("unwrap_or")
                 || member.member().equals("unwrap_or_else")
-                || member.member().equals("or_else") || member.member().equals("ok_or");
+                || member.member().equals("or_else") || member.member().equals("ok_or")
+                || member.member().equals("transpose");
         if (!query && !extracting) return null;
+        if ((member.member().equals("transpose") || member.member().equals("flatten"))
+                && !arguments.isEmpty()) {
+            throw error(member.member() + " requires zero arguments");
+        }
         // A nested call has no reliably resolved result type in this checker
         // until TypeChecker supplies its typed IR. Do not inspect it here and
         // then again in generic method dispatch: that double-checks affine
@@ -3143,13 +3463,17 @@ public final class OwnershipChecker {
         }
         // New nested-only names must not cause a non-Option member receiver
         // to be ownership-checked twice on the ordinary method-call path.
-        if (member.member().equals("flatten") || member.member().equals("unwrap_all")) {
+        if (member.member().equals("flatten") || member.member().equals("unwrap_all")
+                || member.member().equals("transpose")) {
             Ast.TypeRef hint = receiverType(member.receiver(), scope);
             if (hint != null
                     && !(hint.name().equals("Option") && hint.arguments().size() == 1)
                     && !(member.member().equals("flatten")
                             && hint.name().equals("Future")
-                            && hint.arguments().size() == 1)) {
+                            && hint.arguments().size() == 1)
+                    && !(hint.name().equals("Result")
+                            && hint.arguments().size() == 2
+                            && !member.member().equals("unwrap_all"))) {
                 return null;
             }
         }
@@ -3214,7 +3538,6 @@ public final class OwnershipChecker {
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
         if (!option && !result) return null;
-        if (member.member().equals("flatten") && !option) return null;
 
         if (query) {
             for (Ast.Expr argument : arguments) checkExpr(argument, scope, true);
@@ -3270,9 +3593,33 @@ public final class OwnershipChecker {
         }
 
         if (member.member().equals("flatten")) {
-            if (!okType.name().equals("Option") || okType.arguments().size() != 1) {
+            if (option && (!okType.name().equals("Option") || okType.arguments().size() != 1)) {
                 throw error("Option.flatten requires Option<Option<T>>");
             }
+            if (result && (!okType.name().equals("Result")
+                    || okType.arguments().size() != 2
+                    || !okType.arguments().get(1).equals(receiverType.arguments().get(1)))) {
+                throw error("Result.flatten requires Result<Result<T,E>,E> with identical E");
+            }
+        }
+        if (member.member().equals("transpose")) {
+            if (option) {
+                if (!okType.name().equals("Result") || okType.arguments().size() != 2) {
+                    throw error("Option.transpose requires Option<Result<T,E>>");
+                }
+                Ast.TypeRef output = new Ast.TypeRef("Result",
+                        List.of(new Ast.TypeRef("Option",
+                                List.of(okType.arguments().getFirst()), false),
+                                okType.arguments().get(1)), false);
+                return new ValueInfo(output, kindOfType(output), null);
+            }
+            if (!okType.name().equals("Option") || okType.arguments().size() != 1) {
+                throw error("Result.transpose requires Result<Option<T>,E>");
+            }
+            Ast.TypeRef inner = new Ast.TypeRef("Result",
+                    List.of(okType.arguments().getFirst(), receiverType.arguments().get(1)), false);
+            Ast.TypeRef output = new Ast.TypeRef("Option", List.of(inner), false);
+            return new ValueInfo(output, kindOfType(output), null);
         }
 
         if (member.member().equals("unwrap_or") && containsMutexGuardType(okType)) {
@@ -3456,6 +3803,12 @@ public final class OwnershipChecker {
             Scope scope,
             String callable,
             int position) {
+        if (!param.type().isBorrow() && param.type().name().equals("Map")
+                && param.type().arguments().size() == 2
+                && arg instanceof Ast.NameExpr) {
+            throw error(callable + " argument " + position
+                    + " must explicitly rt take an affine Map<K,V> owner");
+        }
         if (param.type().isBorrow() && arg instanceof Ast.CaptureExpr capture) {
             checkExpr(capture, scope, false);
             arg = new Ast.NameExpr(capture.name());
@@ -3581,11 +3934,39 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.IndexExpr indexed) {
-            ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            Ast.TypeRef receiver = receiverType(indexed.receiver(), scope);
+            if (receiver != null && receiver.name().equals("Map")
+                    && receiver.arguments().size() == 2
+                    && findClass("Map") == null) {
+                ensureMapMutationReceiver(indexed.receiver(), scope);
+            } else {
+                ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            }
             checkExpr(indexed.index(), scope, false);
             return;
         }
         throw error("unsupported assignment target");
+    }
+
+    /** Actor-owned Map fields are mutable within their own mailbox turn,
+     * but never become actor-sendable or freely mutable projected aliases.
+     * Local owners and scoped exclusive loans use ordinary borrow admission. */
+    private void ensureMapMutationReceiver(Ast.Expr receiver, Scope scope) {
+        if (receiver instanceof Ast.MemberExpr field
+                && field.receiver() instanceof Ast.NameExpr owner
+                && owner.name().equals("self")) {
+            Ast.ClassDecl klass = classOfReceiver(field.receiver(), scope);
+            if (klass != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                Ast.FieldDecl target = findField(
+                        klass, field.member(), new LinkedHashSet<>());
+                if (target == null || target.bindingKind() != Ast.BindingKind.LET) {
+                    throw error("actor Map field mutation needs an owned writable let field");
+                }
+                checkExpr(field.receiver(), scope, false);
+                return;
+            }
+        }
+        ensureMutableReceiver(receiver, scope, "Map indexed/put mutation");
     }
 
     private void ensureMutableReceiver(Ast.Expr receiver, Scope scope, String what) {
@@ -4364,6 +4745,20 @@ public final class OwnershipChecker {
                 }
             }
         } else if (expr instanceof Ast.CallExpr e) {
+            // Original AST still has a bare name. A closure that invokes it
+            // captures the same borrowed self as an explicit self.method().
+            if (currentInstanceMethodOwner != null
+                    && e.origin() == Ast.CallOrigin.DIRECT
+                    && e.callee() instanceof Ast.NameExpr implicit
+                    && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
+                    && !locals.contains(implicit.name())
+                    && outer.lookup(implicit.name()) == null
+                    && hasMethodNamed(
+                            currentInstanceMethodOwner, implicit.name(),
+                            new LinkedHashSet<>())) {
+                scanExpr(new Ast.NameExpr("self"),
+                        locals, outer, recursiveBinding, captures, false);
+            }
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.SpreadExpr e) {
@@ -4556,7 +4951,16 @@ public final class OwnershipChecker {
         if (constructor.equals("Err") && subjectType.name().equals("Result") && subjectType.arguments().size() == 2) {
             return List.of(subjectType.arguments().get(1));
         }
+        if ((constructor.equals("Full") || constructor.equals("Closed"))
+                && isTryWriteResult(subjectType)) {
+            return List.of(subjectType.arguments().getFirst());
+        }
         return List.of();
+    }
+
+    private static boolean isTryWriteResult(Ast.TypeRef type) {
+        return type != null && !type.isBorrow() && type.name().equals("TryWriteResult")
+                && type.arguments().size() == 1;
     }
 
     private void defineRefinementAlias(String name, Ast.TypeRef narrowedType, VarState source, Scope destination) {
@@ -4944,6 +5348,16 @@ public final class OwnershipChecker {
             // authoritative and this pass fails closed when necessary.
             return Ast.TypeRef.inferred();
         }
+        if (expr instanceof Ast.ChannelOpExpr channel
+                && channel.operation() == Ast.ChannelOperation.WRITE
+                && channel.mode() == Ast.WaitMode.IMMEDIATE) {
+            return new Ast.TypeRef("TryWriteResult",
+                    List.of(syntacticType(channel.value(), scope)), false);
+        }
+        if (expr instanceof Ast.RuntimeCallExpr intrinsic
+                && intrinsic.operation().equals("take") && intrinsic.arguments().size() == 1) {
+            return syntacticType(intrinsic.arguments().getFirst(), scope);
+        }
         if (expr instanceof Ast.TrapExpr trapped) {
             // Preserve the Option wrapper during generic call inference, even
             // when the operand is a local or literal rather than a CallExpr.
@@ -5106,6 +5520,68 @@ public final class OwnershipChecker {
     private Ast.ClassDecl findClass(String name) {
         if (ambiguousClasses.contains(name)) return null;
         return classes.get(name);
+    }
+
+    private Ast.InterfaceDecl findInterface(String name) {
+        if (ambiguousInterfaces.contains(name)) return null;
+        return interfaces.get(name);
+    }
+
+    /**
+     * Ownership-side mirror of the semantic HasFuture<T> result.
+     * Do not treat a merely named get_future method as a capability.
+     * Preserve nominal specialization along inherited class/trait edges.
+     */
+    private Ast.TypeRef hasFutureResult(Ast.TypeRef type, Set<String> seen) {
+        if (type == null || type.isBorrow() || type.inferArguments()) return null;
+        // Path-local nominal identities, not instantiated TypeRef.toString().
+        // Otherwise A<T> -> A<Array<T>> evades the recursion guard forever.
+        // Removing names on exit keeps separate diamond edges observable.
+        if (!seen.add(type.name())) {
+            throw error("cyclic HasFuture<T> ownership inheritance involving " + type.name());
+        }
+        try {
+            Ast.InterfaceDecl iface = findInterface(type.name());
+            if (iface != null && iface.name().equals("HasFuture")
+                    && !iface.moduleContract() && type.arguments().size() == 1) {
+                return type.arguments().getFirst();
+            }
+            Ast.TypeRef result = null;
+            if (iface != null && !iface.moduleContract()) {
+                Map<String, Ast.TypeRef> bindings =
+                        genericBindings(iface.genericParameters(), type.arguments());
+                for (Ast.TypeRef parent : iface.parents()) {
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(parent, bindings), seen));
+                }
+            }
+            Ast.ClassDecl klass = findClass(type.name());
+            if (klass != null) {
+                Map<String, Ast.TypeRef> bindings =
+                        genericBindings(klass.genericParameters(), type.arguments());
+                for (Ast.TypeRef contract : klass.interfaces()) {
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(contract, bindings), seen));
+                }
+                for (Ast.TypeRef parent : klass.parents()) {
+                    if (findClass(parent.name()) == null) continue;
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(parent, bindings), seen));
+                }
+            }
+            return result;
+        } finally {
+            seen.remove(type.name());
+        }
+    }
+
+    private Ast.TypeRef mergeHasFutureOwnershipResult(Ast.TypeRef previous, Ast.TypeRef next) {
+        if (next == null) return previous;
+        if (previous != null && !previous.equals(next)) {
+            throw error("ambiguous HasFuture<T> ownership projection: "
+                    + previous + " and " + next);
+        }
+        return next;
     }
 
     private VarState ownershipRoot(VarState state) {

@@ -1,0 +1,7 @@
+// Negative: ordinary state write cannot impersonate a compiler-issued loan.
+define virtual actor Cart as
+  state { let int quantity: 0; }
+  add(int n) -> void ::
+    s.quantity = s.quantity + n;
+  end
+end

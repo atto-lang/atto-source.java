@@ -44,7 +44,7 @@ public final class ThreadSafetyTraits {
     private static final int MAX_PROOF_STEPS = 100_000;
     private static final int MAX_METADATA_NAME_CHARS = 1_024;
     private static final Set<String> UNPROVEN_CAPABILITIES = Set.of(
-            "Mutex", "MutexGuard", "SharedMutex", "Future",
+            "Mutex", "MutexGuard", "SharedMutex", "Atomic", "AtomicCompareExchange", "Future",
             "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
             "SelectCase", "SelectSet", "SelectResult",
             "Iterator", "AsyncIterator", "TcpConnection", "HttpExchange",

@@ -50,9 +50,11 @@ public final class NativeIo {
                     "fs.read_text_bounded_async max_bytes must be in 0..16777216");
         }
         Path lexical = lexicalPath(rawPath);
-        // Walk the lexical path before the lexical scope check: permission
-        // normalization canonicalizes existing prefixes and would otherwise
-        // follow (probe behind) a symlinked ancestor first.
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.READ, lexical.toString(), "fs.read_text_bounded_async");
         rejectSymlinkComponents(context, RuntimePermissions.Permission.READ, lexical, "fs.read_text_bounded_async");
         context.requirePermission(RuntimePermissions.Permission.READ,
                 lexical.toString(), "fs.read_text_bounded_async");
@@ -123,9 +125,11 @@ public final class NativeIo {
         // Validate the caller's lexical scope BEFORE probing file existence,
         // symlinks or canonical paths. An out-of-scope missing path must
         // report permission denial, not leak its filesystem state.
-        // Walk the lexical path before the lexical scope check: permission
-        // normalization canonicalizes existing prefixes and would otherwise
-        // follow (probe behind) a symlinked ancestor first.
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.READ, lexical.toString(), "fs.file_size");
         rejectSymlinkComponents(context, RuntimePermissions.Permission.READ, lexical, "fs.file_size");
         context.requirePermission(RuntimePermissions.Permission.READ,
                 lexical.toString(), "fs.file_size");
@@ -225,9 +229,11 @@ public final class NativeIo {
         // Reject out-of-scope destinations before any existence, symlink, or
         // parent-resolution probe. This must hold even when the parent path
         // does not exist or its metadata would otherwise reveal its state.
-        // Walk the lexical path before the lexical scope check: permission
-        // normalization canonicalizes existing prefixes and would otherwise
-        // follow (probe behind) a symlinked ancestor first.
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.WRITE, lexical.toString(), "fs.write_text_atomic");
         rejectSymlinkComponents(context, RuntimePermissions.Permission.WRITE, lexical, "fs.write_text_atomic");
         context.requirePermission(RuntimePermissions.Permission.WRITE,
                 lexical.toString(), "fs.write_text_atomic");
@@ -257,6 +263,108 @@ public final class NativeIo {
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException failure) {
             throw ioFailure("atomic write", target, failure);
+        } finally {
+            if (temp != null) {
+                try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
+            }
+        }
+    }
+
+    /**
+     * Durable atomic UTF-8 replacement for small queue manifests (max 1 MiB).
+     *
+     * The enclosing directory is an independently trusted 0700 POSIX
+     * directory, not attacker-writable. This is a *single-file* durability
+     * primitive, NOT a WAL transaction, actor ownership proof, power-loss
+     * guarantee or a directory-FD openat2 sandbox. It is dispatched only via
+     * AsyncNativeIo so the actual fsync work never parks an actor carrier.
+     * Failures after rename have an UNKNOWN outcome; callers must reconcile
+     * from disk before claiming a committed publisher ACK.
+     */
+    public static void writeTextDurableAtomic(
+            OresContext context, String rawPath, String value) {
+        Path lexical = lexicalPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                lexical.toString(), "fs.write_text_durable_atomic_async");
+        byte[] bytes = java.util.Objects.requireNonNull(value, "manifest text")
+                .getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > 1_048_576) {
+            throw new IllegalArgumentException("durable atomic manifest exceeds 1 MiB");
+        }
+        // A write grant for one destination file does not authorize creating
+        // a sibling temp file or rewriting the containing directory's metadata.
+        // Verify lexical directory WRITE before *any* path metadata lookup.
+        Path parent = lexical.getParent();
+        if (parent == null) throw new IllegalArgumentException("durable manifest has no parent");
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                parent.toString(), "fs.write_text_durable_atomic_async.parent");
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException("durable atomic destination cannot be a symlink");
+        }
+        Path actualParent = realPath(parent);
+        Path target = actualParent.resolve(lexical.getFileName());
+        // A symlinked ancestor must not turn one approved lexical directory
+        // into a different, unapproved directory for temporary write/rename.
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                actualParent.toString(), "fs.write_text_durable_atomic_async.parent");
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                target.toString(), "fs.write_text_durable_atomic_async");
+        if (!Files.isDirectory(actualParent, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(target)) {
+            throw new SecurityException("durable manifest directory/leaf is unsafe");
+        }
+        // A private POSIX directory reduces untrusted cross-UID changes,
+        // but does NOT prevent replacement by the same UID or a process with
+        // write access to its parent. A trusted custody boundary is required.
+        try {
+            var attributes = Files.readAttributes(actualParent,
+                    java.nio.file.attribute.PosixFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS);
+            var mode = attributes.permissions();
+            if (mode.contains(java.nio.file.attribute.PosixFilePermission.GROUP_WRITE)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE)) {
+                throw new SecurityException("durable manifest directory must be private (0700)");
+            }
+        } catch (UnsupportedOperationException unsupported) {
+            throw new SecurityException(
+                    "durable manifest requires POSIX private-directory support", unsupported);
+        } catch (IOException failure) {
+            throw ioFailure("check durable manifest directory", actualParent, failure);
+        }
+
+        Path temp = null;
+        try {
+            temp = Files.createTempFile(actualParent, ".oreslang-durable-", ".tmp");
+            try (java.nio.channels.FileChannel pending =
+                    java.nio.channels.FileChannel.open(temp, StandardOpenOption.WRITE,
+                            LinkOption.NOFOLLOW_LINKS)) {
+                java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(bytes);
+                while (buffer.hasRemaining()) {
+                    if (pending.write(buffer) <= 0) {
+                        throw new IOException("stalled durable manifest write");
+                    }
+                }
+                pending.force(true);
+            }
+            if (Files.isSymbolicLink(target)) {
+                throw new SecurityException("durable atomic destination became symlink");
+            }
+            Files.move(temp, target,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            temp = null;
+            // The parent directory's rename metadata is separate from file
+            // data durability. Do not complete Future before this succeeds.
+            try (java.nio.channels.FileChannel directory =
+                    java.nio.channels.FileChannel.open(actualParent, StandardOpenOption.READ)) {
+                directory.force(true);
+            }
+        } catch (IOException failure) {
+            throw ioFailure("durable atomic write (outcome may be unknown)", target, failure);
         } finally {
             if (temp != null) {
                 try { Files.deleteIfExists(temp); } catch (IOException ignored) { }

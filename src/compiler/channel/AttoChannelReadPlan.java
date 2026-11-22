@@ -12,7 +12,7 @@ import java.util.regex.Pattern;
  * No NIO/JSPI guest ABI, scheduler, or general Atto frontend is implemented here.
  */
 public final class AttoChannelReadPlan {
-    public enum Syntax { PREFIX, READCH, DECLARATION_FIRST }
+    public enum Syntax { PREFIX, POSTFIX, READCH, DECLARATION_FIRST, DIRECTIONAL_BINDING }
     public enum Type { CHECKED_RESULT_OPTION_INT, INT, OPTION_INT, VOID }
     public enum OutcomeTag { SOME, EOF, IO_ERROR }
     public record Context(boolean suspending, boolean ioGranted,
@@ -45,6 +45,17 @@ public final class AttoChannelReadPlan {
     private static final Pattern PREFIX = Pattern.compile("(?:(?:return|\\^|val " + ID + " =|let " + ID + " =)\\s+)?<<\\s+(" + ID + ")");
     private static final Pattern READCH = Pattern.compile("readch\\s+(" + ID + ")");
     private static final Pattern DECLARATION = Pattern.compile("(?:val|let)\\s+" + ID + "\\s+<<\\s+(" + ID + ")");
+    // Anchored source-slice candidates: the preflight is not an Atto parser.
+    // Both postfix spellings become exactly the same typed Read as prefix <<.
+    // The suffix must end the expression; c >> val item is a declaration,
+    // while c >>> 1 and c > > are never read aliases.
+    private static final String BIND_HEAD = "(?:val|let)\\s+(?:" + ID + "\\s+)?" + ID + "\\s*=";
+    private static final Pattern POSTFIX = Pattern.compile(
+        "(?:(?:return|\\^|" + BIND_HEAD + ")\\s+)?(?:\\(\\s*(" + ID +
+        ")\\s*>>\\s*\\)|(" + ID + ")\\s*>>)");
+    private static final Pattern DIRECTIONAL = Pattern.compile(
+        "(" + ID + ")\\s*>>\\s*(?:val|let)\\s+" + ID);
+
     private AttoChannelReadPlan() {}
 
     public static Read parse_and_check(String source, String declaredReadable,
@@ -57,10 +68,19 @@ public final class AttoChannelReadPlan {
         Matcher prefix = PREFIX.matcher(text);
         Matcher readch = READCH.matcher(text);
         Matcher declaration = DECLARATION.matcher(text);
+        Matcher postfix = POSTFIX.matcher(text);
+        Matcher directional = DIRECTIONAL.matcher(text);
         Syntax syntax;
         String name;
         if (prefix.matches()) { syntax = Syntax.PREFIX; name = prefix.group(1); }
         else if (readch.matches()) { syntax = Syntax.READCH; name = readch.group(1); }
+        else if (postfix.matches()) {
+            syntax = Syntax.POSTFIX;
+            name = postfix.group(1) == null ? postfix.group(2) : postfix.group(1);
+        } else if (directional.matches()) {
+            syntax = Syntax.DIRECTIONAL_BINDING;
+            name = directional.group(1);
+        }
         else if (declaration.matches()) {
             syntax = Syntax.DECLARATION_FIRST; name = declaration.group(1);
         } else throw new IllegalArgumentException("E_IO_SYNTAX");
@@ -71,6 +91,7 @@ public final class AttoChannelReadPlan {
         if (context.activeBorrowCrossesSuspension())
             throw new IllegalArgumentException("E_BORROW_AWAIT");
         if (context.constBinding() && (syntax == Syntax.DECLARATION_FIRST
+                                       || syntax == Syntax.DIRECTIONAL_BINDING
                                        || text.startsWith("val ")))
             throw new IllegalArgumentException("E_CONST_EFFECT");
         if (expectedType == Type.VOID) throw new IllegalArgumentException("E_IO_DISCARD");

@@ -162,8 +162,17 @@ public final class IncrementalCompiler {
             Ast.Program checked;
             LinkedClasses linked = linkedPublicClasses(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
-            Map<String, Ast.InterfaceDecl> contracts = linkedImportedContracts(
-                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            LinkedHashMap<String, Ast.InterfaceDecl> contracts = new LinkedHashMap<>(
+                    linkedImportedContracts(id, parsed.get(id), parsed, normalizedImportResolutions));
+            for (Map.Entry<String, Ast.InterfaceDecl> trait : linkedImportedTraits(
+                    id, parsed.get(id), parsed, normalizedImportResolutions).entrySet()) {
+                Ast.InterfaceDecl previous = contracts.putIfAbsent(
+                        trait.getKey(), trait.getValue());
+                if (previous != null && previous != trait.getValue()) {
+                    throw new IllegalArgumentException(
+                            "ambiguous imported contract/trait nominal name '" + trait.getKey() + "'");
+                }
+            }
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
@@ -381,6 +390,97 @@ public final class IncrementalCompiler {
         return Map.copyOf(result);
     }
 
+
+    /**
+     * Imports are checked first by ImportGraph. This step carries their
+     * public nominal declarations into the type checker, including same-unit
+     * ancestor traits needed for inherited generic method obligations.
+     *
+     * Never synthesize a trait from a structural shape, an ambient filesystem
+     * path or a private/module-contract declaration. An ancestor's name is
+     * type-checker metadata, not a new runtime export.
+     */
+    private static Map<String, Ast.InterfaceDecl> linkedImportedTraits(
+            String unitId, Ast.Program program, Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.InterfaceDecl> linked = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.TRAIT
+                    && imported.kind() != Ast.ImportKind.INTERFACE) continue;
+            if (imported.wildcard()) continue; // no unchecked wildcard name grants
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, programs.keySet(), importResolutions);
+            if (targetId == null) continue;
+            Ast.Program target = programs.get(targetId);
+            if (target == null) {
+                throw new IllegalArgumentException(
+                        "missing imported trait source unit '" + targetId + "'");
+            }
+            for (String sourceName : imported.names()) {
+                collectImportedTraitAndAncestors(target, targetId, sourceName,
+                        ImportRules.localName(imported, sourceName),
+                        imported.kind(), linked, new LinkedHashSet<>(), 0);
+            }
+        }
+        return Map.copyOf(linked);
+    }
+
+    private static void collectImportedTraitAndAncestors(
+            Ast.Program target, String targetId, String sourceName,
+            String localName, Ast.ImportKind expectedKind,
+            Map<String, Ast.InterfaceDecl> linked,
+            Set<String> visiting, int depth) {
+        if (depth > 32 || !visiting.add(sourceName)) {
+            throw new IllegalArgumentException(
+                    "imported trait inheritance cycle/depth limit: " + sourceName);
+        }
+        try {
+            Ast.InterfaceDecl match = null;
+            for (Ast.ModuleDecl module : target.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.InterfaceDecl iface
+                            && !iface.moduleContract()
+                            && iface.visibility() == Ast.Visibility.PUBLIC
+                            && iface.name().equals(sourceName)) {
+                        if (match != null) {
+                            throw new IllegalArgumentException(
+                                    "ambiguous imported trait '" + sourceName
+                                            + "' in '" + targetId + "'");
+                        }
+                        match = iface;
+                    }
+                }
+            }
+            if (match == null) {
+                throw new IllegalArgumentException(
+                        "imported trait '" + sourceName
+                                + "' has no public non-contract declaration in '" + targetId + "'");
+            }
+            if ((expectedKind == Ast.ImportKind.TRAIT
+                            && match.declarationKind() != Ast.InterfaceKind.TRAIT)
+                    || (expectedKind == Ast.ImportKind.INTERFACE
+                            && match.declarationKind() != Ast.InterfaceKind.INTERFACE)) {
+                throw new IllegalArgumentException(
+                        "import " + expectedKind.name().toLowerCase()
+                                + " '" + sourceName + "' resolved to a mismatched declaration kind in '"
+                                + targetId + "'");
+            }
+            Ast.InterfaceDecl existing = linked.putIfAbsent(localName, match);
+            if (existing != null && existing != match) {
+                throw new IllegalArgumentException(
+                        "conflicting imported trait nominal '" + localName + "'");
+            }
+            for (Ast.TypeRef parent : match.parents()) {
+                // A declared parent must be resolved from the SAME authenticated
+                // imported source unit. Never look it up by arbitrary path.
+                collectImportedTraitAndAncestors(target, targetId, parent.name(),
+                        parent.name(), null, linked, visiting, depth + 1);
+            }
+        } finally {
+            visiting.remove(sourceName);
+        }
+    }
+
     private static final Set<String> LINKABLE_CONTRACT_TYPES = Set.of(
             "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
             "Object", "List", "Map", "Tuple", "FixedArray", "Option", "Result", "Future",
@@ -533,7 +633,7 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(iface.moduleContract() ? "contract " : "interface ")
+            abi.append(iface.declarationKind().name().toLowerCase()).append(' ')
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");

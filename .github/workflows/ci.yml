@@ -47,6 +47,12 @@ jobs:
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run showcase
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
+      - name: Adversarial receipt-gate selftest (source-free, not a guest pass)
+        run: bash scripts/test-replay-video-smoke-runner.sh
+      - name: Native AOT receipt-gate selftest (source-free, not a guest pass)
+        run: bash scripts/test-replay-video-aot-runner.sh
+      - name: Execute 7-receipt replay guest (actual Java/Graal AttoLang compiler)
+        run: bash scripts/run-replay-video-smoke.sh
       - name: Load native stdlib through the modular JVM launcher
         run: |
           mvn -B -ntp -DskipTests dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
@@ -70,6 +76,16 @@ jobs:
           grep -x "orestra-edge-guards-ok" /tmp/edge-guards-jit.out
           grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-jit.out
           grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-jit.out
+
+      - name: Exercise experimental concurrency trace and replay CLI
+        run: |
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="test examples/native-testing.ores --deadlock --schedule-fuzz --seed=37 --trace-output=/tmp/ores-concurrency.trace" | tee /tmp/ores-concurrency-cli.out
+          grep -F "ORES_CONCURRENCY|RUN|seed=37" /tmp/ores-concurrency-cli.out
+          test -s /tmp/ores-concurrency.trace
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="test examples/native-testing.ores --replay=/tmp/ores-concurrency.trace --seed=37" | tee /tmp/ores-concurrency-replay.out
+          grep -F "ORES_CONCURRENCY|RUN|seed=37" /tmp/ores-concurrency-replay.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="test examples/native-fuzz-testing.ores --fuzz --iterations=2 --seed=51" | tee /tmp/ores-native-fuzz.out
+          grep -F "ORES_TEST|SUMMARY|total=2|passed=2|failed=0|skipped=0|filtered=0" /tmp/ores-native-fuzz.out
 
   native-aot:
     runs-on: ubuntu-latest
@@ -109,6 +125,8 @@ jobs:
           grep -F '"managed_reference_mode":"compressed32"' /tmp/ores-aot-build-info.json
       - name: Run AOT image
         run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+      - name: Compile-check and execute replay guest under Native AOT
+        run: bash scripts/run-replay-video-aot-smoke.sh
       - name: Load packaged native stdlib under AOT
         run: ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
       - name: Run AOT proper tail-call stress
@@ -171,6 +189,8 @@ jobs:
           grep -F '"managed_reference_mode":"native64"' /tmp/ores-aot-ref64-build-info.json
       - name: Run full-width AOT image
         run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+      - name: Compile-check and execute replay guest under full-width Native AOT
+        run: bash scripts/run-replay-video-aot-smoke.sh
       - name: Load packaged native stdlib under full-width AOT
         run: ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
 

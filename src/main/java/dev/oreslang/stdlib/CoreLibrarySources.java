@@ -35,7 +35,7 @@ public final class CoreLibrarySources {
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
 
-    private static final Set<String> CORE_SOURCES = Set.of("numeric.atto");
+    private static final Set<String> CORE_SOURCES = Set.of("numeric.atto", "protocols.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
@@ -145,8 +145,13 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException(
                     "canonical core imports must start with 'ores.core/': " + importPath);
         }
+        // Compiler-owned guest modules use canonical .atto bytes; the legacy
+        // .ores spelling of a migrated core module is an explicit closed alias
+        // to the same unit (no ambient file-system or extension probing).
         String relative = canonicalPathBody(importPath, CORE_IMPORT_PREFIX, CORE_SOURCES);
-        return relative.equals("numeric.ores") ? "numeric.atto" : relative;
+        if (relative.equals("numeric.ores")) return "numeric.atto";
+        if (relative.equals("protocols.ores")) return "protocols.atto";
+        return relative;
     }
 
     private static String canonicalStdRelativePath(String importPath) {
