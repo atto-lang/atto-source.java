@@ -7,7 +7,8 @@ define module sync as
   pub fnc mutex_acquire_admissible(bool locked, bool closed,
                                    int waiting, int max_waiting): bool {
     if locked || closed then return false; fi
-    return waiting >= 0 && max_waiting >= 0 && waiting <= max_waiting;
+    // Do not let a newcomer bypass an already queued waiter.
+    return waiting == 0 && max_waiting >= 0;
   }
 
   pub fnc mutex_queue_admissible(bool closed, int waiting,
