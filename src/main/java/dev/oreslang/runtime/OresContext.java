@@ -45,6 +45,37 @@ public final class OresContext implements AutoCloseable {
     private final SourceActorPubSub actorPubSub;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
+    // Keys are owned by exactly one context. Never serialize/copy a handle.
+    private final java.util.Set<AeadPrimitives.Key> cryptoKeys =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private boolean cryptoAdmissionSealed;
+
+    public synchronized AeadPrimitives.Key newCryptoKey(int algorithm) {
+        requireCapability(IsolatePolicy.Capability.CRYPTO, "crypto.aead_new_key");
+        if (cryptoAdmissionSealed) throw new IllegalStateException("crypto context closed");
+        AeadPrimitives.Key key = AeadPrimitives.generateKey(algorithm);
+        cryptoKeys.add(key);
+        return key;
+    }
+
+    public void requireCryptoKey(AeadPrimitives.Key key, String operation) {
+        requireCapability(IsolatePolicy.Capability.CRYPTO, operation);
+        if (key == null || !cryptoKeys.contains(key)) {
+            throw new SecurityException("AEAD key is not owned by this context");
+        }
+    }
+
+    public void closeCryptoKey(AeadPrimitives.Key key) {
+        requireCryptoKey(key, "crypto.aead_close");
+        if (!cryptoKeys.remove(key)) throw new IllegalStateException("AEAD key already released");
+        key.close();
+    }
+
+    private synchronized void retireCryptoKeys() {
+        cryptoAdmissionSealed = true;
+        for (AeadPrimitives.Key key : cryptoKeys) key.close();
+        cryptoKeys.clear();
+    }
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     // Host-provisioned at context creation; default is DENY with no service.
     private final WorkflowHostServiceRegistry workflowHostServices;
@@ -581,6 +612,10 @@ public final class OresContext implements AutoCloseable {
                     "Oreslang context cleanup incomplete; physical state quarantined",
                     incomplete);
         }
+        // The actor/native-I/O join is complete; no actor can use its keys.
+        // Explicitly destroy all remaining secret bytes, even if the guest
+        // omitted a close call. A quarantined failed join keeps keys live.
+        retireCryptoKeys();
         RuntimeException failure = null;
         try {
             http.close();
