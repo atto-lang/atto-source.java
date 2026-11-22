@@ -6,7 +6,7 @@ independently of LLVM/.NET/Wasm and independently of the privileged Java transpo
 ## Available now (source-level, pending exact-head guest CI)
 
 ```atto
-import module http from "std/http";
+import http from "std/http.atto";
 val line = http.parse_request_line("GET /health HTTP/1.1");
 val ok = line.is_ok();
 val has_body = http.response_body_allowed(200, false, false);
@@ -90,3 +90,37 @@ The origin-target validator now rejects requests above 8192 ASCII bytes,
 raw backslashes, malformed/truncated percent encodings, and fragments. Valid
 percent-encoded octets remain permitted in generic HTTP targets but are not
 routable by the conservative route matcher until canonicalized and authorized.
+
+## Namespace-import migration and bounded asynchronous transport planning
+
+The Java compiler import parser now accepts the compact static namespace form:
+
+```atto
+import http from "std/http.atto";
+val checked = http.client_limits(1048576, 8192, 3, 5000);
+```
+
+`stdlib/http.atto` starts with `use namespace http;` and contains public
+file-root classes/functions, not a `define module http as ... end` wrapper.
+The alias import desugars to `import * as http from "std/http.atto";`.
+It is **not** a dynamic module object or authorization credential.
+The exact syntax is proposed language-wide in atto-spec#150; the change
+is source-compatible with explicit wildcard imports, not necessarily with
+old `import module http` callers. The source is in a draft PR.
+
+This candidate also adds native Atto `BodyBudget` (single-owner, monotonic
+stream accounting with `admit`, `finish`, and observed/remaining counts),
+`ClientLimits`, `ServerLimits`, and pure `redirect_candidate` and
+`retry_candidate` functions. These are *admission policy*, not live network
+operations. A positive redirect candidate does NOT grant the next hop: egress
+capabilities, tenant/actor identities, DNS/IP/TLS, credential forwarding,
+timeouts, cancellation and body ownership must be independently checked by
+the privileged transport.
+
+Release blockers: no reviewed async network broker bound to native Atto
+`susp` effects; no actual `await http.get`, server listener or body stream
+I/O; no built-in `std.http` dotted selector parity; no exact-head stepful
+JVM/AOT guest evidence. The expanded Java JUnit fixture contains **105**
+`stdio.println` guest assertions plus a dedicated Java parser regression
+test for namespace desugaring. **NOT_EXECUTED** pending real CI admission.
+Do not report parity or merge until verified.
