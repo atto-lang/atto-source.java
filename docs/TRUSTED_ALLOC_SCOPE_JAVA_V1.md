@@ -80,3 +80,22 @@ poisoned memory remaining live, close preflight, and 1,024-depth admission.
 The standalone pure unwind probe was actually compiled and executed using
 local JDK 21. This is **not** evidence that the Atto compiler automatically
 emits the bracket or has completed suspension/actor cancellation lowering.
+
+## 2026-11-22: bounded multi-destructor failure aggregation
+
+A lexical scope and final owner scope can contain many destructors that
+throw. The runtime must continue attempting the other safe native drops, but
+must **not** accumulate an unbounded exception-suppression list. Aggregation
+now caps attached suppressed failures at 64 and promotes an `Error` or
+`SecurityException` above a prior ordinary failure. The old primary is
+retained as a diagnostic when the new authority failure wins. Failing
+destructors leave their own native allocations poisoned; neither cleanup
+continuation nor diagnostic capping implies successful deallocation.
+
+The host regression exercises 75 failing destructors against an actual native
+arena, and multiple failures with a later authority error. Until a stepful
+exact-head runner actually executes the integration probe, these scenarios
+are **authored, not verified**. The standalone pure unwind helper **was**
+compiled using local JDK21 with `-Xlint:all` and emitted
+`ATTO_TRUSTED_LEXICAL_UNWIND_JDK21_PASS`; its two checked-in file blob SHAs
+match the locally compiled source bytes.
