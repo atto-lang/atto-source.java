@@ -1,6 +1,6 @@
 # Incremental compilation design v1 — Java/GraalVM JVM and Native Image
 
-**Status: DRAFT DESIGN ONLY.** This commit does not implement new incremental code paths and is not compiler or guest-execution evidence.
+**Status: PARTIAL JAVA FRONTEND IMPLEMENTATION / TESTS AUTHORED, NOT EXECUTED.** This PR now modifies the real Java compiler and adds focused JUnit tests, but no exact-head admitted runner, compiled-guest output, namespace package lowering or Native Image proof has been verified.
 
 Shared contract: [atto-common-source #133](https://github.com/atto-lang/atto-common-source/pull/133); rollout tracker: [atto-compilers-parity-testing #53](https://github.com/atto-lang/atto-compilers-parity-testing/issues/53).
 
@@ -46,3 +46,17 @@ Open upstream work #697, #1536, #1545, #1589 is not superseded. Implement by ext
 5. Never export private source to an unapproved CI carrier. If source Actions admission fails with zero steps, report `NOT_EXECUTED` and use only separately approved, exact-tree, per-blob-verified private CI mirroring. Independent review and branch protections remain mandatory.
 
 Design/checklist files here are intentionally **not** a substitute for the above backend changes.
+
+## Implemented Java file-fallback slice (draft PR #1744)
+
+Java main already represents every source file as an individual compilation unit; source-set calls have **singleton file package IDs** and do not currently prove manifest-owned multi-file namespace aggregation. This PR now caches expanded parsed ASTs on a per-source SHA-256 basis with separate strict-Atto/legacy profiles. A no-op build does not reparse unchanged files; body-only changes reparse and re-typecheck the owner but leave unrelated no-header sibling files' typed units intact. `BuildResult.reparsedUnits()` reports parse work independently of `rebuiltUnits()`. Import target swaps with identical target sets invalidate importer checking and transitive dependents, while unresolved external imports conservatively recheck. Caches are published only after successful graph, type and ownership checking. A complete empty source snapshot evicts the selected profile cache.
+
+The implementation **does not** yet aggregate several namespace files into one trusted package instance, produce machine-code/object artifacts, or enforce cross-process toolchain/IR profile keys. Its `packageId` remains `file:<normalized-source-id>` in the map-based API to avoid silently fabricating package/namespace authority.
+
+### Exact-head evidence gate
+
+Focused Java JUnit: `mvn -B -ntp -Dtest=IncrementalFileFallbackV1Test clean test`. The pinned `.github/workflows/incremental-file-fallback-v1.yml` requires a nonempty Surefire XML report with all seven named cases, no failures/skips, and records exact source tree. Source Actions have so far been runner-admission failures with **zero steps**. Thus actual Java compilation and JUnit/guest execution are **NOT_EXECUTED**, not passing.
+
+### Reconcile overlapping PRs before merge
+
+[Java #697](https://github.com/atto-lang/atto-source.java/pull/697) contains an earlier parsed-AST cache and import-binding design. PR #1744 ported the core optimization onto current main and extends it to strict profile separation; the two branches touch `IncrementalCompiler.java` and **must be compared and consolidated**, not blindly merged together. Preserve #697's extra ABI fingerprint audit/tests when reconciled. [#1536](https://github.com/atto-lang/atto-source.java/pull/1536) and [#1545](https://github.com/atto-lang/atto-source.java/pull/1545) own namespace proof and manifest package source-set authority respectively. Integrate those designs in follow-on compile package work without creating an ambient namespace authority.
