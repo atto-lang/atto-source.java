@@ -2556,6 +2556,12 @@ public final class OwnershipChecker {
                 return new ValueInfo(result, ValueKind.COPY, null);
             }
         }
+        if (call.callee() instanceof Ast.MemberExpr cryptoCall
+                && cryptoCall.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("crypto")
+                && scope.lookup("crypto") == null) {
+            return checkBuiltinAeadCall(cryptoCall.member(), call.arguments(), scope);
+        }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -3167,6 +3173,41 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private ValueInfo checkBuiltinAeadCall(
+            String member, List<Ast.Expr> args, Scope scope) {
+        Ast.TypeRef key = Ast.TypeRef.simple("AeadKey");
+        Ast.TypeRef bytes = new Ast.TypeRef(
+                "List", List.of(Ast.TypeRef.simple("int")), false);
+        Ast.TypeRef resultType = new Ast.TypeRef(
+                "Result", List.of(bytes, Ast.TypeRef.simple("String")), false);
+        int arity;
+        Ast.TypeRef returnType;
+        switch (member) {
+            case "aead_new_key" -> { arity = 1; returnType = key; }
+            case "aead_seal", "aead_open" -> { arity = 3; returnType = resultType; }
+            case "aead_close" -> { arity = 1; returnType = Ast.TypeRef.simple("void"); }
+            default -> throw error("unknown crypto AEAD member '" + member
+                    + "' (hash/KDF functions are a separate integration dependency)");
+        }
+        if (args.size() != arity) throw error("crypto." + member
+                + " expects " + arity + " argument(s)");
+        for (int i = 0; i < args.size(); i++) {
+            // seal/open may read one opaque key without consuming it; close
+            // consumes the key at its explicit owner-retirement boundary.
+            boolean consuming = member.equals("aead_close") && i == 0;
+            ValueInfo value = checkExpr(args.get(i), scope, consuming);
+            if (isBorrowValue(value) || containsBorrowType(value.type)
+                    || containsMutexGuardType(value.type)) {
+                throw error("crypto." + member + " cannot retain a borrow or guard");
+            }
+            if (i == 0 && !member.equals("aead_new_key")
+                    && !value.type.name().equals("AeadKey")) {
+                throw error("crypto." + member + " requires an opaque AeadKey");
+            }
+        }
+        return new ValueInfo(returnType, kindOfType(returnType), null);
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
