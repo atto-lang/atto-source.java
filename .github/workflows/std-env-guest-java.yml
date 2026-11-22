@@ -11,6 +11,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/NativeAttoEnvStdlibTest.java'
       - 'src/test/resources/stdlib-parity/env.atto'
       - 'src/test/resources/stdlib-parity/env-injected.atto'
+      - 'src/test/resources/stdlib-parity/env-context-isolation.atto'
       - '.github/workflows/std-env-guest-java.yml'
   push:
     branches: [main]
@@ -23,6 +24,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/NativeAttoEnvStdlibTest.java'
       - 'src/test/resources/stdlib-parity/env.atto'
       - 'src/test/resources/stdlib-parity/env-injected.atto'
+      - 'src/test/resources/stdlib-parity/env-context-isolation.atto'
       - '.github/workflows/std-env-guest-java.yml'
 
 permissions:
@@ -74,6 +76,7 @@ jobs:
             envModuleUsesClosedCanonicalAttoRegistry \
             linkedGuestExecutesStdEnvFallbackAndMissingSemantics \
             linkedGuestUsesOnlyExplicitContextEnvironment \
+            independentlyCreatedGuestContextsDoNotShareEnvironment \
             snapshotDoesNotInspectDeniedHostValues \
             missingCoarseEnvCapabilitySkipsEvenHostKeyEnumeration \
             snapshotBoundsAuthorizedValuesAndNeverPrintsContents \
