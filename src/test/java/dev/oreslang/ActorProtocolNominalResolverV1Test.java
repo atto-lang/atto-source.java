@@ -112,6 +112,25 @@ final class ActorProtocolNominalResolverV1Test {
                 + "terminal state End end", "E_PROTOCOL_SCOPE");
     }
 
+    @Test void namespaceHeaderAndPublicActorBindFromAstNotLexicalGuessing() {
+        var namespaced = resolve("use namespace service;\n"
+                + SOURCE.replace("define actor Client", "define pub actor Client"));
+        assertEquals(1, namespaced.actors().size());
+        assertEquals("Client", namespaced.actors().getFirst().actor());
+    }
+
+    @Test void repeatedOrGenericNominalModesCannotBypassValidation() {
+        denied(SOURCE.replace("extends StreamRequest<Event> as end",
+                        "extends StreamRequest<Event>, StreamRequest<Ack> as end"),
+                "E_PROTOCOL_RESPONSE_MODE");
+        denied(SOURCE.replace("define class Subscribe implements EventContract as end",
+                        "define class Subscribe<T> implements EventContract as end"),
+                "E_PROTOCOL_UNVERIFIED_MESSAGE");
+        denied(SOURCE.replace("define class Subscribe implements EventContract as end",
+                        "define class Subscribe implements EventContract, UnknownImported as end"),
+                "E_PROTOCOL_UNVERIFIED_MESSAGE");
+    }
+
     @Test void missingPayloadOrReplyTypesRejectBeforeRuntimeGate() {
         denied(SOURCE.replace("on Subscribe(Topic) ->", "on Subscribe(MissingType) ->"),
                 "E_PROTOCOL_UNVERIFIED_TYPE");
