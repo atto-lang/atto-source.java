@@ -80,6 +80,12 @@ final class AutomaticPreludeTest {
         assertEquals(2, result.minGenericArity());
         assertEquals(2, result.maxGenericArity());
         assertEquals(CoreTypeRegistry.DropPolicy.ACTIVE_PAYLOAD_ONCE, result.dropPolicy());
+        assertEquals(CoreTypeRegistry.DropPolicy.NONE,
+                CoreTypeRegistry.lookup("None").orElseThrow().dropPolicy());
+        for (String aggregate : new String[]{"Array", "FixedArray", "Tuple", "Pair", "Entry"}) {
+            assertEquals(CoreTypeRegistry.DropPolicy.ALL_INITIALIZED_MEMBERS,
+                    CoreTypeRegistry.lookup(aggregate).orElseThrow().dropPolicy(), aggregate);
+        }
 
         var slice = CoreTypeRegistry.lookup("Slice").orElseThrow();
         assertEquals(CoreTypeRegistry.Ownership.BORROWED_VIEW, slice.ownership());
