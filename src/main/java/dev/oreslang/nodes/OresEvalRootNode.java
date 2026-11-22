@@ -13,6 +13,7 @@ import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.types.ReadonlyShapeProjectionV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.AeadPrimitives;
 import dev.oreslang.runtime.OresVector;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -9088,6 +9089,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                if (name.name().equals("crypto")) return new CryptoAeadFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -10454,6 +10456,17 @@ public final class OresEvalRootNode extends RootNode {
                                 "http." + name, () -> http.postText(values));
                     };
                     default -> throw new IllegalArgumentException("unknown http member " + name);
+                };
+            }
+            if (receiver instanceof CryptoAeadFacade crypto) {
+                return switch (name) {
+                    case "aead_new_key" -> (Invokable) crypto::newKey;
+                    case "aead_seal" -> (Invokable) crypto::seal;
+                    case "aead_open" -> (Invokable) crypto::open;
+                    case "aead_close" -> (Invokable) crypto::close;
+                    default -> throw new IllegalArgumentException(
+                            "unknown crypto AEAD member " + name
+                                    + " (SHA/HMAC/KDF are supplied by separate crypto PR)");
                 };
             }
             if (receiver instanceof EnvFacade environment) {
@@ -14367,6 +14380,142 @@ public final class OresEvalRootNode extends RootNode {
                     context,
                     requireString(args.get(0), "http.post_text url"),
                     requireString(args.get(1), "http.post_text body"));
+        }
+    }
+
+    // The host implementation is not an arbitrary FFI export. The only guest
+    // entrypoints are these four immutable, typed compiler-owned calls.
+    private record CryptoAeadFacade(OresContext context) {
+        private static final int GUEST_MAX_BYTES = 1024 * 1024;
+        private static final int NONCE_BYTES = AeadPrimitives.NONCE_BYTES;
+        private static final int TAG_BYTES = AeadPrimitives.TAG_BYTES;
+
+        private static int integer(Object value, String label) {
+            if (!(value instanceof Integer || value instanceof Long)) {
+                throw new IllegalArgumentException(label + " must be an int");
+            }
+            long number = ((Number) value).longValue();
+            if (number < Integer.MIN_VALUE || number > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(label + " out of range");
+            }
+            return (int) number;
+        }
+
+        private static byte[] byteList(Object value, int max, String label) {
+            if (!(value instanceof List<?> values) || values.size() > max) {
+                throw new IllegalArgumentException(label + " must be a bounded List<int>");
+            }
+            byte[] out = new byte[values.size()];
+            try {
+                for (int i = 0; i < values.size(); i++) {
+                    Object element = values.get(i);
+                    if (!(element instanceof Integer || element instanceof Long)) {
+                        throw new IllegalArgumentException(label + " must contain integer bytes");
+                    }
+                    long octet = ((Number) element).longValue();
+                    if (octet < 0 || octet > 255) {
+                        throw new IllegalArgumentException(label + " byte outside 0..255");
+                    }
+                    out[i] = (byte) octet;
+                }
+                return out;
+            } catch (RuntimeException ex) {
+                java.util.Arrays.fill(out, (byte) 0);
+                throw ex;
+            }
+        }
+
+        private static ArrayList<Long> guestBytes(byte[] bytes) {
+            ArrayList<Long> out = new ArrayList<>(bytes.length);
+            for (byte b : bytes) out.add((long) (b & 255));
+            return out;
+        }
+
+        private AeadPrimitives.Key ownedKey(Object value, String operation) {
+            if (!(value instanceof AeadPrimitives.Key key)) {
+                throw new IllegalArgumentException(operation + " needs an opaque AeadKey");
+            }
+            context.requireCryptoKey(key, operation);
+            return key;
+        }
+
+        private Object newKey(List<Object> arguments) {
+            requireOne(arguments, "crypto.aead_new_key");
+            return context.newCryptoKey(integer(arguments.getFirst(), "AEAD algorithm"));
+        }
+
+        // Returns Result<List<int>,String> containing [12-byte nonce | ciphertext | 16-byte tag].
+        private Object seal(List<Object> arguments) {
+            if (arguments.size() != 3) throw new IllegalArgumentException(
+                    "crypto.aead_seal expects key, aad, plaintext");
+            AeadPrimitives.Key key = ownedKey(arguments.get(0), "crypto.aead_seal");
+            byte[] aad = byteList(arguments.get(1), AeadPrimitives.MAX_AAD_BYTES, "AEAD AAD");
+            byte[] plaintext = null;
+            byte[] nonce = null;
+            byte[] ciphertext = null;
+            byte[] envelope = null;
+            try {
+                plaintext = byteList(arguments.get(2), GUEST_MAX_BYTES, "AEAD plaintext");
+                AeadPrimitives.Sealed sealed = key.seal(aad, plaintext);
+                nonce = sealed.nonce();
+                ciphertext = sealed.ciphertext();
+                envelope = new byte[nonce.length + ciphertext.length];
+                System.arraycopy(nonce, 0, envelope, 0, nonce.length);
+                System.arraycopy(ciphertext, 0, envelope, nonce.length, ciphertext.length);
+                return new ResultValue(true, guestBytes(envelope));
+            } finally {
+                java.util.Arrays.fill(aad, (byte) 0);
+                if (plaintext != null) java.util.Arrays.fill(plaintext, (byte) 0);
+                if (nonce != null) java.util.Arrays.fill(nonce, (byte) 0);
+                if (ciphertext != null) java.util.Arrays.fill(ciphertext, (byte) 0);
+                if (envelope != null) java.util.Arrays.fill(envelope, (byte) 0);
+            }
+        }
+
+        // Returns Result<List<int>,String>; malformed data and tampered tags
+        // are indistinguishable to the caller. No unauthenticated plaintext leaks.
+        private Object open(List<Object> arguments) {
+            if (arguments.size() != 3) throw new IllegalArgumentException(
+                    "crypto.aead_open expects key, aad, sealed_envelope");
+            AeadPrimitives.Key key = ownedKey(arguments.get(0), "crypto.aead_open");
+            byte[] aad = null;
+            byte[] envelope = null;
+            byte[] nonce = null;
+            byte[] ciphertext = null;
+            byte[] plaintext = null;
+            try {
+                aad = byteList(arguments.get(1), AeadPrimitives.MAX_AAD_BYTES, "AEAD AAD");
+                envelope = byteList(arguments.get(2),
+                        GUEST_MAX_BYTES + NONCE_BYTES + TAG_BYTES, "AEAD envelope");
+                if (envelope.length < NONCE_BYTES + TAG_BYTES) {
+                    return new ResultValue(false, "authentication failed");
+                }
+                nonce = java.util.Arrays.copyOfRange(envelope, 0, NONCE_BYTES);
+                ciphertext = java.util.Arrays.copyOfRange(envelope, NONCE_BYTES, envelope.length);
+                try {
+                    plaintext = key.open(nonce, aad, ciphertext);
+                } catch (AeadPrimitives.AuthenticationException badTag) {
+                    return new ResultValue(false, "authentication failed");
+                }
+                return new ResultValue(true, guestBytes(plaintext));
+            } catch (IllegalArgumentException malformed) {
+                return new ResultValue(false, "authentication failed");
+            } finally {
+                if (aad != null) java.util.Arrays.fill(aad, (byte) 0);
+                if (envelope != null) java.util.Arrays.fill(envelope, (byte) 0);
+                if (nonce != null) java.util.Arrays.fill(nonce, (byte) 0);
+                if (ciphertext != null) java.util.Arrays.fill(ciphertext, (byte) 0);
+                if (plaintext != null) java.util.Arrays.fill(plaintext, (byte) 0);
+            }
+        }
+
+        private Object close(List<Object> arguments) {
+            requireOne(arguments, "crypto.aead_close");
+            if (!(arguments.getFirst() instanceof AeadPrimitives.Key key)) {
+                throw new IllegalArgumentException("crypto.aead_close needs an AeadKey");
+            }
+            context.closeCryptoKey(key);
+            return null;
         }
     }
 
