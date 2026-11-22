@@ -433,6 +433,20 @@ public final class AsyncNioTcp {
             }
         }
 
+        /**
+         * Encode one bounded actor reply and write through the same NIO2
+         * CompletionHandler. One guest actor output per GET, no blocking IO.
+         */
+        public OresFuture<Void> writeResp2ReplyAsync(String reply) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.write_resp2_reply_async");
+            try {
+                return writeDetachedAsync(AsyncNioResp2.encodeCompositeReply(reply));
+            } catch (IOException failure) {
+                return OresFuture.failed(failure);
+            }
+        }
+
         public OresFuture<Void> writeResp2HexAsync(String status, String hexPayload) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "socket.write_resp2_hex_async");

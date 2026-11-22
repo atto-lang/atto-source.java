@@ -10349,6 +10349,11 @@ public final class OresEvalRootNode extends RootNode {
                         String payload = requireString(args.get(1), "RESP reply payload");
                         return socket.writeResp2HexAsync(status, payload);
                     };
+                    case "write_resp2_reply_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_resp2_reply_async");
+                        return socket.writeResp2ReplyAsync(
+                                requireString(args.getFirst(), "RESP actor reply"));
+                    };
                     case "read_owned_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "socket.read_owned_bytes_async");
                         if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {

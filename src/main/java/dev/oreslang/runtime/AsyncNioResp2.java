@@ -159,6 +159,25 @@ final class AsyncNioResp2 {
         }
     }
 
+
+    // One actor-output reply per command. A VALUE reply carries lowercase
+    // hex data after a reserved delimiter, not raw binary or arbitrary text.
+    // Bounds are checked before substring/hex decoding or frame allocation.
+    static byte[] encodeCompositeReply(String reply) throws IOException {
+        if (reply == null) throw new IOException("missing reply");
+        if (reply.startsWith("VALUE:")) {
+            if (reply.length() > MAX_VALUE * 2 + 6) {
+                throw new IOException("RESP reply payload exceeds bound");
+            }
+            return encode("VALUE", reply.substring(6));
+        }
+        return switch (reply) {
+            case "OK", "PONG", "NIL", "ONE", "ZERO", "ERR" ->
+                    encode(reply, "");
+            default -> throw new IOException("invalid actor reply envelope");
+        };
+    }
+
     static byte[] encode(String status, String hexPayload) throws IOException {
         if (status == null) throw new IOException("missing RESP status");
         if (hexPayload == null) hexPayload = "";

@@ -272,6 +272,38 @@ final class AttoRedisBinaryResp2GuestTest {
     }
 
     @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void collidingFingerprintsStillUseExactBinaryKeysAfterDeleteAndReuse()
+            throws Exception {
+        // Both keys have the same weighted fingerprint: (length + 1*byte0 + 2*byte1) = 7.
+        // This must never become hash-only equivalence.
+        byte[] a = new byte[] {1, 2};
+        byte[] b = new byte[] {3, 1};
+        runGuest(client -> {
+            client.getOutputStream().write(cat(
+                    command("SET", a, ascii("a")),
+                    command("SET", b, ascii("bb")),
+                    command("GET", a),
+                    command("GET", b),
+                    command("DEL", a),
+                    command("GET", b),
+                    command("SET", a, ascii("ccc")),
+                    command("GET", a),
+                    command("GET", b),
+                    command("QUIT")));
+            expect(client, cat(
+                    ascii("+OK\r\n"), ascii("+OK\r\n"),
+                    bulk(ascii("a")), bulk(ascii("bb")),
+                    ascii(":1\r\n"), bulk(ascii("bb")),
+                    ascii("+OK\r\n"), bulk(ascii("ccc")),
+                    bulk(ascii("bb")), ascii("+OK\r\n")),
+                    "fingerprint collisions and recycled slots must not alias binary keys");
+            assertClosed(client);
+        });
+        System.out.println("ATTO_REDIS_NATIVE_NIO_HASH_COLLISION=PASS");
+    }
+
+    @Test
     void staticTypesRejectUnsafeActorMailAndSynchronousSocketRegression()
             throws Exception {
         String code = source();
@@ -283,7 +315,7 @@ final class AttoRedisBinaryResp2GuestTest {
         assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(typeBreak),
                 "ActorMail<Tuple<int,List<int>,List<int>>> must reject string messages");
-        String ioBreak = code.replace("socket.read_bytes_async(1024)",
+        String ioBreak = code.replace("socket.read_bytes_async(4096)",
                 "socket.read_line()");
         assertNotEquals(code, ioBreak);
         assertThrows(RuntimeException.class,
