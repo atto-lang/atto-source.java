@@ -8727,7 +8727,8 @@ public final class TypeChecker {
                     where + " cannot transfer affine Map<K,V> through actor mail in V1");
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+        if (named.name().equals("UdpSocket") || named.name().equals("UdpPacket")
+                || named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("HttpClientResponse") || named.name().equals("HttpClientBody")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")
@@ -8975,6 +8976,15 @@ public final class TypeChecker {
             return inferBoundaryAutoTraits(bound, seen, genericBindings);
         }
 
+        // Privileged native UDP handles are never task/actor Send just
+        // because a guest declares an unrelated nominal class with the same
+        // spelling. Packet snapshots stay non-transferable until their ABI
+        // and ownership semantics have a separate compiler-backed proof.
+        if (type instanceof Named nativeUdp
+                && (nativeUdp.name().equals("UdpSocket")
+                    || nativeUdp.name().equals("UdpPacket"))) {
+            return new AutoTraitRules.Capabilities(false, false, false);
+        }
         java.util.Optional<AutoTraitRules.Capabilities> builtin =
                 TypeAutoTraits.inferBuiltin(
                         type,
