@@ -6,6 +6,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/NativeAttoHttp*'
       - 'src/test/java/dev/oreslang/compiler/*Module*Test.java'
       - 'src/test/java/dev/oreslang/compiler/RegisteredStdImportGraphTest.java'
+      - 'src/test/java/dev/oreslang/compiler/ImportedClassBorrowOwnershipTest.java'
       - 'src/test/java/dev/oreslang/parser/NativeAttoStdNamespaceImportTest.java'
       - 'src/test/resources/stdlib-parity/**'
       - 'stdlib/http.atto'
@@ -49,13 +50,13 @@ jobs:
           version: '25.3'
           distribution: graalvm
           cache: maven
-      - name: Compile Java checker/linker and execute nine JUnit suites
+      - name: Compile Java checker/linker and execute ten JUnit suites
         shell: bash
         run: |
           set -euo pipefail
           java -version
           mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true \
-            -Dtest=NativeAttoHttpStdlibTest,NativeAttoHttpBoundaryNegativeTest,NativeAttoPublicModuleGuestTest,NativeAttoHttpCoreBorrowBoundaryTest,ModuleVisibilityRewriteRegressionTest,PublicModuleVisibilityCompilerTest,StdHttpSelectiveModuleLinkTest,RegisteredStdImportGraphTest,NativeAttoStdNamespaceImportTest \
+            -Dtest=NativeAttoHttpStdlibTest,NativeAttoHttpBoundaryNegativeTest,NativeAttoPublicModuleGuestTest,NativeAttoHttpCoreBorrowBoundaryTest,ModuleVisibilityRewriteRegressionTest,PublicModuleVisibilityCompilerTest,StdHttpSelectiveModuleLinkTest,RegisteredStdImportGraphTest,ImportedClassBorrowOwnershipTest,NativeAttoStdNamespaceImportTest \
             test
       - name: Reject missing, skipped or failing guest receipts
         shell: bash
@@ -70,6 +71,7 @@ jobs:
             dev.oreslang.compiler.PublicModuleVisibilityCompilerTest \
             dev.oreslang.compiler.StdHttpSelectiveModuleLinkTest \
             dev.oreslang.compiler.RegisteredStdImportGraphTest \
+            dev.oreslang.compiler.ImportedClassBorrowOwnershipTest \
             dev.oreslang.parser.NativeAttoStdNamespaceImportTest; do
             report="target/surefire-reports/TEST-$suite.xml"
             test -s "$report"
