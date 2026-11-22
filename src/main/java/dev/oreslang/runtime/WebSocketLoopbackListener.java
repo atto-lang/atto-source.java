@@ -27,6 +27,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * host I/O worker may hold the accept loan and each connection read loan.
  */
 final class WebSocketLoopbackListener implements AutoCloseable {
+    /**
+     * A shared, fixed four-lane host pool isolates stalled closes. Its
+     * notification API does not execute socket I/O on an actor carrier.
+     */
+    private static final WebSocketHostRetirement HOST_RETIREMENT =
+            WebSocketHostRetirement.shared();
+
     private final AsyncNativeIo nativeIo;
     private final BiConsumer<String, String> requireNet;
     private final ServerSocket server;
@@ -351,16 +358,12 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         return null;
                     });
             if (dispatched.isCompletedExceptionally()) {
-                // A refused CONTROL slot cannot strand an idle accepted peer.
-                // At most maxConnections (<=16) connections can reach this
-                // one-shot fallback for a listener. It runs host cleanup only.
-                try {
-                    Thread.ofVirtual().name("ores-ws-retire-").start(this::close);
-                } catch (RuntimeException | Error allocationFailure) {
-                    // Keep logical authority sealed, with native-I/O owner
-                    // retaining the socket for its eventual context sweep.
-                    // No physical completion is asserted here.
-                }
+                // A saturated CONTROL pool must not spawn one virtual thread
+                // per connection or ever close a socket on an actor carrier.
+                // The single host sweeper owns this pending close; duplicate
+                // notifications collapse to one identity entry. Context
+                // shutdown separately retains and sweeps physical loans.
+                if (!retired.get()) HOST_RETIREMENT.request(this);
             }
         }
 
@@ -1203,24 +1206,31 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 throw new SecurityException("WebSocket poll requires host scheduler");
             }
             requireNet.accept(endpoint, "websocket.poll");
-            synchronized (lifecycleLock) {
-                var loan = acquireActorLease(handle, tenant, authenticatedCaller);
-                try {
-                    var next = protocol.pollUserMessage();
-                    if (next.isEmpty()) return false;
-                    // No actor guest code may execute in this callback.
-                    // Failure to enqueue causes connection close to avoid
-                    // silently losing an admitted USER message.
-                    if (!loan.enqueueIfCurrent(() -> trustedEnqueue.accept(next.orElseThrow()))) {
-                        throw new SecurityException("WebSocket actor retired before dispatch");
+            boolean loanAcquired = false;
+            try {
+                synchronized (lifecycleLock) {
+                    var loan = acquireActorLease(handle, tenant, authenticatedCaller);
+                    loanAcquired = true;
+                    try {
+                        var next = protocol.pollUserMessage();
+                        if (next.isEmpty()) return false;
+                        // No actor guest code may execute in this callback.
+                        // Failure to enqueue requires host-side retirement;
+                        // never call Socket.close while holding lifecycleLock.
+                        if (!loan.enqueueIfCurrent(() -> trustedEnqueue.accept(next.orElseThrow()))) {
+                            throw new SecurityException("WebSocket actor retired before dispatch");
+                        }
+                        return true;
+                    } finally {
+                        loan.close();
                     }
-                    return true;
-                } catch (RuntimeException failure) {
-                    close();
-                    throw failure;
-                } finally {
-                    loan.close();
                 }
+            } catch (RuntimeException | Error failure) {
+                // An invalid/foreign handle is a rejected admission, not a
+                // reason to close an otherwise healthy connection. Only an
+                // error AFTER acquiring a valid lease retires the socket.
+                if (loanAcquired) requestActiveWriteAbort();
+                throw failure;
             }
         }
 
@@ -1252,6 +1262,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                             activeConnections.remove(this);
                         }
                         connections.release();
+                        HOST_RETIREMENT.forget(this);
                     }
                 }
             }

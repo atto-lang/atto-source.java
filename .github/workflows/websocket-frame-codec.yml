@@ -16,6 +16,7 @@ on:
       - src/main/java/dev/oreslang/runtime/WebSocketRawUpgrade.java
       - src/main/java/dev/oreslang/runtime/WebSocketSocketDeadlineInput.java
       - src/main/java/dev/oreslang/runtime/WebSocketLoopbackListener.java
+      - src/main/java/dev/oreslang/runtime/WebSocketHostRetirement.java
       - src/test/java/dev/oreslang/runtime/AsyncNativeIoTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketFrameCodecTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketHandshakeTest.java
@@ -27,6 +28,7 @@ on:
       - src/test/java/dev/oreslang/runtime/WebSocketActorMailboxDeliveryTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketRawUpgradeTest.java
       - src/test/java/dev/oreslang/runtime/WebSocketLoopbackListenerTest.java
+      - src/test/java/dev/oreslang/runtime/WebSocketHostRetirementTest.java
       - docs/WEBSOCKET_TRANSPORT_V1.md
       - .github/workflows/websocket-frame-codec.yml
 
@@ -76,6 +78,6 @@ jobs:
           version: '25.3'
           distribution: graalvm
       - name: Execute bounded WebSocket wire contracts
-        run: mvn -B -ntp -Dtest='dev.oreslang.runtime.WebSocketFrameCodecTest,dev.oreslang.runtime.WebSocketHandshakeTest,dev.oreslang.runtime.WebSocketOpeningRequestTest,dev.oreslang.runtime.WebSocketSessionStateTest,dev.oreslang.runtime.WebSocketOutboundGateTest,dev.oreslang.runtime.WebSocketNioDuplexTest,dev.oreslang.runtime.WebSocketActorConnectionLeaseTest,dev.oreslang.runtime.WebSocketActorMailboxDeliveryTest,dev.oreslang.runtime.WebSocketRawUpgradeTest,dev.oreslang.runtime.WebSocketLoopbackListenerTest' test
+        run: mvn -B -ntp -Dtest='dev.oreslang.runtime.WebSocketFrameCodecTest,dev.oreslang.runtime.WebSocketHandshakeTest,dev.oreslang.runtime.WebSocketOpeningRequestTest,dev.oreslang.runtime.WebSocketSessionStateTest,dev.oreslang.runtime.WebSocketOutboundGateTest,dev.oreslang.runtime.WebSocketNioDuplexTest,dev.oreslang.runtime.WebSocketActorConnectionLeaseTest,dev.oreslang.runtime.WebSocketActorMailboxDeliveryTest,dev.oreslang.runtime.WebSocketRawUpgradeTest,dev.oreslang.runtime.WebSocketLoopbackListenerTest,dev.oreslang.runtime.WebSocketHostRetirementTest' test
       - name: Verify server-socket shutdown retirement
         run: mvn -B -ntp -Dtest=dev.oreslang.runtime.AsyncNativeIoTest test

@@ -589,6 +589,79 @@ private runners executed steps, but do not approve exporting this
 private tree. No source mirror was made. All new tests remain
 **NOT_EXECUTED** until exact-head JDK25/Graal Maven steps run.
 
+## Canonical ledger physical-retirement consolidation (draft, NOT_EXECUTED)
+
+This patch preserves the current `WebSocketActorConnectionLease` as the **only**
+authoritative ownership ledger. It does not copy the older, separate
+`WebSocketActorClaim` or `WebSocketConnectionHandles` designs from review
+PRs #2366/#2371 into the transport. Those drafts require independent
+feature-by-feature review rather than merging competing ownership models.
+
+The existing actor-finalization callback already revokes only the exact
+currently bound actor generation (`revokeIfOwner`) and enqueues a host-only
+CONTROL close operation. A saturated CONTROL pool previously launched a
+**new virtual thread per failed retirement admission**. The fallback now
+uses one shared **fixed four-lane host worker pool** with a
+deduplicating set and FIFO admission queue. Each lane drains up to eight
+already-owned connections per scheduled pass. A blocked physical close
+therefore does not stall other available lanes; a complete four-lane
+stall can still block all retirement. There is no new connection,
+actor carrier, or cleanup thread per retired connection. FIFO orders
+dequeues, but concurrent workers do not guarantee close-completion order.
+Queue entries are removed after the connection-close attempt; the
+native-I/O resource ledger still owns any pending physical loans.
+This is **not** hard-real-time retirement or a complete process-wide
+listener/connection memory budget.
+
+The actor USER delivery handoff now distinguishes rejection of an
+unauthorized/foreign actor handle (which must not close a healthy socket)
+from failure after a valid lease has been acquired. In the latter case the
+loan is closed in `finally`, the lifecycle monitor is released, then
+`requestActiveWriteAbort` revokes the ledger and schedules physical host
+close. The previous code called `close()` while the outer lifecycle lock
+was still held, even though `close()` itself intended to perform socket
+I/O after releasing that lock. No guest callback may be executed in this
+short host scheduler enqueue seam.
+
+The authored `WebSocketLoopbackListenerTest` includes CONTROL-pool
+saturation with a claimed idle connection and a trusted scheduler handoff
+failure that must close without stranding loans. These tests have **not
+executed on current JDK25/GraalVM**. This work does not supply a
+source-level Oreslang guest WebSocket API, global listener/byte budgets,
+a verified native actor mailbox delivery adapter, or full five-backend
+conformance. Do not promote or merge without authorized exact-head CI.
+
+A **source-free Java 21 local concurrency model** of this retirement
+algorithm was compiled and executed for six total passes (one initial and
+five additional) with 1,000 deduplicated retirement events per pass.
+A later FIFO-focused revision ran five further passes with 200 ordered
+requests and the same 1,000-event concurrency batch each time. All model
+passes reported success. The model is a synthetic contract probe, **not**
+compilation or execution of this private source tree, JDK25/GraalVM, the
+actual loopback JUnit cases, or Native Image. Never promote runtime
+claims from this model result alone.
+
+### Isolated byte-exact host retirement verification
+
+The exact `WebSocketHostRetirement.java` blob at Git SHA-1
+`dcfb3ecf63225aeb61375e2969dd3067ff08d642` was copied into a
+local isolated Java 21 workspace and the Git blob hash independently
+recomputed and matched. `javac` compiled that identical helper source
+(with a `ThreadDeath` deprecation warning). A separate Java 21 probe
+executed five rounds with 64 other closes surviving a blocked close,
+400 ordered FIFO closes in total, 5,000 duplicate notifications in
+total, and verified that no more than four physical close workers
+run concurrently. All five rounds passed. This proves the helper's
+standalone Java 21 behavior only, not its integration with the private
+actor runtime, JDK 25/GraalVM JUnit, or Native Image.
+
+The new `WebSocketHostRetirementTest` authors five actual JUnit
+checks of those same behaviors, including forgetting a redundant
+notification. The approved exact-SHA workflow includes this suite,
+but current source-org jobs have not executed any test steps.
+Unbounded listener count and fully blocked worker pool still require
+separate operational admission/budget controls.
+
 ## Not yet implemented
 
 - An executable Oreslang-source WebSocket listen/accept/claim/read/send API.
