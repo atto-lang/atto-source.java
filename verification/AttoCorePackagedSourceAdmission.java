@@ -14,7 +14,7 @@ public final class AttoCorePackagedSourceAdmission {
         assertions++;
     }
 
-    private static void failClosed(String specifier) {
+    private static void failClosed(String specifier) throws java.io.IOException {
         expect(CoreLibrarySources.isReservedOresLibraryImport(specifier),
             "reserved import path " + specifier);
         try {
