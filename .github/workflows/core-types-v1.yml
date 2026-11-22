@@ -4,6 +4,7 @@ on:
     paths:
       - 'core/types.atto'
       - 'tests/core-types-source.test.mjs'
+      - 'tests/core-types-matrix-source.test.mjs'
       - 'tests/fixtures/core-types-v1/**'
       - 'src/test/java/dev/oreslang/CoreTypesGuestTest.java'
       - '.github/workflows/core-types-v1.yml'
@@ -31,7 +32,7 @@ jobs:
           git rev-parse 'HEAD^{tree}'
       - name: Evaluate actual .atto return expressions with independent BigInt oracle
         run: |
-          node --test tests/core-types-source.test.mjs
+          node --test tests/core-types-source.test.mjs tests/core-types-matrix-source.test.mjs
           echo 'CORE_TYPES_SOURCE_ONLY=PASS'
           echo 'CORE_TYPES_COMPILED_GUEST=NOT_PROVEN'
   linked-jvm-guest:

@@ -27,14 +27,16 @@ final class CoreTypesGuestTest {
 
     @Test
     void sourceImportedByRealGuestExecutesBoundaries() throws Exception {
-        Path guest = FIXTURES.resolve("edge-positive.atto");
-        assertTrue(Files.isRegularFile(guest));
-        assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()));
-        var result = LinkedProgramRunner.runWithExitStatus(
-                guest, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
-                new ByteArrayOutputStream(), new ByteArrayOutputStream());
-        assertEquals(0, result.exitStatus(),
-                "real compiled/linked Atto guest must verify all core/types boundaries");
+        for (String fixture : new String[] { "edge-positive.atto", "edge-matrix-positive.atto" }) {
+            Path guest = FIXTURES.resolve(fixture);
+            assertTrue(Files.isRegularFile(guest), fixture);
+            assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), fixture);
+            var result = LinkedProgramRunner.runWithExitStatus(
+                    guest, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            assertEquals(0, result.exitStatus(),
+                    "real compiled/linked Atto guest must verify core/types boundaries: " + fixture);
+        }
     }
 
     @Test
