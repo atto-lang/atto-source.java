@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.AutomaticPrelude;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
@@ -28,7 +29,7 @@ final class AutomaticPreludeTest {
             assertTrue(AutomaticPrelude.lookup(name, AutomaticPrelude.Profile.HOSTED).isEmpty(), name);
         }
         assertTrue(AutomaticPrelude.lookup("Object", AutomaticPrelude.Profile.HOSTED).isEmpty());
-        assertEquals(AutomaticPrelude.Profile.CORE, AutomaticPrelude.Profile.CORE);
+        assertFalse(AutomaticPrelude.protectedIdentity("HashMap"));
     }
 
     @Test
@@ -62,6 +63,12 @@ final class AutomaticPreludeTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(program));
         assertTrue(error.getMessage().contains("E_PRELUDE_SPOOF"), error::getMessage);
+        IllegalArgumentException standaloneBorrowChecker = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program),
+                "the standalone loan checker must reject forged core identities too");
+        assertTrue(standaloneBorrowChecker.getMessage().contains("E_PRELUDE_SPOOF"),
+                standaloneBorrowChecker::getMessage);
     }
 
     @Test
