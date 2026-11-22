@@ -1,0 +1,71 @@
+// AttoLang std/channel: source-level, scheduler-cooperative channel API.
+//
+// Channel<T>, Future<T>, TryWriteResult<T>, and readch/writech are
+// compiler/runtime primitives. This file supplies ordinary Atto functions,
+// never a second host-language queue or a blocking OS-thread adapter.
+//
+// A Channel<T> is local to its execution domain; actor mailboxes are NOT
+// transferable Channel capabilities. Payloads must satisfy the compiler's
+// recursive data-only/ownership checks. Capacity zero means rendezvous.
+// All waits suspend the current continuation; no scheduler carrier may park.
+define module channel as
+
+  // The Java/Graal runtime currently supports only finite capacity.
+  // Do not silently implement "unbounded" as a very large bounded queue.
+  pub fnc bounded<T>(int capacity): Channel<T> {
+    if capacity < 0; do
+      rt fail("std/channel: capacity must be nonnegative");
+    fi
+    return Channel.new<T>(capacity);
+  }
+
+  pub fnc rendezvous<T>(): Channel<T> {
+    return Channel.new<T>(0);
+  }
+
+  // Default channel operations are suspendable, not thread-blocking.
+  // rt take makes ownership transfer explicit for non-copy payloads.
+  pub async fnc send<T>(Channel<T> ch, T value): void {
+    writech ch, rt take value;
+    return;
+  }
+
+  pub async fnc receive<T>(Channel<T> ch): T {
+    return readch ch;
+  }
+
+  // Register a waiter and return a Future immediately. Cancellation is
+  // owned by the runtime's select-registration protocol; we never poll.
+  pub fnc send_pending<T>(Channel<T> ch, T value): Future<void> {
+    return nb writech ch, rt take value;
+  }
+
+  pub fnc receive_pending<T>(Channel<T> ch): Future<T> {
+    return nb readch ch;
+  }
+
+  // Non-registering single admission attempts.
+  // Accepted consumes exactly once; Full/Closed return the rejected value
+  // in the result variant. Never silently drop that ownership result.
+  pub fnc try_send<T>(Channel<T> ch, T value): TryWriteResult<T> {
+    return try writech ch, rt take value;
+  }
+
+  // None means temporarily not ready, not end-of-stream. An empty closed
+  // channel reports a closed error per the underlying readch contract.
+  pub fnc try_receive<T>(Channel<T> ch): Option<T> {
+    return try readch ch;
+  }
+
+  // Idempotent close: buffered values remain readable until drained.
+  // Pending readers/writers are resolved by runtime arbitration.
+  pub fnc close<T>(Channel<T> ch): void {
+    ch.close();
+    return;
+  }
+
+  pub fnc is_closed<T>(Channel<T> ch): bool {
+    return ch.is_closed();
+  }
+
+end
