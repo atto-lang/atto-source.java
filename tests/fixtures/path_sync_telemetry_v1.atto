@@ -58,5 +58,24 @@ pub routine main(): void {
   stdio.println(path.is_portable_relative("ñ"));
   stdio.println(path.normalized_component_scalar("ñ/café", false, 1, 3));
   stdio.println(path.normalized_component_length("ñ/café", false, 1));
+  // Immutable native Atto Path instance, no host filesystem I/O.
+  val item = path.relative_path("a/./b/../c", false);
+  stdio.println(item.component_count());
+  stdio.println(item.component_start(1));
+  stdio.println(item.component_length(1));
+  stdio.println(item.component_scalar(1, 0));
+  stdio.println(item.file_name_offset());
+  stdio.println(item.file_name_size());
+  stdio.println(item.extension_offset());
+  stdio.println(item.stem_length());
+  stdio.println(item.parent_component_count());
+  stdio.println(item.is_canonical());
+  stdio.println(item.is_portable());
+  stdio.println(item.can_join("deep/file.txt"));
+  val clean = path.relative_path("archive.tar.gz", true);
+  stdio.println(clean.extension_offset());
+  stdio.println(clean.stem_length());
+  stdio.println(clean.is_canonical());
+  stdio.println(clean.can_join("parts"));
   return;
 }
