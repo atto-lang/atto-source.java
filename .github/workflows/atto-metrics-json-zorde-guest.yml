@@ -15,7 +15,6 @@ on:
       - 'contracts/core-borrow-preflight-v1.json'
       - 'tests/core-borrow-preflight-source.test.mjs'
       - 'tests/fixtures/core-borrow-v1/**'
-      - 'src/main/resources/dev/oreslang/core/borrow_admission.atto'
   workflow_dispatch:
 permissions:
   contents: read
