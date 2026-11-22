@@ -1,0 +1,52 @@
+name: Atto trusted native allocation scope exact-head host
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/TrustedAllocationScopeV1.java'
+      - 'src/test/java/dev/oreslang/runtime/TrustedAllocationScopeV1HostProbe.java'
+      - '.github/workflows/atto-trusted-alloc-host-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host-native-scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Exact triggering source HEAD
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Verify source SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --quiet
+          git diff --cached --quiet
+      - name: JDK21
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile and execute actual native arena scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          trap 'rm -rf "$dir"' EXIT
+          javac -d "$dir" \
+            src/main/java/dev/oreslang/runtime/ActorLinearArena.java \
+            src/main/java/dev/oreslang/runtime/TrustedAllocationScopeV1.java \
+            src/test/java/dev/oreslang/runtime/TrustedAllocationScopeV1HostProbe.java
+          java -cp "$dir" dev.oreslang.runtime.TrustedAllocationScopeV1HostProbe | tee "$dir/probe.log"
+          grep -Fqx 'ATTO_TRUSTED_ALLOC_SCOPE_JDK21_PASS' "$dir/probe.log"
+          echo 'ATTO_TRUSTED_ALLOC_SCOPE_HOST=EXECUTED'
+      - name: Evidence boundary
+        if: always()
+        run: |
+          echo 'Host-only native actor arena integration. Not compiler-emitted guest drop glue, Atto ledger binding, AOT, or backend parity.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A queued/zero-step job is NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"
