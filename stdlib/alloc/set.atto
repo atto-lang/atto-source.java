@@ -133,7 +133,7 @@ define module set as
       done
     }
 
-    fnc home(int key): int {
+    home(int key): int {
       // Signed remainder is bounded by capacity-1; correction cannot overflow.
       let int remainder = key % self.limit;
       if remainder < 0; do return remainder + self.limit; fi

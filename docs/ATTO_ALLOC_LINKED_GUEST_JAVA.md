@@ -17,8 +17,9 @@ admission/layout but does not mint physical allocation receipts.
 `drop` tracks advisory LIFO destructor obligations; only compiler-owned
 drop glue can release actual payload memory. `arc` remains a SERIAL
 reference-counting ledger, not an atomic `Arc<T>`.
-`set` implements a bounded integer-key set, not a generic
-`HashSet<T>`; accepting user-defined `Hash` is insufficient without
+`set` implements two Atto-backed collections: `BoundedIntSet`
+(dense domain [0..N)) and `IntHashSet` (open-addressed signed int keys,
+collision-safe search, tombstone reuse); neither is a generic `HashSet<T>`; accepting user-defined `Hash` is insufficient without
 compiler-checked `Eq` coherence and key immutability.
 
 **Tests:** `AttoAllocGuestTest` contains real Java compiler/linker guest
