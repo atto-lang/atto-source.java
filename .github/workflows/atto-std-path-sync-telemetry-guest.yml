@@ -70,6 +70,7 @@ jobs:
               "dev.oreslang.runtime.StdPathSyncTelemetryGuestTest": {
                   "exactCompilerOwnedRegistryContainsNativeAttoSourceOnly",
                   "importedNativeAttoPoliciesExecuteInLinkedGuest",
+                  "applicationFilesCannotShadowTrustedStdModules",
               },
               "dev.oreslang.runtime.NativeTraceStdlibTest": {
                   "independentlyPackagedTelemetryPolicyAndBatchExecuteInGuest",
