@@ -4,10 +4,13 @@
 
 This repository owns its own `stdlib/std/crypto.atto` source. The `.atto` functions in this first slice are **pure admission policy**,
 not a complete guest-callable encryption implementation.
-A module path of `"std.crypto"` is the intended core import (never
-`pkg "std.crypto"`), but **the import resolver and host crypto bindings still
-need implementation and an executed compiler-backed test**. Do not promote
-the fixture or this PR as proof of functioning encryption.
+The compiler now admits only the exact
+`import * as crypto from "std.crypto";` form for the built-in
+`crypto` namespace. It is deliberately resolved without arbitrary host
+classes, files or package identity. The `.atto` admission-policy source
+is still independent of these host intrinsic functions; **the full
+standard-library module has not been compiled or executed as a guest**
+and this PR is not a released encryption implementation.
 
 
 ### Java trusted-host progress (this PR)
@@ -35,8 +38,11 @@ when integrated. Avoid claiming it is a released `std.crypto` API.
 
 The Java evaluator now recognizes a compiler-owned **`crypto` namespace**
 in guest source. This is deliberately separate from a validated file import:
-`import * as crypto from "std.crypto";` is **not wired to a trusted
-stdlib import resolver yet** and must not be advertised as production syntax.
+`import * as crypto from "std.crypto";` is now statically admitted
+as an exact compiler-owned import. Arbitrary aliases, selected function
+imports, and lookalike paths are rejected. This is an initial intrinsic
+namespace, **not** source-linked `.atto` function execution or proof of
+a working AOT linker.
 
 Working implementation targets in this PR:
 
@@ -148,6 +154,33 @@ HKDF-SHA-256 output ≤ 8,160 bytes (RFC 5869), bounded PBKDF2 work
 ≤ 100,000 rounds **for protocol compatibility**, entropy requests ≤ 4,096
 bytes. Higher-cost password storage must use a separate async/memory-hard
 and explicitly budgeted API.
+
+## Consolidated SHA/HMAC/PBKDF2 implementation
+
+The existing Java PR #1367 `CryptoPrimitives.java` and
+`CryptoPrimitivesTest.java` were incorporated into this branch as
+**byte-identical Git blobs**, hashes
+`b1243dbe5a1cfa8ac6b0a101a264f64585720015` and
+`8819155e9006a6e4892af24b4cbf1a910ea3626a`. The evaluator
+and type/ownership checkers now expose its SHA-256, HMAC-SHA-256,
+bounded PBKDF2, secure randomness, canonical Base64, and
+constant-time comparison under the same trusted `crypto` namespace.
+No independent duplicate primitive code was written.
+
+Guest `List<int>` message inputs are further limited to 1 MiB
+in the Java facade to contain boxed-list overhead, even where the
+trusted Java primitive accepts 16 MiB. SHA/HMAC outputs are returned
+as byte lists; password/secret material in these lists still awaits
+a dedicated zeroizing `SecretBytes` type. HKDF is intentionally
+host-only until this type exists. Do not call the combined API
+production-ready for storing high-value keys.
+
+JUnit source tests `CryptoMergedGuestSourceTest`,
+`CryptoImportAdmissionTest`, and `CryptoAeadGuestSourceTest`
+cover expected vectors, malformed byte and KDF limits, import path
+admission, authenticated open/close and capability denial.
+**They are not yet executed on this compiler head.** Root import
+and cross-backend negative semantic proofs are still required.
 
 ## Implementation ownership and rollout
 
