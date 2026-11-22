@@ -1,0 +1,76 @@
+name: Atto core slice/error borrowed-copy real guest (exact head)
+on:
+  pull_request:
+    paths:
+      - 'src/main/resources/dev/oreslang/core/slice.atto'
+      - 'src/main/resources/dev/oreslang/core/error.atto'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/test/java/dev/oreslang/CoreSliceErrorGuestTest.java'
+      - 'docs/CORE_SLICE_ERROR_SOURCE_V1.md'
+      - '.github/workflows/core-slice-error-guest-jvm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-slice-error-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  borrowed-copy-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout immutable triggering source HEAD
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact tracked tree and source blobs
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          for path in \
+            src/main/resources/dev/oreslang/core/slice.atto \
+            src/main/resources/dev/oreslang/core/error.atto \
+            src/test/java/dev/oreslang/CoreSliceErrorGuestTest.java; do
+            test "$(git hash-object "$path")" = "$(git rev-parse "HEAD:$path")"
+          done
+          echo "ATTO_SLICE_ERROR_SOURCE_SHA=$EXPECTED_HEAD"
+          echo "ATTO_SLICE_ERROR_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Install GraalVM 25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Compile and run real Atto guest JUnit cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreSliceErrorGuestTest,ArrayIntGetCopyLanguageTest -DfailIfNoTests=true test
+          report='target/surefire-reports/TEST-dev.oreslang.CoreSliceErrorGuestTest.xml'
+          test -s "$report"
+          for name in \
+            bothFreestandingModulesArePackagedAndChecked \
+            realGuestRunsBoundaryAndCatalogHelpers \
+            copyableArraySliceOperationsExecuteThroughPublicImports \
+            sliceCopyCannotCircumventExclusiveMutableArrayLoan \
+            copyHelperDoesNotAcceptNoncopyElements; do
+            grep -F "name=\"$name\"" "$report"
+          done
+          grep -F 'skipped="0"' "$report"
+          grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
+          echo 'ATTO_SLICE_ERROR_JAVA_GUEST=EXECUTED'
+      - name: Limit result claims
+        if: always()
+        shell: bash
+        run: |
+          echo 'This test is Java/JVM guest only, not Native Image, LLVM, or other backend parity.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Queued, no-runner, zero-step, skipped or start-up failures are NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"
