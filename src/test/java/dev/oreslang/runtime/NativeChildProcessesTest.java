@@ -60,10 +60,13 @@ final class NativeChildProcessesTest {
         try (NativeChildProcesses manager = new NativeChildProcesses()) {
             var child = manager.spawn(javaExe(), probe("oversize"), cwd(),
                     (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
-            assertEquals(0, child.waitForExit().get(8, TimeUnit.SECONDS).code());
             var error = assertThrows(ExecutionException.class,
                     () -> child.collectOutput().get(8, TimeUnit.SECONDS));
             assertTrue(error.getCause() instanceof NativeChildProcesses.OutputLimitException);
+            // Exceeding the quota is grounds for terminating the child; it
+            // must not keep running to feed an unbounded output stream.
+            child.waitForExit().get(8, TimeUnit.SECONDS);
+            assertFalse(child.alive());
         }
     }
     @Test void forceKillMakesWaitComplete() throws Exception {
@@ -72,6 +75,43 @@ final class NativeChildProcessesTest {
                     (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
             child.kill().get(8, TimeUnit.SECONDS);
             assertFalse(child.alive());
+        }
+    }
+    @Test void unboundedProducerIsKilledOnFirstOutputOverflow() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            var child = manager.spawn(javaExe(), probe("infinite"), cwd(),
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            var failure = assertThrows(ExecutionException.class,
+                    () -> child.collectOutput().get(8, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof NativeChildProcesses.OutputLimitException);
+            child.waitForExit().get(8, TimeUnit.SECONDS);
+            assertFalse(child.alive(), "unbounded-output child was not terminated");
+        }
+    }
+    @Test void emptyArgumentIsAdmissibleAndNullArgumentIsNot() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            java.util.ArrayList<String> safe = new java.util.ArrayList<>(probe("exit42"));
+            safe.add("");
+            var child = manager.spawn(javaExe(), safe, cwd(),
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            assertEquals(42, child.waitForExit().get(8, TimeUnit.SECONDS).code());
+
+            java.util.ArrayList<String> invalid = new java.util.ArrayList<>(safe);
+            invalid.add(null);
+            assertThrows(IllegalArgumentException.class,
+                    () -> manager.spawn(javaExe(), invalid, cwd(),
+                            (exe, dir) -> { }));
+        }
+    }
+    @Test void invalidPathAndHugeArgumentDoNotReserveChildren() {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    manager.spawn("relative-executable", List.of(), cwd(),
+                            (exe, dir) -> { }));
+            assertThrows(IllegalArgumentException.class, () ->
+                    manager.spawn(javaExe(), List.of("x".repeat(4_194_305)), cwd(),
+                            (exe, dir) -> { }));
+            assertEquals(0, manager.reservedCount());
         }
     }
     @Test void rejectsArgumentsWithEmbeddedNulWithoutLaunch() {
@@ -97,6 +137,11 @@ final class NativeChildProcessesTest {
                     System.out.flush();
                 }
                 case "sleep" -> Thread.sleep(30_000);
+                case "infinite" -> {
+                    byte[] bytes = new byte[8192];
+                    java.util.Arrays.fill(bytes, (byte) 'x');
+                    while (true) System.out.write(bytes);
+                }
                 default -> throw new IllegalArgumentException("unknown probe");
             }
         }
