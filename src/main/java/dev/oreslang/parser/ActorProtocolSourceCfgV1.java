@@ -229,8 +229,11 @@ public final class ActorProtocolSourceCfgV1 {
                         && call.arguments().size() == 1 && !call.typeArgumentsPresent()) {
                     if (binding.declaredType() == null
                             || binding.declaredType().arguments().size() != 1
-                            || binding.declaredType().inferArguments())
-                        throw error("E_PROTOCOL_SOURCE_TYPE", "request needs explicit lease type");
+                            || binding.declaredType().inferArguments()
+                            || binding.declaredType().arguments().getFirst().inferArguments()
+                            || !binding.declaredType().arguments().getFirst().arguments().isEmpty())
+                        throw error("E_PROTOCOL_SOURCE_TYPE",
+                                "request needs an exact non-generic nominal lease reply type");
                     String message = messages.get(name(call.arguments().getFirst()));
                     if (message == null)
                         throw error("E_PROTOCOL_SOURCE_TYPE", "request payload must be a typed argument");
