@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/parser/ActorProtocolTypestateV1.java'
+      - 'src/main/java/dev/oreslang/parser/ActorProtocolAffineCfgV1.java'
       - 'src/main/java/dev/oreslang/parser/ActorProtocolNominalResolverV1.java'
       - 'src/main/java/dev/oreslang/ast/Ast.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
@@ -15,6 +16,8 @@ on:
       - 'src/test/java/dev/oreslang/ActorProtocolIncrementalAbiTest.java'
       - 'src/test/java/dev/oreslang/ActorMessageContractV1Test.java'
       - 'src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java'
+      - 'src/test/java/dev/oreslang/ActorProtocolAffineCfgV1Smoke.java'
+      - 'src/test/java/dev/oreslang/ActorProtocolAffineCfgV1Test.java'
       - '.github/workflows/actor-protocol-typestate-source-v1.yml'
   workflow_dispatch:
 
@@ -50,16 +53,22 @@ jobs:
           javac --release 21 -Xlint:all -Werror -d build/protocol-source-v1 \
             src/main/java/dev/oreslang/parser/Token.java \
             src/main/java/dev/oreslang/parser/Lexer.java \
+            src/main/java/dev/oreslang/ast/Ast.java \
             src/main/java/dev/oreslang/parser/ActorProtocolTypestateV1.java \
-            src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java
+            src/main/java/dev/oreslang/parser/ActorProtocolNominalResolverV1.java \
+            src/main/java/dev/oreslang/parser/ActorProtocolAffineCfgV1.java \
+            src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java \
+            src/test/java/dev/oreslang/ActorProtocolAffineCfgV1Smoke.java
           java -cp build/protocol-source-v1 dev.oreslang.ActorProtocolTypestateV1Smoke
+          java -cp build/protocol-source-v1 dev.oreslang.ActorProtocolAffineCfgV1Smoke
           echo "ATTO_ACTOR_PROTOCOL_JAVA_SOURCE_ONLY=PASS"
           echo "ATTO_ACTOR_PROTOCOL_SOURCE_LEXER=PASS"
+          echo "ATTO_ACTOR_PROTOCOL_AFFINE_CFG_SOURCE_ONLY=PASS"
           echo "ATTO_ACTOR_PROTOCOL_GUEST_EXECUTION=NOT_EXECUTED"
       - name: Compile production Java compiler and execute real focused JUnit tests
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorMessageContractV1Test,ActorProtocolTypestateV1Test,ActorProtocolNominalResolverV1Test,ActorProtocolOptimizerContractTest,ActorProtocolIncrementalAbiTest test
+          mvn -B -ntp -Dtest=ActorMessageContractV1Test,ActorProtocolTypestateV1Test,ActorProtocolNominalResolverV1Test,ActorProtocolOptimizerContractTest,ActorProtocolIncrementalAbiTest,ActorProtocolAffineCfgV1Test test
           echo "ATTO_ACTOR_PROTOCOL_REAL_JUNIT=PASS"
           echo "ATTO_ACTOR_PROTOCOL_GUEST_EXECUTION=NOT_EXECUTED"
