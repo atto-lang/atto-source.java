@@ -46,7 +46,8 @@ final class NativeAttoEnvStdlibTest {
                 Set.of(), java.util.Map.of(), out, err);
         assertTrue(linked.units().containsKey("@std/env.atto"),
                 "source library must compile and link as a guest module");
-        assertEquals(String.join("\n", "false", "true", "fallback", "true",\n                        "true", "true", "true", "false", "true", "true", "true", "true"),
+        assertEquals(String.join("\n", "false", "true", "fallback", "true",
+                        "true", "true", "true", "false", "true", "true", "true", "true"),
                 out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                 () -> err.toString(StandardCharsets.UTF_8));
     }
