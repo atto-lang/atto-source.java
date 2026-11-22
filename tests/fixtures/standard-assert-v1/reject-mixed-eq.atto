@@ -1,0 +1,7 @@
+// Must be a compile-time Eq type mismatch, never coercion. NOT_EXECUTED.
+import module assert from pkg "std.assert";
+
+pub routine main(): void {
+  assert.equal(42, 42.0);
+  return;
+}
