@@ -125,7 +125,7 @@ final class NativeTraceStdlibTest {
             ByteArrayOutputStream stderr = new ByteArrayOutputStream();
             LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                     ExecutionProfile.serverJit(), stdout, stderr);
-            assertEquals(String.join("\\n", "true", "false", "true", "1",
+            assertEquals(String.join("\n", "true", "false", "true", "1",
                             "true", "false", "true", "false", "true", "false", "1", "1"),
                     stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> stderr.toString(StandardCharsets.UTF_8));
