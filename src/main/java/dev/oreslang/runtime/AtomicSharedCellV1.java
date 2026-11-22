@@ -98,18 +98,23 @@ final class AtomicSharedCellV1 {
 
         synchronized Strong<T> clone_owner() {
             ensureOpen();
+            // Construct an unpublished owner before the reference increment:
+            // allocation failure must not strand a strong count.
+            Strong<T> candidate = new Strong<>(control);
             if (!incrementIfLive(control.strong)) {
                 throw new IllegalStateException("strong owner exhausted or dead");
             }
-            return new Strong<>(control);
+            return candidate;
         }
 
         synchronized Weak<T> downgrade() {
             ensureOpen();
+            // Construct before reference reservation; OOME is failure-atomic.
+            Weak<T> candidate = new Weak<>(control);
             if (!incrementIfLive(control.weak)) {
                 throw new IllegalStateException("weak owner exhausted or dead");
             }
-            return new Weak<>(control);
+            return candidate;
         }
 
         private void ensureOpen() {
@@ -137,17 +142,21 @@ final class AtomicSharedCellV1 {
 
         synchronized Weak<T> clone_owner() {
             ensureOpen();
+            // Construct before reference reservation; OOME is failure-atomic.
+            Weak<T> candidate = new Weak<>(control);
             if (!incrementIfLive(control.weak)) {
                 throw new IllegalStateException("weak owner exhausted or dead");
             }
-            return new Weak<>(control);
+            return candidate;
         }
 
         synchronized Strong<T> upgrade(long domain, long generation) {
             ensureOpen();
             if (domain != control.domain || generation != control.generation) return null;
+            // Failed handle allocation must leave the strong count unchanged.
+            Strong<T> candidate = new Strong<>(control);
             if (!incrementIfLive(control.strong)) return null;
-            return new Strong<>(control);
+            return candidate;
         }
 
         private void ensureOpen() {

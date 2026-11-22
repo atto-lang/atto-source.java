@@ -60,6 +60,8 @@ public final class AtomicSharedCellV1HostProbe {
                 x -> drops.incrementAndGet());
             int n = 8;
             CountDownLatch start = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
             Thread[] threads = new Thread[n];
             for (int i = 0; i < n; i++) {
                 var weak = root.downgrade();
@@ -71,13 +73,16 @@ public final class AtomicSharedCellV1HostProbe {
                             if (promoted != null) promoted.close();
                         }
                         weak.close();
-                    } catch (Exception ex) { throw new AssertionError(ex); }
+                    } catch (Throwable ex) { failure.compareAndSet(null, ex); }
                 });
                 threads[i].start();
             }
             start.countDown();
             root.close();
             for (Thread thread : threads) thread.join();
+            if (failure.get() != null) {
+                throw new AssertionError("Arc race worker failed", failure.get());
+            }
             check(drops.get() == 1 && root.is_control_retired());
         }
     }
