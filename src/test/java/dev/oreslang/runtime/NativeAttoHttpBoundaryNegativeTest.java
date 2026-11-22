@@ -47,6 +47,24 @@ final class NativeAttoHttpBoundaryNegativeTest {
     }
 
     @Test
+    void wildcardNamespaceMustNotExposePrivateModuleFacade() throws Exception {
+        String diagnostic = expectNoOutputAndNoLinkedGuest(
+                "http-private-module-namespace-negative.atto");
+        assertTrue(diagnostic.contains("internal"), diagnostic);
+        assertTrue(diagnostic.contains("export") || diagnostic.contains("private"),
+                "expected private module denial, not an unrelated failure: " + diagnostic);
+    }
+
+    @Test
+    void namedFunctionImportCannotReachPublicMemberOfPrivateModule() throws Exception {
+        String diagnostic = expectNoOutputAndNoLinkedGuest(
+                "http-private-module-member-negative.atto");
+        assertTrue(diagnostic.contains("leak"), diagnostic);
+        assertTrue(diagnostic.contains("export") || diagnostic.contains("private"),
+                "expected private member denial, not an unrelated failure: " + diagnostic);
+    }
+
+    @Test
     void missingReservedBuiltinMustNotResolveViaFilesystem() throws Exception {
         String diagnostic = expectNoOutputAndNoLinkedGuest("http-unregistered-negative.atto");
         assertTrue(diagnostic.contains("std.unregistered"), diagnostic);
