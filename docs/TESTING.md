@@ -167,3 +167,35 @@ packaged `testing.atto` source resolution, explicit legacy fallback,
 and reject-by-default import paths. **These checks do not prove guest
 execution.** Admitted, independently reviewed exact-head compiler-backed
 AttoLang steps are still mandatory.
+
+
+## Native Atto testing hardening — range and summary accounting
+
+The canonical stdlib/testing.atto provides expect_in_range_int(actual, lower,
+upper, message). Bounds are **inclusive**; reversed bounds and values outside
+the range return a failing TestOutcome with the caller's diagnostic. The
+implementation compares endpoints directly and never constructs upper + 1
+or lower - 1, so it is safe at both signed-i64 limits.
+
+summary_is_valid(borrow RunSummary) checks that all counters are nonnegative
+and that total == passed + failed + skipped without adding untrusted
+integers. filtered is nonnegative and deliberately excluded from total:
+it counts cases that never entered the selected suite. Because fail-fast only
+counts attempted cases, early-exit summaries also meet this invariant.
+require_success now rejects inconsistent summaries *before* computing an
+executed count; it continues to reject all-empty/all-skipped/all-filtered and
+failed suites.
+
+The positive examples/native-testing-summary-range.atto fixture exercises
+range endpoints and corrupted summaries. The negative
+examples/native-testing-negative-forged-summary.atto fixture must compile,
+reach require_success, and fail at runtime. Both are wired into
+AttoNativeTestingGuestIntegrationTest without changing the pinned 40-case
+machine receipt inventory or expanding the fixed JUnit method count.
+
+**Evidence status:** source and test wiring are authored; an admitted,
+exact-head GitHub Actions run with real guest/compiler steps is still required
+before classifying these guest tests as PASS. This change is Java compiler-local
+and does not assert LLVM, Rust/Wasm, JavaScript, Forge, or .NET parity.
+Seeded property generation/shrinking remains a distinct overlapping Java
+proposal in atto-source.java PR #1747; this patch does not duplicate it.
