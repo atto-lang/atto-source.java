@@ -65,10 +65,9 @@ final class AttoAllocGuestTest {
     @Test
     void importedAttoAllocSelfTestsExecuteAsGuestPrograms() throws Exception {
         for (String module : new String[]{"allocator", "set", "drop", "arc", "pool", "weak"}) {
-            Path guest = temp.resolve(module + "-main.atto");
-            Files.writeString(guest,
-                    "import fnc self_test from \"atto.alloc/" + module + "\";\n"
-                    + "pub fnc main(): int { return self_test() ? 42 : 1; }\n");
+            Path guest = Path.of("tests", "fixtures", "alloc-java-guest",
+                    module + "-positive.atto");
+            assertTrue(Files.isRegularFile(guest), "missing native .atto fixture " + guest);
             assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), module);
             var result = LinkedProgramRunner.runWithExitStatus(
                     guest, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
@@ -80,11 +79,9 @@ final class AttoAllocGuestTest {
 
     @Test
     void missingOrForgedAllocExportsRejectAtLink() throws Exception {
-        Path bad = temp.resolve("missing-export.atto");
-        Files.writeString(bad, """
-                import fnc imaginary_allocator from "atto.alloc/allocator";
-                pub fnc main(): void { return; }
-                """);
+        Path bad = Path.of("tests", "fixtures", "alloc-java-guest",
+                "missing-export-negative.atto");
+        assertTrue(Files.isRegularFile(bad));
         assertThrows(IllegalArgumentException.class,
                 () -> LinkedProgramRunner.validate(bad, Map.of()),
                 "only real declarations may be imported from closed alloc units");
