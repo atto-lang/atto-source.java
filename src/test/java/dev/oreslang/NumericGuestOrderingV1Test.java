@@ -66,4 +66,45 @@ final class NumericGuestOrderingV1Test {
         }
     }
 
+    @Test void numericEqualityMatchesExactOrderingAtThe53BitBoundary() {
+        String source = """
+                pub fnc main(): int {
+                  val int exact = 9007199254740993;
+                  val float rounded = 9007199254740992.0;
+                  if exact == rounded || rounded == exact then
+                    return 1;
+                  fi
+                  if exact != rounded && rounded != exact then
+                    return 42;
+                  fi
+                  return 2;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(OresLanguage.ID, source).asLong());
+        }
+    }
+
+    @Test void signedZeroAndNanEqualityFollowIeeeGuestSemantics() {
+        String source = """
+                pub fnc main(): int {
+                  val float zero = 0.0;
+                  val float negative_zero = -0.0;
+                  val float nan = 0.0 / 0.0;
+                  if zero != negative_zero || nan == nan then
+                    return 1;
+                  fi
+                  if zero == negative_zero && nan != nan then
+                    return 42;
+                  fi
+                  return 2;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(OresLanguage.ID, source).asLong());
+        }
+    }
+
 }
