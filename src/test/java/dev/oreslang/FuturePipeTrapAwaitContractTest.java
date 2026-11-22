@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class FuturePipeTrapAwaitContractTest {
     @Test
-    void trapAwaitWrapsCompletedAndSuspendedFutureAsOptionOfValue() throws Exception {
+    void trapAwaitWrapsCompletedAndSuspendedFutureAsResultOfValue() throws Exception {
         String source = """
                 define class Animal as
                 end
@@ -41,11 +41,11 @@ final class FuturePipeTrapAwaitContractTest {
                 }
 
                 pub fnc main(): void {
-                  val Option<int> some = trap await (answer());
-                  val Option<int> none = trap await (invalid());
+                  val Result<int, Error> some = trap await (answer());
+                  val Result<int, Error> none = trap await (invalid());
                   stdio.stdout.write(some.unwrap());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(none.is_none());
+                  stdio.stdout.write(none.is_err());
                   return;
                 }
                 """;
@@ -59,7 +59,7 @@ final class FuturePipeTrapAwaitContractTest {
         String source = """
                 async fnc answer(): int { return 21; }
                 pub fnc main(): void {
-                  val Option<int> value = await trap (answer());
+                  val Result<Future<int>, Error> value = await trap (answer());
                   return;
                 }
                 """;
@@ -71,17 +71,17 @@ final class FuturePipeTrapAwaitContractTest {
     }
 
     @Test
-    void trapWithoutAwaitReturnsOptionOfPendingFutureNotOptionOfItsResult() {
+    void trapWithoutAwaitReturnsResultOfPendingFutureNotResultOfItsValue() {
         String source = """
                 async fnc answer(): int { return 21; }
                 pub fnc main(): void {
-                  val Option<Future<int>> pending = trap (answer());
+                  val Result<Future<int>, Error> pending = trap (answer());
                   return;
                 }
                 """;
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
 
-        String wrongType = source.replace("Option<Future<int>>", "Option<int>");
+        String wrongType = source.replace("Result<Future<int>, Error>", "Result<int, Error>");
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(wrongType)));
     }
@@ -92,7 +92,7 @@ final class FuturePipeTrapAwaitContractTest {
                 async fnc answer(): int { return 21; }
                 async fnc save(int value): int { return value + 1; }
                 pub fnc main(): void {
-                  val Option<int> result = trap await (answer() |> save());
+                  val Result<int, Error> result = trap await (answer() |> save());
                   return;
                 }
                 """;
