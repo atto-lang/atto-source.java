@@ -41,7 +41,11 @@ final class OresContext {
 }
 final class NativeIo {
   final Set<AutoCloseable> active=ConcurrentHashMap.newKeySet();
-  void register(AutoCloseable resource){active.add(resource);}
+  volatile boolean rejectRegistration;
+  void register(AutoCloseable resource) throws Exception {
+    if(rejectRegistration)throw new IOException("native resource admission rejected");
+    active.add(resource);
+  }
   void unregister(AutoCloseable resource){active.remove(resource);}
 }
 final class OresVM {final NioReadinessGroup reactor=new NioReadinessGroup();NioReadinessGroup nioReadiness(){return reactor;}}
@@ -99,6 +103,11 @@ public final class UdpBridgeHarness {
     public Integer get(int i){reads++;throw new AssertionError("guest value read without permit");}
   }
   public static void main(String[] args)throws Exception {
+    OresContext deniedRegistration=new OresContext();
+    deniedRegistration.io.rejectRegistration=true;
+    assertTrue(failure(AsyncNioUdp.bindAsync(deniedRegistration,"127.0.0.1",0)) instanceof IOException,
+            "checked native registration failure returns failed Future");
+    assertTrue(deniedRegistration.io.active.isEmpty(),"failed registration has no published resource");
     OresContext context=new OresContext();
     var bound=AsyncNioUdp.bindAsync(context,"127.0.0.1",0).join();
     int port=bound.localPort();
