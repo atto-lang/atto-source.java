@@ -12,6 +12,9 @@ on:
       - 'tests/std-metrics-json-zorde-source-contract.test.mjs'
       - 'contracts/std-metrics-json-zorde-source-v1.json'
       - '.github/workflows/atto-metrics-json-zorde-guest.yml'
+      - 'contracts/core-borrow-preflight-v1.json'
+      - 'tests/core-borrow-preflight-source.test.mjs'
+      - 'src/main/resources/dev/oreslang/core/borrow_admission.atto'
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,6 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           node --test tests/std-metrics-json-zorde-source-contract.test.mjs
+          node --test tests/core-borrow-preflight-source.test.mjs
           echo 'ATTO_STDLIB_SOURCE_AUDIT=PASS'
       - name: Setup Java 25 and Maven
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
