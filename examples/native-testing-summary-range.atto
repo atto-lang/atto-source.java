@@ -1,7 +1,7 @@
 // Compiler-backed .atto regression for bounded assertions and trusted summaries.
 // This is separate from the pinned 40-case ORES_TEST receipt inventory.
 import class TestOutcome, RunSummary from 'ores.std/testing';
-import fnc expect_in_range_int, summary_is_valid, require_success from 'ores.std/testing';
+import fnc expect_in_range_int, expect_greater_than_int, expect_less_than_int, summary_is_valid, require_success from 'ores.std/testing';
 
 pub routine main(): void {
   val int minimum = -9223372036854775807 - 1;
@@ -19,6 +19,25 @@ pub routine main(): void {
   if !expect_in_range_int(0, -1, 0, "inclusive upper").passed; do
     rt fail("inclusive upper endpoint was rejected");
   fi
+  if !expect_greater_than_int(42, 41, "strict greater").passed; do
+    rt fail("strict greater-than wrongly rejected a larger integer");
+  fi
+  if expect_greater_than_int(41, 42, "strict greater failure").passed; do
+    rt fail("strict greater-than accepted a smaller integer");
+  fi
+  if expect_greater_than_int(42, 42, "strict greater equality").passed; do
+    rt fail("strict greater-than accepted equality");
+  fi
+  if !expect_less_than_int(41, 42, "strict less").passed; do
+    rt fail("strict less-than wrongly rejected a smaller integer");
+  fi
+  if expect_less_than_int(42, 41, "strict less failure").passed; do
+    rt fail("strict less-than accepted a larger integer");
+  fi
+  if expect_less_than_int(42, 42, "strict less equality").passed; do
+    rt fail("strict less-than accepted equality");
+  fi
+
   val TestOutcome outside = expect_in_range_int(4, 5, 9, "below range");
   if outside.passed || outside.message != "below range"; do
     rt fail("out-of-range rejection lost its diagnostic");
@@ -56,6 +75,6 @@ pub routine main(): void {
     rt fail("negative filtered count was accepted");
   fi
 
-  stdio.stdout.println("ATTO_TEST_SUMMARY_RANGE_OK|checks=13");
+  stdio.stdout.println("ATTO_TEST_SUMMARY_RANGE_OK|checks=19");
   return;
 }
