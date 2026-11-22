@@ -21,5 +21,22 @@ pub routine main(): void {
   let mut reader = zorde.reader(prefix);
   stdio.println(reader.read_byte().unwrap());
   stdio.println(reader.read_byte().unwrap());
+  let mut Array<int> overlong = new Array<int>();
+  overlong.add(128);
+  overlong.add(0);
+  let mut bad_varint = zorde.reader(overlong);
+  stdio.println(bad_varint.read_varuint().is_err());
+  stdio.println(bad_varint.remaining());
+  let mut Array<int> valid = new Array<int>();
+  valid.add(172);
+  valid.add(2);
+  let mut canonical = zorde.reader(valid);
+  stdio.println(canonical.read_varuint().unwrap());
+  stdio.println(canonical.remaining());
+  let mut Array<int> truncated = new Array<int>();
+  truncated.add(128);
+  let mut partial = zorde.reader(truncated);
+  stdio.println(partial.read_varuint().is_err());
+  stdio.println(partial.remaining());
   return;
 }
