@@ -9,6 +9,7 @@ on:
       - 'src/test/resources/stdlib-parity/metrics-json-zorde/**'
       - 'src/test/java/dev/oreslang/runtime/NativeAttoMetricsJsonZordeTest.java'
       - 'tests/std-metrics-json-zorde-source-contract.test.mjs'
+      - 'contracts/std-metrics-json-zorde-source-v1.json'
       - '.github/workflows/atto-metrics-json-zorde-guest.yml'
   workflow_dispatch:
 permissions:
