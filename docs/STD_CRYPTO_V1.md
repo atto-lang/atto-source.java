@@ -7,10 +7,11 @@ not a complete guest-callable encryption implementation.
 The compiler now admits only the exact
 `import * as crypto from "std.crypto";` form for the built-in
 `crypto` namespace. It is deliberately resolved without arbitrary host
-classes, files or package identity. The `.atto` admission-policy source
-is still independent of these host intrinsic functions; **the full
-standard-library module has not been compiled or executed as a guest**
-and this PR is not a released encryption implementation.
+classes, files or package identity. The `.atto` policy functions are now source-compiled through
+`StandardCryptoNamespace`, a bundled-resource linker that unifies
+`crypto.atto` and `crypto_envelope.atto` without introducing a module.
+The new imported-namespace guest tests are **committed, not executed**.
+This is not yet a released encryption implementation.
 
 
 ### Java trusted-host progress (this PR)
@@ -42,9 +43,11 @@ in guest source. This is deliberately separate from a validated file import:
 as an exact compiler-owned import. Arbitrary aliases, selected function
 imports, lookalike paths, duplicate crypto imports, and crypto calls
 without an explicit import are rejected by the static checker.
-This remains an **unexecuted compiler integration** pending JUnit. This is an initial intrinsic
-namespace, **not** source-linked `.atto` function execution or proof of
-a working AOT linker.
+This remains an **unexecuted compiler integration** pending JUnit.
+The trusted compiler now links and invokes **actual checked `.atto` policy
+function bodies** from two packaged source files through this namespace.
+AOT resource inclusion, actual guest execution, and cross-backend parity
+remain unverified.
 
 Working implementation targets in this PR:
 
@@ -59,15 +62,22 @@ crypto.aead_close(key);
 ```
 
 `aead_new_key` produces an opaque, non-copyable `AeadKey`.
-`aead_seal/open` accept a reusable borrowed key and return
-`Result<List<int>, String>`; `aead_close` consumes its key.
-`String` is a **temporary** error payload until `CryptoError` and the
-checked error ABI are integrated. AAD and plaintext are currently represented
+`aead_seal/open` accept a reusable owned key without consuming it
+and return `Result<List<int>, CryptoError>`; `aead_close` consumes its key.
+`CryptoError` is a sealed, compiler-owned local enum-like identity with
+`crypto.authentication_failed`, `crypto.invalid_input`, and
+`crypto.key_exhausted` values. Arbitrary Java exception strings are
+not guest error payloads. Actor transfer of `CryptoError` is **denied**
+until an independently verified cross-backend wire encoding exists. AAD and plaintext are currently represented
 as byte-valued `List<int>`, with a stricter **1 MiB guest message limit**
 to bound `List<Long>` allocation overhead. Native implementation has a
 16 MiB primitive maximum; the two must not be confused.
-`aead_open` returns `Err("authentication failed")` for malformed
+`aead_open` returns `Err(crypto.authentication_failed)` for malformed
 envelopes and bad tags/AAD, and never exposes unauthenticated plaintext.
+Malformed seal inputs return `Err(crypto.invalid_input)`; per-key nonce
+reservation exhaustion returns `Err(crypto.key_exhausted)`. Unexpected
+provider failures and security/capability violations remain exceptions,
+not silently misclassified as authenticated failure.
 
 The guest interface is capability-gated through `CRYPTO`, granted in the
 developer isolate profile but **not** by strict/adversarial profiles.
@@ -146,6 +156,24 @@ the source SHA/root tree, destination immutable repo ID, readers
 and retention. Do not substitute a PAT, secret, public repo,
 or unapproved private carrier.
 
+## Java security identity hardening in this milestone
+
+The `AeadKey`, `SecretBytes` and `CryptoError` nominal type names are
+reserved against user class/alias shadowing. `AeadKey` and
+`SecretBytes` fail Send/Sync/Share auto-trait proof, including when
+nested inside `Option` or `Result`; actor-mail transfer is rejected.
+`CryptoError` is copyable locally but deliberately not actor-sendable
+until the guest wire codec has a stable identity. `SecretBytes` remains
+a **reserved future zeroizing type**, not an implemented guest allocation
+or a claim that existing `List<int>` secrets are safely wiped.
+
+The host `AeadPrimitives.NonceExhaustedException` is a typed internal
+exception consumed by the facade and mapped to
+`Err(crypto.key_exhausted)`. Compiler code and the new guest tests have
+not been executed on their current heads, and previous host-only test
+receipts predate this exception-admission change. Key-lifecycle,
+actor-cancellation and all four native AOT tests remain release gates.
+
 ## Portable Atto source envelope helpers
 
 The additional `stdlib/std/crypto_envelope.atto` file is implemented
@@ -179,13 +207,21 @@ use namespace crypto;
 import * as crypto from "std.crypto";
 ```
 
-Two separately maintained `.atto` files can contribute distinct pure
-functions to the `crypto` source namespace; namespace metadata alone does
-**not** prove a multi-file linker correctly merges them. The Java compiler
-currently treats the exact `std.crypto` import as an intrinsic namespace
-for its supported crypto host methods, not yet as a verified source export
-graph for `crypto.atto` and `crypto_envelope.atto`. LLVM, .NET and Wasm
-still require their own namespace import-resolution and guest source tests.
+The Java compiler now has a source-first bundle linker:
+`StandardCryptoNamespace` reads exactly the two Maven-packaged
+`.atto` resources, requires the flat `crypto` namespace, rejects
+duplicate/forged host symbols, admits only bounded primitive int/bool
+signatures, and merges the root functions into one checked source program.
+It validates the source with strict TypeChecker and OwnershipChecker,
+rejects effectful statements and dynamic expressions, and forbids recursive
+source policy call graphs. The runtime evaluator invokes those checked
+Atto source function bodies through the `crypto` facade, without opening
+guest-controlled paths or registering a forgeable linked code unit.
+`CryptoImportedAttoNamespaceIntegrationTest` verifies cross-file
+function calls, packaged source byte parity, malformed calls, and unknown
+members. **That test has not executed yet**, so this is implemented
+linker logic, not a verified guest/AOT parity receipt. LLVM, .NET and
+Wasm still need their own source namespace linking and execution.
 
 For the **strict Atto source profile**, comparisons in these files and
 fixtures use `eq` / `neq`; legacy `==` / `!=` must not be reintroduced.
