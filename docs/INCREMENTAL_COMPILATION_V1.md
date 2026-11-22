@@ -55,8 +55,28 @@ The implementation **does not** yet aggregate several namespace files into one t
 
 ### Exact-head evidence gate
 
-Focused Java JUnit: `mvn -B -ntp -Dtest=IncrementalFileFallbackV1Test clean test`. The pinned `.github/workflows/incremental-file-fallback-v1.yml` requires a nonempty Surefire XML report with all seven named cases, no failures/skips, and records exact source tree. Source Actions have so far been runner-admission failures with **zero steps**. Thus actual Java compilation and JUnit/guest execution are **NOT_EXECUTED**, not passing.
+Focused Java JUnit: `mvn -B -ntp -Dtest=IncrementalFileFallbackV1Test clean test`. The pinned `.github/workflows/incremental-file-fallback-v1.yml` requires a nonempty Surefire XML report with all ten named cases, no failures/skips, and records exact source tree. Source Actions have so far been runner-admission failures with **zero steps**. Thus actual Java compilation and JUnit/guest execution are **NOT_EXECUTED**, not passing.
 
 ### Reconcile overlapping PRs before merge
 
 [Java #697](https://github.com/atto-lang/atto-source.java/pull/697) contains an earlier parsed-AST cache and import-binding design. PR #1744 ported the core optimization onto current main and extends it to strict profile separation; the two branches touch `IncrementalCompiler.java` and **must be compared and consolidated**, not blindly merged together. Preserve #697's extra ABI fingerprint audit/tests when reconciled. [#1536](https://github.com/atto-lang/atto-source.java/pull/1536) and [#1545](https://github.com/atto-lang/atto-source.java/pull/1545) own namespace proof and manifest package source-set authority respectively. Integrate those designs in follow-on compile package work without creating an ambient namespace authority.
+
+### Public ABI hardening and binding identity (follow-up)
+
+The type-neutral exported interface SHA is now `ores-abi-v4` in the process-local compiler. It includes public callable `suspends` / `nonLexical` / `trapped` state and declared checked effect types, parameter names (for named-argument dispatch), method receiver/critical/effects, public class actor transport/concurrency and abstract metadata, mutable referent flags and annotations, and module interface authority. Complete exported declaration entries are sorted so simple declaration reordering no longer dirties importers.
+
+Resolved import bindings include the **full source-derived imported declaration identity** plus pinned source target. Changing `import fnc {left}` to `import fnc {right}` from the **same provider** must invalidate the importer and conservative downstream closure, even though both target set and provider ABI are unchanged. Import target swaps between two providers are also detected. `BuildResult.reparsedUnits()` and `rebuiltUnits()` separately expose parse work and semantic rechecking.
+
+**Evidence:** Ten JUnit cases are written and required by `.github/workflows/incremental-file-fallback-v1.yml`, but **no executed JDK25 compiler/JUnit run has been obtained**. The shared canonical Python model has been locally re-executed with 20/20 tests passing; that does **not** prove Java compilation.
+
+### Export authorization blocker — source remains private
+
+The live allowlist `.github/private-ci-approved-repositories.txt` has **no approved carrier**, source `main` reports `protected=false`, and security [issue #65](https://github.com/atto-lang/atto-source.java/issues/65) explicitly holds external private-source mirroring pending independent `@ORESoftware` security resolution. The V3 policy requires a pinned carrier contract, exact source head/tree, approved repository ID, reviewed plan and effective protected-source authority before any source-bearing write.
+
+An `opto-sync-test/go-java-validation` source-free runner canary on November 13 executed six steps, but its newer November 21 source-free capacity probe had zero executed steps. Neither is current proof of an approved/available private source carrier. **No private-source mirror was made in this work.**
+
+### Remaining admission checks
+
+1. Obtain independent V3 security review, live source protection and exact carrier allowlist/plan approval; then run a fresh **source-free stepful** capacity probe before any transfer.
+2. On a permitted private carrier, transport only an exact independently approved PR tree; verify all root paths, modes, blob SHA and root tree SHA, scrub credentials and execute the approved JDK25 + offline Maven focused test plan.
+3. Reconcile public ABI coverage against Java [#697](https://github.com/atto-lang/atto-source.java/pull/697) and maintain full manifest/namespace admission from [#1536](https://github.com/atto-lang/atto-source.java/pull/1536) and [#1545](https://github.com/atto-lang/atto-source.java/pull/1545), then compare actual compiled guests against clean builds.
