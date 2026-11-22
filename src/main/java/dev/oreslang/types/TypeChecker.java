@@ -2192,6 +2192,19 @@ public final class TypeChecker {
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            // ActorRef is the only transferable actor capability. A structural
+            // interface/trait with inherited or local callable/field members
+            // could otherwise expose direct object dispatch, bypassing mailbox
+            // admission. Check the transitive interface shape, not merely the
+            // leaf declaration, to prevent an empty child marker from laundering
+            // callable ancestors. StreamOperator uses its own checked path.
+            if (klass.actorKind() != Ast.ActorKind.NONE && !expectedTemplate.members().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' may implement only marker traits/interfaces "
+                                + "or compiler-owned StreamOperator until actor-ref-safe protocol "
+                                + "dispatch and sealed state are lowered; '" + iface.name()
+                                + "' has callable or field members, including inherited members");
+            }
             Record expected = (Record) substituteGenerics(expectedTemplate,
                     genericBindings(iface.genericParameters(), interfaceType.arguments(), "interface " + iface.name()));
             Record actual = publicClassShape(klass, new LinkedHashSet<>());

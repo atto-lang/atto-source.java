@@ -1579,6 +1579,14 @@ public final class Parser {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        // Actors have one runtime-owned mailbox, one lifecycle and one state
+        // ownership domain. Multiple actor superclasses would merge those
+        // domains without an admission or layout proof; reject at parse time
+        // rather than letting ordinary-class diamond dispatch choose a parent.
+        if (parents.size() > 1) {
+            throw error(peek(), "actor '" + name
+                    + "' may extend at most one actor superclass");
+        }
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
         // Standalone actor declaration: retain the receiver-binding name in
