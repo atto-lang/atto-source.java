@@ -173,6 +173,42 @@ final class IncrementalFileFallbackV1Test {
     }
 
     @Test
+    void changedImportedSymbolWithSameProviderInvalidatesDependents() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("provider.atto", """
+                pub fnc left(): int { return 1; }
+                pub fnc right(): int { return 2; }
+                """);
+        sources.put("consumer.atto", """
+                import fnc {left} from './provider.atto';
+                pub fnc main(): void { return; }
+                """);
+        sources.put("downstream.atto", """
+                import fnc {main} from './consumer.atto';
+                pub fnc start(): void { return; }
+                """);
+        sources.put("unrelated.atto", TWO);
+        compiler.compile(sources);
+
+        Map<String, String> retargeted = new LinkedHashMap<>(sources);
+        retargeted.put("consumer.atto", """
+                import fnc {right} from './provider.atto';
+                pub fnc main(): void { return; }
+                """);
+        var rebuilt = compiler.compile(retargeted);
+        assertEquals(Set.of("consumer.atto"), rebuilt.reparsedUnits());
+        assertEquals(Set.of("provider.atto"),
+                rebuilt.units().get("consumer.atto").dependencies(),
+                "changing the imported name may leave the target set unchanged");
+        assertTrue(rebuilt.rebuilt("consumer.atto"));
+        assertTrue(rebuilt.rebuilt("downstream.atto"),
+                "the imported declaration identity must invalidate the reverse graph");
+        assertTrue(rebuilt.reused("provider.atto"));
+        assertTrue(rebuilt.reused("unrelated.atto"));
+    }
+
+    @Test
     void publicParameterRenameInvalidatesNamedArgumentImporters() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> files = new LinkedHashMap<>();
