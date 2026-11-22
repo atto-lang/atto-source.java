@@ -881,7 +881,12 @@ final class MutexRuntimeTest {
 
     @Test
     void sharedGuardCannotBeReleasedFromAnotherActorDomain() throws Exception {
-        try (ActorRuntime runtime = new ActorRuntime()) {
+        // The owner deliberately blocks its physical carrier until the
+        // intruder attempts a cross-domain release. With only one shared
+        // worker, the barrier deadlocks before the authorization assertion.
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8))) {
             var shared = OresMutex.shared(new int[]{0});
             AtomicReference<OresMutex.Guard<int[]>> guardRef = new AtomicReference<>();
             AtomicReference<Throwable> observed = new AtomicReference<>();

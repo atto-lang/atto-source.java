@@ -88,6 +88,77 @@ final class ActorPipeTransportTest {
         }
     }
 
+    /**
+     * Shared three-backend host-transport contract: graceful close admits no
+     * new DATA, cancels blocked writers, and retains only previously admitted
+     * FIFO payloads for the consuming stage. This is not source actor lowering.
+     */
+    @Test
+    void closePreservesAcceptedFifoAndCancelsPendingOrLateSends() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var pipe = ActorPipeTransport.open(runtime, runtime.rootSupervisor(),
+                    stages(), List.of(String.class, String.class), 2);
+            var writer = pipe.writer(0, String.class);
+            var reader = pipe.reader(0, String.class);
+            assertTrue(writer.tryWrite("accepted-1"));
+            assertTrue(writer.tryWrite("accepted-2"));
+            var backpressured = writer.writeAsync("must-not-commit");
+            assertFalse(backpressured.isDone(),
+                    "full bounded edge must not treat pending admission as delivery");
+
+            pipe.close();
+            pipe.close(); // repeated close must not duplicate or resurrect payloads
+            assertTrue(pipe.closed());
+            assertThrows(ExecutionException.class,
+                    () -> backpressured.get(5, TimeUnit.SECONDS));
+            assertFalse(writer.tryWrite("too-late"));
+            assertThrows(ExecutionException.class,
+                    () -> writer.writeAsync("also-too-late").get(5, TimeUnit.SECONDS));
+            assertEquals("accepted-1", reader.readAsync().get(5, TimeUnit.SECONDS));
+            assertEquals("accepted-2", reader.readAsync().get(5, TimeUnit.SECONDS));
+            assertTrue(reader.tryRead().isEmpty());
+            assertThrows(ExecutionException.class,
+                    () -> reader.readAsync().get(5, TimeUnit.SECONDS),
+                    "closed and empty edge must not wait forever");
+        }
+    }
+
+    @Test
+    void fatalLinkCloseStillFencesLaterLinksAndRetiresGroup() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var pipe = ActorPipeTransport.open(
+                    runtime, runtime.rootSupervisor(),
+                    stages(), List.of(String.class, String.class), 1);
+
+            var firstPending = pipe.reader(0, String.class).readAsync();
+            firstPending.whenCompleteRuntime((ignored, failure) -> {
+                throw new LinkageError("fatal first-link completion");
+            });
+
+            var secondPending = pipe.reader(1, String.class).readAsync();
+            secondPending.whenCompleteRuntime((ignored, failure) -> {
+                throw new AssertionError("secondary later-link completion");
+            });
+
+            // OresFuture may isolate runtime-subscriber failures from the completer,
+            // so close() is not required to rethrow them; when it does, the fatal
+            // first-link error must win. Either way the structural fences below hold.
+            try {
+                pipe.close();
+            } catch (LinkageError fatal) {
+                assertEquals("fatal first-link completion", fatal.getMessage());
+            }
+
+            assertThrows(ExecutionException.class,
+                    () -> secondPending.get(5, TimeUnit.SECONDS),
+                    "later links must still be structurally closed after a fatal sibling close");
+            assertTrue(pipe.closed());
+            assertEquals(0, runtime.actorGroupCount(),
+                    "fatal pipe close must still retire its ActorGroup publication");
+        }
+    }
+
+
     @Test
     void rejectsWrongTypeAndForeignSupervisorBeforePublishingAnything() {
         try (ActorRuntime runtime = new ActorRuntime();

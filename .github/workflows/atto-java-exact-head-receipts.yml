@@ -1,4 +1,7 @@
 name: Atto Java exact-head admission and guest receipts
+# Source-repository only. Does not authorize cross-org source transport.
+# A test result counts only if the job actually executes nonzero steps,
+# the immutable source SHA is recorded, and Surefire XML proves the suites ran.
 
 on:
   pull_request:
@@ -18,7 +21,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Checkout immutable event commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # audited in fast-ci
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -33,7 +36,7 @@ jobs:
           printf 'RECEIPT source_sha=%s\n' "$(git rev-parse HEAD)"
           printf 'RECEIPT source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
       - name: Provision GraalVM JDK 25
-        uses: graalvm/setup-graalvm@v1
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # audited in fast-ci
         with:
           java-version: '25'
           distribution: 'graalvm'
@@ -46,7 +49,7 @@ jobs:
           java -version
           mvn -version
           mvn -B -ntp -DfailIfNoTests=true \
-            -Dtest=AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest \
+            -Dtest=AttoMqGuardedActorAdmissionTest,AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest,AotDispatchPlannerV1Test,CheckedDispatchPlanIntegrationV1Test,AotDispatchGuestV1Test,DispatchV1CorpusCompilerTest,MethodOverloadTest,ArityDispatchTableRuntimeTest,ArityOverloadAotTest \
             clean test
       - name: Require nonempty unskipped Surefire reports
         if: always()
@@ -55,12 +58,20 @@ jobs:
           set -euo pipefail
           test -d target/surefire-reports
           for suite in \
+            dev.oreslang.AttoMqGuardedActorAdmissionTest \
             dev.oreslang.AttoSourceAdmissionTest \
             dev.oreslang.launcher.AttoMainAdmissionTest \
             dev.oreslang.launcher.OresMainSourceBudgetTest \
             dev.oreslang.config.OresProjectConfigTest \
             dev.oreslang.AttoCacheShapeAdmissionTest \
-            dev.oreslang.ProjectManifestImportTest; do
+            dev.oreslang.ProjectManifestImportTest \
+            dev.oreslang.AotDispatchPlannerV1Test \
+            dev.oreslang.CheckedDispatchPlanIntegrationV1Test \
+            dev.oreslang.AotDispatchGuestV1Test \
+            dev.oreslang.DispatchV1CorpusCompilerTest \
+            dev.oreslang.MethodOverloadTest \
+            dev.oreslang.ArityDispatchTableRuntimeTest \
+            dev.oreslang.ArityOverloadAotTest; do
             report="target/surefire-reports/TEST-${suite}.xml"
             test -s "$report"
             grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
@@ -68,9 +79,56 @@ jobs:
               echo "::error::Nonzero failures/errors in $suite"
               exit 1
             fi
+            # Skipped or disabled suites are NOT executed evidence.
+            if grep -Eq '<testsuite[^>]*skipped="[1-9][0-9]*"' "$report"; then
+              echo "::error::Skipped tests in required suite $suite"
+              exit 1
+            fi
+            if grep -Eq '<skipped([ >])' "$report"; then
+              echo "::error::Skipped test case in required suite $suite"
+              exit 1
+            fi
             printf 'RECEIPT junit_suite=%s report=%s\n' "$suite" "$report"
           done
+          # Guarded queue owner tests are source/parser admission only. They must
+          # execute, not merely compile or be omitted by -Dtest filtering.
+          actor_report=target/surefire-reports/TEST-dev.oreslang.AttoMqGuardedActorAdmissionTest.xml
+          test -s "$actor_report"
+          for actor_case in \
+            serialActorTypedLiteralStateParsesButLoweringRemainsDisabled \
+            oldColonFieldsCannotPassForSealedActorState \
+            negativeSentinelIsNotAnApprovedScalarStateLiteral \
+            duplicateSealedStateContainersAreRejected \
+            duplicateSealedStateFieldNamesAreRejected \
+            sealedStateMustUseTheSupportedScalarTypes \
+            sealedStateInitializersMustMatchTheDeclaredType \
+            sealedStateCannotMixOrdinaryActorFields \
+            untrustedActorCodeCannotDefineHandleStateIntrinsic \
+            actorLocalPanicHandlerCannotInterceptSupervisorControl \
+            sealedStateFieldBudgetIsEnforcedAtParseTime; do
+            grep -Fq "name=\"$actor_case\"" "$actor_report"
+          done
+          echo 'RECEIPT attomq_guarded_actor_parser_negative_cases=11 lowering=DENIED'
+          dispatch_report=target/surefire-reports/TEST-dev.oreslang.AotDispatchGuestV1Test.xml
+          # Two named methods must be present: JIT and JIT-disabled.
+          # A suite with only one executed method is not equivalent evidence.
+          grep -Fq 'name="baseTypedReceiverRetainsVirtualOverrideAndStaticCallsStayQualified"' "$dispatch_report"
+          grep -Fq 'name="sameFixtureRunsWithGuestJitDisabledByProfile"' "$dispatch_report"
+          grep -Fq 'name="scalarGenericIntReuseRunsWithAndWithoutGuestJit"' "$dispatch_report"
+          # Source admission alone does not prove the direct/instance/static
+          # canonical corpus actually executed through the guest interpreter.
+          # Require both the JIT-enabled and JIT-disabled runtime JUnit cases.
+          corpus_report=target/surefire-reports/TEST-dev.oreslang.DispatchV1CorpusCompilerTest.xml
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithJitEnabled"' "$corpus_report"
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithGuestJitDisabled"' "$corpus_report"
+          echo 'RECEIPT dispatch_jvm_jit_and_disabled_named_cases=EXECUTED'
+          echo 'RECEIPT dispatch_canonical_direct_instance_static_jit_modes=EXECUTED'
           echo 'RECEIPT guest_42=asserted_by_AttoSourceAdmissionTest_and_AttoCacheShapeAdmissionTest'
+          echo 'RECEIPT dispatch_virtual_override=asserted_by_AotDispatchGuestV1Test stdout_expected=121020'
+          echo 'RECEIPT dispatch_jit_disabled_profile=asserted_by_AotDispatchGuestV1Test'
+          echo 'RECEIPT dispatch_ownership_and_target_identity=asserted_by_CheckedDispatchPlanIntegrationV1Test'
+          echo 'RECEIPT dispatch_native_guest_aot=NOT_EXECUTED'
+          echo 'RECEIPT dispatch_cross_backend_parity=NOT_EXECUTED'
       - name: Preserve compiler and guest test reports
         if: always()
         uses: actions/upload-artifact@v4

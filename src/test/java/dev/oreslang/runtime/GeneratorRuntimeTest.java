@@ -154,10 +154,13 @@ final class GeneratorRuntimeTest {
             java.util.concurrent.FutureTask<Void> closing = new java.util.concurrent.FutureTask<>(
                     () -> { generator.close(); return null; });
             Thread closer = Thread.ofVirtual().start(closing);
+            var outstanding = new java.util.concurrent.atomic.AtomicReference<
+                    OresFuture<GeneratorRuntime.Step<Integer>>>();
             try {
                 assertTrue(leaving.await(2, TimeUnit.SECONDS));
                 var pull = assertTimeoutPreemptively(java.time.Duration.ofMillis(500),
                         generator::nextStep);
+                outstanding.set(pull);
                 assertEquals(OresFuture.class, pull.getClass());
                 assertThrows(java.util.concurrent.TimeoutException.class,
                         () -> pull.get(80, TimeUnit.MILLISECONDS));
@@ -166,6 +169,16 @@ final class GeneratorRuntimeTest {
             }
             closing.get(2, TimeUnit.SECONDS);
             closer.join();
+            // Single-flight contract: await the outstanding pull before the
+            // next one. close() does not wait for an in-flight pull's
+            // completion callback, so pulling again without this races it
+            // (the overlap is rejected by design). The pull must still settle
+            // promptly once the producer exits; either outcome is valid here.
+            try {
+                outstanding.get().get(2, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException settledByClose) {
+                // closed while pending
+            }
             assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
         } finally {
             // Release before closing even if the first pull/assertion fails.
@@ -213,6 +226,406 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void concurrentSyncPullIsRejectedInsteadOfQueueingAnotherConsumer() throws Exception {
+        CountDownLatch producerStarted = new CountDownLatch(1);
+        CountDownLatch releaseProducer = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>generator(runtime, emitter -> {
+                 producerStarted.countDown();
+                 releaseProducer.await();
+                 emitter.emit(42);
+             })) {
+            java.util.concurrent.FutureTask<GeneratorRuntime.Step<Integer>> first =
+                    new java.util.concurrent.FutureTask<>(generator::nextStep);
+            Thread consumer = Thread.ofVirtual().start(first);
+            try {
+                assertTrue(producerStarted.await(2, TimeUnit.SECONDS));
+                IllegalStateException concurrent =
+                        assertThrows(IllegalStateException.class, generator::nextStep);
+                assertTrue(concurrent.getMessage().contains("concurrent Iterator.next()"));
+
+                releaseProducer.countDown();
+                assertEquals(42, first.get(2, TimeUnit.SECONDS).value());
+                assertTrue(generator.nextStep().done());
+            } finally {
+                releaseProducer.countDown();
+                consumer.join();
+            }
+        }
+    }
+
+
+    @Test
+    void cancelledAsyncPullBeforeEngineAdmissionReleasesGateImmediately() throws Exception {
+        CountDownLatch firstTurnEntered = new CountDownLatch(1);
+        CountDownLatch releaseCancelledCarrier = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean blockFirstTurn =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+
+        AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            if (blockFirstTurn.compareAndSet(true, false)) {
+                firstTurnEntered.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        releaseCancelledCarrier.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+            turn.run();
+        });
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> emitter.emit(42));
+        try {
+            OresFuture<GeneratorRuntime.Step<Integer>> cancelled = generator.nextStep();
+            assertTrue(firstTurnEntered.await(2, TimeUnit.SECONDS));
+            assertTrue(cancelled.cancel(true));
+
+            // The cancelled task has not entered engine.next(), so it owns no
+            // generator activation state. A replacement pull may proceed even
+            // while that cancelled carrier is still leaving TurnExecutor.
+            OresFuture<GeneratorRuntime.Step<Integer>> replacement = generator.nextStep();
+            assertEquals(42, replacement.get(2, TimeUnit.SECONDS).value());
+        } finally {
+            releaseCancelledCarrier.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
+
+
+    @Test
+    void cancelledAsyncPullKeepsSingleFlightGateUntilEnginePullUnwinds() throws Exception {
+        CountDownLatch producerLeaving = new CountDownLatch(1);
+        CountDownLatch allowProducerExit = new CountDownLatch(1);
+        var producerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+
+        AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try {
+                turn.run();
+            } finally {
+                if (Thread.currentThread() == producerThread.get()) {
+                    producerLeaving.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try {
+                            allowProducerExit.await();
+                            break;
+                        } catch (InterruptedException ignored) {
+                            interrupted = true;
+                        }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+            }
+        });
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter ->
+                producerThread.set(Thread.currentThread()));
+        try {
+            OresFuture<GeneratorRuntime.Step<Integer>> first = generator.nextStep();
+            assertTrue(producerLeaving.await(2, TimeUnit.SECONDS));
+            assertTrue(first.cancel(true));
+
+            OresFuture<GeneratorRuntime.Step<Integer>> overlapping = generator.nextStep();
+            java.util.concurrent.ExecutionException rejected = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> overlapping.get(2, TimeUnit.SECONDS));
+            IllegalStateException concurrent =
+                    assertInstanceOf(IllegalStateException.class, rejected.getCause());
+            assertTrue(concurrent.getMessage().contains("concurrent AsyncIterator.next()"));
+        } finally {
+            allowProducerExit.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
+
+
+    @Test
+    void asyncCloseIsMemoizedAndWaitsOffCallerForCleanup() throws Exception {
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+                 try {
+                     emitter.emit(1);
+                 } finally {
+                     cleanupStarted.countDown();
+                     boolean interrupted = false;
+                     for (;;) {
+                         try { releaseCleanup.await(); break; }
+                         catch (InterruptedException ignored) { interrupted = true; }
+                     }
+                     if (interrupted) Thread.currentThread().interrupt();
+                 }
+             })) {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+
+            OresFuture<Void> firstClose = generator.closeAsync();
+            assertTrue(cleanupStarted.await(2, TimeUnit.SECONDS));
+            OresFuture<Void> repeatedClose = generator.closeAsync();
+            assertSame(firstClose, repeatedClose);
+            assertFalse(firstClose.cancel(true),
+                    "AsyncIterator.close is irrevocable once cleanup begins");
+            assertFalse(firstClose.isCancelled(),
+                    "cleanup receipt must not become terminal before physical close");
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> firstClose.get(100, TimeUnit.MILLISECONDS));
+
+            releaseCleanup.countDown();
+            assertNull(firstClose.get(2, TimeUnit.SECONDS));
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            releaseCleanup.countDown();
+        }
+    }
+
+
+    @Test
+    void asyncCloseRacingOutstandingPullWaitsForPhysicalProducerExit() throws Exception {
+        CountDownLatch producerEntered = new CountDownLatch(1);
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch allowCleanupExit = new CountDownLatch(1);
+        CountDownLatch blockProducer = new CountDownLatch(1);
+
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+                 producerEntered.countDown();
+                 try {
+                     blockProducer.await();
+                 } finally {
+                     cleanupStarted.countDown();
+                     boolean interrupted = false;
+                     for (;;) {
+                         try {
+                             allowCleanupExit.await();
+                             break;
+                         } catch (InterruptedException ignored) {
+                             interrupted = true;
+                         }
+                     }
+                     if (interrupted) Thread.currentThread().interrupt();
+                 }
+             })) {
+            OresFuture<GeneratorRuntime.Step<Integer>> pull = generator.nextStep();
+            assertTrue(producerEntered.await(2, TimeUnit.SECONDS));
+
+            OresFuture<Void> closing = generator.closeAsync();
+            assertTrue(cleanupStarted.await(2, TimeUnit.SECONDS));
+            assertFalse(closing.isDone(),
+                    "close receipt settled before producer cleanup physically exited");
+            assertFalse(pull.isDone(),
+                    "outstanding pull settled before close observed physical producer exit");
+            assertFalse(closing.cancel(true),
+                    "close receipt must not revoke cleanup during a pull/close race");
+
+            allowCleanupExit.countDown();
+            assertTrue(pull.get(2, TimeUnit.SECONDS).done());
+            assertNull(closing.get(2, TimeUnit.SECONDS));
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            blockProducer.countDown();
+            allowCleanupExit.countDown();
+        }
+    }
+
+
+    @Test
+    void asyncCloseReceiptSurvivesConcurrentRuntimeShutdown() throws Exception {
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch allowCleanupExit = new CountDownLatch(1);
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            try {
+                emitter.emit(1);
+            } finally {
+                cleanupStarted.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        allowCleanupExit.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        });
+
+        try {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            OresFuture<Void> closing = generator.closeAsync();
+            assertTrue(cleanupStarted.await(2, TimeUnit.SECONDS));
+
+            var shutdownFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread shutdown = Thread.ofVirtual().start(() -> {
+                try {
+                    runtime.close();
+                } catch (Throwable failure) {
+                    shutdownFailure.set(failure);
+                }
+            });
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!runtime.isClosed() && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertTrue(runtime.isClosed(), "runtime shutdown did not begin");
+            assertFalse(closing.isDone(),
+                    "close receipt settled before held producer cleanup exited");
+            assertFalse(closing.cancel(true),
+                    "runtime shutdown must not make close cleanup cancellable");
+
+            allowCleanupExit.countDown();
+            assertNull(closing.get(2, TimeUnit.SECONDS));
+            shutdown.join(2_000);
+            assertFalse(shutdown.isAlive(), "runtime shutdown did not finish after cleanup");
+            assertNull(shutdownFailure.get(), "runtime shutdown failed after generator cleanup");
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            allowCleanupExit.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
+
+
+    @Test
+    void concurrentAsyncPullIsRejectedBeforeAnotherPullTaskIsAdmitted() throws Exception {
+        CountDownLatch producerStarted = new CountDownLatch(1);
+        CountDownLatch releaseProducer = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+                 producerStarted.countDown();
+                 releaseProducer.await();
+                 emitter.emit(42);
+             })) {
+            OresFuture<GeneratorRuntime.Step<Integer>> first = generator.nextStep();
+            assertTrue(producerStarted.await(2, TimeUnit.SECONDS));
+
+            OresFuture<GeneratorRuntime.Step<Integer>> overlapping = generator.nextStep();
+            java.util.concurrent.ExecutionException rejected = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> overlapping.get(2, TimeUnit.SECONDS));
+            IllegalStateException concurrent =
+                    assertInstanceOf(IllegalStateException.class, rejected.getCause());
+            assertTrue(concurrent.getMessage().contains("concurrent AsyncIterator.next()"));
+
+            releaseProducer.countDown();
+            assertEquals(42, first.get(2, TimeUnit.SECONDS).value());
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            releaseProducer.countDown();
+        }
+    }
+
+
+    @Test
+    void syncClosePreservesCleanupFailureAfterPhysicalExit() {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>generator(runtime, emitter -> {
+            try {
+                emitter.emit(1);
+            } finally {
+                throw new IllegalStateException("generator cleanup failed");
+            }
+        });
+        try {
+            assertEquals(1, generator.nextStep().value());
+            IllegalStateException first =
+                    assertThrows(IllegalStateException.class, generator::close);
+            assertEquals("generator cleanup failed", first.getMessage());
+
+            IllegalStateException repeated =
+                    assertThrows(IllegalStateException.class, generator::close);
+            assertEquals("generator cleanup failed", repeated.getMessage());
+            assertTrue(generator.nextStep().done());
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void asyncCloseReceiptPreservesCleanupFailureAfterPhysicalExit() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            try {
+                emitter.emit(1);
+            } finally {
+                throw new IllegalStateException("async generator cleanup failed");
+            }
+        });
+        try {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+
+            OresFuture<Void> closing = generator.closeAsync();
+            java.util.concurrent.ExecutionException failed = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> closing.get(2, TimeUnit.SECONDS));
+            IllegalStateException cleanup =
+                    assertInstanceOf(IllegalStateException.class, failed.getCause());
+            assertEquals("async generator cleanup failed", cleanup.getMessage());
+            assertSame(closing, generator.closeAsync(),
+                    "repeated async close must preserve one cleanup receipt");
+            assertFalse(closing.cancel(true),
+                    "settled cleanup failure cannot be replaced by cancellation");
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void asyncCloseBeforeFirstPullNeverStartsProducer() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var ran = new java.util.concurrent.atomic.AtomicBoolean();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            ran.set(true);
+            emitter.emit(1);
+        });
+        try {
+            OresFuture<Void> closing = generator.closeAsync();
+            assertNull(closing.get(2, TimeUnit.SECONDS));
+            assertFalse(ran.get(), "closing an unstarted generator must not start guest code");
+            assertSame(closing, generator.closeAsync());
+            assertFalse(closing.cancel(true));
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+            assertFalse(ran.get(), "terminal pulls after close must not start guest code");
+        } finally {
+            runtime.close();
+        }
+    }
+
+
+    @Test
+    void asyncClosePreservesCleanupFailureAfterPhysicalExit() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            try {
+                emitter.emit(1);
+            } finally {
+                throw new IllegalStateException("async generator cleanup failed");
+            }
+        });
+        try {
+            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            IllegalStateException first =
+                    assertThrows(IllegalStateException.class, generator::close);
+            assertEquals("async generator cleanup failed", first.getMessage());
+
+            IllegalStateException repeated =
+                    assertThrows(IllegalStateException.class, generator::close);
+            assertEquals("async generator cleanup failed", repeated.getMessage());
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+        } finally {
+            runtime.close();
+        }
+    }
+
+
+    @Test
     void closeAtYieldDoesNotResumeGuestBody() throws Exception {
         CountDownLatch resumed = new CountDownLatch(1);
         try (AsyncRuntime runtime = new AsyncRuntime();
@@ -224,6 +637,163 @@ final class GeneratorRuntimeTest {
             generator.close();
             assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
             assertFalse(resumed.await(100, TimeUnit.MILLISECONDS));
+        }
+    }
+
+    @Test
+    void asyncCloseFutureWaitsForPhysicalProducerExit() throws Exception {
+        CountDownLatch leaving = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        var producerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try { turn.run(); }
+            finally {
+                // An async pull uses this context adapter too. Holding every
+                // turn's exit would block the *first* nextStep().get() before
+                // the test reaches closeAsync() or the latch release.
+                // Hold only the physical producer exit we are proving.
+                if (Thread.currentThread() == producerThread.get()) {
+                    leaving.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try { allowExit.await(); break; }
+                        catch (InterruptedException ignored) { interrupted = true; }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+            }
+        }); var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> {
+            producerThread.set(Thread.currentThread());
+            emitter.emit(1);
+        })) {
+            try {
+                assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+                OresFuture<Void> closing = generator.closeAsync();
+                assertTrue(leaving.await(2, TimeUnit.SECONDS));
+                assertFalse(closing.isDone(),
+                        "AsyncIterator.close completed before physical producer exit");
+                allowExit.countDown();
+                closing.get(2, TimeUnit.SECONDS);
+                assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
+            } finally {
+                // Never strand a task when an assertion fails before the
+                // intended release; try-with-resources closes afterwards.
+                allowExit.countDown();
+            }
+        }
+    }
+
+    @Test
+    void syncGeneratorReturnsOneStableIteratorView() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(1);
+                 emitter.emit(2);
+             })) {
+            var first = generator.iterator();
+            var second = generator.iterator();
+            assertSame(first, second);
+            assertEquals(1, first.next());
+            assertEquals(2, second.next());
+            assertFalse(first.hasNext());
+        }
+    }
+
+    @Test
+    void closeInvalidatesPrefetchedSyncYield() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(1);
+                 emitter.emit(2);
+             })) {
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            generator.close();
+            assertFalse(iterator.hasNext());
+            assertThrows(java.util.NoSuchElementException.class, iterator::next);
+        }
+    }
+
+    @Test
+    void directPullConsumesIteratorPrefetchBeforeAdvancingProducer() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(11);
+                 emitter.emit(22);
+                 emitter.emit(33);
+             })) {
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            assertTrue(iterator.hasNext(), "repeated peek must not advance");
+            assertEquals(11, generator.nextStep().value(),
+                    "direct API must consume the prefetched first yield");
+            assertEquals(22, iterator.next(),
+                    "Iterator.next must not return the already claimed first yield");
+            assertTrue(iterator.hasNext());
+            assertEquals(33, generator.nextStep().value());
+            assertFalse(iterator.hasNext());
+            assertTrue(generator.nextStep().done());
+        }
+    }
+
+    @Test
+    void directPullAndIteratorNextShareOneOrderedActivation() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(41);
+                 emitter.emit(42);
+             })) {
+            assertEquals(41, generator.nextStep().value());
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            assertEquals(42, iterator.next());
+            assertFalse(iterator.hasNext());
+            assertTrue(generator.nextStep().done());
+        }
+    }
+
+    @Test
+    void closeDiscardsPrefetchForBothDirectAndIteratorConsumers() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(7);
+                 emitter.emit(8);
+             })) {
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            generator.close();
+            assertTrue(generator.nextStep().done(),
+                    "direct pull must not leak a prefetched yield after close");
+            assertFalse(iterator.hasNext());
+            assertThrows(java.util.NoSuchElementException.class, iterator::next);
+        }
+    }
+
+    @Test
+    void iteratorPrefetchRejectsOverlappingDirectPull() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>generator(runtime, emitter -> {
+                 entered.countDown();
+                 release.await();
+                 emitter.emit(99);
+             })) {
+            java.util.concurrent.FutureTask<Boolean> peek =
+                    new java.util.concurrent.FutureTask<>(() -> generator.iterator().hasNext());
+            Thread consumer = Thread.ofVirtual().start(peek);
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                var overlap = assertThrows(IllegalStateException.class, generator::nextStep);
+                assertTrue(overlap.getMessage().contains("concurrent Iterator.next()"));
+                release.countDown();
+                assertTrue(peek.get(2, TimeUnit.SECONDS));
+                assertEquals(99, generator.nextStep().value());
+                assertFalse(generator.iterator().hasNext());
+            } finally {
+                release.countDown();
+                consumer.join();
+            }
         }
     }
 }

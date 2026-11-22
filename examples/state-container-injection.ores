@@ -1,0 +1,52 @@
+// Canonical owned mutable state with private representation.
+// Native Oreslang data and methods; no Java collection, lock, or guard allocation.
+// The owner must not escape while a borrowed access capability is live.
+define class InventoryState as
+  let int available = 10;
+  let int reserved = 0;
+
+  pub available_count(): int {
+    return self.available;
+  }
+
+  pub reserved_count(): int {
+    return self.reserved;
+  }
+
+  pub try_reserve(mut self InventoryState)(int amount): bool {
+    if amount <= 0; then return false; fi
+    if amount > self.available; then return false; fi
+    // Mutate both fields only after validating the joint invariant.
+    self.available = self.available - amount;
+    self.reserved = self.reserved + amount;
+    return true;
+  }
+end
+
+fnc checkout(borrow mut InventoryState state, int amount): bool {
+  return state.try_reserve(amount);
+}
+
+fnc remaining(borrow InventoryState state): int {
+  return state.available_count();
+}
+
+pub routine main(): void {
+  let mut InventoryState state = new InventoryState();
+  const bool accepted = checkout(rt mut borrow state, 3);
+  const bool refused = checkout(rt mut borrow state, 20);
+  const bool zero = checkout(rt mut borrow state, 0);
+  const bool negative = checkout(rt mut borrow state, -1);
+  stdio.stdout.write(remaining(rt borrow state));
+  stdio.stdout.write("|");
+  stdio.stdout.write(state.reserved_count());
+  stdio.stdout.write("|");
+  stdio.stdout.write(accepted);
+  stdio.stdout.write("|");
+  stdio.stdout.write(refused);
+  stdio.stdout.write("|");
+  stdio.stdout.write(zero);
+  stdio.stdout.write("|");
+  stdio.stdout.write(negative);
+  return;
+}

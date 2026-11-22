@@ -22,6 +22,28 @@ final class EqualityIdentityOperatorTest {
         assertEquals(Token.Type.EQ, tokens.get(0).type());
         assertEquals(Token.Type.NEQ, tokens.get(1).type());
         assertEquals(Token.Type.IS, tokens.get(2).type());
+        var atomic = new Lexer("left !eq right").scan();
+        assertEquals(Token.Type.NEQ, atomic.get(1).type(),
+                "!eq must be one NEQ token, not BANG followed by EQ");
+        assertEquals("!eq", atomic.get(1).lexeme(),
+                "atomic inequality must preserve original source spelling");
+        assertEquals(Token.Type.BANG_EQUAL, new Lexer("left != right").scan().get(1).type(),
+                "legacy != remains supported until a versioned migration");
+
+        var split = new Lexer("left ! eq right").scan();
+        assertEquals(Token.Type.BANG, split.get(1).type());
+        assertEquals(Token.Type.EQ, split.get(2).type());
+        var suffix = new Lexer("left !eqvalue right").scan();
+        assertEquals(Token.Type.BANG, suffix.get(1).type(),
+                "!eq cannot consume a prefix of an identifier");
+        assertEquals("eqvalue", suffix.get(2).lexeme());
+        // A raw expression parser intentionally does not consume EOF. Use a
+        // complete function body so trailing invalid tokens cannot go unseen.
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc bad(int left,int right):bool{return left ! eq right;}"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc bad(int left,int right):bool{return left !eqvalue right;}"));
+
 
         assertEquals("eq", binary("left eq right").operator());
         assertEquals("neq", binary("left neq right").operator());

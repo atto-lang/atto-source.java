@@ -94,6 +94,45 @@ public class LiveMutexGuardCountTest {
     }
 
     @Test
+    void rejectedTaskLeaseAdmissionMustNotLeakSharedGuardCounterOrPermit() throws Exception {
+        var shared = OresMutex.shared(new int[] { 0 });
+        long base = OresMutex.liveGuardCount();
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                // Saturate this task's lease registry without creating guards.
+                // The next SharedMutex acquisition physically takes the permit
+                // before TaskOwnedLeases.registerIfTracked rejects its guard.
+                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK; i++) {
+                    TaskOwnedLeases.register(() -> { });
+                }
+                // Repeated rejected acquisitions must not accumulate a
+                // process-wide counter leak or poison the physical mutex.
+                for (int rejected = 0; rejected < 16; rejected++) {
+                    IllegalStateException failure =
+                            assertThrows(IllegalStateException.class, shared::lock);
+                    assertTrue(failure.getMessage().contains("quota exceeded"),
+                            failure::getMessage);
+                    assertEquals(base, OresMutex.liveGuardCount(),
+                            "rejected attempt " + rejected + " stranded a guard count");
+                }
+                return OresScheduler.done(1);
+            });
+            assertInstanceOf(TaskHandle.Success.class,
+                    task.getDone().get(10, TimeUnit.SECONDS));
+        }
+        // Acquire again after the failed admission: the physical permit and
+        // owner-domain reservation were rolled back by checkedGuardAfterAcquire.
+        var after = shared.tryLock().orElseThrow();
+        try {
+            assertEquals(base + 1, OresMutex.liveGuardCount());
+        } finally {
+            after.release();
+        }
+        assertEquals(base, OresMutex.liveGuardCount());
+        assertFalse(shared.isPoisoned(), "admission rejection must not poison data");
+    }
+
+    @Test
     void cancelledTaskCleanupRetiresItsGuard() throws Exception {
         var shared = OresMutex.shared(new int[] { 0 });
         var never = new OresFuture<Integer>();

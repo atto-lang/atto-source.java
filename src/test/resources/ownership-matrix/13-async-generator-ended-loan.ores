@@ -1,0 +1,5 @@
+define class Box as
+ pub let int value = 7;
+end
+async generator fnc values(): int { val Box box = new Box(); block { val view = rt borrow box; } yield box.value; return; }
+pub async routine main(): void { for await const n of values() { stdio.stdout.write(n); } return; }
