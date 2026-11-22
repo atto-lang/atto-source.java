@@ -1,0 +1,67 @@
+name: Deterministic actor dispatch — real JVM runtime turns
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/DeterministicActorDispatchTest.java'
+      - 'contracts/v1/DETERMINISTIC_ACTOR_DISPATCH_V1.md'
+      - '.github/workflows/deterministic-actor-dispatch-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jvm-host-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout PR commit without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact commit and inspect source/test object identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          git hash-object src/main/java/dev/oreslang/runtime/ActorRuntime.java
+          git hash-object src/test/java/dev/oreslang/runtime/DeterministicActorDispatchTest.java
+      - name: Configure pinned GraalVM 25 JDK
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Execute real ActorRuntime mailbox-turn tests
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=10s 900s mvn -B -ntp \
+            -Dtest=DeterministicActorDispatchTest \
+            -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Require three executed JVM host-runtime tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          name='dev.oreslang.runtime.DeterministicActorDispatchTest'
+          report=Path('target/surefire-reports/TEST-'+name+'.xml')
+          if not report.is_file():
+              raise SystemExit('MISSING_JVM_TEST_RECEIPT')
+          root=ET.parse(report).getroot()
+          counts={k:int(root.get(k,'0')) for k in ('tests','failures','errors','skipped')}
+          if counts != {'tests':3, 'failures':0, 'errors':0, 'skipped':0}:
+              raise SystemExit('INCOMPLETE_JVM_TEST_RECEIPT '+repr(counts))
+          print('THREE_REAL_ACTOR_RUNTIME_JVM_TESTS_PASSED (HOST ONLY)')
+          print('COMPILED_ATTO_GUEST_NOT_EXECUTED')
+          print('GRAALVM_NATIVE_IMAGE_NOT_EXECUTED')
+          PY
