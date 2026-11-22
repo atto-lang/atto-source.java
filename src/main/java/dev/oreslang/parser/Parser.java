@@ -3847,6 +3847,13 @@ public final class Parser {
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
         if (match(LPAREN)) {
             Ast.TypeRef grouped = parseTypeRef();
+            if (match(COMMA)) {
+                // `(A, B, ...)` is the positional tuple type, same as Tuple<A, B, ...>.
+                List<Ast.TypeRef> elements = new ArrayList<>(List.of(grouped));
+                do elements.add(parseTypeRef()); while (match(COMMA));
+                consume(RPAREN, "expected ')' after tuple type");
+                return Ast.TypeRef.tupleType(elements);
+            }
             consume(RPAREN, "expected ')' after grouped type");
             return grouped;
         }
