@@ -36,7 +36,7 @@ surviving scalar offsets. Neither yields a canonical serialized native path. A t
 remain further implementation milestones.
 
 ## Tests and current evidence
-`tests/fixtures/path_sync_telemetry_v1.atto` contains 51 guest output
+`tests/fixtures/path_sync_telemetry_v1.atto` contains 67 guest output
 vectors, including root escapes, Windows aliases, path ambiguity, waiter
 fairness, permit release on closed semaphore, 32-digit trace IDs and invalid
 headers. `StdPathSyncTelemetryGuestTest.java` tests closed registry/source
@@ -58,3 +58,6 @@ backend source candidates. Resolve semantic overlaps before merge.
 A new source audit verified that every fixture method exists in its backend-owned `.atto` module and no host-language source islands occur in those modules. Path scans reject unpaired Unicode surrogate scalars and values outside Unicode's maximum scalar range. The Java/.NET path views now scan one bounded Unicode snapshot per call and avoid temporary component arrays. Sync release and upgrade policy require an authenticated, unconsumed owner/generation receipt from a trusted runtime, not guest-created boolean authority.
 
 **Verification boundary:** Guest fixtures are authored, not executed. Exact-current-head Actions jobs were queued or pending with no recorded runner steps when checked. Private-source export is not permitted merely by naming a carrier: Java has no active reviewed destination; .NET's candidate remains inactive; LLVM's stale StreemPilot allowlist entry is explicitly under the source-security hold described by LLVM #726/#736/#778. No private-source mirror was performed. Existing draft PRs must remain draft until stepful native guest results and all required reviews are available.
+
+### Immutable native Path value (follow-up)
+The backend now exposes a `define pub class Path` Atto value and `relative_path(spelling, windows)` factory. The instance provides the surviving lexical components, filename/extension/stem offsets, parent depth, canonical/portable tests and safe join preflight. The original `String` spelling is retained for codepoint views; no canonical serialized output, symlink confinement, or filesystem grant is produced. The 67-output guest fixture includes 16 new Path-instance observations. No exact-head compiled JVM guest result is available yet.
