@@ -385,6 +385,9 @@ public final class OresMutex {
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
+        // Make publication + cycle inspection atomic across competing waiters.
+        // Never hold this monitor across semaphore waiting or guest execution.
+        private static final Object WAIT_GRAPH_MONITOR = new Object();
         private static final ScheduledExecutorService ASYNC_TIMEOUTS =
                 Executors.newSingleThreadScheduledExecutor(
                         Thread.ofPlatform()
@@ -574,23 +577,30 @@ public final class OresMutex {
         }
 
         private void beginWait(Object domain) {
-            Shared<?> existing = WAITING_ON.putIfAbsent(domain, this);
-            if (existing != null) {
-                if (existing == this) {
-                    throw new RecursiveLockException("SharedMutex<T>");
+            synchronized (WAIT_GRAPH_MONITOR) {
+                Shared<?> existing = WAITING_ON.putIfAbsent(domain, this);
+                if (existing != null) {
+                    if (existing == this) {
+                        throw new RecursiveLockException("SharedMutex<T>");
+                    }
+                    throw new IllegalStateException(
+                            "execution domain is already waiting on another SharedMutex");
                 }
-                throw new IllegalStateException(
-                        "execution domain is already waiting on another SharedMutex");
-            }
 
-            if (wouldCreateDeadlock(domain)) {
-                WAITING_ON.remove(domain, this);
-                throw new DeadlockDetectedException();
+                if (wouldCreateDeadlock(domain)) {
+                    WAITING_ON.remove(domain, this);
+                    ConcurrencyTestProbe.deadlock("mutex-cycle");
+                    throw new DeadlockDetectedException();
+                }
             }
         }
 
         private void endWait(Object domain) {
-            if (domain != null) WAITING_ON.remove(domain, this);
+            if (domain != null) {
+                synchronized (WAIT_GRAPH_MONITOR) {
+                    WAITING_ON.remove(domain, this);
+                }
+            }
         }
 
         private boolean wouldCreateDeadlock(Object requesterDomain) {
@@ -607,18 +617,26 @@ public final class OresMutex {
         }
 
         private void markOwner(Object domain) {
-            if (!currentOwnerDomain.compareAndSet(null, domain)) {
-                throw new IllegalStateException("SharedMutex permit acquired while another owner is recorded");
+            // Owner transitions and waiter graph publication share one
+            // linearization point; otherwise concurrent cycle checks can read
+            // a half-published ownership path.
+            synchronized (WAIT_GRAPH_MONITOR) {
+                if (!currentOwnerDomain.compareAndSet(null, domain)) {
+                    throw new IllegalStateException(
+                            "SharedMutex permit acquired while another owner is recorded");
+                }
             }
         }
 
         private void clearOwner(Object domain) {
             if (domain == null) return;
-            if (!currentOwnerDomain.compareAndSet(domain, null)) {
-                Object recorded = currentOwnerDomain.get();
-                if (recorded != null) {
-                    throw new IllegalStateException(
-                            "SharedMutex owner-domain accounting mismatch");
+            synchronized (WAIT_GRAPH_MONITOR) {
+                if (!currentOwnerDomain.compareAndSet(domain, null)) {
+                    Object recorded = currentOwnerDomain.get();
+                    if (recorded != null) {
+                        throw new IllegalStateException(
+                                "SharedMutex owner-domain accounting mismatch");
+                    }
                 }
             }
         }
