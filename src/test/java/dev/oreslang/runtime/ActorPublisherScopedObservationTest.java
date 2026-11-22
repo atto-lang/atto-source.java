@@ -240,6 +240,8 @@ final class ActorPublisherScopedObservationTest {
             assertTrue(producerA.awaitTermination(5, TimeUnit.SECONDS));
             assertFalse(runtime.isLiveActorAddress(address));
             assertTrue(scoped.get().closed());
+            assertEquals(0, scoped.get().pending(),
+                    "publisher STOP must synchronously drain its scoped subscription");
 
             // Other actors are still live here. Their independently owned
             // USER mailbox envelopes may account for shared memory even

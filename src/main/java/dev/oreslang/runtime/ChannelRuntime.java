@@ -190,6 +190,22 @@ public final class ChannelRuntime {
      * Write-only channel capability. It cannot read, close, or expose the
      * underlying bidirectional channel.
      */
+    /**
+     * Recoverable, non-registering write probe. A rejected payload remains
+     * owned by the caller. The compiler must move its ownership into this
+     * result only on Full/Closed, and into the channel only on Accepted.
+     */
+    public sealed interface TryWriteResult<T>
+            permits TryWriteResult.Accepted, TryWriteResult.Full, TryWriteResult.Closed {
+        record Accepted<T>() implements TryWriteResult<T> { }
+        record Full<T>(T value) implements TryWriteResult<T> {
+            public Full { Objects.requireNonNull(value, "rejected payload"); }
+        }
+        record Closed<T>(T value) implements TryWriteResult<T> {
+            public Closed { Objects.requireNonNull(value, "rejected payload"); }
+        }
+    }
+
     public static final class WriteChannel<T> {
         private final Channel<T> channel;
 
@@ -204,6 +220,11 @@ public final class ChannelRuntime {
         /** Directional capability for immediate, recoverable owned attempts. */
         public OwnedTryWriteResult<T> tryWriteOwned(T value) {
             return channel.tryWriteOwned(value);
+        }
+
+        /** Guest-facing typed immediate write result (source try writech). */
+        public TryWriteResult<T> tryWriteResult(T value) {
+            return channel.tryWriteResult(value);
         }
 
         public OresFuture<Void> writeAsync(T value) {
@@ -375,8 +396,7 @@ public final class ChannelRuntime {
          * (no value committed) and CLOSED (closure won admission). The
          * asynchronous writeAsync API remains non-recoverable until a
          * separate cancellation-safe escrow and affine guest contract exist.
-         * Do not expose this as a guest ownership guarantee without that
-         * compiler lowering.</p>
+         * Guest code uses {@link #tryWriteResult(Object)} instead.</p>
          */
         public OwnedTryWriteResult<T> tryWriteOwned(T value) {
             requireValue(value);
@@ -389,6 +409,30 @@ public final class ChannelRuntime {
                 if (OresFuture.unwrap(failure) instanceof ChannelClosedException) {
                     return OwnedTryWriteResult.rejected(
                             OwnedWriteOutcome.CLOSED, value);
+                }
+                throw failure;
+            }
+        }
+
+        /**
+         * Typed immediate send result, sharing the existing linearizable
+         * select admission and returning the original payload on rejection.
+         * No waiter or pending write survives Full/Closed. Closed is decoded
+         * only from ChannelClosedException, not from arbitrary failures.
+         *
+         * This host primitive is also the guest interpreter's immediate
+         * write result path. Only the Java-host tryWrite(T) compatibility API
+         * remains Boolean; source try writech returns TryWriteResult<T>.
+         */
+        public TryWriteResult<T> tryWriteResult(T value) {
+            requireValue(value);
+            try {
+                return tryWrite(value)
+                        ? new TryWriteResult.Accepted<>()
+                        : new TryWriteResult.Full<>(value);
+            } catch (java.util.concurrent.CompletionException failure) {
+                if (OresFuture.unwrap(failure) instanceof ChannelClosedException) {
+                    return new TryWriteResult.Closed<>(value);
                 }
                 throw failure;
             }

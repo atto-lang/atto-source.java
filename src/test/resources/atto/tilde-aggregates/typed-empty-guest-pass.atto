@@ -1,8 +1,8 @@
 pub fnc main(): void {
-    const record = ~<{}>();
-    const tuple = ~<[]>();
-    const same_record = ~record();
-    const same_tuple = ~tuple();
+    const record = Record.of();
+    const tuple = Tuple.of();
+    const same_record = Record.of();
+    const same_tuple = Tuple.of();
     stdio.println("typed-empty-ok");
     return;
 }
