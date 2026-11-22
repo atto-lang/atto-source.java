@@ -81,6 +81,17 @@
     "observed_new_head_sha": "c908c6c824c2dbb5caed3023b2c5e3e975a05834",
     "observed_new_root_tree_sha": "103e305a8157e1cabce214b888df68e0777844cf",
     "stale": true,
-    "resolution": "DO_NOT_AUTO_REPIN_REQUIRES_INDEPENDENT_REVIEW_AND_NEW_EXACT_HEAD_PROOF"
+    "resolution": "DO_NOT_AUTO_REPIN_REQUIRES_INDEPENDENT_REVIEW_AND_NEW_EXACT_HEAD_PROOF",
+    "observed_new_regular_files": 2908,
+    "observed_new_regular_blob_bytes": 20915041,
+    "observed_new_executable_files": 17,
+    "observed_new_symlinks": 0,
+    "observed_new_submodules": 0,
+    "observed_new_tree_truncated": false,
+    "inert_plan_required_blobs_still_match": 16,
+    "new_files_missing_from_inert_plan": {
+      "scripts/verify_numeric_junit_receipts.py": "b3361baf6f0f9e8b1c8789d708f3a67621de2a7e",
+      "tests/test_verify_numeric_junit_receipts.py": "f4550cd398cc7ad24c270c72d5ce79189e48e7e1"
+    }
   }
 }

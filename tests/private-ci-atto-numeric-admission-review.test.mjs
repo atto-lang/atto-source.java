@@ -115,3 +115,35 @@ test('inert numerical Maven plan pins exact tree components but cannot grant exe
     }
   }
 });
+
+test('exact-tree drift adds receipt verifier files outside the inert approved-plan candidate', () => {
+  const proposal = JSON.parse(read('docs/security/reviews/atto-numeric-1736-junit-plan-proposal.json'));
+  const drift = packet.source_head_drift;
+  assert.deepEqual(drift, proposal.source_head_drift);
+  assert.equal(drift.stale, true);
+  assert.equal(drift.observed_new_head_sha, 'c908c6c824c2dbb5caed3023b2c5e3e975a05834');
+  assert.equal(drift.observed_new_root_tree_sha, '103e305a8157e1cabce214b888df68e0777844cf');
+  assert.notEqual(drift.observed_new_root_tree_sha, packet.source.observed_root_tree_sha);
+  assert.equal(drift.observed_new_regular_files, 2908);
+  assert.equal(drift.observed_new_regular_blob_bytes, 20915041);
+  assert.equal(drift.observed_new_executable_files, 17);
+  assert.equal(drift.observed_new_tree_truncated, false);
+  assert.equal(drift.observed_new_symlinks, 0);
+  assert.equal(drift.observed_new_submodules, 0);
+  assert.equal(drift.inert_plan_required_blobs_still_match, 16);
+  const files = drift.new_files_missing_from_inert_plan;
+  assert.deepEqual(Object.keys(files).sort(), [
+    'scripts/verify_numeric_junit_receipts.py',
+    'tests/test_verify_numeric_junit_receipts.py',
+  ]);
+  assert.equal(files['scripts/verify_numeric_junit_receipts.py'],
+    'b3361baf6f0f9e8b1c8789d708f3a67621de2a7e');
+  assert.equal(files['tests/test_verify_numeric_junit_receipts.py'],
+    'f4550cd398cc7ad24c270c72d5ce79189e48e7e1');
+  for (const [path, sha] of Object.entries(files)) {
+    assert.match(sha, /^[0-9a-f]{40}$/);
+    assert.equal(proposal.target_plan.required_source_blobs[path], undefined);
+  }
+  assert.equal(packet.disposition, 'DENY_PRIVATE_SOURCE_EXPORT');
+  assert.equal(proposal.status, 'REVIEW_ONLY_NOT_AUTHORIZED');
+});

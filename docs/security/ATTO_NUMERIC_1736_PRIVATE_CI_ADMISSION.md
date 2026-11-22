@@ -4,6 +4,19 @@
 
 **Snapshot invalidated by subsequent source commit:** the numerical PR #1736 moved from reviewed-candidate head `c16a0313b166f4b426e5c4aa2b3f487475e107b6` to `c908c6c824c2dbb5caed3023b2c5e3e975a05834`, tree `103e305a8157e1cabce214b888df68e0777844cf`, during review. The pinned source JSON and Maven plan intentionally retain their *original* snapshot for provenance and are explicitly marked `source_head_drift.stale=true`. They **must not** be used for transfer or test admission. Require a new exact-head review packet and independently approved blob/plan proof after the numerical implementation branch is frozen; **do not silently retarget**.
 
+## 0. Full-tree drift verification (source readback only)
+
+The observed Java #1736 head `c908c6c824c2dbb5caed3023b2c5e3e975a05834` and tree `103e305a8157e1cabce214b888df68e0777844cf` were read through the GitHub recursive tree API. The response was **not truncated**. It contained **2,908 regular files**, **20,915,041 blob bytes**, **321 directories**, **17 executable-mode files**, **zero symlinks**, and **zero submodules**. The complete tree remains within the implemented 4,096-file and 40-MiB capacity limits. This is source metadata, **not transfer approval, compiler execution, or guest AOT**.
+
+All **16 pinned source blobs** in the inert Maven proposal still match the newer tree. But **two additional files**, absent in the older 2,906-file snapshot, have not been reviewed or pinned by the proposal:
+
+| Added file | Git blob SHA | Mode |
+| --- | --- | --- |
+| `scripts/verify_numeric_junit_receipts.py` | `b3361baf6f0f9e8b1c8789d708f3a67621de2a7e` | `100644` |
+| `tests/test_verify_numeric_junit_receipts.py` | `f4550cd398cc7ad24c270c72d5ce79189e48e7e1` | `100644` |
+
+**Stop condition:** the old source head/tree pin remains stale despite the unchanged 16 selected blobs. Renewed independent review must include the added receipt-verifier files, every complete-tree path/blob/mode, any later source changes, the exact approved carrier/control plane, and source-main protection. Do not auto-repin the original proposal, and do not transfer source based on this readback.
+
 ## 1. Observed exact Atto Java snapshot (must be rechecked before each use)
 
 | Field | Observed value |
