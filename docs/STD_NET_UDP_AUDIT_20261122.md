@@ -43,3 +43,32 @@ The operator authorized token-free private exact-tree mirroring into an alternat
 **Alternate private Actions carrier admission:** the user authorized token-free private exact-tree mirroring **after proving the carrier runs jobs**. New *source-free only* `benefactor-cc/atto-ci` canary `ci/atto-udp-sourcefree-capacity-20261122` at SHA `6579f3e113c5c9404150fc088ab987a5b139394e` executed workflow `45050095837`, which failed with **zero steps**. Repo's own run `45050095576` also had zero steps. This does not prove the precise billing/permission cause; no carrier with admitted execution was established. **No private Atto source/tree was exported**.
 
 **Before Ready:** execute actual Java guest positive/negative fixtures under the compiler and JDK25/GraalVM, resolve namespace imports, audit affine socket ownership and cancellation retirement, verify .NET native/AOT and LLVM guest, and get nonzero-step exact-head Actions results.
+
+
+## M1/M2 continuation — Java guest wiring and physical lease hardening
+
+**Current Java guest candidate (not full compiler verified):**
+- `TypeChecker` recognizes `network.bind_udp`, `UdpSocket`, and `UdpPacket` operations; `OresEvalRootNode` lowers them to `AsyncNioUdp`.
+- `stdlib/net/udp_loopback.atto` is a backend-owned `Udp.bind_loopback(int)` wrapper. **Important:** it is a synchronous `fnc` returning `Future<UdpSocket>`, rather than an async routine returning a privileged host handle through an unsafe task boundary. Caller `await` remains in the owning task.
+- `AttoAsyncUdpGuestTest` includes a real physical guest-loopback candidate returning 42; negative typecheck/runtime cases cover legacy methods, bad payloads, invalid capacity, missing NETWORK, hostname aliases, invalid octet and forbidden host-handle async task escape.
+- `AttoUdpNamespaceImportGuestTest` writes the actual backend-owned `.atto` wrapper and a linked importing guest to a test directory, then checks a real `LinkedProgramRunner.runWithExitStatus` result of 42 with NETWORK permissions. **Not executed on GraalVM/JDK25.** It is an intentionally strong future test, not a source-model success.
+
+**Java security and lifecycle fixes:**
+1. The trusted destination NET gate executes before observing `size()` or `get()` on guest byte storage. `UdpSendAuthorityBoundaryTest` includes a poison list, malformed peer, oversized list, byte range/fractional rejection, and copy independence. The physical kernel reauthorizes on send.
+2. Cancellation no longer releases the socket's operation slot during a physical callback. Immediately cancelling an I/O operation makes that UDP socket terminal (descriptor closed); reuse requires a fresh bind, preventing stale reactor-watch re-admission.
+3. Native resource **unregistration waits for physical step retirement** instead of happening immediately on visible Future cancellation. Descriptor closure is attempted immediately, while a tracked operation remains pinned until its `finally` releases the lease. This does not yet prove entire actor teardown or external scheduler semantics.
+4. `nativeIo().register(socket)` actually declares checked `Exception`; the binding now handles registration rejection and preserves close errors as suppressed failures. A checked-exception mismatch was corrected before guest tests.
+5. `TypeChecker` explicitly rejects `UdpSocket` and `UdpPacket` as actor/task Send/Share pending a verified ownership ABI. A guest-defined nominal class with a similar spelling must not launder host authority through derived auto-traits.
+
+**Reproducible, exact-blob JDK21 host verification:** `bash tests/host/udp/run.sh`.
+The retained `tests/host/udp/UdpBridgeHarness.java` uses minimal **test-only** shims for the VM/future/reactor and compiles the **real production** `AsyncNioUdp.java` and `UdpDatagramKernel.java`. Exact Git blob SHAs:
+- `AsyncNioUdp.java` = `dee6e5a6926ea1924d23a609f4a3f655cb490815`
+- `UdpDatagramKernel.java` = `edd67eee2bf6835dc3f7501d93e61cdce2de2363`
+- `UdpBridgeHarness.java` = `ef1d62c2051902ba68898dbe43d43fd9bd47a134`
+- `tests/host/udp/run.sh` = `f62b1e3ee32f555f95b8f2289d675c6c5572a4bd`
+
+All four local Git blob hashes matched the GitHub versions at the documented commit. The standalone `javac --release 21` + real socket smoke passed **3/3 runs** after the latest changes. It covers end-to-end physical loopback, source/byte identity, denied destination before poison-list access, invalid bytes, overlapping operation rejection, terminal cancellation/close/rebind, a controlled selector-callback race that verifies delayed resource unregistration, checked registration failure, and 40 fresh bind/send/recv/close cycles per run. This receipt is **host code compiled with test shims**, NOT a real `OresFuture`/`NioReadinessGroup` scheduler or compiled Atto guest/AOT test.
+
+**CI/alternate carrier status:** latest source PR has pending/queued Actions without stepful completion as inspected. Private source-free `benefactor-cc/atto-ci` runner canary `45050095837` has `steps=[]`, as have other sampled carriers. No private branch has been exported; there is no independently verified stepful private Actions carrier nor an independently authorized exact-tree export clearance. Keep PR **Draft**.
+
+**Remaining M1/M2 gates:** run the two real guest tests using the exact JDK25/GraalVM project toolchain, reconcile async/actor handle transfer with real compiler and runtime, verify real reactor cancellation/close and actor lifecycle under stress, and produce exact-current-head stepful CI/AOT evidence. Do not promote from shims or source models.
