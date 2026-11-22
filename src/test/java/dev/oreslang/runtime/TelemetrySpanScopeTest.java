@@ -319,7 +319,10 @@ final class TelemetrySpanScopeTest {
                 scope.addEvent("step." + i);
             }
             assertEquals(16, scope.eventsSnapshot().size());
+            assertEquals(17, scope.droppedEvents(), "overflow must be accounted for");
             assertEquals("payment_started", scope.eventsSnapshot().getFirst());
+            assertThrows(SecurityException.class,
+                    () -> scope.addEvent("secret_token"));
             assertThrows(IllegalArgumentException.class,
                     () -> scope.addEvent("newline" + (char) 10 + "forged"));
             assertThrows(IllegalArgumentException.class,
@@ -338,6 +341,7 @@ final class TelemetrySpanScopeTest {
             disabled.addEvent("valid_event");
             disabled.setAttribute("safe.key", "value");
             assertTrue(disabled.eventsSnapshot().isEmpty());
+            assertEquals(0, disabled.droppedEvents());
             assertTrue(disabled.attributesSnapshot().isEmpty());
         }
     }
