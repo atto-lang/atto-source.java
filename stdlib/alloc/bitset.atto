@@ -136,6 +136,15 @@ define module bitset as
     }
   end
 
+  // Bounds-only fallible constructor. The allocator provider must separately
+  // make physical allocation failure a typed error before this is try_alloc.
+  pub fnc try_new_bitset(int length): Result<BitSet, String> {
+    if length < 0 || length > 1048576; do
+      return Err("InvalidBitCount");
+    fi
+    return Ok(new BitSet(length));
+  }
+
   pub fnc new_bitset(int length): BitSet {
     return new BitSet(length);
   }
