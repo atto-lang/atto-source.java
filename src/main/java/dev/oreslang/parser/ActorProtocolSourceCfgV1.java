@@ -32,6 +32,23 @@ public final class ActorProtocolSourceCfgV1 {
     }
 
     /**
+     * Full source-local admission: lex the actual .atto source, parse the
+     * protocol prelude, build the real AST and derive nominal reply modes.
+     * No external message-map or caller-provided AST can spoof this path.
+     * The trusted handle map must still come from separately authenticated
+     * compiler spawn/binding evidence (not a source spelling).
+     */
+    public static Projection verifySource(
+            String source, String functionName, Map<String, String> trustedEntryHandles) {
+        List<Token> tokens = new Lexer(Objects.requireNonNull(source)).scan();
+        var catalog = ActorProtocolTypestateV1.parseTokens(tokens);
+        Ast.Program ast = new Parser(
+                ActorProtocolTypestateV1.withoutProtocolPrelude(tokens)).parseProgram();
+        var nominal = ActorProtocolNominalResolverV1.resolve(catalog, ast);
+        return verifyFunction(ast, functionName, nominal, trustedEntryHandles);
+    }
+
+    /**
      * Cross-check an already parsed real AST plus nominal declarations with
      * trusted entry owner names. Only a single named source function is
      * projected: callers cannot use this as proof for other declarations.
@@ -43,6 +60,21 @@ public final class ActorProtocolSourceCfgV1 {
         Objects.requireNonNull(ast);
         Objects.requireNonNull(declarations);
         Objects.requireNonNull(trustedEntryHandles);
+        if (!ast.imports().isEmpty())
+            throw error("E_PROTOCOL_SOURCE_UNLINKED_IMPORT",
+                    "cross-file type identities require checked linker metadata");
+        for (Ast.ModuleDecl module : ast.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                String declaredName = null;
+                if (declaration instanceof Ast.ClassDecl c) declaredName = c.name();
+                if (declaration instanceof Ast.InterfaceDecl i) declaredName = i.name();
+                if (declaration instanceof Ast.TypeAliasDecl t) declaredName = t.name();
+                if (declaredName != null && Set.of("ProtocolHandle",
+                        "UnaryLease", "StreamLease").contains(declaredName))
+                    throw error("E_PROTOCOL_SOURCE_FORGED_HANDLE_TYPE",
+                            "compiler-owned source modeling type " + declaredName);
+            }
+        }
         Ast.FunctionDecl function = null;
         for (Ast.ModuleDecl module : ast.modules()) {
             for (Ast.Decl decl : module.declarations()) {
@@ -82,7 +114,7 @@ public final class ActorProtocolSourceCfgV1 {
         final Map<String, Ast.TypeRef> parameterTypes = new LinkedHashMap<>();
         final List<MutableBlock> blocks = new ArrayList<>();
         final Set<String> defined = new HashSet<>();
-        int placeId = 1, leaseId = 1, loanId = 1;
+        int placeId = 1, leaseId = 1;
         MutableBlock current;
         Builder(ActorProtocolNominalResolverV1.ResolvedDeclarations declarations,
                 Ast.FunctionDecl function, Map<String, String> trusted) {
