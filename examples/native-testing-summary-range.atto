@@ -1,0 +1,61 @@
+// Compiler-backed .atto regression for bounded assertions and trusted summaries.
+// This is separate from the pinned 40-case ORES_TEST receipt inventory.
+import class TestOutcome, RunSummary from 'ores.std/testing';
+import fnc expect_in_range_int, summary_is_valid, require_success from 'ores.std/testing';
+
+pub routine main(): void {
+  val int minimum = -9223372036854775807 - 1;
+  val int maximum = 9223372036854775807;
+
+  if !expect_in_range_int(minimum, minimum, maximum, "min bound").passed; do
+    rt fail("minimum signed i64 endpoint was rejected");
+  fi
+  if !expect_in_range_int(maximum, minimum, maximum, "max bound").passed; do
+    rt fail("maximum signed i64 endpoint was rejected");
+  fi
+  if !expect_in_range_int(-1, -1, 0, "inclusive lower").passed; do
+    rt fail("inclusive lower endpoint was rejected");
+  fi
+  if !expect_in_range_int(0, -1, 0, "inclusive upper").passed; do
+    rt fail("inclusive upper endpoint was rejected");
+  fi
+  val TestOutcome outside = expect_in_range_int(4, 5, 9, "below range");
+  if outside.passed || outside.message != "below range"; do
+    rt fail("out-of-range rejection lost its diagnostic");
+  fi
+  if expect_in_range_int(10, 5, 9, "above range").passed; do
+    rt fail("upper range escape was accepted");
+  fi
+  if expect_in_range_int(5, 6, 5, "reversed bounds").passed; do
+    rt fail("reversed range was accepted");
+  fi
+
+  val RunSummary valid = new RunSummary(3, 2, 0, 1, 8);
+  if !summary_is_valid(rt borrow valid); do
+    rt fail("valid skipped/passed summary was rejected");
+  fi
+  require_success(rt borrow valid);
+  val RunSummary empty = new RunSummary(0, 0, 0, 0, 0);
+  if !summary_is_valid(rt borrow empty); do
+    rt fail("empty summary must be structurally valid but not successful");
+  fi
+  val RunSummary inconsistent = new RunSummary(1, 1, 0, 1, 0);
+  if summary_is_valid(rt borrow inconsistent); do
+    rt fail("overcounted skipped case was accepted");
+  fi
+  val RunSummary negative = new RunSummary(1, -1, 1, 1, 0);
+  if summary_is_valid(rt borrow negative); do
+    rt fail("negative count was accepted");
+  fi
+  val RunSummary overflow = new RunSummary(maximum, maximum, 1, 0, 0);
+  if summary_is_valid(rt borrow overflow); do
+    rt fail("overflowing aggregate was accepted");
+  fi
+  val RunSummary negative_filtered = new RunSummary(1, 1, 0, 0, -1);
+  if summary_is_valid(rt borrow negative_filtered); do
+    rt fail("negative filtered count was accepted");
+  fi
+
+  stdio.stdout.println("ATTO_TEST_SUMMARY_RANGE_OK|checks=13");
+  return;
+}
