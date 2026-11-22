@@ -61,3 +61,10 @@ A new source audit verified that every fixture method exists in its backend-owne
 
 ### Immutable native Path value (follow-up)
 The backend now exposes a `define pub class Path` Atto value and `relative_path(spelling, windows)` factory. The instance provides the surviving lexical components, filename/extension/stem offsets, parent depth, canonical/portable tests and safe join preflight. The original `String` spelling is retained for codepoint views; no canonical serialized output, symlink confinement, or filesystem grant is produced. The 67-output guest fixture includes 16 new Path-instance observations. No exact-head compiled JVM guest result is available yet.
+
+
+## Source-local JDK25 negative-constructor gate (2026-11-22)
+
+The new `Path` facade uses the existing `pub define class` syntax, consistent with compiler-owned `Trace.Buffer` and `Telemetry.SpanBatch`. The JUnit guest suite now includes `invalidPathInstancesFailInGuestBeforeReturning`: four noncanonical or reserved paths must throw **after** a real guest entry marker, preventing a mere parser/import rejection from counting as constructor validation. The exact-head JVM workflow demands this method's unskipped Surefire report.
+
+The original 67-output guest oracle is unchanged. Runner-backed JVM/JDK25 and Native Image results remain NOT_EXECUTED on the current head. No privately owned source was exported.
