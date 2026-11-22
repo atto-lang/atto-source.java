@@ -1,5 +1,5 @@
 // atto.alloc/bitset: compact, actor-owned, bounded 63-bit word bitset.
-// The sign bit is intentionally unused: (1 << offset) remains nonnegative
+// The sign bit is intentionally unused: (1 <<< offset) remains nonnegative
 // for offsets 0..62 with AttoLang checked signed integer arithmetic.
 // This module owns its Array<int>; no host language, background GC or OS API.
 define module bitset as
@@ -26,7 +26,7 @@ define module bitset as
         return None;
       fi
       let int word = self.words.get(index / 63);
-      let int mask = 1 << (index % 63);
+      let int mask = 1 <<< (index % 63);
       return Some((word & mask) != 0);
     }
 
@@ -36,7 +36,7 @@ define module bitset as
         return Err("IndexOutOfBounds");
       fi
       let int slot = index / 63;
-      let int mask = 1 << (index % 63);
+      let int mask = 1 <<< (index % 63);
       let int before = self.words.get(slot);
       let bool old = (before & mask) != 0;
       if value; do
@@ -72,7 +72,7 @@ define module bitset as
 
     pub first_set(): Option<int> {
       for (let int i = 0; i < self.bits; i = i + 1) {
-        if (self.words.get(i / 63) & (1 << (i % 63))) != 0; do
+        if (self.words.get(i / 63) & (1 <<< (i % 63))) != 0; do
           return Some(i);
         fi
       }
