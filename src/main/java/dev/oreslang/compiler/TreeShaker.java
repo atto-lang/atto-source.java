@@ -690,7 +690,10 @@ public final class TreeShaker {
                         fields,
                         constructor,
                         methods,
-                        klass.actorConcurrency());
+                        klass.actorConcurrency(),
+                        klass.sealedStateFields(),
+                        klass.annotations(),
+                        klass.actorMessageContract());
             }
             return declaration;
         }
