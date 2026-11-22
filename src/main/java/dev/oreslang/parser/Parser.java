@@ -190,6 +190,15 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        // State-indexed actor protocols are parsed to bounded metadata, but no
+        // guest code path may erase their unary/stream cardinality or claim
+        // unverified runtime-issued affine authority.
+        if (ActorProtocolTypestateV1.containsProtocol(tokens)) {
+            ActorProtocolTypestateV1.parseTokens(tokens);
+            throw new IllegalArgumentException("E_UNSUPPORTED_PROTOCOL_LOWERING: "
+                    + "requires verified nominal message resolution, ownership, "
+                    + "generation-fenced stream replies and guest AOT lowering");
+        }
         // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
         // execution regions and quantum fail-closed, but allow canonical task
         // forms (plus legacy nb aliases) to reach typed lowering. GPU task is
