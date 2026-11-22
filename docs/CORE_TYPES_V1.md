@@ -1,6 +1,6 @@
 # core/types v1 — Java backend
 
-This folder is the Java/GraalVM backend's independent freestanding AttoLang implementation. The public module is `core/types.atto` (`types`). Do not import implementation source from another backend.
+This folder is the Java/GraalVM backend's independent freestanding AttoLang implementation. The public source namespace is `types`, declared in `core/types.atto` by `use namespace types;`. Do not import implementation source from another backend.
 
 ## Shipped source surface (not yet certified)
 
@@ -21,3 +21,7 @@ This folder is the Java/GraalVM backend's independent freestanding AttoLang impl
 4. Record exact source and compiler SHA, target/toolchain, nonzero runner steps, and passing/failing/unsupported status. Source-free helper tests or zero-step Actions runs are **NOT_EXECUTED** guest evidence.
 
 Related overlapping work: atto-source.java PR #701 (transparent aliases/Entry/Pair) and #669 (Any/Unknown) are distinct compiler type-system efforts; do not merge or redefine their symbols here.
+
+## Namespace-only migration
+
+`core/types.atto` now uses the canonical **file-level namespace header** `use namespace types;` followed by public top-level `.atto` functions. It does **not** contain a `define module` declaration or imply any implicit import. Consumers still import its public exports explicitly with `import * as types from "../../../core/types.atto";`. The qualified local binding and the source namespace identity are distinct. Parser and guest-linker tests must independently establish compatibility; unsupported backends are NOT_VERIFIED, not source-parity failures to hide.

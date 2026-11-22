@@ -21,8 +21,22 @@ final class CoreTypesGuestTest {
         Path module = Path.of("core", "types.atto");
         assertTrue(Files.isRegularFile(module));
         String source = Files.readString(module);
-        assertTrue(source.contains("define pub module types as"));
+        assertTrue(source.contains("use namespace types;"));
+        assertFalse(source.contains("define pub module types as"));
+        assertEquals("types", Parser.parseStrictAtto(source).namespace());
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
+
+    @Test
+    void invalidNamespaceHeadersRejectAtParserNotOnlyAtRuntime() {
+        for (String fixture : new String[] {
+                "namespace-duplicate-negative.atto", "namespace-late-negative.atto"
+        }) {
+            Path input = FIXTURES.resolve(fixture);
+            assertTrue(Files.isRegularFile(input), fixture);
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parseStrictAtto(Files.readString(input)), fixture);
+        }
     }
 
     @Test
@@ -47,7 +61,9 @@ final class CoreTypesGuestTest {
                 "bool-truthiness-negative.atto",
                 "i64-literal-overflow-negative.atto",
                 "wrong-arg-negative.atto",
-                "u64-outside-int-negative.atto"
+                "u64-outside-int-negative.atto",
+                "namespace-duplicate-negative.atto",
+                "namespace-late-negative.atto"
         }) {
             Path input = FIXTURES.resolve(fixture);
             assertTrue(Files.isRegularFile(input), fixture);
