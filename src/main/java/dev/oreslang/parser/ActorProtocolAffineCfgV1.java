@@ -359,7 +359,9 @@ public final class ActorProtocolAffineCfgV1 {
                 } else if (op instanceof Return) {
                     if (!facts.loans.isEmpty()) throw error("E_PROTOCOL_LOAN_ESCAPE", id, i);
                     if (!facts.leases.isEmpty()) throw error("E_PROTOCOL_LEASE_ESCAPE", id, i);
-                    if (facts.owners.values().stream().anyMatch(v -> !v.maybeAbsent()))
+                    // Optional (moved | live) owners remain live on SOME path.
+                    // Do not treat maybeAbsent as proof of definite disposal.
+                    if (facts.owners.values().stream().anyMatch(v -> !v.states().isEmpty()))
                         throw error("E_PROTOCOL_HANDLE_ESCAPE", id, i);
                 } else {
                     throw error("E_PROTOCOL_UNVERIFIED_OP", id, i);
