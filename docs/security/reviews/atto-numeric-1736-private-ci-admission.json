@@ -1,0 +1,80 @@
+{
+  "schema": "atto.private-ci-admission-review.v1",
+  "status": "REVIEW_ONLY_NOT_AUTHORIZED",
+  "disposition": "DENY_PRIVATE_SOURCE_EXPORT",
+  "source": {
+    "repository": "atto-lang/atto-source.java",
+    "repository_id": 1448697198,
+    "pull_request": 1736,
+    "observed_head_sha": "c16a0313b166f4b426e5c4aa2b3f487475e107b6",
+    "observed_root_tree_sha": "c8fe1626629782a171e6950ba3d7080e489160cd",
+    "observed_tree_blob_count": 2906,
+    "observed_tree_blob_bytes": 20904978,
+    "observed_max_blob_bytes": 737506,
+    "pom_blob_sha": "7ace0b647b2f07e1ed7b771421cc7bd60c2585a3",
+    "observed_main_sha": "169a541e5957f5706404a30aa6b5a607d63083dc",
+    "observed_main_protected": false,
+    "private": true
+  },
+  "legacy_publisher": {
+    "source_repository": "ores-truffle-oreslang/oreslang-source.java",
+    "source_repository_id": 1400792274,
+    "supported_max_files": 4096,
+    "supported_max_bytes": 41943040,
+    "compatible_with_atto_source_id": false,
+    "v3_atto_test_plan_approved": false
+  },
+  "candidates": [
+    {
+      "repository": "opto-sync/atto-ci",
+      "repository_id": 1458322748,
+      "private": true,
+      "runner_proven": true,
+      "default_branch_is_main": false,
+      "source_free_v3_base_reviewed": false,
+      "approved_for_transfer": false
+    },
+    {
+      "repository": "opto-sync-test/go-java-validation",
+      "repository_id": 1323598177,
+      "private": true,
+      "default_branch_is_main": true,
+      "runner_proven_for_pr1736": false,
+      "source_free_v3_base_reviewed_for_pr1736": false,
+      "approved_for_transfer": false
+    }
+  ],
+  "source_free_evidence": {
+    "run_url": "https://github.com/opto-sync/atto-ci/actions/runs/44973090105",
+    "run_id": 44973090105,
+    "host_checks": 213495,
+    "host_native_image_checks": 213495,
+    "graalvm_version": "25.3.4.1",
+    "host_native_image_no_fallback": true,
+    "private_source_files_transferred": 0,
+    "actual_atto_guest_executed": false,
+    "actual_atto_full_guest_aot_executed": false
+  },
+  "required_before_transfer": [
+    "independent_oresoftware_decision_on_v3_scope",
+    "protected_source_main_live_verified_with_full_security_rules",
+    "reviewed_atto_specific_publisher_origin_identity",
+    "reviewed_exact_private_carrier_identity_and_main_base",
+    "carrier_workflow_and_test_plan_pinned_with_reviewed_sha",
+    "reviewed_exact_numeric_pr_head_and_tree_with_approval",
+    "prewrite_fail_closed_checks_on_every_persistent_object_write"
+  ],
+  "required_after_authorized_transfer": [
+    "verify_all_source_blobs_modes_and_exact_original_tree",
+    "stepful_java25_junit_and_real_graal_guest_execution",
+    "stepful_full_guest_native_image_no_fallback",
+    "record_source_carrier_artifact_shas_and_negative_tests",
+    "preserve_independent_ready_cycle_and_codeowner_review"
+  ],
+  "notes": [
+    "This file is data-only and grants no destination, test plan, or source-transfer authority.",
+    "No allowlist or source-control-plane contract is changed by this review proposal.",
+    "A changed source PR head invalidates this review snapshot.",
+    "Source-free alternate runner/host AOT evidence is not evidence of Atto guest correctness."
+  ]
+}
