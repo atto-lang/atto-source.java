@@ -2696,6 +2696,21 @@ public final class OwnershipChecker {
                     Ast.TypeRef receiverType = receiverState.type;
                     if ((receiverType.name().equals("Mutex") || receiverType.name().equals("SharedMutex"))
                             && receiverType.arguments().size() == 1) {
+                        // Invariant-level mutual exclusion is only safe to compose when
+                        // nested acquisitions have a statically proven order. Until
+                        // ordered multi-lock capabilities are implemented, reject
+                        // re-acquisition (including try/async forms) while a guard
+                        // or an inline protected-state callback is still active.
+                        // A second handle may alias the first mutex, so merely
+                        // comparing receiver names would be unsound.
+                        boolean acquiringMutex = switch (member.member()) {
+                            case "lock", "try_lock", "lock_async", "with_lock", "recover" -> true;
+                            default -> false;
+                        };
+                        if (acquiringMutex && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
+                            throw error("nested mutex acquisition requires a proven lock order; "
+                                    + "release the current MutexGuard before acquiring another mutex");
+                        }
                         Ast.TypeRef element = receiverType.arguments().getFirst();
                         if (member.member().equals("lock") && call.arguments().isEmpty()) {
                             return new ValueInfo(new Ast.TypeRef("MutexGuard", List.of(element), false), ValueKind.MOVE_ONLY, null);
@@ -2814,6 +2829,60 @@ public final class OwnershipChecker {
             if (concreteReceiver == null) {
                 concreteReceiver = receiverValue.type.isBorrow()
                         ? receiverValue.type.borrowedTarget() : receiverValue.type;
+            }
+            // Do not let a chained factory call or a projected mutex receiver
+            // evade the nested-lock gate above, which handles named locals.
+            // TypeChecker already recognizes these builtin receiver types.
+            boolean acquiringMutex = switch (member.member()) {
+                case "lock", "try_lock", "lock_async", "with_lock", "recover" -> true;
+                default -> false;
+            };
+            if (acquiringMutex && concreteReceiver != null
+                    && (concreteReceiver.name().equals("Mutex")
+                            || concreteReceiver.name().equals("SharedMutex"))
+                    && concreteReceiver.arguments().size() == 1
+                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
+                throw error("nested mutex acquisition requires a proven lock order; "
+                        + "release the current MutexGuard before acquiring another mutex");
+            }
+            // Non-name receivers (e.g. Mutex.new(3).with_lock(...)) must
+            // receive the same lexical protected-state treatment as named
+            // mutex locals. Otherwise their callbacks run through the
+            // generic call fallback without a critical-section admission fence.
+            if (concreteReceiver != null
+                    && (concreteReceiver.name().equals("Mutex")
+                            || concreteReceiver.name().equals("SharedMutex"))
+                    && concreteReceiver.arguments().size() == 1
+                    && (member.member().equals("with_lock")
+                            || member.member().equals("recover"))
+                    && call.arguments().size() == 1) {
+                if (member.member().equals("recover")
+                        && !concreteReceiver.name().equals("SharedMutex")) {
+                    throw error("recover is only available on SharedMutex<T>");
+                }
+                if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                    throw error(member.member()
+                            + " requires an inline lambda so protected mutex state remains lexical");
+                }
+                if (lambda.parameters().size() != 1) {
+                    throw error(member.member()
+                            + " callback must accept exactly one protected-value parameter");
+                }
+                Ast.Param original = lambda.parameters().getFirst();
+                Ast.Param protectedParam = new Ast.Param(
+                        Ast.TypeRef.borrowed(concreteReceiver.arguments().getFirst(), true),
+                        original.name(),
+                        original.structural(),
+                        false);
+                Ast.LambdaExpr protectedLambda = new Ast.LambdaExpr(
+                        List.of(protectedParam), lambda.expressionBody(), lambda.blockBody());
+                mutexCriticalSectionDepth++;
+                try {
+                    checkLambda(protectedLambda, scope, null);
+                } finally {
+                    mutexCriticalSectionDepth--;
+                }
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
             }
             // Bytes v1 (spec chapter 26): read-only members never consume the
             // receiver; equals/concat only read their argument. Results are
