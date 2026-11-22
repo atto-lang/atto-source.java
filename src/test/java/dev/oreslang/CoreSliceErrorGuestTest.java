@@ -128,18 +128,19 @@ final class CoreSliceErrorGuestTest {
                   if slice.is_empty(-1); do return 29; fi
                   if !slice.can_split_at(4, 4); do return 30; fi
                   if slice.can_split_at(4, 5); do return 31; fi
+                  // Loan is explicit: reads must not move the array owner.
                   if !slice.valid_range(1, 3, 4); do return 1; fi
                   if slice.valid_range(3, 2, 4); do return 2; fi
                   if !slice.valid_endpoints(1, 4, 4); do return 3; fi
-                  if !slice.get_copy_int(values, 1, 2, -1).is_some(); do return 4; fi
-                  if slice.get_copy_int(values, 1, 2, -1).unwrap_or(-1) != 30; do return 5; fi
-                  if !slice.get_copy_int(values, 0, 4, 0).is_some(); do return 6; fi
-                  if slice.get_copy_int(values, 0, 4, 0).unwrap_or(-1) != 0; do return 7; fi
-                  if !slice.get_copy_int(values, 4, 0, 0).is_none(); do return 8; fi
-                  if !slice.get_copy_int(values, 1, 2, -3).is_none(); do return 9; fi
-                  if !slice.get_copy_int(values, 3, 2, 0).is_none(); do return 10; fi
-                  if slice.last_copy_int(values, 1, 2).unwrap_or(-1) != 30; do return 11; fi
-                  if !slice.first_copy_int(values, 4, 0).is_none(); do return 12; fi
+                  if !slice.get_copy_int(rt borrow values, 1, 2, -1).is_some(); do return 4; fi
+                  if slice.get_copy_int(rt borrow values, 1, 2, -1).unwrap_or(-1) != 30; do return 5; fi
+                  if !slice.get_copy_int(rt borrow values, 0, 4, 0).is_some(); do return 6; fi
+                  if slice.get_copy_int(rt borrow values, 0, 4, 0).unwrap_or(-1) != 0; do return 7; fi
+                  if !slice.get_copy_int(rt borrow values, 4, 0, 0).is_none(); do return 8; fi
+                  if !slice.get_copy_int(rt borrow values, 1, 2, -3).is_none(); do return 9; fi
+                  if !slice.get_copy_int(rt borrow values, 3, 2, 0).is_none(); do return 10; fi
+                  if slice.last_copy_int(rt borrow values, 1, 2).unwrap_or(-1) != 30; do return 11; fi
+                  if !slice.first_copy_int(rt borrow values, 4, 0).is_none(); do return 12; fi
                   if slice.subslice_offset(1, 3, 4, 1, 2).unwrap_or(-1) != 2; do return 13; fi
                   if !slice.subslice_offset(1, 3, 4, 2, 2).is_none(); do return 14; fi
                   if !slice.valid_reverse_window(2, -1, 3, 4); do return 15; fi
@@ -149,10 +150,10 @@ final class CoreSliceErrorGuestTest {
                   if error.code_group(3001).unwrap_or(-1) != 3000; do return 19; fi
                   if !error.code_group(3090).is_some(); do return 20; fi
                   if !error.code_group(3091).is_none(); do return 21; fi
-                  val Option<int> before = slice.get_copy_int(values, 0, 4, 0);
+                  val Option<int> before = slice.get_copy_int(rt borrow values, 0, 4, 0);
                   values.set(0, 99);
                   if before.unwrap_or(-1) != 0; do return 22; fi
-                  if slice.get_copy_int(values, 0, 4, 0).unwrap_or(-1) != 99; do return 23; fi
+                  if slice.get_copy_int(rt borrow values, 0, 4, 0).unwrap_or(-1) != 99; do return 23; fi
                   return 42;
                 }
                 """);
@@ -170,9 +171,28 @@ final class CoreSliceErrorGuestTest {
                 import module slice from "core/slice";
                 pub fnc main(): int {
                   val Array<String> values = new Array<String>();
-                  return slice.get_copy_int(values, 0, 0, 0).unwrap_or(42);
+                  return slice.get_copy_int(rt borrow values, 0, 0, 0).unwrap_or(42);
                 }
                 """);
+        assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(guest, Map.of()));
+    }
+
+    @Test
+    void sliceCopyCannotCircumventExclusiveMutableArrayLoan() throws Exception {
+        Path guest = temp.resolve("exclusive-loan.atto");
+        Files.writeString(guest, """
+                import module slice from "core/slice";
+                pub fnc main(): int {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(42);
+                  val borrow mut Array<int> exclusive = rt mut borrow values;
+                  val missed = slice.get_copy_int(rt borrow values, 0, 1, -7);
+                  stdio.stdout.write(exclusive.size);
+                  return missed.unwrap_or(42);
+                }
+                """);
+        // A bounds miss must not bypass ownership checks.
         assertThrows(IllegalArgumentException.class,
                 () -> LinkedProgramRunner.validate(guest, Map.of()));
     }
