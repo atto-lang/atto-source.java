@@ -124,4 +124,24 @@ final class UdpDatagramKernelTest {
             }
         }
     }
+
+    @Test void nioReadinessCancellationRearmsWithoutClosingUdpSocket() throws Exception {
+        NioReadinessGroup group = new NioReadinessGroup(4, 8);
+        try (var sender = bind(); var receiver = bind()) {
+            var pending = group.watch(receiver.channel(), java.nio.channels.SelectionKey.OP_READ);
+            assertTrue(pending.cancel(false), "one pending receive readiness cancellation");
+            assertTrue(group.awaitIdle(5, java.util.concurrent.TimeUnit.SECONDS));
+            var ready = group.watch(receiver.channel(), java.nio.channels.SelectionKey.OP_READ);
+            assertEquals(UdpDatagramKernel.SendOutcome.SENT,
+                    sender.trySendTo(receiver.localPort(), new byte[] {99}));
+            int mask = ready.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertNotEquals(0, mask & java.nio.channels.SelectionKey.OP_READ);
+            assertArrayEquals(new byte[]{99}, poll(receiver, 1).bytes());
+            assertEquals(0, group.pendingCount());
+        } finally {
+            group.close();
+            assertTrue(group.awaitStopped(5, java.util.concurrent.TimeUnit.SECONDS));
+        }
+    }
+
 }
