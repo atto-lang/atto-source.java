@@ -8759,7 +8759,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
-        if (named.name().equals("AeadKey") || named.name().equals("SecretBytes")) {
+        if (named.name().equals("AeadKey") || named.name().equals("SecretBytes")
+                || named.name().equals("CryptoError")) {
             throw new IllegalArgumentException(
                     where + " cannot transfer opaque crypto secrets across actor boundaries");
         }
