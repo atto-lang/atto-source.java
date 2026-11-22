@@ -1,0 +1,34 @@
+name: std-process-host-smoke
+
+on:
+  pull_request:
+    paths:
+      - 'stdlib/process.atto'
+      - 'stdlib/process_policy.atto'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/main/java/dev/oreslang/runtime/TrustedChildProcessRunner.java'
+      - 'tests/host/StdProcessNamespaceSmoke.java'
+      - 'tests/host/TrustedChildProcessRunnerSmoke.java'
+      - 'tests/host/run-std-process-smoke.sh'
+      - 'tests/fixtures/std-process-*/**'
+      - '.github/workflows/std-process-host-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-jdk21:
+    name: host-jdk21-actual-execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify Java host process and namespace tests
+        run: bash tests/host/run-std-process-smoke.sh
