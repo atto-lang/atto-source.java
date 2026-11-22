@@ -96,7 +96,7 @@ final class AsyncPersistentScalarActorRuntimeTest {
             throws Exception {
         Path path = temp.resolve("async-replay.db");
         var plan = PersistentScalarMirV1.lower(SOURCE);
-        var io = AsyncSqliteDurableProviderV1.open(path, 16);
+        var io = AsyncSqliteDurableProviderV1.open(path, 1);
         try (var images = new SharedCodeImageStore();
              var runtime = new ActorRuntime(IsolatePolicy.developer())) {
             await(io.ready());
