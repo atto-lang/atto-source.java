@@ -2,7 +2,6 @@ package dev.oreslang.parser;
 
 import dev.oreslang.ast.Ast;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -80,6 +79,7 @@ public final class ActorProtocolSourceCfgV1 {
         final Map<String, Integer> leases = new LinkedHashMap<>();
         final Map<String, String> messages = new LinkedHashMap<>();
         final Map<String, String> ownerProtocols = new LinkedHashMap<>();
+        final Map<String, Ast.TypeRef> parameterTypes = new LinkedHashMap<>();
         final List<MutableBlock> blocks = new ArrayList<>();
         final Set<String> defined = new HashSet<>();
         int placeId = 1, leaseId = 1, loanId = 1;
@@ -128,11 +128,20 @@ public final class ActorProtocolSourceCfgV1 {
             return ref.arguments().getFirst().name();
         }
         ActorProtocolAffineCfgV1.Program compile() {
+            // This slice must not silently erase effects, dynamic dispatch
+            // or hidden callable state from a seemingly ordinary function.
+            if (function.generator() || function.structural() || function.trapped()
+                    || function.actorKind() != Ast.ActorKind.NONE
+                    || !function.genericParameters().isEmpty()
+                    || !function.genericSpecs().isEmpty()
+                    || !function.effects().isEmpty()) {
+                throw error("E_PROTOCOL_SOURCE_EFFECT",
+                        "unsupported callable shape/effects");
+            }
             current = newBlock();
-            Map<String, Ast.TypeRef> params = new HashMap<>();
             for (Ast.Param param : function.parameters()) {
                 declare(param.name());
-                if (params.putIfAbsent(param.name(), param.type()) != null)
+                if (parameterTypes.putIfAbsent(param.name(), param.type()) != null)
                     throw error("E_PROTOCOL_SOURCE_BINDING", param.name());
                 if (trusted.containsKey(param.name())) {
                     String protocol = protocolType(param.type());
@@ -252,10 +261,18 @@ public final class ActorProtocolSourceCfgV1 {
                 emit(new ActorProtocolAffineCfgV1.Return());
                 current = null;
             } else if (stmt instanceof Ast.IfStmt iff) {
-                if (iff.branches().size() != 1 || iff.elseBody().isEmpty()
-                        || !(iff.branches().getFirst().condition() instanceof Ast.NameExpr
-                                || iff.branches().getFirst().condition() instanceof Ast.LiteralExpr))
-                    throw error("E_PROTOCOL_SOURCE_BRANCH", "only full binary if/else with pure condition");
+                if (iff.branches().size() != 1 || iff.elseBody().isEmpty())
+                    throw error("E_PROTOCOL_SOURCE_BRANCH", "only full binary if/else");
+                Ast.Expr guard = iff.branches().getFirst().condition();
+                boolean pureBoolean = guard instanceof Ast.LiteralExpr lit
+                        && lit.value() instanceof Boolean
+                        || guard instanceof Ast.NameExpr n
+                        && parameterTypes.get(n.name()) != null
+                        && parameterTypes.get(n.name()).name().equals("bool")
+                        && parameterTypes.get(n.name()).arguments().isEmpty();
+                if (!pureBoolean)
+                    throw error("E_PROTOCOL_SOURCE_BRANCH",
+                            "condition must be a known pure bool parameter or literal");
                 MutableBlock from = current;
                 MutableBlock yes = newBlock(), no = newBlock();
                 from.successors.add(yes.id);
