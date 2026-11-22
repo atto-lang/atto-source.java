@@ -44,6 +44,17 @@ define module Process as
     return value.stderr_mode >= 0 && value.stderr_mode <= 2;
   }
 
+  // Restricted root-context bridge. This delegates to the authenticated
+  // host process intrinsic; it does not grant RUN permission by itself.
+  // Initial implementation requires explicit absolute executable and cwd.
+  // Child stdin is closed and stdout/stderr are bounded captured outputs.
+  // Actor-owned launches, alternate stdio modes and process detachment remain
+  // unsupported until their ownership and cleanup contracts are enforced.
+  pub async fnc spawn(
+      String executable, Array<String> arguments, String cwd): Result<ChildProcess, ProcessError> {
+    return await process.spawn(executable, arguments, cwd);
+  }
+
   pub fnc exit_status(int code, bool signaled): ExitStatus {
     return new ExitStatus(code, signaled);
   }
