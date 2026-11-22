@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.stdlib.CoreLibrarySources;
+import dev.oreslang.types.TypeChecker;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -88,6 +89,16 @@ final class ChannelStdlibAttoSourceTest {
                 () -> run("try_read_closed_drained.atto"));
         assertTrue(failure.isGuestException(),
                 "a closed, drained channel must not return a temporary-empty Option");
+    }
+
+    @Test
+    void movedPayloadCannotBeReusedAfterAttoStdlibTrySend() throws Exception {
+        String guest = Files.readString(
+                FIXTURES.resolve("use_after_taken_try_send.atto"), StandardCharsets.UTF_8);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)));
+        assertTrue(rejected.getMessage().contains("use of moved value"),
+                () -> "expected core borrow/move rejection, got: " + rejected.getMessage());
     }
 
     @Test
