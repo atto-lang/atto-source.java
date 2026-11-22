@@ -279,6 +279,9 @@ define module http as
        pattern.contains_literal("%") || pattern.contains_literal("//") then
       return false;
     fi
+    if pattern == "/" then return true; fi
+    val points = pattern.codepoints();
+    if points.size > 8192 then return false; fi
     val segments = pattern.split_literal("/");
     if segments.size > 65 then return false; fi
     for (let int i = 1; i < segments.size; i = i + 1) {
@@ -300,6 +303,9 @@ define module http as
     fi
     val target_parts = target.split_literal("?");
     val String path = target_parts.get(0);
+    if pattern == "/" then return path == "/"; fi
+    val path_points = path.codepoints();
+    if path_points.size > 8192 then return false; fi
     if path.contains_literal("%") || path.contains_literal("//") then
       return false;
     fi
