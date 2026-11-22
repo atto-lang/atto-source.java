@@ -39,7 +39,12 @@ public final class IncrementalCompiler {
     private final Map<String, List<String>> importBindingCache = new LinkedHashMap<>();
     private final Map<String, List<String>> strictAttoImportBindingCache = new LinkedHashMap<>();
 
-    private record ParsedUnit(String sourceDigest, String abiDigest, Ast.Program program) { }
+    // Raw AST is the input to semantic analysis (which expands annotations
+    // itself). The expanded AST is used for graph linking and ABI indexing.
+    // Both are immutable source-derived facts, never checked/borrow-authority.
+    private record ParsedUnit(
+            String sourceDigest, String abiDigest,
+            Ast.Program rawProgram, Ast.Program program) { }
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -112,15 +117,18 @@ public final class IncrementalCompiler {
             if (previous != null && previous.sourceDigest().equals(sourceDigest)) {
                 unit = previous;
             } else {
-                final Ast.Program program;
+                final Ast.Program rawProgram;
+                final Ast.Program expandedProgram;
                 try {
-                    program = AnnotationExpander.expand(strictAtto
+                    rawProgram = strictAtto
                             ? Parser.parseStrictAtto(entry.getValue())
-                            : Parser.parse(entry.getValue()));
+                            : Parser.parse(entry.getValue());
+                    expandedProgram = AnnotationExpander.expand(rawProgram);
                 } catch (IllegalArgumentException invalid) {
                     throw new SourceUnitDiagnosticException(id, "", "", invalid);
                 }
-                unit = new ParsedUnit(sourceDigest, abiDigest(program), program);
+                unit = new ParsedUnit(
+                        sourceDigest, abiDigest(expandedProgram), rawProgram, expandedProgram);
                 reparsed.add(id);
             }
             stagedParsed.put(id, unit);
@@ -242,9 +250,7 @@ public final class IncrementalCompiler {
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
-                                strictAtto
-                                        ? Parser.parseStrictAtto(normalized.get(id))
-                                        : Parser.parse(normalized.get(id)),
+                                stagedParsed.get(id).rawProgram(),
                                 linked.classes(), linked.aliases(), contracts, strictAtto);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
