@@ -1,0 +1,14 @@
+// Real guest execution: the runtime must use only the injected Truffle context
+// environment, NOT System.getenv() or unrelated host ambient variables.
+// Host injects ATTO_ENV_VALUE=42, ATTO_ENV_EMPTY="", ATTO_ENV_FLAG=true.
+// Host omits ATTO_ENV_MISSING. Expected lines: true,42,true,true,true,fallback.
+import module std_env from "std/env";
+pub routine main(): void {
+  stdio.println(std_env.has("ATTO_ENV_VALUE"));
+  stdio.println(std_env.get_required("ATTO_ENV_VALUE").unwrap());
+  stdio.println(std_env.has("ATTO_ENV_EMPTY"));
+  stdio.println(std_env.get("ATTO_ENV_EMPTY").unwrap() == "");
+  stdio.println(std_env.get_bool("ATTO_ENV_FLAG").unwrap());
+  stdio.println(std_env.get_or("ATTO_ENV_MISSING", "fallback"));
+  return;
+}
