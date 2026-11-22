@@ -62,6 +62,8 @@ public final class TypeChecker {
 
     /** Strict source-profile flag is local to this checker; never process-global. */
     private boolean strictAttoEquality;
+    /** Selected lexical prelude profile; defaults to hosted Java for compatibility. */
+    private AutomaticPrelude.Profile preludeProfile = AutomaticPrelude.Profile.HOSTED;
     /** Exact return spelling scoped to the checked source callable. */
     private Ast.TypeRef strictCallableReturnSource;
 
@@ -394,6 +396,20 @@ public final class TypeChecker {
      * unchanged; strict callers must not bypass this path after parsing.
      */
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program, boolean strictAttoEquality) {
+        return checkTypesWithDiagnostics(program, strictAttoEquality, AutomaticPrelude.Profile.HOSTED);
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, AutomaticPrelude.Profile preludeProfile) {
+        return checkTypesWithDiagnostics(program, false, preludeProfile);
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, boolean strictAttoEquality,
+            AutomaticPrelude.Profile preludeProfile) {
+        if (preludeProfile == null) {
+            throw new IllegalArgumentException("prelude profile cannot be null");
+        }
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -404,6 +420,7 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
+        checker.preludeProfile = preludeProfile;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -12918,10 +12935,18 @@ public final class TypeChecker {
      * shape dimensions and named collection layout metadata are separate syntax
      * channels and must be validated by their dedicated rules.
      */
-    private static void validateRegisteredCoreTypeArity(Ast.TypeRef ref) {
+    private void validateRegisteredCoreTypeArity(Ast.TypeRef ref) {
         CoreTypeRegistry.TypeInfo info = CoreTypeRegistry.lookup(ref.name()).orElse(null);
-        if (info == null || info.kind() != CoreTypeRegistry.Kind.TYPE
-                || ref.inferArguments()) return;
+        if (info == null || info.kind() != CoreTypeRegistry.Kind.TYPE) return;
+        // Java's historical String scalar remains a compatibility value, not
+        // the allocator-owned alloc/string/String implementation.
+        if (info.scope() == CoreTypeRegistry.Scope.ALLOC
+                && preludeProfile == AutomaticPrelude.Profile.CORE
+                && info.javaStatus() != CoreTypeRegistry.LoweringStatus.JAVA_LEGACY_SCALAR) {
+            throw new IllegalArgumentException("E_ALLOC_PROFILE_REQUIRED: "
+                    + info.canonicalIdentity() + " requires an allocator-enabled profile");
+        }
+        if (ref.inferArguments()) return;
         if (ref.arguments().stream().anyMatch(Ast.TypeRef::isSequenceShape)
                 || ref.arguments().stream().anyMatch(Ast.TypeRef::isNamedParameter)) return;
         int arity = ref.arguments().size();
