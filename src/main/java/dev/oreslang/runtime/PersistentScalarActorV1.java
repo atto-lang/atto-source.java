@@ -72,7 +72,7 @@ public final class PersistentScalarActorV1 implements AutoCloseable {
         return new PersistentScalarActorV1(plan, store, address, activation);
     }
 
-    /** Durable send+turn. Empty means that the delivery ID already exists. */
+    /** Durable send+turn. Empty means the exact duplicate is still pending. */
     public synchronized OptionalLong increment(String deliveryId, long delta) {
         requireActive();
         if (deliveryId == null || deliveryId.isBlank())
@@ -81,9 +81,17 @@ public final class PersistentScalarActorV1 implements AutoCloseable {
             // This is an actor-origin message, so the epoch check and durable
             // admission are one SQLite transaction. Stale actors may not
             // enqueue commands for the new incarnation to execute.
-            if (!storage.enqueueFenced(address, epoch, new DurableActorStore.Inbound(
-                    deliveryId, plan.encode_increment_message(delta))))
-                return OptionalLong.empty();
+            var original = new DurableActorStore.Inbound(
+                    deliveryId, plan.encode_increment_message(delta));
+            if (!storage.enqueueFenced(address, epoch, original)) {
+                // A committed duplicate returns its ORIGINAL committed result,
+                // never the actor's current state. A still-pending duplicate
+                // remains unacknowledged until its turn actually commits.
+                var committed = storage.committedDelivery(address, epoch, original);
+                return committed.isPresent()
+                        ? OptionalLong.of(plan.decode(committed.get()))
+                        : OptionalLong.empty();
+            }
             return OptionalLong.of(process_committed_delivery(deliveryId, delta));
         } catch (RuntimeException | Error failure) {
             poison();
