@@ -58,7 +58,8 @@ cannot acquire ambient JVM variables through `std/env`.
 
 `NativeAttoEnvStdlibTest` executes real guest fixtures
 `src/test/resources/stdlib-parity/env.atto` (absent/fallback/strict bool) and
-`env-injected.atto` (present, empty, strict boolean and host-PATH isolation).
+`env-injected.atto` (present, empty, strict boolean and host-PATH isolation),
+and `env-context-isolation.atto` (independent context snapshots).
 Additional host-policy tests check denied value getters are never invoked,
 coarse permission denial avoids enumeration, key/value bounds, spoofing and
 canonical package resolution.
@@ -75,6 +76,21 @@ test. A workflow run with no executed steps is `NOT_EXECUTED`, not a failure
 or pass of the compiler. External mirrors are forbidden unless the private
 V3 source-export policy is independently satisfied; a source-free alternate
 runner canary is only capacity evidence.
+
+## Independent source-free GraalVM behavior receipts
+
+With no Atto compiler source exported, an independently written minimal Truffle
+guest was compiled and run on a private alternate GitHub Actions runner using
+GraalVM JDK 25 and Truffle artifacts 25.3.4.1:
+
+- [Source-free run 45051743255](https://github.com/channelsiege/atto-ci/actions/runs/45051743255) — executed actual Truffle `Env.getEnvironment()` with `EnvironmentAccess.NONE`; only explicitly configured keys appeared, and JVM-global `PATH` was absent.
+- [Source-free run 45051945356](https://github.com/channelsiege/atto-ci/actions/runs/45051945356) — repeated those checks and verified two simultaneous Graal contexts with different values remained distinct, including repeat reads of the first context.
+
+These prove Truffle API and external runner behavior; they **do not prove**
+Atto guest module linking, parser/type-checking, or the contents of this private
+repo. In particular, source-org Actions CI is not replaced by these synthetic
+receipts. Security review [issue #1788](https://github.com/atto-lang/atto-source.java/issues/1788)
+tracks the separate private source export DENIED hold.
 
 **Verification: NOT_EXECUTED for this changed Java guest implementation.**
 Do not mark the PR Ready or claim Native Image AOT parity until exact-head
