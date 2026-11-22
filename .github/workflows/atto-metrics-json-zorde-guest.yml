@@ -66,6 +66,7 @@ jobs:
           grep -F 'name="jsonGuestRejectsAmbiguousAndMalformedText"' "$report"
           grep -F 'name="zordeGuestRoundtripsDeterministicFrame"' "$report"
           grep -F 'name="coreBorrowAdmissionGuestIsFreestandingAndExact"' "$report"
+          grep -F 'name="coreBorrowCompilerRejectsInvalidLoans"' "$report"
           grep -F 'skipped="0"' "$report"
           grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
           echo 'ATTO_STDLIB_JAVA_GUEST=EXECUTED'
