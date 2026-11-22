@@ -11648,8 +11648,9 @@ public final class OresEvalRootNode extends RootNode {
     /** Checked explicit cast failures are ordinary guest errors, never JVM host values. */
     private static final class OresCastError extends OresGuestError {
         private OresCastError(String message) {
-            // Type identity is stable; the cross-backend cast ABI is not yet assigned.
-            super("CastError", 0, message);
+            // -1 is internal/unassigned and must never be emitted as a wire
+            // ABI code. Numeric code 0 is reserved for success.
+            super("CastError", -1, message);
         }
     }
     private static List<Object> immutableIoStrings(List<Object> args) {
