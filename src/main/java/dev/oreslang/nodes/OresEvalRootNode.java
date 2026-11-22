@@ -12,6 +12,7 @@ import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.NumericErrorAbi;
 import dev.oreslang.runtime.OresVector;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -13281,13 +13282,13 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class ArithmeticOverflowError extends NumericGuestError {
         private ArithmeticOverflowError(String message) {
-            super("ArithmeticOverflowError", 65537, message);
+            super("ArithmeticOverflowError", NumericErrorAbi.ARITHMETIC_OVERFLOW, message);
         }
     }
 
     private static final class DivisionByZeroError extends NumericGuestError {
         private DivisionByZeroError(String message) {
-            super("DivisionByZeroError", 65538, message);
+            super("DivisionByZeroError", NumericErrorAbi.DIVISION_BY_ZERO, message);
         }
     }
 
