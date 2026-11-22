@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout exact PR head without persisted token
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af683
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
