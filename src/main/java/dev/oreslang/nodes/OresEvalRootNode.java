@@ -11796,8 +11796,10 @@ public final class OresEvalRootNode extends RootNode {
                                         + " is a type-only selector and cannot be evaluated as a runtime value");
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
-                    if (module == null || module.name().equals(Parser.ROOT_MODULE)) {
-                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    if (module == null || module.name().equals(Parser.ROOT_MODULE)
+                            || module.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId + "' does not export public module '" + name + "'");
                     }
                     yield new ModuleFacade(this, module);
                 }
@@ -11807,7 +11809,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object exportAny(String name) {
             Ast.ModuleDecl module = modules.get(name);
-            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
+            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) {
+                if (module.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "code unit '" + codeUnitId + "' does not export public module '" + name + "'");
+                }
+                return new ModuleFacade(this, module);
+            }
             Ast.ClassDecl klass = findClass(name);
             if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC) {
                 return new ClassFacade(this, klass);
