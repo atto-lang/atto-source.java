@@ -14455,7 +14455,7 @@ public final class OresEvalRootNode extends RootNode {
             requireCrypto("crypto.sha256");
             requireOne(arguments, "crypto.sha256");
             byte[] message = byteList(arguments.getFirst(),
-                    CryptoPrimitives.MAX_HASH_INPUT_BYTES, "SHA-256 input");
+                    GUEST_MAX_BYTES, "SHA-256 input");
             byte[] digest = null;
             try {
                 digest = CryptoPrimitives.sha256(message);
@@ -14475,7 +14475,7 @@ public final class OresEvalRootNode extends RootNode {
             byte[] digest = null;
             try {
                 message = byteList(arguments.get(1),
-                        CryptoPrimitives.MAX_HASH_INPUT_BYTES, "HMAC message");
+                        GUEST_MAX_BYTES, "HMAC message");
                 digest = CryptoPrimitives.hmacSha256(key, message);
                 return guestBytes(digest);
             } finally {
@@ -14511,7 +14511,7 @@ public final class OresEvalRootNode extends RootNode {
             requireCrypto("crypto.base64_encode");
             requireOne(arguments, "crypto.base64_encode");
             byte[] source = byteList(arguments.getFirst(),
-                    CryptoPrimitives.MAX_BASE64_INPUT_BYTES, "Base64 input");
+                    GUEST_MAX_BYTES, "Base64 input");
             try {
                 return CryptoPrimitives.base64Encode(source);
             } finally {
@@ -14547,11 +14547,11 @@ public final class OresEvalRootNode extends RootNode {
             requireCrypto("crypto.constant_time_equals");
             requireTwo(arguments, "crypto.constant_time_equals");
             byte[] a = byteList(arguments.get(0),
-                    CryptoPrimitives.MAX_HASH_INPUT_BYTES, "comparison left");
+                    GUEST_MAX_BYTES, "comparison left");
             byte[] b = null;
             try {
                 b = byteList(arguments.get(1),
-                        CryptoPrimitives.MAX_HASH_INPUT_BYTES, "comparison right");
+                        GUEST_MAX_BYTES, "comparison right");
                 return CryptoPrimitives.constantTimeEquals(a, b);
             } finally {
                 java.util.Arrays.fill(a, (byte) 0);
