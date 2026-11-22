@@ -76,5 +76,11 @@
     "No allowlist or source-control-plane contract is changed by this review proposal.",
     "A changed source PR head invalidates this review snapshot.",
     "Source-free alternate runner/host AOT evidence is not evidence of Atto guest correctness."
-  ]
+  ],
+  "source_head_drift": {
+    "observed_new_head_sha": "c908c6c824c2dbb5caed3023b2c5e3e975a05834",
+    "observed_new_root_tree_sha": "103e305a8157e1cabce214b888df68e0777844cf",
+    "stale": true,
+    "resolution": "DO_NOT_AUTO_REPIN_REQUIRES_INDEPENDENT_REVIEW_AND_NEW_EXACT_HEAD_PROOF"
+  }
 }
