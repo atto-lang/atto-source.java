@@ -139,3 +139,23 @@ alias remains compatible); loans never authorize move, drop or share.
 Keep equivalent semantics across all eleven Atto backend implementations,
 with independent backend-owned source and capability-specific fail-closed
 coverage.
+
+## Core source now exposes explicit read-only borrow adapters
+
+`option.is_some_borrowed` and `option.is_none_borrowed` accept
+`borrow Option<T>`; `result.is_ok_borrowed` and
+`result.is_err_borrowed` accept `borrow Result<T,E>`. Their bodies only
+inspect the carrier tag and cannot extract an affine payload. These use
+checked scoped loan semantics, not a new runtime ownership flag. The
+`tests/core_option_result/borrowed_queries.atto` candidate invokes all four
+adapters via `borrow!`, then consumes the still-live original `Option<int>`
+and must print `42`. The active Java JUnit gate
+`linkedBorrowedCoreQueriesMustNotConsumeOwner` requires real linked guest
+execution. Neither JUnit nor the guest is yet verified on an admitted runner.
+
+**Do not infer affine consuming helper safety from this scalar positive:**
+`flatten`, `map`, `and_then`, `zip_with`, `transpose`, and extracting
+conversions must still reject loan-to-owner promotions until resolved typed
+formal ownership modes, active-variant drop and callback effects have compiled
+negative and positive evidence. Backends are free to implement these native
+source helpers independently; semantic borrow requirements are shared.
