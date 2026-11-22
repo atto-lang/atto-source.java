@@ -76,6 +76,12 @@ public final class TypeChecker {
 
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    // Record statically resolved direct calls during type checking. Routines are
+    // direct-call-only and may not occur on a recursive call-graph cycle.
+    private final IdentityHashMap<Ast.FunctionDecl, Set<Ast.FunctionDecl>> staticFunctionCalls =
+            new IdentityHashMap<>();
+    private Ast.FunctionDecl currentFunction;
+
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -959,6 +965,45 @@ public final class TypeChecker {
                 currentLexicalModule = previousModule;
             }
         }
+        rejectRecursiveRoutines(program);
+    }
+
+    private void recordStaticFunctionCall(Ast.FunctionDecl target) {
+        if (currentFunction == null) return;
+        staticFunctionCalls.computeIfAbsent(currentFunction,
+                ignored -> java.util.Collections.newSetFromMap(new IdentityHashMap<>())).add(target);
+    }
+
+    /**
+     * Reject any statically resolved function-call cycle that reenters a routine,
+     * including cycles through ordinary fncs. Tail-call lowering cannot make
+     * recursive routines legal. Dynamic dispatch needs an additional runtime
+     * reentry fence; this pass covers direct, arity-resolved function calls.
+     */
+    private void rejectRecursiveRoutines(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.FunctionDecl routine)
+                        || routine.kind() != Ast.CallableKind.ROUTINE) continue;
+                Set<Ast.FunctionDecl> visited =
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+                java.util.ArrayDeque<Ast.FunctionDecl> pending = new java.util.ArrayDeque<>();
+                pending.add(routine);
+                visited.add(routine);
+                while (!pending.isEmpty()) {
+                    Ast.FunctionDecl caller = pending.removeFirst();
+                    for (Ast.FunctionDecl callee : staticFunctionCalls.getOrDefault(caller, Set.of())) {
+                        if (callee == routine) {
+                            throw new IllegalArgumentException(
+                                    "routine '" + module.name() + "." + routine.name()
+                                            + "' cannot be recursive (directly or indirectly); "
+                                            + "declare a fnc for recursive behavior");
+                        }
+                        if (visited.add(callee)) pending.addLast(callee);
+                    }
+                }
+            }
+        }
     }
 
     private void validateModuleValueNamespace(Ast.ModuleDecl module) {
@@ -1542,9 +1587,12 @@ public final class TypeChecker {
         Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
         strictCallableReturnSource = strictAttoEquality && !fn.generator() ? fn.returnType() : null;
         currentMaySuspend = fn.async() || fn.suspends();
+        Ast.FunctionDecl previousFunction = currentFunction;
+        currentFunction = fn;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            currentFunction = previousFunction;
             strictCallableReturnSource = previousStrictReturnSource;
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
@@ -4478,6 +4526,7 @@ public final class TypeChecker {
                         checkStrictNumericCallArguments(target, call.arguments(), env);
                     }
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    recordStaticFunctionCall(target);
                     // This target is a checked local function declaration in the
                     // immutable, macro-expanded program. A runtime lexical value
                     // still wins if the identifier is shadowed.
@@ -4581,6 +4630,7 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    recordStaticFunctionCall(target);
                     return trappedCallableResult(target.trapped(), target.async(), target.suspends(), target.generator(), result);
                 }
                 if (pkgRoot) {
