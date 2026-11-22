@@ -83,7 +83,7 @@ final class StdPathSyncTelemetryGuestTest {
                         entry, IsolatePolicy.developer(),
                         ExecutionProfile.serverJit(), stdout, stderr));
                 assertEquals("17",
-                        stdout.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+                        stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                         "must enter real guest before constructor rejects " + malformed);
             } finally {
                 Files.deleteIfExists(entry);
