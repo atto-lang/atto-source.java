@@ -9,6 +9,17 @@ import java.util.regex.Pattern;
 public final class ImportRules {
     public static final String JAVA_PREFIX = "java:";
     public static final String PACKAGE_PREFIX = "pkg:";
+    // Compiler-owned std.crypto is not an arbitrary relative file import.
+    // It has no user-controlled host-class lookup or package graph fallback.
+    public static final String STANDARD_CRYPTO_PATH = "std.crypto";
+
+    public static boolean isStandardCryptoImport(Ast.ImportDecl imported) {
+        return imported != null && STANDARD_CRYPTO_PATH.equals(imported.path())
+                && imported.kind() == Ast.ImportKind.ALL
+                && imported.wildcard() && imported.names().isEmpty()
+                && "crypto".equals(imported.namespace());
+    }
+
     private static final Pattern JAVA_BINARY_NAME =
             Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
 
@@ -73,6 +84,16 @@ public final class ImportRules {
         if (imported == null) throw new IllegalArgumentException("import declaration cannot be null");
         if (imported.path() == null || imported.path().isBlank()) {
             throw new IllegalArgumentException("import path cannot be empty");
+        }
+        // Only the exact approved standard namespace form may bypass the
+        // external code-unit linker. Reject aliases, selective imports,
+        // and similarly spelled paths rather than upgrading their authority.
+        if (STANDARD_CRYPTO_PATH.equals(imported.path())) {
+            if (!isStandardCryptoImport(imported)) {
+                throw new IllegalArgumentException(
+                        "std.crypto requires 'import * as crypto from \"std.crypto\"'");
+            }
+            return;
         }
         // Import grammar admission does not authorize linking. A synthetic
         // package identity must never fall through to a relative-file
