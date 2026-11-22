@@ -40,7 +40,9 @@ The Java evaluator now recognizes a compiler-owned **`crypto` namespace**
 in guest source. This is deliberately separate from a validated file import:
 `import * as crypto from "std.crypto";` is now statically admitted
 as an exact compiler-owned import. Arbitrary aliases, selected function
-imports, and lookalike paths are rejected. This is an initial intrinsic
+imports, lookalike paths, duplicate crypto imports, and crypto calls
+without an explicit import are rejected by the static checker.
+This remains an **unexecuted compiler integration** pending JUnit. This is an initial intrinsic
 namespace, **not** source-linked `.atto` function execution or proof of
 a working AOT linker.
 
@@ -166,6 +168,15 @@ and type/ownership checkers now expose its SHA-256, HMAC-SHA-256,
 bounded PBKDF2, secure randomness, canonical Base64, and
 constant-time comparison under the same trusted `crypto` namespace.
 No independent duplicate primitive code was written.
+
+An isolated Java 21 direct smoke of the exact integrated
+`CryptoPrimitives.java` Git blob
+`b1243dbe5a1cfa8ac6b0a101a264f64585720015` compiled
+and **passed** SHA-256("abc"), HMAC-SHA-256("key","abc"),
+PBKDF2-HMAC-SHA-256("password","salt",4096,32), canonical
+Base64 decoding, secure-random output sizing, equality checks
+and an excessive-PBKDF2-cost rejection. This test did not
+load or execute an Atto guest compiler.
 
 Guest `List<int>` message inputs are further limited to 1 MiB
 in the Java facade to contain boxed-list overhead, even where the
