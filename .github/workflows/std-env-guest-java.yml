@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'stdlib/env.atto'
+      - 'docs/STDLIB_ENV_V1.md'
       - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
       - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - 'stdlib/env.atto'
+      - 'docs/STDLIB_ENV_V1.md'
       - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
       - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
