@@ -104,3 +104,24 @@ test('guest runner fails closed without configured real compiler',()=>{
   assert.equal(report.passed,0);
   assert.ok(report.failed>0);
 });
+
+test('Java packaged Atto core aliases are compiler-owned and guest JUnit suites exist',()=>{
+  const registry=read('../src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java');
+  const pom=read('../pom.xml');
+  const linked=read('../src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java');
+  const guest=read('../src/test/java/dev/oreslang/CoreFourGuestTest.java');
+  for(const name of ['range','cell','contracts','num'])
+    assert.match(registry,new RegExp('"'+name+'\\.atto"'));
+  for(const prefix of ['core/','atto.core/','ores.core/'])
+    assert.ok(registry.includes('"'+prefix+'"'));
+  assert.ok(pom.includes('<directory>core</directory>'));
+  assert.ok(pom.includes('<targetPath>dev/oreslang/core</targetPath>'));
+  assert.ok(linked.includes('collectOresCoreImportClosure('));
+  assert.ok(guest.includes('importsLinkAndGuestExecutesExactI64Vectors() throws Exception'));
+  assert.ok(guest.includes('requiresFalseRemainsTrappableInGuestExecution() throws Exception'));
+  for(const fixture of ['smoke.atto','contract-failure.atto']) {
+    const src=read('../tests/fixtures/core-four-v1/'+fixture);
+    assert.match(src,/"core\/contracts"/);
+    assert.doesNotMatch(src,/"std\/core\//);
+  }
+});
