@@ -28,5 +28,10 @@ pub routine main(): void {
   // Cross-OS separator ambiguity and closed-semaphore cleanup.
   stdio.println(path.is_portable_relative("safe\\\\child"));
   stdio.println(sync.semaphore_release_admissible(3, 2, 5, true));
+  // Normalized surviving component view into the original Unicode scalars.
+  stdio.println(path.normalized_component_start("a/./b/../c", false, 1));
+  stdio.println(path.normalized_component_length("a/./b/../c", false, 1));
+  stdio.println(path.normalized_component_scalar("a/./b/../c", false, 1, 0));
+  stdio.println(path.normalized_component_start("a/..", false, 0));
   return;
 }
