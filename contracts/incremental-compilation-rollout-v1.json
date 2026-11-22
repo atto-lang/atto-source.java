@@ -67,7 +67,10 @@
     "source/interface/import-binding invalidation with transitive conservatism",
     "transactional cache publication after full graph and ownership checks",
     "empty complete-snapshot and explicit clear cache invalidation",
-    "reparsedUnits diagnostics on BuildResult with backward-compatible constructors"
+    "reparsedUnits diagnostics on BuildResult with backward-compatible constructors",
+    "public ABI v4 includes checked effects, named parameters, actor/method policy, mutability and annotations",
+    "stable sorted exported declaration entries",
+    "import bindings keyed by complete imported declaration identity and actual provider source"
   ],
   "unimplemented_or_unverified": [
     "executed JDK25 JUnit and compiled AttoLang guest receipts",
@@ -75,7 +78,12 @@
     "function-level codegen caching and object emission",
     "persistent disk cache and cross-process cache invalidation",
     "Native Image AOT execution, full guest codegen parity, cross-backend conformance",
-    "exact compiler semantic-profile and target/toolchain persistent cache keys"
+    "exact compiler semantic-profile and target/toolchain persistent cache keys",
+    "independent V3 private-source carrier authorization and source main branch protection",
+    "current exact head 10-case focused JDK25 JUnit execution with nonzero steps"
   ],
-  "ci_check": ".github/workflows/incremental-file-fallback-v1.yml"
+  "ci_check": ".github/workflows/incremental-file-fallback-v1.yml",
+  "focused_regression_cases_authored": 10,
+  "reference_model_tests_passed_locally": 20,
+  "reference_model_tests_are_not_java_compiler_evidence": true
 }
