@@ -4,6 +4,7 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.imports.StandardCryptoNamespace;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -3180,6 +3181,28 @@ public final class OwnershipChecker {
         if (checkedProgram.imports().stream().noneMatch(
                 dev.oreslang.imports.ImportRules::isStandardCryptoImport)) {
             throw error("crypto namespace requires explicit import from std.crypto");
+        }
+        // Library policy is authored in two separate .atto units and
+        // compiled into one source-owned namespace; ownership semantics
+        // come from their checked signatures rather than host guesses.
+        StandardCryptoNamespace.Signature policy =
+                StandardCryptoNamespace.signature(member);
+        if (policy != null) {
+            if (args.size() != policy.arguments().size()) {
+                throw error("crypto." + member + " expects "
+                        + policy.arguments().size() + " argument(s)");
+            }
+            for (int i = 0; i < args.size(); i++) {
+                ValueInfo value = checkExpr(args.get(i), scope, false);
+                if (isBorrowValue(value) || containsBorrowType(value.type)
+                        || containsMutexGuardType(value.type)
+                        || !value.type.name().equals(policy.arguments().get(i).name())
+                        || !value.type.arguments().isEmpty()) {
+                    throw error("crypto." + member + " requires primitive int input at " + i);
+                }
+            }
+            Ast.TypeRef result = policy.result();
+            return new ValueInfo(result, kindOfType(result), null);
         }
         Ast.TypeRef key = Ast.TypeRef.simple("AeadKey");
         Ast.TypeRef bytes = new Ast.TypeRef(
