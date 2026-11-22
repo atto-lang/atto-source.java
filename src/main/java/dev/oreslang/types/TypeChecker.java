@@ -801,6 +801,21 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (ImportRules.isStandardCryptoImport(imported)) {
+                // A sealed, compiler-owned namespace already admitted to the
+                // builtin table. Do not materialize a mutable imported value
+                // or invoke the source graph linker for this exact path.
+                if (!exposed.add("crypto")) {
+                    throw new IllegalArgumentException("duplicate std.crypto import");
+                }
+                if (nonFunctionDeclarations.contains("crypto")
+                        || rootFunctions.contains("crypto")) {
+                    throw new IllegalArgumentException(
+                            "local crypto declaration shadows the standard crypto import");
+                }
+                importedNames.add("crypto");
+                continue;
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
