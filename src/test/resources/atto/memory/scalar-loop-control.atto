@@ -1,0 +1,11 @@
+// Allocation observation control: same checksum/loop count, no Vector.
+define module app
+  pub fnc main(): void {
+    let int checksum = 0;
+    for let i = 0; i < 256; i++ do
+      checksum = checksum + i;
+    done
+    stdio.println(checksum);
+    return;
+  }
+end
