@@ -94,6 +94,9 @@ public final class ActorProtocolNominalResolverV1 {
 
         Map<String, ActorProtocolTypestateV1.NominalMessage> validated =
                 new LinkedHashMap<>();
+        // Memoize completed nominal modes. Shared diamond inheritance must be
+        // O(nodes + edges), never exponential in the number of paths.
+        Map<String, Response> memo = new LinkedHashMap<>();
         // One nominal message class has one payload schema even when multiple
         // protocol states admit it. A state-dependent payload would require
         // a different nominal message kind or an explicitly checked ADT.
@@ -118,7 +121,7 @@ public final class ActorProtocolNominalResolverV1 {
                             "message must name a concrete non-generic class: "
                                     + transition.message());
                 Response marker = inheritedMode(node.name(), nodes,
-                        new LinkedHashSet<>(), 0);
+                        new LinkedHashSet<>(), memo, 0);
                 if (marker == null)
                     throw error("E_PROTOCOL_UNVERIFIED_MESSAGE",
                             "missing explicit nominal response marker on "
@@ -190,7 +193,9 @@ public final class ActorProtocolNominalResolverV1 {
     }
 
     private static Response inheritedMode(
-            String name, Map<String, Nominal> nodes, Set<String> active, int depth) {
+            String name, Map<String, Nominal> nodes, Set<String> active,
+            Map<String, Response> memo, int depth) {
+        if (memo.containsKey(name)) return memo.get(name);
         if (depth > MAX_DEPTH)
             throw error("E_PROTOCOL_LIMIT", "nominal inheritance depth exceeded");
         if (!active.add(name))
@@ -207,7 +212,7 @@ public final class ActorProtocolNominalResolverV1 {
                 if (parent.inferArguments() || !parent.arguments().isEmpty())
                     throw error("E_PROTOCOL_UNVERIFIED_MESSAGE",
                             "generic parent needs linked specialization: " + parent.name());
-                candidate = inheritedMode(parent.name(), nodes, active, depth + 1);
+                candidate = inheritedMode(parent.name(), nodes, active, memo, depth + 1);
             }
             if (candidate == null) continue;
             if (mode != null && !mode.equals(candidate))
@@ -216,6 +221,7 @@ public final class ActorProtocolNominalResolverV1 {
             mode = candidate;
         }
         active.remove(name);
+        memo.put(name, mode);
         return mode;
     }
 
