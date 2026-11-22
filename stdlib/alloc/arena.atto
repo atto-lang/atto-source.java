@@ -14,7 +14,7 @@ define module arena as
     // Empty allocations are zero-cost; no phantom alignment charge.
     if bytes == 0 then return cursor; fi
     let int remainder = cursor - (cursor / alignment) * alignment;
-    let int padding = 0;
+    let mut int padding = 0;
     if remainder != 0 then
       padding = alignment - remainder;
     fi
