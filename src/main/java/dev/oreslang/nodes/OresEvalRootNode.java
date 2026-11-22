@@ -8454,10 +8454,32 @@ public final class OresEvalRootNode extends RootNode {
             return true;
         }
 
-        /** Never copy uninitialized or unexpected class slots. */
+        /**
+         * A type-declared scalar is Copy only when its *runtime payload* is
+         * actually immutable. Untrusted linked/interop values must not use
+         * a declared primitive slot to clone a mutable resource handle.
+         */
+        private static boolean certifiedWithScalarValue(Ast.TypeRef type, Object value) {
+            if (value == null || value == UNINITIALIZED_FIELD || type == null) return false;
+            return switch (type.name()) {
+                case "int" -> value instanceof Long
+                        || value instanceof Integer
+                        || value instanceof java.math.BigInteger;
+                case "bool" -> value instanceof Boolean;
+                case "float" -> value instanceof Double || value instanceof Float;
+                case "string", "String" -> value instanceof String;
+                default -> false;
+            };
+        }
+
+        /** Never copy foreign-arena, uninitialized or ill-typed class slots. */
         private LinkedHashMap<String, Object> checkedCopyClassFields(OresObject object) {
             if (!withCopyEligibleClass(object.klass)) {
                 throw new IllegalStateException("unverified class copy contract");
+            }
+            if (object.owner != this) {
+                throw new IllegalStateException(
+                        "rt copy cannot duplicate objects from a foreign actor/isolate arena");
             }
             if (object.fields.size() != object.klass.fields().size()) {
                 throw new IllegalStateException("copy class runtime field layout mismatch");
@@ -8468,8 +8490,10 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException("copy class missing field '" + field.name() + "'");
                 }
                 Object value = object.fields.get(field.name());
-                if (value == UNINITIALIZED_FIELD) {
-                    throw new IllegalStateException("copy class contains uninitialized field '" + field.name() + "'");
+                if (!certifiedWithScalarValue(field.type(), value)) {
+                    throw new IllegalStateException(
+                            "copy class field '" + field.name()
+                                    + "' is not a verified immutable runtime scalar");
                 }
                 fields.put(field.name(), value);
             }
