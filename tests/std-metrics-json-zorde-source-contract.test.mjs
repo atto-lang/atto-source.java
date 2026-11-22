@@ -209,3 +209,25 @@ test("Java integration preserves main core/stdlib registry and sealed core owner
   assert.ok(!existsSync(path.join(repo, "stdlib/core/borrow_admission.atto")),
             "duplicated borrow-admission package root");
 });
+
+
+test("Java runner links real ownership-positive and typed-negative guest cases", () => {
+  const junit = read("src/test/java/dev/oreslang/runtime/NativeAttoMetricsJsonZordeTest.java");
+  const workflow = read(".github/workflows/atto-metrics-json-zorde-guest.yml");
+  for (const testName of ["coreBorrowAdmissionGuestIsFreestandingAndExact",
+                          "coreBorrowCompilerExecutesPositiveLoans",
+                          "coreBorrowCompilerRejectsInvalidLoans"]) {
+    assert.ok(junit.includes("void " + testName + "("), "missing JUnit guest method " + testName);
+    assert.ok(workflow.includes('name="' + testName + '"'),
+              "exact-head guest workflow does not require " + testName);
+  }
+  assert.ok(junit.includes("LinkedProgramRunner.runWithExitStatus("),
+            "positive borrow check must execute the guest and inspect its exit");
+  assert.ok(junit.includes("assertEquals(42, executed.exitStatus()"),
+            "compiled borrow-positive guest must exit 42");
+  for (const code of ["E_BORROW", "E_MOVED", "E_LOAN_SUSPEND"]) {
+    assert.ok(junit.includes('"' + code + '"'), "typed negative guard missing " + code);
+  }
+  assert.ok(junit.includes("assertEquals(0, guestOut.size()"),
+            "rejected guest must not write output before failing");
+});
