@@ -162,6 +162,50 @@ final class NativeChildProcessesTest {
         manager.close(); // idempotent
     }
 
+    @Test void launchRechecksHostAuthorityAtCanonicalSpawnBoundary() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            java.util.concurrent.atomic.AtomicInteger calls =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            var pending = manager.spawn(javaExe(), probe("exit42"), cwd(), (exe, dir) -> {
+                if (calls.incrementAndGet() == 2) {
+                    throw new SecurityException("canonical host permission revoked");
+                }
+            });
+            var denied = assertThrows(ExecutionException.class,
+                    () -> pending.get(8, TimeUnit.SECONDS));
+            assertTrue(denied.getCause() instanceof SecurityException);
+            assertEquals(2, calls.get(), "permission must be checked again before start");
+        }
+    }
+    @Test void argvMetacharactersAreDataAndEnvironmentIsNotInherited() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            String dangerous = "one; echo shell-injection $(whoami) \"quoted\"";
+            java.util.ArrayList<String> echoArgs = new java.util.ArrayList<>(probe("echo"));
+            echoArgs.add(dangerous);
+            var child = manager.spawn(javaExe(), echoArgs, cwd(),
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            assertEquals(dangerous,
+                    child.collectOutput().get(8, TimeUnit.SECONDS).stdout());
+            assertEquals(0, child.waitForExit().get(8, TimeUnit.SECONDS).code());
+            var environment = manager.spawn(javaExe(), probe("env"), cwd(),
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            assertEquals("empty",
+                    environment.collectOutput().get(8, TimeUnit.SECONDS).stdout());
+        }
+    }
+    @Test void closingManagerKillsOwnedChildAndReapsIt() throws Exception {
+        NativeChildProcesses manager = new NativeChildProcesses();
+        try {
+            var child = manager.spawn(javaExe(), probe("sleep"), cwd(),
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            manager.close();
+            child.waitForExit().get(8, TimeUnit.SECONDS);
+            assertFalse(child.alive());
+            assertEquals(0, manager.reservedCount());
+        } finally {
+            manager.close();
+        }
+    }
     @Test void rejectsArgumentsWithEmbeddedNulWithoutLaunch() {
         try (NativeChildProcesses manager = new NativeChildProcesses()) {
             assertThrows(IllegalArgumentException.class,
@@ -185,6 +229,9 @@ final class NativeChildProcessesTest {
                     System.out.flush();
                 }
                 case "sleep" -> Thread.sleep(30_000);
+                case "echo" -> System.out.print(args[1]);
+                case "env" -> System.out.print(
+                        System.getenv().isEmpty() ? "empty" : "inherited");
                 case "infinite" -> {
                     byte[] bytes = new byte[8192];
                     java.util.Arrays.fill(bytes, (byte) 'x');
