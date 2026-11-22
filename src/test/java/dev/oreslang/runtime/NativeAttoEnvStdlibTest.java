@@ -55,6 +55,9 @@ final class NativeAttoEnvStdlibTest {
     void linkedGuestUsesOnlyExplicitContextEnvironment() throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
+        // The test deliberately supplies no PATH. A JVM-global getenv(PATH)
+        // implementation would leak it into the guest despite the context.
+        assertNotNull(System.getenv("PATH"), "isolation test needs host PATH");
         var guestEnv = java.util.Map.of(
                 "ATTO_ENV_VALUE", "42",
                 "ATTO_ENV_EMPTY", "",
@@ -69,7 +72,7 @@ final class NativeAttoEnvStdlibTest {
                 Set.of(), guestEnv, out, err);
         assertTrue(linked.units().containsKey("@std/env.atto"));
         assertEquals(String.join("\n", "true", "42", "true",
-                        "true", "true", "fallback"),
+                        "true", "true", "fallback", "true", "true"),
                 out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                 () -> err.toString(StandardCharsets.UTF_8));
     }
