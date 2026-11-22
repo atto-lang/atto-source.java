@@ -1,0 +1,22 @@
+// Pure, bounded actor-response correlation metadata from ActorResults.java.
+// IDs are simple local integers, NOT authenticated ActorAddress/UUID/ActorRef.
+// The host still pins trusted identities and duplicate correlations before fan-in.
+define module actor_result_policy as
+  pub fnc valid_fan_in(int count): bool {
+    return count >= 0 && count <= 65536;
+  }
+
+  // O(n^2) uniqueness is deliberately capped at 256 elements to prevent
+  // guest CPU abuse. Larger batches require a bounded, trusted hash primitive.
+  pub fnc distinct_local_ids(borrow Array<int> ids): bool {
+    if ids.size > 256; do return false; fi
+    for (let int i = 0; i < ids.size; i = i + 1) {
+      val int candidate = ids.get(i);
+      if candidate < 1; do return false; fi
+      for (let int j = 0; j < i; j = j + 1) {
+        if ids.get(j) == candidate; do return false; fi
+      }
+    }
+    return true;
+  }
+end
