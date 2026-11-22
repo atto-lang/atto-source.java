@@ -1,10 +1,11 @@
-// atto.alloc/bitset: compact, actor-owned, bounded 63-bit word bitset.
-// The sign bit is intentionally unused: (1 <<< offset) remains nonnegative
-// for offsets 0..62 with AttoLang checked signed integer arithmetic.
-// This module owns its Array<int>; no host language, background GC or OS API.
+// atto.alloc/bitset: compact, bounded, actor-owned packed bit array.
+// Words have 63 payload bits so every mask and word is a nonnegative int.
+// This Java-backend implementation avoids shift syntax unsupported by the
+// current Java lexer. All guest algorithms remain in AttoLang .atto source.
 define module bitset as
   pub define class BitSet as
     let mut Array<int> words = new Array<int>();
+    let mut Array<int> masks = new Array<int>();
     let int bits;
 
     pub constructor(int bit_count) {
@@ -16,6 +17,14 @@ define module bitset as
       for (let int i = 0; i < word_count; i = i + 1) {
         self.words.add(0);
       }
+      // Cache every legal shift as an exact nonnegative signed integer.
+      let mut int mask = 1;
+      for (let int i = 0; i < 63; i = i + 1) {
+        self.masks.add(mask);
+        if i < 62; do
+          mask = mask * 2;
+        fi
+      }
     }
 
     pub len(): int { return self.bits; }
@@ -26,23 +35,24 @@ define module bitset as
         return None;
       fi
       let int word = self.words.get(index / 63);
-      let int mask = 1 <<< (index % 63);
-      return Some((word & mask) != 0);
+      let int mask = self.masks.get(index % 63);
+      return Some(((word / mask) % 2) != 0);
     }
 
-    // Returns the previous bit; all validation happens before mutation.
+    // Returns previous bit; no state changes for an invalid index.
     pub try_set(mut self)(int index, bool value): Result<bool, String> {
       if index < 0 || index >= self.bits; do
         return Err("IndexOutOfBounds");
       fi
       let int slot = index / 63;
-      let int mask = 1 <<< (index % 63);
-      let int before = self.words.get(slot);
-      let bool old = (before & mask) != 0;
-      if value; do
-        self.words.set(slot, before | mask);
-      else
-        self.words.set(slot, before & ~mask);
+      let int mask = self.masks.get(index % 63);
+      let int previous = self.words.get(slot);
+      let bool old = ((previous / mask) % 2) != 0;
+      if value && !old; do
+        self.words.set(slot, previous + mask);
+      fi
+      if !value && old; do
+        self.words.set(slot, previous - mask);
       fi
       return Ok(old);
     }
@@ -58,25 +68,49 @@ define module bitset as
       let mut int count = 0;
       for (let int i = 0; i < self.words.size; i = i + 1) {
         let mut int word = self.words.get(i);
-        // Kernighan's bit-count loop, with no extra allocation.
         for (let int bit = 0; bit < 63; bit = bit + 1) {
-          if word != 0; do
-            word = word & (word - 1);
+          if (word % 2) != 0; do
             count = count + 1;
           fi
+          word = word / 2;
         }
       }
       return count;
     }
 
-
     pub first_set(): Option<int> {
       for (let int i = 0; i < self.bits; i = i + 1) {
-        if (self.words.get(i / 63) & (1 <<< (i % 63))) != 0; do
+        let int word = self.words.get(i / 63);
+        let int mask = self.masks.get(i % 63);
+        if ((word / mask) % 2) != 0; do
           return Some(i);
         fi
       }
       return None;
+    }
+
+    // Combine two nonnegative words without depending on bitwise shift or ~.
+    // At most 63 iterations, with result always within signed int range.
+    combine_word(int left, int right, bool intersection): int {
+      let mut int a = left;
+      let mut int b = right;
+      let mut int result = 0;
+      for (let int i = 0; i < 63; i = i + 1) {
+        let bool left_set = (a % 2) != 0;
+        let bool right_set = (b % 2) != 0;
+        if intersection; do
+          if left_set && right_set; do
+            result = result + self.masks.get(i);
+          fi
+        else
+          if left_set || right_set; do
+            result = result + self.masks.get(i);
+          fi
+        fi
+        a = a / 2;
+        b = b / 2;
+      }
+      return result;
     }
 
     pub try_union_with(mut self)(BitSet other): Result<int, String> {
@@ -84,7 +118,8 @@ define module bitset as
         return Err("LengthMismatch");
       fi
       for (let int i = 0; i < self.words.size; i = i + 1) {
-        self.words.set(i, self.words.get(i) | other.words.get(i));
+        self.words.set(i, self.combine_word(
+            self.words.get(i), other.words.get(i), false));
       }
       return Ok(self.count_ones());
     }
@@ -94,7 +129,8 @@ define module bitset as
         return Err("LengthMismatch");
       fi
       for (let int i = 0; i < self.words.size; i = i + 1) {
-        self.words.set(i, self.words.get(i) & other.words.get(i));
+        self.words.set(i, self.combine_word(
+            self.words.get(i), other.words.get(i), true));
       }
       return Ok(self.count_ones());
     }
