@@ -1,0 +1,21 @@
+// Java/GraalVM backend-owned AttoLang UDP namespace entry point.
+// Pure high-level composition belongs in .atto. Privileged bind is provided
+// by the capability-gated Java NIO runtime network facade.
+// Candidate still needs exact-head multi-file import/link guest execution.
+// Only numeric IPv4 127.0.0.1 supported; no DNS, IPv6, multicast or ambient
+// network authority.
+//
+// Proposed guest:
+//   import udp from "std/net/udp_loopback.atto";
+//   let socket = await udp.bind_loopback(0);
+//   let port = socket.local_port();
+//   await socket.send_to(port, [42]);
+//   let packet = await socket.recv_from(16);
+//   await socket.close();
+//
+// The host network facade remains an implementation detail.
+define module Udp as
+  pub async routine bind_loopback(int port): UdpSocket {
+    return await network.bind_udp("127.0.0.1", port);
+  }
+end
