@@ -1,0 +1,15 @@
+import trait Eq from "ores.core/protocols";
+
+define pub class Counter implements Eq<int> as
+  pub val int value;
+  pub constructor(int initial) { self.value = initial; }
+  pub equals(int other): bool { return self.value == other; }
+end
+
+fnc check_eq(Eq<int> candidate): int {
+  return candidate.equals(42) ? 42 : 7;
+}
+
+pub fnc main(): int {
+  return check_eq(new Counter(42));
+}

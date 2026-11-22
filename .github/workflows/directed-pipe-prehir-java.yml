@@ -1,0 +1,34 @@
+name: Java typed pipe/rpipe pre-HIR host admission
+
+on:
+  pull_request:
+    paths:
+      - 'src/compiler/pipe/**'
+      - 'tests/compiler/AttoDirectedPipePlanProbe.java'
+      - 'ci/compiler/verify-directed-pipe.sh'
+      - '.github/workflows/directed-pipe-prehir-java.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  directed-pipe-host-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: graalvm
+          java-version: '25'
+      - name: Run typed compiler pre-HIR JVM plus GraalVM Native Image probe
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATTO_REQUIRE_NATIVE_IMAGE: '1'
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          bash ci/compiler/verify-directed-pipe.sh

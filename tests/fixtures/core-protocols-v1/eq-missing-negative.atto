@@ -1,0 +1,7 @@
+import trait Eq from "ores.core/protocols";
+
+define pub class Counter implements Eq<int> as
+  pub val int value = 42;
+end
+
+pub fnc main(): void { return; }

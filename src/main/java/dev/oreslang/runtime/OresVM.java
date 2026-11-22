@@ -2,6 +2,9 @@ package dev.oreslang.runtime;
 
 import java.util.Objects;
 import java.util.List;
+import java.util.Set;
+import java.io.IOException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -38,6 +41,25 @@ public final class OresVM implements AutoCloseable {
     private static final int DEFAULT_PHYSICAL_STOP_PARALLELISM =
             Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_PHYSICAL_STOP_QUEUE_CAPACITY = 16_384;
+
+    /** NIO selector/completion plumbing is host runtime code, never guest execution. */
+    private static final ThreadLocal<Boolean> ON_NIO_WORKER = new ThreadLocal<>();
+
+    static boolean onNioWorker() {
+        return Boolean.TRUE.equals(ON_NIO_WORKER.get());
+    }
+
+    static void runAsNioWorker(Runnable work) {
+        Objects.requireNonNull(work, "work");
+        Boolean previous = ON_NIO_WORKER.get();
+        ON_NIO_WORKER.set(Boolean.TRUE);
+        try {
+            work.run();
+        } finally {
+            if (previous == null) ON_NIO_WORKER.remove();
+            else ON_NIO_WORKER.set(previous);
+        }
+    }
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
@@ -81,9 +103,24 @@ public final class OresVM implements AutoCloseable {
         }
     }
 
-    private final ThreadPoolExecutor controlExecutor;
+    /** Root and CONTROL carriers; root-task continuations prefer their last carrier. */
+    private final LocalityCarrierPool controlExecutor;
     private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
+    private final NioReadinessGroup nioReadiness;
+    /**
+     * VM-owned NIO2 completion carriers for AsyncNioTcp. Created on first use,
+     * bounded, named and marked as NIO workers: completion handlers only
+     * settle OresFutures, and the continuation resumes through its scheduler.
+     * Without this, NIO2 used the JVM-wide default group, an unbounded pool the
+     * VM neither owned nor shut down.
+     */
+    private final Object nioCompletionLock = new Object();
+    private java.nio.channels.AsynchronousChannelGroup nioCompletionGroup;
+    private static final int DEFAULT_NIO_COMPLETION_THREADS = 2;
+    private static final int MAX_NIO_COMPLETION_THREADS = 64;
+    private final Set<VmNioTcpListener> nioTcpListeners =
+            ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -111,16 +148,12 @@ public final class OresVM implements AutoCloseable {
         ThreadFactory factory = runnable -> Thread.ofPlatform()
                 .daemon(true)
                 .name("ores-control-plane-" + carrierId.getAndIncrement())
-                .unstarted(runnable);
+                .stackSize(LogicalStackQuota.CARRIER_STACK_BYTES)
+                .unstarted(LogicalStackQuota.carrierBody(
+                        LogicalStackQuota.CARRIER_STACK_BYTES, runnable));
 
-        this.controlExecutor = new ThreadPoolExecutor(
-                controlParallelism,
-                controlParallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
-                factory,
-                new ThreadPoolExecutor.AbortPolicy());
+        this.controlExecutor = new LocalityCarrierPool(
+                controlParallelism, DEFAULT_QUEUE_CAPACITY, factory);
 
         // Limits are fixed at VM startup; no mutable global/test properties
         // may affect physical STOP capacity after admission.
@@ -155,6 +188,9 @@ public final class OresVM implements AutoCloseable {
             throw failure;
         }
         this.rootScheduler = initializedRoot;
+        // Construction owns no selector or reactor thread. The first accepted
+        // readiness watch starts the VM-owned reactor lazily.
+        this.nioReadiness = new NioReadinessGroup();
         try {
             startup();
         } catch (RuntimeException | Error failure) {
@@ -236,10 +272,9 @@ public final class OresVM implements AutoCloseable {
         }
 
         try {
-            controlExecutor.allowCoreThreadTimeOut(false);
-            int required = controlExecutor.getCorePoolSize();
-            int newlyStarted = controlExecutor.prestartAllCoreThreads();
-            int live = controlExecutor.getPoolSize();
+            int required = controlExecutor.carrierCount();
+            int newlyStarted = controlExecutor.prestartAll();
+            int live = controlExecutor.liveCarriers();
             if (live != required) {
                 throw new IllegalStateException(
                         "CONTROL dispatcher bootstrap incomplete: required="
@@ -258,7 +293,99 @@ public final class OresVM implements AutoCloseable {
     }
 
     int controlCarrierCount() {
-        return controlExecutor.getPoolSize();
+        return controlExecutor.liveCarriers();
+    }
+
+    /** Trusted runtime-only shared readiness domain; guest access is permission-gated above it. */
+    NioReadinessGroup nioReadiness() {
+        if (!started()) throw new IllegalStateException("Oreslang VM is not running");
+        return nioReadiness;
+    }
+
+    int nioReactorCount() {
+        return nioReadiness.reactorCount();
+    }
+
+    /** The VM-owned NIO2 channel group, created on first use. */
+    java.nio.channels.AsynchronousChannelGroup nioCompletionGroup() throws java.io.IOException {
+        if (!started()) throw new IllegalStateException("Oreslang VM is not running");
+        synchronized (nioCompletionLock) {
+            if (closed.get()) throw new IllegalStateException("Oreslang VM is closed");
+            if (nioCompletionGroup == null) {
+                int threads = configuredNioCompletionThreads(
+                        System.getProperty("ores.runtime.nio.completion-threads"));
+                AtomicInteger completionId = new AtomicInteger();
+                ThreadFactory completionFactory = runnable -> Thread.ofPlatform()
+                        .daemon(true)
+                        .name("ores-nio-completion-" + completionId.getAndIncrement())
+                        .unstarted(() -> runAsNioWorker(runnable));
+                nioCompletionGroup = java.nio.channels.AsynchronousChannelGroup
+                        .withFixedThreadPool(threads, completionFactory);
+            }
+            return nioCompletionGroup;
+        }
+    }
+
+    static int configuredNioCompletionThreads(String configured) {
+        if (configured == null) return DEFAULT_NIO_COMPLETION_THREADS;
+        final int requested;
+        try {
+            requested = Integer.parseInt(configured.trim());
+        } catch (NumberFormatException malformed) {
+            throw new IllegalArgumentException(
+                    "ores.runtime.nio.completion-threads must be a decimal integer in [1,"
+                            + MAX_NIO_COMPLETION_THREADS + "]", malformed);
+        }
+        if (requested < 1 || requested > MAX_NIO_COMPLETION_THREADS) {
+            throw new IllegalArgumentException(
+                    "ores.runtime.nio.completion-threads must be in [1,"
+                            + MAX_NIO_COMPLETION_THREADS + "]");
+        }
+        return requested;
+    }
+
+    /** True once the completion group exists and has not terminated (tests). */
+    boolean nioCompletionGroupLive() {
+        synchronized (nioCompletionLock) {
+            return nioCompletionGroup != null && !nioCompletionGroup.isTerminated();
+        }
+    }
+
+    /**
+     * Runtime-only descriptor admission after OresContext has checked NET
+     * capability/permission. The close race is fenced without a VM monitor:
+     * a listener created just before CLOSED is observed closes itself again.
+     */
+    VmNioTcpListener openNioTcpLoopback(
+            int port, int backlog, int maxConnections, int maxPending)
+            throws IOException {
+        if (!started() || closed.get()) {
+            throw new RejectedExecutionException("Oreslang VM is not running");
+        }
+        AtomicReference<VmNioTcpListener> owner = new AtomicReference<>();
+        VmNioTcpListener listener = VmNioTcpListener.openOwned(
+                nioReadiness,
+                port,
+                backlog,
+                maxConnections,
+                maxPending,
+                () -> {
+                    VmNioTcpListener terminated = owner.get();
+                    if (terminated != null) nioTcpListeners.remove(terminated);
+                });
+        owner.set(listener);
+        nioTcpListeners.add(listener);
+        if (!started() || closed.get()) {
+            listener.close();
+            nioTcpListeners.remove(listener);
+            throw new RejectedExecutionException(
+                    "Oreslang VM closed during TCP listener admission");
+        }
+        return listener;
+    }
+
+    int nioTcpListenerCount() {
+        return nioTcpListeners.size();
     }
 
     public OresScheduler rootScheduler() {
@@ -343,6 +470,65 @@ public final class OresVM implements AutoCloseable {
         return OresScheduler.current() == rootScheduler;
     }
 
+    /**
+     * Fence readiness admission and prove the selector has physically exited
+     * before actor/root CONTROL teardown. Return the failure so the remaining
+     * VM-owned executors are still retired even when NIO quiescence fails.
+     */
+    private RuntimeException closeNioReadiness() {
+        List<VmNioTcpListener> listeners = List.copyOf(nioTcpListeners);
+        for (VmNioTcpListener listener : listeners) listener.close();
+        nioReadiness.close();
+        // Closing the group closes every channel still open in it, failing
+        // their pending operations; join its carriers like the selector.
+        java.nio.channels.AsynchronousChannelGroup group;
+        synchronized (nioCompletionLock) {
+            group = nioCompletionGroup;
+        }
+        // Recorded, not returned: the selector below must still be joined.
+        RuntimeException groupFailure = null;
+        if (group != null) {
+            try {
+                group.shutdownNow();
+                if (!group.awaitTermination(5, TimeUnit.SECONDS)) {
+                    groupFailure = new IllegalStateException(
+                            "Oreslang VM NIO completion group did not terminate");
+                }
+            } catch (java.io.IOException failure) {
+                groupFailure = new IllegalStateException(
+                        "Oreslang VM NIO completion group close failed", failure);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                groupFailure = new IllegalStateException(
+                        "interrupted closing NIO completion group", interrupted);
+            }
+        }
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        try {
+            long left = deadline - System.nanoTime();
+            if (left <= 0 || !nioReadiness.awaitStopped(
+                    left, TimeUnit.NANOSECONDS)) {
+                return new IllegalStateException(
+                        "Oreslang NIO reactor did not terminate before CONTROL shutdown");
+            }
+            for (VmNioTcpListener listener : listeners) {
+                left = deadline - System.nanoTime();
+                if (left <= 0 || !listener.awaitTerminated(
+                        left, TimeUnit.NANOSECONDS)) {
+                    return new IllegalStateException(
+                            "Oreslang TCP listener did not retire before CONTROL shutdown");
+                }
+            }
+            nioTcpListeners.removeAll(listeners);
+            return groupFailure;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return new IllegalStateException(
+                    "interrupted while closing Oreslang NIO resources", interrupted);
+        }
+    }
+
     @Override
     public void close() {
         // A CONTROL/root task cannot wait for its own carrier to leave. Reject
@@ -351,6 +537,7 @@ public final class OresVM implements AutoCloseable {
         // An ordinary actor/Mailman must likewise delegate blocking VM teardown
         // to its supervising host after its turn finishes.
         if (OresScheduler.current() != null
+                || onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
@@ -359,8 +546,14 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
             startupState = StartupState.CLOSED;
+            RuntimeException nioFailure = closeNioReadiness();
             try {
-                rootScheduler.close();
+                try {
+                    rootScheduler.close();
+                } catch (RuntimeException | Error failure) {
+                    if (nioFailure != null) failure.addSuppressed(nioFailure);
+                    throw failure;
+                }
             } finally {
                 // ActorRuntime has already requested structured closure. A
                 // failed close may leave an actor quarantined; never assume a
@@ -387,16 +580,23 @@ public final class OresVM implements AutoCloseable {
                         if (physicalShutdownFailure != null) {
                             incomplete.addSuppressed(physicalShutdownFailure);
                         }
+                        if (nioFailure != null) incomplete.addSuppressed(nioFailure);
                         throw incomplete;
                     }
-                    if (physicalShutdownFailure != null) throw physicalShutdownFailure;
+                    if (physicalShutdownFailure != null) {
+                        if (nioFailure != null) physicalShutdownFailure.addSuppressed(nioFailure);
+                        throw physicalShutdownFailure;
+                    }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    throw new IllegalStateException(
+                    IllegalStateException failure = new IllegalStateException(
                             "interrupted while closing Oreslang CONTROL scheduler",
                             interrupted);
+                    if (nioFailure != null) failure.addSuppressed(nioFailure);
+                    throw failure;
                 }
             }
+            if (nioFailure != null) throw nioFailure;
         }
     }
 }

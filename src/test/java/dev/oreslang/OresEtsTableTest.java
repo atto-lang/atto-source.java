@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresEtsTable;
 import dev.oreslang.runtime.OresSymbol;
 import java.math.BigInteger;
@@ -208,6 +209,43 @@ final class OresEtsTableTest {
             assertEquals(1, winners.get());
             assertEquals(16L, table.byteSize());
             assertEquals(1, table.size());
+        }
+    }
+
+    @Test
+    void unbalancedExitNeverClearsClosedFence() throws Exception {
+        var table = new OresEtsTable<String, String>(1);
+        table.close();
+        var exit = OresEtsTable.class.getDeclaredMethod("exit");
+        exit.setAccessible(true);
+        var underflow = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> exit.invoke(table));
+        assertInstanceOf(AssertionError.class, underflow.getCause());
+        assertTrue(table.isClosed());
+        assertThrows(IllegalStateException.class, () -> table.lookup("key"));
+    }
+
+    @Test
+    void directHostTableRejectsRealActorTurnAndCannotCloseFromCarrier() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var table = new OresEtsTable<String, String>(2)) {
+            var done = new CountDownLatch(1);
+            var carrierGuardWorked = new java.util.concurrent.atomic.AtomicBoolean();
+            var worker = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    assertThrows(IllegalStateException.class,
+                            () -> table.insert("key", "value"));
+                    assertThrows(IllegalStateException.class, table::close);
+                    carrierGuardWorked.set(true);
+                } finally {
+                    done.countDown();
+                }
+            });
+            worker.send("check");
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertTrue(carrierGuardWorked.get());
+            assertFalse(table.isClosed());
+            assertTrue(table.lookup("key").isEmpty());
         }
     }
 }

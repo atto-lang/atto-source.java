@@ -1,0 +1,13 @@
+import trait Eq from "ores.core/protocols";
+
+define pub class Impostor as
+  pub equals(int other): bool { return true; }
+end
+
+fnc check_eq(Eq<int> candidate): int {
+  return candidate.equals(42) ? 42 : 7;
+}
+
+pub fnc main(): int {
+  return check_eq(new Impostor());
+}

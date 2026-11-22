@@ -1,0 +1,44 @@
+name: Java actor output nonparking poll (Rust-driven host gate)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorOutputStreamTest.java'
+      - 'tools/actor-output-try-next-runner.rs'
+      - '.github/workflows/actor-output-try-next.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host-actor-output:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact host source and test blobs
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git rev-parse 'HEAD^{tree}'
+          git hash-object src/main/java/dev/oreslang/runtime/ActorRuntime.java \
+            src/test/java/dev/oreslang/runtime/ActorOutputStreamTest.java \
+            tools/actor-output-try-next-runner.rs
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute Java actor output host runtime via Rust test harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition=2021 -D warnings --test tools/actor-output-try-next-runner.rs \
+            -o "$RUNNER_TEMP/actor-output-jvm-runner"
+          "$RUNNER_TEMP/actor-output-jvm-runner" --test-threads=1 --nocapture

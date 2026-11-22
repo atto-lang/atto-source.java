@@ -116,6 +116,22 @@ final class TenantIsolateManagerTest {
     }
 
     @Test
+    void confidentialComputeCannotBeDowngradedToTrustedOrUntrustedContext() {
+        try (TenantIsolateManager manager = new TenantIsolateManager(2, 256)) {
+            for (IsolatePolicy policy : new IsolatePolicy[] {
+                    IsolatePolicy.developer(), IsolatePolicy.untrustedActor() }) {
+                SecurityException denied = assertThrows(SecurityException.class,
+                        () -> manager.open_confidential_tenant_vm("confidential", policy));
+                assertTrue(denied.getMessage().contains("CONFIDENTIAL_COMPUTE_UNAVAILABLE"));
+                assertEquals(0, manager.tenant_count());
+            }
+            // Existing explicitly trusted admission remains unchanged.
+            assertNotNull(manager.open_trusted_tenant_vm("trusted", IsolatePolicy.developer()));
+            assertEquals(1, manager.tenant_count());
+        }
+    }
+
+    @Test
     void protectedOrUntrustedTenantsCannotSilentlyFallBackToContexts() {
         try (TenantIsolateManager manager = new TenantIsolateManager(2, 256)) {
             SecurityException error = assertThrows(SecurityException.class,
