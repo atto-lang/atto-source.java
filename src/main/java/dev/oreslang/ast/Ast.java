@@ -77,7 +77,32 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl { }
+            ExternalActorMethodDecl, SingletonDecl { }
+
+    /**
+     * Parsed singleton for the opt-in semantic check-only path. No runtime or
+     * backend may lower it until separate identity/publication proof exists.
+     * Field positions are retained for stable safety diagnostics.
+     */
+    public record SingletonField(FieldDecl declaration, int line, int column) {
+        public SingletonField {
+            java.util.Objects.requireNonNull(declaration, "singleton field");
+            if (line < 1 || column < 1) throw new IllegalArgumentException("invalid singleton field source location");
+        }
+    }
+
+    public record SingletonDecl(String name, Visibility visibility,
+                                List<SingletonField> fields, int line, int column)
+            implements Decl {
+        public SingletonDecl {
+            java.util.Objects.requireNonNull(name, "singleton name");
+            java.util.Objects.requireNonNull(visibility, "singleton visibility");
+            fields = List.copyOf(fields);
+            if (name.isBlank() || line < 1 || column < 1) {
+                throw new IllegalArgumentException("invalid singleton declaration");
+            }
+        }
+    }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -145,19 +170,38 @@ public final class Ast {
      * declaration, it must not be turned into an empty actor class.
      */
     public record StandaloneActorDecl(
-            String name, String receiverName, Visibility visibility, ActorKind actorKind)
-            implements Decl {
+            String name, String receiverName, Visibility visibility, ActorKind actorKind,
+            List<TypeRef> implementedContracts) implements Decl {
         public StandaloneActorDecl {
-            if (name == null || name.isBlank() || receiverName == null
-                    || receiverName.isBlank() || name.equals(receiverName)) {
+            // A semicolon-only declaration has no source-level receiver alias.
+            // Receiver authority is never created by an absent alias.
+            if (name == null || name.isBlank()
+                    || (receiverName != null
+                        && (receiverName.isBlank() || name.equals(receiverName)))) {
                 throw new IllegalArgumentException(
-                        "standalone actor requires distinct nominal type and receiver binding names");
+                        "standalone actor requires a nominal type and an optional distinct receiver name");
             }
             java.util.Objects.requireNonNull(visibility, "standalone actor visibility");
             if (actorKind != ActorKind.SHARED) {
                 throw new IllegalArgumentException(
                         "standalone actor AST currently supports only generic shared actors");
             }
+            implementedContracts = List.copyOf(implementedContracts);
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (TypeRef contract : implementedContracts) {
+                if (contract == null || contract.name() == null || contract.name().isBlank()
+                        || contract.isBorrow() || contract.inferArguments()
+                        || !contract.arguments().isEmpty()
+                        || !names.add(contract.name())) {
+                    throw new IllegalArgumentException(
+                            "standalone actor requires distinct nominal non-generic contract references");
+                }
+            }
+        }
+        /** Compatibility for the earlier 'as receiver;' declaration form. */
+        public StandaloneActorDecl(
+                String name, String receiverName, Visibility visibility, ActorKind actorKind) {
+            this(name, receiverName, visibility, actorKind, List.of());
         }
     }
 
@@ -591,6 +635,18 @@ public final class Ast {
         }
     }
 
+    /**
+     * Explicit actor application-message contracts. Null means the clause was
+     * omitted, NOT that it permits arbitrary messages. Supervisor CONTROL
+     * messages are outside both contracts.
+     */
+    public record ActorMessageContract(TypeRef receives, TypeRef sends) {
+        public static ActorMessageContract unspecified() {
+            return new ActorMessageContract(null, null);
+        }
+        public boolean declared() { return receives != null || sends != null; }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -604,10 +660,14 @@ public final class Ast {
             List<MethodDecl> methods,
             ActorConcurrency actorConcurrency,
             List<ProtectedStateField> sealedStateFields,
-            List<Annotation> annotations) implements Decl {
+            List<Annotation> annotations,
+            ActorMessageContract actorMessageContract) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             annotations = List.copyOf(annotations);
+            actorMessageContract = java.util.Objects.requireNonNull(actorMessageContract);
+            if (actorKind == ActorKind.NONE && actorMessageContract.declared())
+                throw new IllegalArgumentException("ordinary classes cannot declare receives/sends");
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
@@ -622,6 +682,32 @@ public final class Ast {
                 if (!fields.isEmpty())
                     throw new IllegalArgumentException("sealed actor state cannot mix ordinary actor fields");
             }
+        }
+
+        /** Annotated call sites (main) default to no receives/sends contract. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields,
+                         List<Annotation> annotations) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, annotations, ActorMessageContract.unspecified());
+        }
+
+        /** Actor headers with receives/sends but no class annotations. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields,
+                         ActorMessageContract actorMessageContract) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, List.of(), actorMessageContract);
         }
 
         /** Existing actor concurrency call sites default to no sealed state or annotations. */

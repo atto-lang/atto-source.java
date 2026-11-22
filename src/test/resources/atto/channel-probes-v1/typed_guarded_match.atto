@@ -1,0 +1,12 @@
+// A guarded result match must fail closed until rejected-payload rollback exists.
+pub routine main(): void {
+  val Channel<int> channel = Channel.new<int>(1);
+  val TryWriteResult<int> outcome = try writech channel, 12;
+  do match outcome over
+    on Accepted when true -> { }
+    on Full(rejected) -> { stdio.stdout.write(rejected); }
+    on Closed(rejected) -> { stdio.stdout.write(rejected); }
+    default -> { }
+  end
+  return;
+}

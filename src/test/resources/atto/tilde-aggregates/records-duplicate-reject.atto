@@ -1,4 +1,4 @@
 fnc bad(): void {
-    const row = ~(name: "A", name: "B");
+    const row = Record.of(name: "A", name: "B");
     return;
 }

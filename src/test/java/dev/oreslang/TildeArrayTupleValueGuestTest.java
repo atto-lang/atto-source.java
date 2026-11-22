@@ -14,47 +14,50 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Actual Java/Graal guest regression targets for ~array/~tuple.
- * This class is NOT verification evidence until an exact-head runner executes it.
+ * Migration regression: removed ~array/~tuple constructors must never silently
+ * reappear. Existing array/tuple literals retain their original guest path.
+ * Type.of guest lowering belongs to the separately stacked Java PR #2735.
+ * Authored tests are NOT execution evidence until a runner executes them.
  */
 final class TildeArrayTupleValueGuestTest {
     @Test
-    void tildeValuesUseExactExistingListAndTupleAstNodes() {
-        Ast.ListExpr oldArray = assertInstanceOf(Ast.ListExpr.class, initializer("arr[1, 2, 3]"));
-        Ast.ListExpr tildeArray = assertInstanceOf(Ast.ListExpr.class, initializer("~array(1, 2, 3)"));
+    void legacyLiteralAstRemainsIndependentFromRemovedFactories() {
+        Ast.ListExpr explicit = assertInstanceOf(Ast.ListExpr.class, initializer("arr[1, 2, 3]"));
         Ast.ListExpr bare = assertInstanceOf(Ast.ListExpr.class, initializer("[1, 2, 3]"));
-        assertEquals(oldArray.elements(), tildeArray.elements());
-        assertEquals(oldArray.elements(), bare.elements());
-        assertTrue(oldArray.explicitArrayConstructor());
-        assertTrue(tildeArray.explicitArrayConstructor());
+        assertEquals(explicit.elements(), bare.elements());
+        assertTrue(explicit.explicitArrayConstructor());
         assertFalse(bare.explicitArrayConstructor());
-        assertEquals(initializer("tuple(1, \"hi\")"), initializer("~tuple(1, \"hi\")"));
-        assertInstanceOf(Ast.ListExpr.class, initializer("~array()"));
-        assertInstanceOf(Ast.TupleExpr.class, initializer("~tuple()"));
-        assertNotEquals(initializer("~array(1, 2)"), initializer("~tuple(1, 2)"));
-    }
 
-    @Test
-    void zeroAndSingletonTupleFormsRemainDistinctFromGroupingAndArray() {
-        Ast.TupleExpr emptyTuple = assertInstanceOf(Ast.TupleExpr.class, initializer("~tuple()"));
-        assertEquals(0, emptyTuple.elements().size());
-        Ast.TupleExpr singleton = assertInstanceOf(Ast.TupleExpr.class, initializer("~tuple(42)"));
-        assertEquals(1, singleton.elements().size());
+        assertInstanceOf(Ast.TupleExpr.class, initializer("(1, \"hi\")"));
         assertInstanceOf(Ast.LiteralExpr.class, initializer("(42)"));
-        assertInstanceOf(Ast.ListExpr.class, initializer("~array(42)"));
-        assertNotEquals(initializer("~tuple(42)"), initializer("~array(42)"));
+        // Parser admission is not proof that unmerged Type.of guest lowering works.
+        assertDoesNotThrow(() -> initializer("Array.of(1, 2, 3)"));
+        assertDoesNotThrow(() -> initializer("Tuple.of(1, \"hi\")"));
     }
 
     @Test
-    void compilerAndOwnershipCheckMixedOldAndNewLiterals() {
+    void allRetiredArrayTupleConstructorsRejectAtParserBoundary() {
+        for (String expression : new String[]{
+                "~array(1, 2, 3)", "~array()", "~array(42)",
+                "~tuple()", "~tuple(42)", "~tuple(1, \"hi\")",
+                "~array<int>(1, 2)", "~tuple<int, string>(1, \"hi\")",
+                "~ array(1, 2)", "~ tuple(1, 2)",
+                "~array (1, 2)", "~tuple (1, 2)"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> initializer(expression), expression);
+        }
+    }
+
+    @Test
+    void compilerAndOwnershipKeepOrdinaryArrayAndTupleLiteralTypes() {
         String program = """
                 pub routine main(): void {
-                  val old_array: Array[int] = arr[1, 2];
-                  val new_array: ~array<int> = ~array(3, 4);
-                  val old_tuple: Tuple[int, string] = tuple(5, "five");
-                  val new_tuple: ~tuple<int, string> = ~tuple(6, "six");
-                  stdio.stdout.write(old_array[0] + new_array[0]
-                      + old_tuple[0] + new_tuple[0]);
+                  val first_array: Array[int] = arr[1, 2];
+                  val second_array: Array[int] = arr[3, 4];
+                  val first_tuple: Tuple[int, string] = (5, "five");
+                  val second_tuple: Tuple[int, string] = (6, "six");
+                  stdio.stdout.write(first_array[0] + second_array[0]
+                      + first_tuple[0] + second_tuple[0]);
                   return;
                 }
                 """;
@@ -63,15 +66,15 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
-    void executableGraalGuestPreservesPositionalAndArraySemantics() throws Exception {
+    void executableGraalGuestPreservesUntouchedLiteralPaths() throws Exception {
         String program = """
                 pub routine main(): void {
-                  val old_array: Array[int] = arr[1, 2];
-                  val new_array: ~array<int> = ~array(3, 4);
-                  val old_tuple: Tuple[int, string] = tuple(5, "five");
-                  val new_tuple: ~tuple<int, string> = ~tuple(6, "six");
-                  stdio.stdout.write(old_array[0] + new_array[0]
-                      + old_tuple[0] + new_tuple[0]);
+                  val first_array: Array[int] = arr[1, 2];
+                  val second_array: Array[int] = arr[3, 4];
+                  val first_tuple: Tuple[int, string] = (5, "five");
+                  val second_tuple: Tuple[int, string] = (6, "six");
+                  stdio.stdout.write(first_array[0] + second_array[0]
+                      + first_tuple[0] + second_tuple[0]);
                   return;
                 }
                 """;
@@ -79,12 +82,12 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
-    void postfixIndexingOfTildeLiteralsUsesTheOldValuePath() throws Exception {
+    void postfixIndexingOfExistingLiteralsStillWorks() throws Exception {
         String program = """
                 pub routine main(): void {
-                  stdio.stdout.write(~array(10, 21)[1]);
+                  stdio.stdout.write(arr[10, 21][1]);
                   stdio.stdout.write("|");
-                  stdio.stdout.write(~tuple(11, "eleven")[0]);
+                  stdio.stdout.write((11, "eleven")[0]);
                   return;
                 }
                 """;
@@ -94,15 +97,15 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
-    void tildeConstructorsEvaluateArgumentsOnceInSourceOrder() throws Exception {
+    void ordinaryCollectionLiteralsEvaluateOperandsOnceInOrder() throws Exception {
         String program = """
                 routine emit(int value): int {
                   stdio.stdout.write(value);
                   return value;
                 }
                 pub routine main(): void {
-                  val array: ~array<int> = ~array(emit(1), emit(2), emit(3));
-                  val tuple: ~tuple<int, int> = ~tuple(emit(4), emit(5));
+                  val array: Array[int] = arr[emit(1), emit(2), emit(3)];
+                  val tuple: Tuple[int, int] = (emit(4), emit(5));
                   stdio.stdout.write("|");
                   stdio.stdout.write(array[2]);
                   stdio.stdout.write(tuple[0]);
@@ -115,12 +118,12 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
-    void tildeTupleCannotBeImplicitlyPassedAsAnArray() {
+    void tupleCannotBePassedAsArrayEvenWithoutTildeAlias() {
         IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         fnc takes_array(Array[int] values): void { return; }
                         pub routine main(): void {
-                          val tuple: ~tuple<int, int> = ~tuple(1, 2);
+                          val tuple: Tuple[int, int] = (1, 2);
                           takes_array(tuple);
                           return;
                         }
@@ -129,46 +132,23 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
-    void unsupportedAggregateConstructorsFailClosed() {
+    void allOtherNamedAggregateFactoriesAlsoFailClosed() {
         for (String invalid : new String[]{
                 "~map(\"a\" => 1)", "~set(1, 2)", "~vector(1, 2)",
-                "~entry(\"key\" => 1)", "~pair(1, 2)", // ~record(...) is canonical on main (parsed inline)
-                "~array<int>(1, 2)", "~tuple<int, string>(1, \"hi\")"}) {
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class, () -> initializer(invalid), invalid);
-            assertTrue(failure.getMessage().contains("requires"), failure::getMessage);
+                "~entry(\"key\" => 1)", "~pair(1, 2)",
+                "~list(1, 2)", "~record(foo: 42)"}) {
+            assertThrows(IllegalArgumentException.class, () -> initializer(invalid), invalid);
         }
     }
 
     @Test
-    void sigilRequiresAdjacencyAndDoesNotStealExistingUnaryCalls() {
-        Ast.UnaryExpr spacedArray = assertInstanceOf(
-                Ast.UnaryExpr.class, initializer("~ array(1, 2)"));
-        assertEquals("~", spacedArray.operator());
-        Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class, spacedArray.operand());
-        assertEquals("array", assertInstanceOf(Ast.NameExpr.class, call.callee()).name());
-
-        Ast.UnaryExpr spacedTuple = assertInstanceOf(
-                Ast.UnaryExpr.class, initializer("~ tuple(1, 2)"));
-        assertEquals("~", spacedTuple.operator());
-        // A spaced sigil stays unary ~; main represents a bare tuple(...) as TupleExpr.
-        assertInstanceOf(Ast.TupleExpr.class, spacedTuple.operand());
-
-        // Whitespace before '<' must remain comparison syntax.
-        Ast.BinaryExpr comparison = assertInstanceOf(
-                Ast.BinaryExpr.class, initializer("~array < 4"));
-        assertEquals("<", comparison.operator());
-        assertInstanceOf(Ast.UnaryExpr.class, comparison.left());
-
-        assertInstanceOf(Ast.ListExpr.class, initializer("~array (1, 2)"));
-        assertInstanceOf(Ast.TupleExpr.class, initializer("~tuple (1, 2)"));
-    }
-
-    @Test
-    void preexistingUnaryTildeIsStillAnIndependentExpression() {
+    void independentUnaryTildeStillParses() {
         Ast.UnaryExpr unary = assertInstanceOf(Ast.UnaryExpr.class, initializer("~1"));
         assertEquals("~", unary.operator());
         assertInstanceOf(Ast.LiteralExpr.class, unary.operand());
+        Ast.UnaryExpr parenthesized = assertInstanceOf(Ast.UnaryExpr.class,
+                initializer("~(42)"));
+        assertEquals("~", parenthesized.operator());
     }
 
     private static Ast.Expr initializer(String expression) {
@@ -194,7 +174,7 @@ final class TildeArrayTupleValueGuestTest {
 
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "tilde-array-tuple-values.ores")
+        Source source = Source.newBuilder(OresLanguage.ID, program, "tilde-array-tuple-migration.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)

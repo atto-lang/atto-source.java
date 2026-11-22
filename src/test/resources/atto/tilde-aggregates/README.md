@@ -1,56 +1,32 @@
-# AttoLang tilde aggregates — Java/Graal reference fixtures
+# Canonical Record.of and Tuple.of guest fixtures — Java/Graal draft
 
-These are **real guest-source .atto fixtures** for the first readonly record
-parser/compiler implementation slice, not a claim that guest execution passed.
+These are compiler/Truffle fixture sources for readonly Record, positional
+Tuple, and typed-empty collection behavior after retiring tilde aggregate
+constructors. They do **not** constitute an executed guest-test receipt.
 
-- `records-guest-pass.atto` targets real Truffle guest execution and compares
-  stdout with `records-guest-pass.stdout`.
-- `records-nested-pass.atto` and `records-explicit-empty-pass.atto`
-  target positive compiler/typecheck admission.
-- `records-*-reject.atto` target parser or type/ownership rejection,
-  while `unary-tilde-pass.atto` guards the existing unary `~` operator.
-- Every `maps-*-not-enabled.atto` fixture **must fail** at the parser stage
-  while typed Map<K,V> guest admission, equality/hash eligibility, atomic
-  duplicate detection, ownership cleanup and AOT lowering are pending.
-  Promote these to positive/negative tests only after implementation review.
+- `records-guest-pass.atto`, `records-nested-pass.atto`,
+  `records-explicit-empty-pass.atto`, and `records-readonly-reject.atto`
+  exercise `Record.of(...)` and readonly field semantics.
+- Duplicate field, mixed Map/Record entries, and unsupported spread fixtures
+  must fail with the **relevant semantic diagnostic**, not merely a parser
+  error because canonical `Record.of` lowering is absent.
+- `tuples-empty-pass.atto` and `tuples-two-pass.atto` exercise `Tuple.of`.
+- `typed-empty-{map,record,tuple}-parser-only.atto` use canonical factory
+  spelling. The old `~<T>()` forms are removed, including generic and
+  required-field variants, and remain negative syntax fixtures.
+- `typed-empty-guest-pass.atto` compares the expected Truffle stdout
+  from canonical empty Record and Tuple values.
+- `unary-tilde-pass.atto` must retain the independent unary operator.
+  Tilde structural typing and structural matching have separate conformance.
+- `maps-*-not-enabled.atto` remain intentional deprecated-tilde negatives.
+  Canonical Map.of positive, semantic-negative and duplicate-key fixtures
+  are in `../tilde-map/` and `../typed-empty-map/`.
 
-The JUnit runner is `TildeRecordLiteralGuestTest`. No new legacy `.ores`
-fixtures are introduced. Cross-backend runtimes, formatting, structural
-record patterns, and AOT parity remain independently gated.
+**Integration blocker:** Java #2735 supplies canonical Type.of guest lowering
+on a separate stacked branch; PR #3140 must reconcile it before positive
+Record/Map/Tuple guest cases can pass on the removal branch.
 
-**Status: source fixtures committed; real guest execution NOT_EXECUTED until
-exact-head JVM/Graal runs provide step receipts and outcomes.**
-
-## Explicit tuple and typed-empty extension
-
-- `tuples-empty-pass.atto` and `tuples-two-pass.atto` cover `~tuple()`
-  and `~tuple(1, "two")`. They reuse the canonical tuple AST.
-- `typed-empty-{map,record,tuple,generic}-parser-only.atto` are parser-positive
-  **and typechecker-negative for now**. The lexer/parser preserves the full
-  `~<T>()` type witness in `Ast.TypedEmptyAggregateExpr`, but no compiler
-  backend may construct it before the kind/zero-initialization proof and
-  ownership-safe lowering are implemented.
-- `typed-empty-{argument,missing-type}-reject.atto` are grammar-negative.
-  An explicit type witness does not permit arbitrary positional defaults.
-- The shared design authority is
-  `oreslang-common-source/contracts/v3/ATTO_TILDE_TYPED_EMPTY_AGGREGATES_V3.md`.
-  Its positive semantic expectations are **NOT IMPLEMENTED** by this slice.
-
-Current JUnit file: `TildeRecordLiteralGuestTest` (10 source-authored test
-methods; no claim of executed tests or backend parity).
-
-## Concrete typed-empty guest lowering (new first implementation slice)
-
-- `typed-empty-guest-pass.atto` exercises `~<{}>()` and `~<[]>()` alongside
-  `~record()` and `~tuple()` through the real Truffle guest root.
-- `typed-empty-guest-pass.stdout` is the expected stdout receipt.
-- `typed-empty-required-{record,tuple}-reject.atto`,
-  `typed-empty-unresolved-reject.atto`, and
-  `typed-empty-nominal-reject.atto` are negative typechecker fixtures.
-- Only *syntactically concrete* zero-field readonly-record and zero-arity
-  tuple witnesses are admitted. Generic aliases, unresolved types, nominal
-  classes and typed Maps must still fail before code generation. A future
-  compiler-proven alias/generic-construction feature requires its own
-  lowering and lifetime checks; no runtime reflection is permitted.
-- All guest tests remain **NOT_EXECUTED** while source CI fails at zero
-  steps; authored assertions and golden files are not execution evidence.
+**Verification:** SOURCE AUTHORED / JUNIT NOT_EXECUTED / GUEST NOT_EXECUTED /
+NATIVE AOT NOT_EXECUTED / MULTI-BACKEND PARITY NOT_CERTIFIED.
+Zero-step GitHub Actions failures are runner-admission failures, not guest
+compiler failures or successful tests.
