@@ -31,12 +31,15 @@ define module heap as
   // quiescence; bytes-used == 0 alone NEVER establishes safe reclamation.
   pub fnc can_reclaim(bool sealed, bool drops_complete,
                       int used_bytes, int pending_bytes,
-                      int active_loans, int continuations, int io_leases): bool {
+                      int active_turns, int active_loans, int continuations,
+                      int io_leases, int producer_admissions): bool {
     if !sealed || !drops_complete then return false; fi
-    if used_bytes < 0 || pending_bytes < 0 || active_loans < 0 then return false; fi
-    if continuations < 0 || io_leases < 0 then return false; fi
-    return used_bytes == 0 && pending_bytes == 0 &&
-           active_loans == 0 && continuations == 0 && io_leases == 0;
+    if used_bytes < 0 || pending_bytes < 0 || active_turns < 0 then return false; fi
+    if active_loans < 0 || continuations < 0 || io_leases < 0 then return false; fi
+    if producer_admissions < 0 then return false; fi
+    return used_bytes == 0 && pending_bytes == 0 && active_turns == 0 &&
+           active_loans == 0 && continuations == 0 && io_leases == 0 &&
+           producer_admissions == 0;
   }
 
   // Single-owner accounting for allocator adapters. A successful reservation
