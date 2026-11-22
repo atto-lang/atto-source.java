@@ -107,4 +107,36 @@ final class NativeAttoMetricsJsonZordeTest {
                 () -> err.toString(StandardCharsets.UTF_8));
     }
 
+    @Test
+    void coreBorrowCompilerRejectsInvalidLoans() {
+        // Target profile is canonical Atto ownership. No parse-only
+        // exception can satisfy a typed-borrow diagnostic expectation.
+        String[] examples = {
+                "fail/read-loan.atto",
+                "fail/write-loan.atto",
+                "fail/take.atto",
+                "fail/suspension.atto"
+        };
+        String[] expected = {
+                "E_BORROW", "E_BORROW", "E_MOVED", "E_LOAN_SUSPEND"
+        };
+        for (int i = 0; i < examples.length; i++) {
+            final String fixture = examples[i];
+            final String diagnostic = expected[i];
+            Throwable failure = assertThrows(Throwable.class, () ->
+                    LinkedProgramRunner.run(
+                            Path.of("tests/fixtures/core-borrow-v1/" + fixture),
+                            IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                            new ByteArrayOutputStream(), new ByteArrayOutputStream()),
+                    "compiler must reject invalid ownership: " + fixture);
+            StringBuilder details = new StringBuilder();
+            for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+                details.append(cursor).append("\n");
+            }
+            assertTrue(details.toString().contains(diagnostic),
+                    () -> "expected typed " + diagnostic
+                            + " rather than parser/runtime fallback: " + details);
+        }
+    }
+
 }
