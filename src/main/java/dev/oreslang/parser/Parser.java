@@ -4239,6 +4239,21 @@ public final class Parser {
             } finally {
                 suppressRefinementOperators = previousRefinementMode;
             }
+            if (resource instanceof Ast.CallExpr lockCall && !lockCall.typeArgumentsPresent()
+                    && lockCall.arguments().isEmpty()
+                    && lockCall.callee() instanceof Ast.MemberExpr lockMember
+                    && (lockMember.member().equals("lock") || lockMember.member().equals("lock_async"))) {
+                // `using m.lock_async() as g { ... }`: a scoped lease. The guard binding is
+                // released at block exit (normal, throw or cancellation) like any held guard,
+                // and the existing checks forbid awaiting while a synchronous lease is held.
+                consume(AS, "using lock lease requires 'as <lease>'");
+                Token lease = consume(IDENT, "using lock lease requires a binding name");
+                Ast.Expr acquired = lockMember.member().equals("lock_async") ? new Ast.AwaitExpr(resource) : resource;
+                List<Ast.Stmt> scoped = new ArrayList<>();
+                scoped.add(new Ast.BindingStmt(Ast.BindingKind.VAL, null, lease.lexeme(), acquired));
+                scoped.addAll(parseBlock());
+                return new Ast.BlockStmt(scoped);
+            }
             boolean importedSpan = resource instanceof Ast.CallExpr spanCall
                     && !spanCall.typeArgumentsPresent()
                     && spanCall.callee() instanceof Ast.NameExpr spanName
