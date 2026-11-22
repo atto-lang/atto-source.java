@@ -25,5 +25,8 @@ pub routine main(): void {
   stdio.println(Telemetry.traceparent_v00_header_valid("00-0123456789ABCDEF0123456789abcdef-0123456789abcdef-01"));
   stdio.println(Telemetry.traceparent_v00_header_valid("00-00000000000000000000000000000000-0123456789abcdef-01"));
   stdio.println(Telemetry.traceparent_v00_header_valid("00-0123456789abcdef0123456789abcdef-0000000000000000-01"));
+  // Cross-OS separator ambiguity and closed-semaphore cleanup.
+  stdio.println(path.is_portable_relative("safe\\\\child"));
+  stdio.println(sync.semaphore_release_admissible(3, 2, 5, true));
   return;
 }
