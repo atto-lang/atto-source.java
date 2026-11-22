@@ -1,0 +1,17 @@
+import module json from "std/json";
+pub routine main(): void {
+  let good = json.decode("{\"a\":1,\"b\":[true,null]}");
+  stdio.println(good.is_ok());
+  stdio.println(good.unwrap().kind());
+  stdio.println(json.decode("{\"a\":1,\"\\u0061\":2}").is_err());
+  stdio.println(json.decode("[1,]").is_err());
+  stdio.println(json.decode("\"\\uD800\"").is_err());
+  stdio.println(json.decode("{\"a\":01}").is_err());
+  stdio.println(json.decode("{\"a\":1,}").is_err());
+  stdio.println(json.decode("1e+4").is_ok());
+  stdio.println(json.decode_int("2147483647").unwrap());
+  stdio.println(json.decode_int("2147483648").is_err());
+  stdio.println(json.decode_int("00").is_err());
+  stdio.println(json.encode_bool(true));
+  return;
+}
