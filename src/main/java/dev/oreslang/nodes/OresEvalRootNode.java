@@ -7462,6 +7462,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     yield new ClassFacade(this, klass);
                 }
+                case CONST ->
+                        throw new IllegalArgumentException(
+                                "E_UNSUPPORTED: imported const requires verified immutable source-unit"
+                                        + " linkage and startup initialization; host value fallback denied");
                 case ACTOR, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES ->
                         throw new IllegalArgumentException(
                                 "import " + kind.name().toLowerCase()
