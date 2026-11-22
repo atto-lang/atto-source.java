@@ -46,7 +46,7 @@ public final class CoreLibrarySources {
             "http_wire", "actor_persistence");
 
     private static final Set<String> STD_SOURCES = Set.of(
-            "core.atto", "testing.ores", "assert.atto", "trace.atto",
+            "core.atto", "testing.ores", "assert.atto", "trace.atto", "telemetry.atto",
             "http_wire.atto", "compute.atto", "db_pool.atto",
             "actor_persistence.atto", "data_pool.ores", "otp/supervisor.ores", "bounds.atto", "text.atto");
 
@@ -156,6 +156,7 @@ public final class CoreLibrarySources {
 
     private static String canonicalStdRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
+        final String relative;
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
             return canonicalMigratedStdPath(
                     canonicalPathBody(importPath, STD_IMPORT_PREFIX, STD_SOURCES));
@@ -164,8 +165,7 @@ public final class CoreLibrarySources {
             return canonicalMigratedStdPath(
                     canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX, STD_SOURCES));
         }
-        throw new IllegalArgumentException(
-                "standard-library imports must start with 'ores.std/': " + importPath);
+        return relative;
     }
 
     private static String canonicalMigratedStdPath(String relative) {

@@ -285,6 +285,42 @@ public final class NativeHttp implements AutoCloseable {
         return new Handler(code, type, kind);
     }
 
+    /**
+     * Extract one strict v00 W3C parent at the HTTP admission boundary.
+     * Multiple/malformed/untrusted headers are not followed as parents.
+     * A new recording root is created only in explicitly enabled contexts.
+     * This is context propagation only; SERVER span export is not implemented.
+     */
+    static TraceParent admittedServerTraceContext(
+            List<String> incoming, boolean tracingEnabled) {
+        if (!tracingEnabled) return null;
+        if (incoming != null && incoming.size() == 1) {
+            Optional<TraceParent> remote = TraceParent.parse(incoming.getFirst());
+            if (remote.isPresent()) return remote.orElseThrow().newChild();
+        }
+        return TraceParent.newRoot(true);
+    }
+
+    /**
+     * Run one supervisor-side mailbox send under the admitted request trace
+     * context. Dispatch executes on a supervisor/host turn: never borrow a
+     * possibly stale carrier thread-local context or transfer a live Span.
+     */
+    private static void sendWithRequestTraceContext(Exchange exchange, Runnable send) {
+        TraceParent requestContext = exchange.state.traceParent;
+        if (requestContext == null) {
+            send.run();
+            return;
+        }
+        TaskContext previous = TaskContext.install(null);
+        try {
+            TaskContext.pushTraceParent(requestContext);
+            send.run();
+        } finally {
+            TaskContext.install(previous);
+        }
+    }
+
     /** Supervisor-owned code registration and optional bounded reusable worker pool. */
     public final class Handler {
         private final ActorRuntime.ActorCodeExecutor code;
@@ -482,9 +518,10 @@ public final class NativeHttp implements AutoCloseable {
                         // one actor.done callback per completed request.
                         exchange.state.readyNanos = exchange.state.spawnNanos;
                     }
-                    worker.actor.send(exchange.moveTo(worker.actor, type, binding,
-                            authorityClass, scopeGeneration, nextDispatchSequence(),
-                            scopeGeneration > 0));
+                    sendWithRequestTraceContext(exchange, () -> worker.actor.send(
+                            exchange.moveTo(worker.actor, type, binding,
+                                    authorityClass, scopeGeneration, nextDispatchSequence(),
+                                    scopeGeneration > 0)));
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
@@ -507,9 +544,11 @@ public final class NativeHttp implements AutoCloseable {
                     }
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
-                actor.send(exchange.moveTo(actor, type, binding,
-                        authorityClass, scopeGeneration, nextDispatchSequence(),
-                        scopeGeneration > 0));
+                final ActorRuntime.ActorRef<Object> target = actor;
+                sendWithRequestTraceContext(exchange, () -> target.send(
+                        exchange.moveTo(target, type, binding,
+                                authorityClass, scopeGeneration, nextDispatchSequence(),
+                                scopeGeneration > 0)));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
@@ -735,6 +774,9 @@ public final class NativeHttp implements AutoCloseable {
         final Server server;
         final HttpExchange raw;
         final List<String> path;
+        // Immutable, HTTP-authorized request trace context. Never guest payload.
+        final TraceParent traceParent;
+        final SemanticTraceBuffer.Scope serverSpan;
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
         Object owner;
@@ -760,6 +802,20 @@ public final class NativeHttp implements AutoCloseable {
         Handler.Worker poolWorker;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = hostOwner;
+            // Admission already validated raw header count/size. Unknown,
+            // malformed or duplicate traceparent is never trusted. The
+            // loopback test fixture has no OresContext and never traces.
+            List<String> incoming = raw.getRequestHeaders().get("traceparent");
+            this.traceParent = admittedServerTraceContext(
+                    incoming, context != null && context.autoTrace().enabled());
+            String parentId = "";
+            if (incoming != null && incoming.size() == 1) {
+                parentId = TraceParent.parse(incoming.getFirst())
+                        .map(TraceParent::spanId).orElse("");
+            }
+            this.serverSpan = context == null ? null : context.semanticTrace().begin(
+                    this.traceParent, parentId, SemanticTraceBuffer.HTTP_SERVER,
+                    SemanticTraceBuffer.Kind.SERVER);
         }
         // Linearize cancellation against success header emission. Never
         // hold this monitor while performing blocking socket I/O.
@@ -826,6 +882,14 @@ public final class NativeHttp implements AutoCloseable {
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
+                // Logical SERVER completion is the physical HTTP exchange
+                // retirement, not the initial request dispatch or Future
+                // allocation. Terminal racing paths funnel through this
+                // single admission-removal winner.
+                int completedStatus;
+                synchronized (this) { completedStatus = responseStatus; }
+                SemanticTraceBuffer.finish(serverSpan, completedStatus,
+                        completedStatus == 0 || completedStatus >= 500);
                 if (poolWorker != null) poolWorker.requests.remove(this);
                 if (CorePerf.enabled()) {
                     CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
