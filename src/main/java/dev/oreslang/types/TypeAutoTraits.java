@@ -207,7 +207,8 @@ public final class TypeAutoTraits {
                 Capabilities entries = combine(named.arguments(), nested);
                 yield Optional.of(new Capabilities(entries.send(), false, false));
             }
-            case "Future", "Iterator", "AsyncIterator",
+            case "ActorGroup", "Topic", "Subscription",
+                    "Future", "Iterator", "AsyncIterator",
                     "MutexGuard", "SelectCase", "SelectSet", "SelectResult",
                     "TcpConnection", "HttpExchange", "HttpServer",
                     "HttpHandler", "HttpResponse", "HttpResponseDraft" ->

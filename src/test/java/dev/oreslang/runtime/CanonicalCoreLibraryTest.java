@@ -17,7 +17,8 @@ final class CanonicalCoreLibraryTest {
 
     @Test
     void packagedCoreIdentityAndClosedRegistry() throws Exception {
-        assertEquals(Set.of("numeric.ores", "collections.atto"), CoreLibrarySources.packagedCorePaths());
+        assertEquals(Set.of("numeric.atto", "protocols.atto", "collections.atto"),
+                CoreLibrarySources.packagedCorePaths());
         assertEquals("@ores.core/collections.atto",
                 CoreLibrarySources.oresCoreUnitId("ores.core/collections"));
         assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/collections"),

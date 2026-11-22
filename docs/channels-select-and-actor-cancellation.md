@@ -166,12 +166,39 @@ it completes or is cancelled.
 
 ### Immediate probe forms
 
-```ores
+```atto
 val Option<int> now = try readch input;
-val bool wrote = try writech output, value;
+val TryWriteResult<int> outcome = try writech output, value;
 ```
 
-`try` means **succeed now or return immediately without leaving a waiter**.
+`try` means **attempt immediate admission without leaving a waiter**.
+
+- `try readch` returns `Some(value)` if ready and `None` when temporarily empty. After a closed channel's committed buffer is drained, it raises the channel-closed error; closure is **not** `None`.
+- `try writech` returns a `TryWriteResult<T>` containing `Accepted`, `Full(T)`, or `Closed(T)`. Exactly one admission either commits or does not. `Full` means temporarily no capacity or no rendezvous partner; `Closed` means write admission lost to closure.
+- Full/Closed return ownership of the **original value**, not a deep copy, delayed registration, or stale alias. Move-only writes and `rt take` are supported by the typed guest compiler path. Explicit `rt take` invalidates the original source binding even on failure; the rejected value is recoverable only from its result.
+- A typed immediate result cannot be silently discarded or destructured twice. The ownership checker rejects use-after-move, and guarded destructuring is rejected until rollback semantics are proven. Channel data still cannot transport protected MutexGuard, borrowed references, callable captures, or cross-actor capabilities.
+- The host Java `Channel<T>.tryWrite(T)` Boolean probe remains only as a compatibility host API. Guest `try writech` does **not** return Boolean anymore.
+
+```atto
+val result = try writech output, rt take message;
+do match result over
+  on Accepted -> { /* ownership committed exactly once */ }
+  on Full(message) -> { /* original owned message returned */ }
+  on Closed(message) -> { /* original owned message returned */ }
+end
+```
+
+The Java reference exposes `Channel<T>.tryWriteResult(T)` and
+`WriteChannel<T>.tryWriteResult(T)`; both return the sealed
+`ChannelRuntime.TryWriteResult<T>` host result. Closed is decoded only
+from channel closure; other failures remain failures. The interpreter and
+ownership/type checkers now recognize the guest variants. Focused guest and
+runtime execution (13/13) passed on exact-tree JDK25/GraalVM private-runner
+CI for Java source commit `c45bf45c2cb90572f145c18a0a56f7f57c95bdd1`:
+https://github.com/3FA-app/atto-ci/actions/runs/43672639208
+Later changes require their own exact-head tests; this earlier receipt is
+not certification of subsequent commits. LLVM, Wasm, Forge, and .NET
+compiler-backed parity remains NOT_EXECUTED.
 
 Immediate probes and select registrations use the same channel arbitration, so
 an immediate write can rendezvous with a pending select-read and an immediate

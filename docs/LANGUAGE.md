@@ -10,6 +10,8 @@ A source file may contain multiple named modules. A module owns declarations and
 
 A source namespace does **not** imply that all backend implementations can link or execute it. In particular, the native LLVM backend currently fails closed on runtime namespace use and on linked namespace/type identities; Java/Graal support must not be advertised as cross-backend parity.
 
+The compiler reserves `__root__` for its synthetic file-root module. User code cannot define `namespace __root__`, `define module __root__`, import `module __root__`, or use `__root__` as an import alias. A synthetic root module is **not** a public namespace export. The compiler keeps `CompiledUnit.namespace` separate from `CompiledUnit.packageId`; absent verified manifest grouping, each normalized source file receives a singleton package identity.
+
 ```ores
 define module math
   pub fnc add(int a, int b): int {
@@ -406,27 +408,44 @@ finite sequence shapes.
 Every local binding is declared with a fixed/rebindable permission:
 
 - `const`: fixed readonly local binding; its checked initializer is evaluated
-  eagerly once in lexical order and the binding cannot be reassigned.
+  eagerly once in lexical order and the binding cannot be reassigned. A typed
+  scalar `const` (and every type-first local) must be compile-time evaluable;
+  see below.
 - `val`: runtime single-assignment binding; it cannot be reassigned and keeps
   its existing referent-mutation permission subject to ownership checks.
 - `let`: rebindable binding and the only local binding kind that may be
   reassigned.
 
-A proven compile-time-constant value is optimization/type-check metadata, not
-the meaning of the `const` binding keyword. Contexts such as switch/case
+A **typed scalar const** (`int`, `bool`, `string`/`String`) is a compile-time
+constant: `const int x = e;` and the type-right `const x: int = e;` require an
+initializer the checker can evaluate without running guest code (literals,
+prior typed scalar constants, checked `+ - *`, comparisons, `! && || ^^`,
+string `+` within a size budget, and conditionals over those). Anything else
+is rejected with `E_NON_CONST_INITIALIZER`; overflow is `E_CONST_OVERFLOW`;
+`const mut` on a scalar is `E_CONST_MUT_UNSUPPORTED`. Untyped `const x = e;`
+is unchanged in this stage: a fixed readonly binding whose value is folded
+when it is constant (spec chapter 27, stage one). Contexts such as switch/case
 patterns that require a compile-time constant expression check that property
 explicitly.
 
-Primitive type-first locals are immutable by default:
+Primitive type-first locals are exactly typed scalar constants:
 
 ```ores
-int answer = compute();
-bool ready = check_ready();
+int answer = 6 * 7;      // same as const int answer = 6 * 7;
+bool ready = true;
 ```
 
-For the supported scalar subset this has the same fixed readonly binding
-permission as `const int answer = compute();`. Use explicit `let` when
-rebinding is intended.
+A runtime initializer needs an explicit runtime binding:
+
+```ores
+val int answer = compute();   // or: val answer = compute();
+let int retries = 0;          // rebindable
+```
+
+`int answer = compute();` is rejected with `E_NON_CONST_INITIALIZER`; it is
+never reinterpreted as `val`. A bare `mut int x = e;` is rejected with
+`E_MUT_QUALIFIER`. Reassigning a `const`/`val` binding is
+`E_IMMUTABLE_REBIND`. Use explicit `let` when rebinding is intended.
 
 ```ores
 const max = 10;
@@ -592,6 +611,61 @@ end
 ```
 
 Anonymous structs and array literals are values, not classes, and cannot be inherited from.
+
+## Record type positions versus record value positions
+
+`record { ... }` is unambiguous because the *enclosing grammar* selects
+whether the braces contain field types or field values. The compiler must not
+infer the grammar from whether a field payload is a literal or an identifier.
+
+```ores
+type T = record { foo: string };       // type declaration; foo has type string
+
+pub fnc make(string value): T {
+    const T x = record { foo: value }; // value binding; foo evaluates value
+    return x;
+}
+
+pub fnc inline(): record { foo: string } {
+    return record { foo: "hello" };
+}
+```
+
+A plain record literal is a value and never implicitly binds an undeclared type
+name. In the current compiler, `const T x = record {...}` requires `T` to be
+an existing type alias. `const T x = infer<T> record {...}` or the proven
+short named-inference form may instead capture a *lexical*, readonly structural
+type alias, but must not manufacture nominal identity or a runtime type object.
+
+The equivalent name-first declaration syntax is supported for explicit
+inferred-struct capture. It preserves the same lexical type identity and
+closed-shape checking as the type-first spelling:
+
+```ores
+fnc create(): float {
+    const point: Point = infer<Point> struct { x: 3.0, y: 4.0 };
+    const next: Point = infer struct { x: 5.0, y: 6.0 };
+    return next.y;
+}
+```
+
+The checked short capture `const point: Point = infer struct {...}` may
+also introduce `Point` if that name is unbound and safe to introduce. The
+corresponding type-first spelling is `const Point point = infer struct {...}`.
+These are compile-time aliases, not runtime type objects; they do not
+permit record-to-struct coercion, field-set growth, or mutation through a
+readonly `const` value.
+
+Type declarations are immutable by definition. `const type T = ...` is invalid;
+`type T = ...` defines a type, whereas `const type T x = ...` may use
+`type T` as an explicit named-type marker in a value binding.
+
+Function-/routine-local standalone declarations such as
+`fnc make(): T { type T = record { foo: string }; ... }` remain **proposed**,
+not executable in this compiler revision. Supporting them requires
+compile-time lexical type registration, return-signature dependency resolution,
+public ABI serialization, and ownership/backend conformance. Do not treat a
+local `type` statement as a runtime value or silently export its name.
 
 ## Inline values
 

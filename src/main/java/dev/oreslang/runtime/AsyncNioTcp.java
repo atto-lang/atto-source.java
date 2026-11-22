@@ -43,7 +43,8 @@ public final class AsyncNioTcp {
         context.requirePermission(RuntimePermissions.Permission.NET,
                 host + ":" + port, "network.listen_async");
         try {
-            AsynchronousServerSocketChannel channel = AsynchronousServerSocketChannel.open();
+            AsynchronousServerSocketChannel channel =
+                    AsynchronousServerSocketChannel.open(context.vm().nioCompletionGroup());
             try {
                 channel.bind(new InetSocketAddress(
                         InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), port), 32);

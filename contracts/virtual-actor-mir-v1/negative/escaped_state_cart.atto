@@ -1,0 +1,9 @@
+// Negative: no state reference may escape a protected method.
+define virtual actor Cart as
+  state { let int quantity: 0; }
+  add(int n) -> void ::
+    handle_state(critical-write |s| -> {
+      return s;
+    });
+  end
+end
