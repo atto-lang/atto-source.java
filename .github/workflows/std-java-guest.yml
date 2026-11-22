@@ -33,17 +33,17 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - name: Compile and execute genuine 37-case Atto JIT guest
+      - name: Compile and execute genuine 37+109 Atto JIT guests with fault injection
         run: >-
           mvn -B -ntp
           -Dtest=AttoStdWebsocketQuicComputeGuestTest
           -DfailIfNoTests=true
           clean test
-      - name: Require 3 actual non-skipped JUnit cases
+      - name: Require 5 actual non-skipped JUnit cases
         run: |
           set -euo pipefail
           report=target/surefire-reports/TEST-dev.oreslang.AttoStdWebsocketQuicComputeGuestTest.xml
           test -s "$report"
-          test "$(grep -c '<testcase ' "$report")" -eq 3
+          test "$(grep -c '<testcase ' "$report")" -eq 5
           if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then exit 1; fi
-          echo "ATTO_STD_JAVA_GUEST_EXECUTED=head=$(git rev-parse HEAD) tests=3 guest_checks=37"
+          echo "ATTO_STD_JAVA_GUEST_EXECUTED=head=$(git rev-parse HEAD) tests=5 guest_checks=146"
