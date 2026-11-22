@@ -52,6 +52,23 @@ define module map as
       return None;
     }
 
+    // Convenience for scalar callers. Use get() to distinguish a missing key
+    // from a stored value equal to the supplied fallback.
+    pub get_or(int key, int fallback): int {
+      let int start = self.start_slot(key);
+      for (let int probe = 0; probe < self.limit; probe = probe + 1) {
+        let int slot = (start + probe) % self.limit;
+        let int state = self.states.get(slot);
+        if state == 0; do
+          return fallback;
+        fi
+        if state == 1 && self.keys.get(slot) == key; do
+          return self.values.get(slot);
+        fi
+      }
+      return fallback;
+    }
+
     pub contains_key(int key): bool {
       let int start = self.start_slot(key);
       for (let int probe = 0; probe < self.limit; probe = probe + 1) {
