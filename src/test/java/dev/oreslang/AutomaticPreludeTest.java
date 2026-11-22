@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.ast.Ast;
 import dev.oreslang.types.AutomaticPrelude;
 import dev.oreslang.types.CoreTypeRegistry;
 import dev.oreslang.types.TypeChecker;
@@ -8,6 +9,7 @@ import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Regression gate for compiler-owned implicit core bindings and affine loans. */
@@ -189,6 +191,30 @@ final class AutomaticPreludeTest {
         assertDoesNotThrow(() -> TypeChecker.checkTypesWithDiagnostics(
                 legacyScalar, false, AutomaticPrelude.Profile.CORE),
                 "the historical Java immutable String scalar is not alloc::String");
+    }
+
+
+    @Test
+    void linkedForeignClassOriginCannotForgeCoreIdentityThroughAnAlias() {
+        Ast.Program forgedSource = assertDoesNotThrow(() ->
+                Parser.parse("define pub class Option as val int value = 1; end"));
+        Ast.ClassDecl forged = forgedSource.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+        Ast.Program importer = assertDoesNotThrow(() ->
+                Parser.parse("pub fnc main(): int { return 42; }"));
+
+        IllegalArgumentException type = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        importer, Map.of("ForeignOption", forged), Map.of(), Map.of()));
+        assertTrue(type.getMessage().contains("E_PRELUDE_SPOOF"), type::getMessage);
+
+        IllegalArgumentException borrow = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithImportedClasses(
+                        importer, Map.of("ForeignOption", forged)));
+        assertTrue(borrow.getMessage().contains("E_PRELUDE_SPOOF"), borrow::getMessage);
     }
 
     @Test
