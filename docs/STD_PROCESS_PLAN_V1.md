@@ -46,6 +46,37 @@ graceful escalation, cancellation after abandoned await, and Native Image
 remain unproven. Keep PR in draft until compiler, guest and security gates pass.
 
 
+## Bounded child lifetime — JDK implementation, NOT EXECUTED
+
+The Java root-context subprocess provider now enforces **five minutes maximum
+per child** by default. A per-child virtual-thread watchdog sleeps until the
+deadline, then forcibly destroys a still-live OS process. The watchdog is
+interrupted when the child exits normally; at most 16 live children are admitted.
+The host-only overload may narrow this duration to 50 milliseconds or greater
+for deterministic regression tests, but may not raise it above five minutes.
+Invalid durations fail before permission checks, process reservation, filesystem
+probing or execution.
+
+`child.wait()` and `child.collect_output()` report deadline expiration as
+`Err(ProcessError(kind: "timeout"))`; a forced shutdown by deadline is **not**
+returned as a successful `ExitStatus`. A nonblocking `try_wait()` cannot
+encode an error and returns no successful status after timeout. The pending
+tests include a silent 30-second Java child with a 150-millisecond host
+deadline, normal exit before deadline, and invalid budget admission.
+
+These watchdogs bound the directly owned OS child, **not its descendant tree**.
+A subprocess that forks children holding inherited pipes may still prevent
+clean pipe retirement. JVM `ProcessBuilder.start()` has an executable
+replacement (TOCTOU) window and no portable descriptor-pinned exec guarantee.
+Root guest requests still cannot customize the lifetime; that belongs to a
+future typed `run`/`spawn` options contract. Cancellation of an abandoned
+guest await must not be claimed to retire the physical child until separately
+implemented. This is a partial fail-closed mitigation, not OS sandboxing.
+
+**Execution evidence:** JUnit and guest tests committed; current-head Java
+compiler, host subprocess, GraalVM Native Image and complete lifetime
+regressions are **NOT EXECUTED / NOT VERIFIED**.
+
 ## Lowercase namespace and intrinsic precedence
 
 The source declares `define module process as`, not `define module Process as`.
