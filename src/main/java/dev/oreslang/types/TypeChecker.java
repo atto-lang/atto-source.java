@@ -8252,6 +8252,15 @@ public final class TypeChecker {
             Type bytes = new ListType(Primitive.INT);
             Type result = new Named("Result", List.of(bytes, Primitive.STRING));
             return switch (name) {
+                case "sha256" -> new Function(List.of(bytes), bytes);
+                case "hmac_sha256" -> new Function(List.of(bytes, bytes), bytes);
+                case "pbkdf2_hmac_sha256" ->
+                        new Function(List.of(bytes, bytes, Primitive.INT, Primitive.INT), bytes);
+                case "base64_encode" -> new Function(List.of(bytes), Primitive.STRING);
+                case "base64_decode" -> new Function(List.of(Primitive.STRING), bytes);
+                case "secure_random_bytes" -> new Function(List.of(Primitive.INT), bytes);
+                case "constant_time_equals" ->
+                        new Function(List.of(bytes, bytes), Primitive.BOOL);
                 case "aead_new_key" -> new Function(List.of(Primitive.INT), key);
                 case "aead_seal", "aead_open" ->
                         new Function(List.of(key, bytes, bytes), result);
