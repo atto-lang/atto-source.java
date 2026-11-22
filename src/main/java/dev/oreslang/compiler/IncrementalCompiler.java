@@ -31,6 +31,15 @@ public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
     // Never reuse a legacy-checked unit as strict-AOT source admission evidence.
     private final Map<String, CompiledUnit> strictAttoCache = new LinkedHashMap<>();
+    // Parsing is separate from type/borrow admission. Cached expanded syntax
+    // may be reused, but checked units must still honor current import ABI.
+    // Strict-Atto and legacy parsing must never share cache entries.
+    private final Map<String, ParsedUnit> parsedCache = new LinkedHashMap<>();
+    private final Map<String, ParsedUnit> strictAttoParsedCache = new LinkedHashMap<>();
+    private final Map<String, List<String>> importBindingCache = new LinkedHashMap<>();
+    private final Map<String, List<String>> strictAttoImportBindingCache = new LinkedHashMap<>();
+
+    private record ParsedUnit(String sourceDigest, String abiDigest, Ast.Program program) { }
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -61,9 +70,21 @@ public final class IncrementalCompiler {
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions,
             boolean strictAtto) {
+        if (sources == null) throw new IllegalArgumentException("sources cannot be null");
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
-        if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
         Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
+        Map<String, ParsedUnit> selectedParsedCache =
+                strictAtto ? strictAttoParsedCache : parsedCache;
+        Map<String, List<String>> selectedBindingCache =
+                strictAtto ? strictAttoImportBindingCache : importBindingCache;
+        if (sources.isEmpty()) {
+            // The input map is a complete source snapshot, including removals.
+            // A later re-add must not reuse a checked result for deleted files.
+            selectedCache.clear();
+            selectedParsedCache.clear();
+            selectedBindingCache.clear();
+            return new BuildResult(Map.of(), Set.of(), Set.of(), List.of(), Set.of());
+        }
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
@@ -76,22 +97,35 @@ public final class IncrementalCompiler {
         Map<String, String> hashes = new LinkedHashMap<>();
         Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
+        Map<String, ParsedUnit> stagedParsed = new LinkedHashMap<>();
+        LinkedHashSet<String> reparsed = new LinkedHashSet<>();
 
-        // Parse the complete source set before resolving imports. This is the
-        // first half of cycle tolerance: A may name B while B names A because
-        // neither unit is recursively compiled while discovering the other.
+        // Parse all *changed* inputs before resolving the complete graph.
+        // This is in-memory only: AST keys include strict-vs-legacy parser
+        // mode via separate maps. Never treat parse reuse as type validation.
         for (Map.Entry<String, String> entry : normalized.entrySet()) {
-            hashes.put(entry.getKey(), digest(entry.getValue()));
-            final Ast.Program program;
-            try {
-                program = AnnotationExpander.expand(strictAtto
-                        ? Parser.parseStrictAtto(entry.getValue())
-                        : Parser.parse(entry.getValue()));
-            } catch (IllegalArgumentException invalid) {
-                throw new SourceUnitDiagnosticException(entry.getKey(), "", "", invalid);
+            String id = entry.getKey();
+            String sourceDigest = digest(entry.getValue());
+            hashes.put(id, sourceDigest);
+            ParsedUnit previous = selectedParsedCache.get(id);
+            ParsedUnit unit;
+            if (previous != null && previous.sourceDigest().equals(sourceDigest)) {
+                unit = previous;
+            } else {
+                final Ast.Program program;
+                try {
+                    program = AnnotationExpander.expand(strictAtto
+                            ? Parser.parseStrictAtto(entry.getValue())
+                            : Parser.parse(entry.getValue()));
+                } catch (IllegalArgumentException invalid) {
+                    throw new SourceUnitDiagnosticException(id, "", "", invalid);
+                }
+                unit = new ParsedUnit(sourceDigest, abiDigest(program), program);
+                reparsed.add(id);
             }
-            parsed.put(entry.getKey(), program);
-            abiHashes.put(entry.getKey(), abiDigest(program));
+            stagedParsed.put(id, unit);
+            parsed.put(id, unit.program());
+            abiHashes.put(id, unit.abiDigest());
         }
 
         Map<String, Map<String, String>> normalizedImportResolutions =
@@ -121,14 +155,46 @@ public final class IncrementalCompiler {
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
 
+        // A dependency SET is not sufficient: swapping the binding of two
+        // imports can retain exactly the same set of target source IDs.
+        // Resolve every declaration again against this complete snapshot.
+        Map<String, List<String>> resolvedBindings = new LinkedHashMap<>();
+        LinkedHashSet<String> unversioned = new LinkedHashSet<>();
+        for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+            String id = entry.getKey();
+            ArrayList<String> targets = new ArrayList<>();
+            for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                String target = ImportGraph.resolveImportUnitId(
+                        id, imported, parsed.keySet(), normalizedImportResolutions);
+                if (target == null) {
+                    // Unknown host/package interface: never keep an unchecked
+                    // cached type result across builds without version proof.
+                    unversioned.add(id);
+                    targets.add("external:" + imported.path());
+                } else {
+                    targets.add(target);
+                }
+            }
+            resolvedBindings.put(id, List.copyOf(targets));
+        }
+
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
             CompiledUnit previous = selectedCache.get(id);
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
-            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
+            boolean bindingsChanged = previous == null
+                    || !resolvedBindings.get(id).equals(selectedBindingCache.get(id));
+            if (sourceChanged || depsChanged || bindingsChanged || unversioned.contains(id)) {
+                dirty.add(id);
+            }
+            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))
+                    || bindingsChanged || unversioned.contains(id)) {
+                // Binding changes may alter exposed identities even when the
+                // raw public declaration text is unchanged.
+                abiChanged.add(id);
+            }
         }
 
         /*
@@ -203,13 +269,20 @@ public final class IncrementalCompiler {
             rebuilt.add(id);
         }
 
-        selectedCache.keySet().retainAll(normalized.keySet());
+        // Publish syntax, imported bindings and checked units together ONLY
+        // after all graph validation, type/ownership checks have succeeded.
+        selectedCache.clear();
         selectedCache.putAll(next);
+        selectedParsedCache.clear();
+        selectedParsedCache.putAll(stagedParsed);
+        selectedBindingCache.clear();
+        selectedBindingCache.putAll(resolvedBindings);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
-                initializationGroups);
+                initializationGroups,
+                Set.copyOf(reparsed));
     }
 
     private record LinkedClasses(
@@ -317,6 +390,10 @@ public final class IncrementalCompiler {
     public synchronized void clear() {
         cache.clear();
         strictAttoCache.clear();
+        parsedCache.clear();
+        strictAttoParsedCache.clear();
+        importBindingCache.clear();
+        strictAttoImportBindingCache.clear();
     }
 
     /**
@@ -854,14 +931,25 @@ public final class IncrementalCompiler {
             Map<String, CompiledUnit> units,
             Set<String> rebuiltUnits,
             Set<String> reusedUnits,
-            List<List<String>> initializationGroups) {
+            List<List<String>> initializationGroups,
+            Set<String> reparsedUnits) {
         public BuildResult {
             units = Map.copyOf(units);
             rebuiltUnits = Set.copyOf(rebuiltUnits);
             reusedUnits = Set.copyOf(reusedUnits);
+            reparsedUnits = Set.copyOf(reparsedUnits);
             initializationGroups = initializationGroups.stream()
                     .map(List::copyOf)
                     .toList();
+        }
+
+        /** Backward-compatible constructor for callers that track only checked units. */
+        public BuildResult(
+                Map<String, CompiledUnit> units,
+                Set<String> rebuiltUnits,
+                Set<String> reusedUnits,
+                List<List<String>> initializationGroups) {
+            this(units, rebuiltUnits, reusedUnits, initializationGroups, Set.of());
         }
 
         /** Backward-compatible constructor for callers that do not need lifecycle planning. */
@@ -869,7 +957,7 @@ public final class IncrementalCompiler {
                 Map<String, CompiledUnit> units,
                 Set<String> rebuiltUnits,
                 Set<String> reusedUnits) {
-            this(units, rebuiltUnits, reusedUnits, List.of());
+            this(units, rebuiltUnits, reusedUnits, List.of(), Set.of());
         }
 
         public boolean rebuilt(String unitId) { return rebuiltUnits.contains(normalizeUnitId(unitId)); }
