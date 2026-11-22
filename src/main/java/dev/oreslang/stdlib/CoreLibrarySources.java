@@ -35,7 +35,13 @@ public final class CoreLibrarySources {
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
 
-    private static final Set<String> CORE_SOURCES = Set.of("numeric.atto", "protocols.atto", "collections.atto");
+    private static final Set<String> CORE_SOURCES = Set.of(
+            "numeric.atto",
+            "protocols.atto",
+            "collections.atto",
+            "math.atto",
+            "hash.atto",
+            "cell.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
