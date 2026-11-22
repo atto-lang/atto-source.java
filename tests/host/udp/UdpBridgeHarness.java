@@ -140,11 +140,12 @@ public final class UdpBridgeHarness {
       field.setAccessible(true);
       AtomicBoolean lease=(AtomicBoolean)field.get(raceReceiver);
       assertTrue(lease.get(),"physical socket lease held despite visible future cancellation");
-      assertTrue(raceContext.io.active.isEmpty(),"close-on-cancel unregisters handle");
+      assertTrue(raceContext.io.active.contains(raceReceiver),"resource retained during physical callback");
       raceContext.physicalReceiveMayExit.countDown();
       long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
       while(lease.get() && System.nanoTime()<deadline)Thread.sleep(1);
       assertTrue(!lease.get(),"lease released only after physical callback finished");
+      assertTrue(raceContext.io.active.isEmpty(),"resource unregistered after physical callback retired");
       assertTrue(racingRead.isCancelled(),"late packet cannot settle canceled future");
     }finally{
       raceContext.physicalReceiveMayExit.countDown();
