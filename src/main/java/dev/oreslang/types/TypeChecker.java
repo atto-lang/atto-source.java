@@ -232,6 +232,19 @@ public final class TypeChecker {
                                     + "checked ownership and critical read/write MIR lowering");
                 }
                 if (declaration instanceof Ast.VirtualActorDecl actor) {
+                    // Stage-one typed scalar MIR rejects forged/unsafe protected
+                    // body tokens before the generic executable-admission gate.
+                    // Even a valid plan is NOT a runtime permit: no actor state
+                    // loan, code image or typed dispatch is lowered yet.
+                    if (!actor.methods().isEmpty()) {
+                        try {
+                            dev.oreslang.compiler.VirtualActorProtectedOpsMirV1.lower(actor);
+                        } catch (IllegalArgumentException invalidMir) {
+                            throw new IllegalArgumentException(
+                                    "VIRTUAL_ACTOR_MIR_UNSUPPORTED: " + invalidMir.getMessage(),
+                                    invalidMir);
+                        }
+                    }
                     throw new IllegalArgumentException(
                             "VIRTUAL_ACTOR_MIR_UNSUPPORTED: '" + actor.name()
                                     + "' is parsed with logical identity metadata but requires "
