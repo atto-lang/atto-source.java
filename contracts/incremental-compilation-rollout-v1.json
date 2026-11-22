@@ -83,7 +83,19 @@
     "current exact head 10-case focused JDK25 JUnit execution with nonzero steps"
   ],
   "ci_check": ".github/workflows/incremental-file-fallback-v1.yml",
-  "focused_regression_cases_authored": 10,
+  "focused_regression_cases_authored": 15,
   "reference_model_tests_passed_locally": 20,
-  "reference_model_tests_are_not_java_compiler_evidence": true
+  "reference_model_tests_are_not_java_compiler_evidence": true,
+  "overlap_reconciled_from_pr_697": [
+    "preserved old+new raw/expanded parsed-AST cache and binding invalidation ideas",
+    "named-argument and source-order-stable ABI and declared effect/actor extensions",
+    "failed typecheck cache retention and file deletion/restoration tests",
+    "annotation-derived wire ABI and unversioned external import tests",
+    "clear operation and immutable parse telemetry test"
+  ],
+  "overlap_unresolved": [
+    "executable current-head JDK25 regression and source compilation validation",
+    "complete versioned ABI/specialization semantics for persistent caches",
+    "approval of canonical vs overlapping Java PR #697"
+  ]
 }
