@@ -113,6 +113,18 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
         return mark;
     }
 
+    /**
+     * Trusted compiler-lowering call target: bracket a lexical body without
+     * exposing checkpoints to guest source. Normal returns and exceptions
+     * both invoke real native retirement, preserving primary failure identity.
+     */
+    <T> T with_lexical_scope(java.util.function.Supplier<T> checkedBody) {
+        Objects.requireNonNull(checkedBody, "checked lexical body");
+        ScopeMark mark = begin_lexical_scope();
+        return TrustedLexicalUnwindV1.run(
+                checkedBody, () -> end_lexical_scope(mark));
+    }
+
     /** Retire precisely the owners acquired after this mark, in LIFO order. */
     void end_lexical_scope(ScopeMark mark) {
         requireOpen();
@@ -193,6 +205,12 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
     @Override
     public void close() {
         requireOpen();
+        // An unconsumed nested lexical scope means compiler cleanup skipped
+        // a lifetime boundary. Never conceal the missing quiescence proof.
+        if (!lexicalMarks.isEmpty()) {
+            throw new IllegalStateException(
+                    "cannot close arena scope with outstanding lexical checkpoints");
+        }
         // No partial cleanup while a loan exists. Compiler lowering must
         // wait for async/FFI quiescence BEFORE this scope is closed.
         for (Owner owner : owners) {

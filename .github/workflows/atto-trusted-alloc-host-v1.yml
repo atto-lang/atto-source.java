@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/runtime/TrustedAllocationScopeV1.java'
+      - 'src/main/java/dev/oreslang/runtime/TrustedLexicalUnwindV1.java'
+      - 'src/test/java/dev/oreslang/runtime/TrustedLexicalUnwindV1HostProbe.java'
       - 'src/test/java/dev/oreslang/runtime/TrustedAllocationScopeV1HostProbe.java'
       - '.github/workflows/atto-trusted-alloc-host-v1.yml'
   workflow_dispatch:
@@ -40,10 +42,16 @@ jobs:
           trap 'rm -rf "$dir"' EXIT
           javac -d "$dir" \
             src/main/java/dev/oreslang/runtime/ActorLinearArena.java \
+            src/main/java/dev/oreslang/runtime/TrustedLexicalUnwindV1.java \
             src/main/java/dev/oreslang/runtime/TrustedAllocationScopeV1.java \
             src/test/java/dev/oreslang/runtime/TrustedAllocationScopeV1HostProbe.java
           java -cp "$dir" dev.oreslang.runtime.TrustedAllocationScopeV1HostProbe | tee "$dir/probe.log"
           grep -Fqx 'ATTO_TRUSTED_ALLOC_SCOPE_JDK21_PASS' "$dir/probe.log"
+          javac -Xlint:all -d "$dir" \
+            src/main/java/dev/oreslang/runtime/TrustedLexicalUnwindV1.java \
+            src/test/java/dev/oreslang/runtime/TrustedLexicalUnwindV1HostProbe.java
+          java -cp "$dir" dev.oreslang.runtime.TrustedLexicalUnwindV1HostProbe | tee "$dir/unwind.log"
+          grep -Fqx 'ATTO_TRUSTED_LEXICAL_UNWIND_JDK21_PASS' "$dir/unwind.log"
           echo 'ATTO_TRUSTED_ALLOC_SCOPE_HOST=EXECUTED'
       - name: Evidence boundary
         if: always()

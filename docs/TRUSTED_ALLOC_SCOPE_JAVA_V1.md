@@ -61,3 +61,22 @@ includes 4,000 serial allocate/drop cycles with constant owner tracking,
 nested checkpoints, borrow-blocked cleanup, stale/replayed checkpoints,
 and simulated exceptional unwind. This is still **host runtime machinery**,
 not automatic compiled Atto guest lowering or full GC-freedom.
+
+## Trusted lexical-bracket lowering target
+
+`TrustedAllocationScopeV1.with_lexical_scope(Supplier<T>)` now wraps an
+authenticated `ScopeMark` in `TrustedLexicalUnwindV1.run`, which executes
+the real native owner retirement in all synchronous completion paths.
+It preserves the original user/body failure and suppresses an ordinary
+cleanup failure (bounded at 64). An `Error` or `SecurityException` in
+cleanup wins over a preceding ordinary body failure, retaining that body
+failure as a suppressed diagnostic. After a normal return, a cleanup error
+fails the operation rather than returning a success value.
+
+Final `TrustedAllocationScopeV1.close()` refuses to silently bypass an
+unconsumed lexical checkpoint. Native arena host probes exercise nested
+brackets, an ordinary return, primary exception with failed destructor,
+poisoned memory remaining live, close preflight, and 1,024-depth admission.
+The standalone pure unwind probe was actually compiled and executed using
+local JDK 21. This is **not** evidence that the Atto compiler automatically
+emits the bracket or has completed suspension/actor cancellation lowering.

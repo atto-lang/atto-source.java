@@ -213,6 +213,65 @@ public final class TrustedAllocationScopeV1HostProbe {
         }
     }
 
+
+    private static void checkedLexicalUnwindOnRealArena() {
+        try (ActorLinearArena arena = new ActorLinearArena(128, 8)) {
+            var observed = new ArrayList<Integer>();
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            scope.allocate_word(() -> observed.add(1));
+            int result = scope.with_lexical_scope(() -> {
+                scope.allocate_word(() -> observed.add(2));
+                int inner = scope.with_lexical_scope(() -> {
+                    scope.allocate_word(() -> observed.add(3));
+                    return 42;
+                });
+                check(observed.equals(List.of(3)), "nested native cleanup not executed");
+                return inner;
+            });
+            check(result == 42 && observed.equals(List.of(3, 2)),
+                    "lexical value return lost cleanup or result");
+            check(arena.liveAllocations() == 1, "only outer owner may survive inner scopes");
+            scope.close();
+            check(observed.equals(List.of(3, 2, 1)), "outer native owner cleanup");
+            check(arena.liveAllocations() == 0, "bracketed native scope leaked storage");
+        }
+        try (ActorLinearArena arena = new ActorLinearArena(64, 4)) {
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var mark = scope.begin_lexical_scope();
+            rejects(scope::close, "pending lexical checkpoint must block final close");
+            scope.end_lexical_scope(mark);
+            scope.close();
+        }
+        try (ActorLinearArena arena = new ActorLinearArena(64, 4)) {
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var marks = new ArrayList<TrustedAllocationScopeV1.ScopeMark>();
+            for (int i = 0; i < 1024; i++) marks.add(scope.begin_lexical_scope());
+            rejects(scope::begin_lexical_scope, "bounded lexical checkpoint nesting");
+            for (int i = marks.size() - 1; i >= 0; i--)
+                scope.end_lexical_scope(marks.get(i));
+            scope.close();
+        }
+        try (ActorLinearArena arena = new ActorLinearArena(64, 4)) {
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var bodyFailure = new IllegalArgumentException("body failure");
+            var cleanupFailure = new IllegalStateException("destructor failure");
+            try {
+                scope.with_lexical_scope(() -> {
+                    scope.allocate_word(() -> { throw cleanupFailure; });
+                    throw bodyFailure;
+                });
+                throw new AssertionError("lost native body failure");
+            } catch (IllegalArgumentException expected) {
+                check(expected == bodyFailure
+                        && expected.getSuppressed().length == 1
+                        && expected.getSuppressed()[0] == cleanupFailure,
+                        "native cleanup exception must be suppressed on primary");
+            }
+            check(arena.liveAllocations() == 1,
+                    "throwing destructor must quarantine native allocation");
+            rejects(scope::close, "poisoned native owner must not be silently retired");
+        }
+    }
     private static void admissionAndForeignOwner() {
         try (ActorLinearArena arena = new ActorLinearArena(8, 1)) {
             var first = TrustedAllocationScopeV1.trusted_open(arena);
@@ -234,6 +293,7 @@ public final class TrustedAllocationScopeV1HostProbe {
         destructorReentrancyAndQuarantine();
         lexicalCleanupAndBoundedOwnerMetadata();
         lexicalFailureStillDropsOtherOwners();
+        checkedLexicalUnwindOnRealArena();
         System.out.println("ATTO_TRUSTED_ALLOC_SCOPE_JDK21_PASS");
     }
 }
