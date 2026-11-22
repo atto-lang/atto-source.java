@@ -29,7 +29,7 @@ public final class DurableScalarSchemaV1 {
                              String fieldName, String fieldType,
                              String fingerprint) {
         public Descriptor {
-            requireName(schemaId);
+            requireSchemaId(schemaId);
             requireName(fieldName);
             if (schemaVersion != VERSION || fieldId < 1 || !"i64".equals(fieldType))
                 throw new IllegalArgumentException("unsupported durable scalar schema");
@@ -90,6 +90,12 @@ public final class DurableScalarSchemaV1 {
                 HexFormat.of().parseHex(expected.fingerprint())))
             throw new IllegalStateException("DURABLE_MESSAGE_SCHEMA_FINGERPRINT");
         return data.getLong();
+    }
+
+    private static void requireSchemaId(String s) {
+        if (s == null || s.length() > 256
+                || !s.matches("[A-Za-z_][A-Za-z0-9_.]*"))
+            throw new IllegalArgumentException("invalid durable nominal schema ID");
     }
 
     private static void requireName(String s) {
