@@ -49,6 +49,35 @@ final class NativeAttoEnvStdlibTest {
     }
 
     @Test
+    void projectCannotShadowCompilerOwnedStdEnv() throws Exception {
+        Path localStd = Files.createDirectories(temp.resolve("std"));
+        Files.writeString(localStd.resolve("env.atto"), """
+                define module std_env as
+                  pub fnc parse_bool(String value): Result<bool, String> {
+                    return Err("shadowed");
+                  }
+                end
+                """);
+        Path entry = temp.resolve("entry.atto");
+        Files.writeString(entry, """
+                import module std_env from "std/env";
+                pub routine main(): void {
+                  stdio.println(std_env.parse_bool("true").unwrap());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(entry,
+                IsolatePolicy.developer().withCapabilities(
+                        IsolatePolicy.Capability.ENVIRONMENT),
+                ExecutionProfile.serverJit(), out, err);
+        assertTrue(linked.units().containsKey("@std/env.atto"));
+        assertEquals("true", out.toString(StandardCharsets.UTF_8).trim(),
+                () -> err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void scopedDenyPrecedesHostEnvironmentLookup() throws Exception {
         Path entry = temp.resolve("deny.atto");
         Files.writeString(entry, """
