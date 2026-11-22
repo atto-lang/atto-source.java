@@ -22,8 +22,9 @@ final class TypeAutoTraitsTest {
             assertFalse(wrapped.sync(), "Result must not launder " + opaque);
         }
         var error = TypeAutoTraits.inferClosed(new Types.Named("CryptoError", List.of()));
-        assertTrue(error.send(), "immutable CryptoError identity may cross actor domains");
-        assertTrue(error.sync());
+        assertFalse(error.send(), "CryptoError actor wire identity is not verified yet");
+        assertFalse(error.sync());
+        assertFalse(error.share());
     }
 
     @Test
