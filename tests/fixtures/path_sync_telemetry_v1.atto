@@ -47,5 +47,11 @@ pub routine main(): void {
   stdio.println(path.normalized_component_scalar("a/./b/../c", false, 1, 1));
   stdio.println(path.is_portable_relative("a/.."));
   stdio.println(path.join_admissible("a", "b", true));
+  stdio.println(sync.mutex_release_receipt_admissible(true, 8, 8, 3, 3, false));
+  stdio.println(sync.mutex_release_receipt_admissible(true, 8, 9, 3, 3, false));
+  stdio.println(sync.mutex_release_receipt_admissible(true, 8, 8, 3, 2, false));
+  stdio.println(sync.mutex_release_receipt_admissible(true, 8, 8, 3, 3, true));
+  stdio.println(sync.rw_upgrade_admissible(1, false, 0, true));
+  stdio.println(sync.rw_upgrade_admissible(2, false, 0, true));
   return;
 }
