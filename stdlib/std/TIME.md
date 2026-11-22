@@ -61,3 +61,18 @@ teardown, clock-domain mismatch, AOT and overflow. A source-only review or
 host-language arithmetic model is not an executed Atto guest test.
 
 Upstream context: atto-lang/atto-spec#47; atto-lang/atto-source.rs#226.
+
+### Current Java execution gate (not yet an execution receipt)
+
+The example now imports the **compiler-owned** `std/time` module once and
+calls `time.*` factories. It shares exact fixture Git blob
+`4937c0d975b4d87ea65cb93957175b6ba557b5c1` with LLVM.
+`NativeTimeStdlibTest.compiledGuestRunsCanonicalFiftyTwoCaseTimeContract`
+invokes `LinkedProgramRunner` and requires 52 distinct pass markers plus
+`TIME-CONTRACT-DONE`. The source workflow rejects fewer than five JUnit
+tests in that class. Until a current-HEAD, stepful JUnit job finishes,
+the compiled Atto guest and GraalVM native-image cells remain **NOT_EXECUTED**.
+
+The protected `main` private-source export allowlist has **no approved
+alternate destination**. Never mirror this private compiler to an unrelated
+test organization merely because its GHA runner has spare minutes.
