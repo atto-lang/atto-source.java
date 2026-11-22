@@ -105,4 +105,62 @@ final class CoreMemoryPolicyGuestTest {
                     "closed compiler registry must reject " + importPath);
         }
     }
+    @Test
+    void linkedMemoryOverflowPolicyRejectsMaxSizeWithoutWrapping() throws Exception {
+        assertEquals(42, linkedGuestExit("""
+                import fnc align_up_checked from "ores.core/mem";
+                pub fnc main(): int {
+                    if imports::align_up_checked(9223372036854775807, 8) == -1 then
+                        return 42;
+                    fi
+                    return 1;
+                }
+                """, "mem-overflow"));
+    }
+
+    @Test
+    void linkedPointerBoundsRejectOnePastEnd() throws Exception {
+        assertEquals(42, linkedGuestExit("""
+                import fnc checked_index_offset from "ores.core/ptr";
+                pub fnc main(): int {
+                    if imports::checked_index_offset(64, 0, 8, 8, 8, 8, 8) == -1 then
+                        return 42;
+                    fi
+                    return 1;
+                }
+                """, "ptr-bounds"));
+    }
+
+    @Test
+    void linkedAtomicPolicyRejectsIllegalCasOrders() throws Exception {
+        assertEquals(42, linkedGuestExit("""
+                import fnc valid_compare_exchange_orders from "ores.core/atomic";
+                pub fnc main(): int {
+                    if imports::valid_compare_exchange_orders(4, 2) then
+                        return 1;
+                    fi
+                    if imports::valid_compare_exchange_orders(3, 1) then
+                        return 42;
+                    fi
+                    return 2;
+                }
+                """, "atomic-cas-orders"));
+    }
+
+    @Test
+    void guestOrderedAtomicsRemainFailClosedUntilSignatureLoweringExists() {
+        // The host now admits ordered overloads; that does NOT make the
+        // same guest call signature legal until compiler/lowering supports it.
+        for (String statements : new String[] {
+                "val c: Atomic<int> = Atomic.new(5); c.load(4);",
+                "val c: Atomic<int> = Atomic.new(5); c.store(6, 2);",
+                "val c: Atomic<int> = Atomic.new(5); c.fetch_add(1, 3);",
+                "val c: Atomic<int> = Atomic.new(5); c.compare_exchange(5, 6, 4, 4);"
+        }) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    TypeChecker.check(Parser.parse(
+                            "pub fnc main(): void { " + statements + " return; }")));
+        }
+    }
+
 }
