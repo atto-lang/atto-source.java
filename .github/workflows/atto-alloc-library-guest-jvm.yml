@@ -7,6 +7,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - 'src/test/java/dev/oreslang/AttoAllocLibraryGuestTest.java'
       - 'tests/fixtures/alloc-heap-arena-region-*.atto'
+      - 'tests/fixtures/alloc-region-moved-owner-reject.atto'
       - '.github/workflows/atto-alloc-library-guest-jvm.yml'
   workflow_dispatch:
 
@@ -51,11 +52,11 @@ jobs:
           mvn -B -ntp -DfailIfNoTests=true -Dtest=AttoAllocLibraryGuestTest clean test
           report=target/surefire-reports/TEST-dev.oreslang.AttoAllocLibraryGuestTest.xml
           test -s "$report"
-          for test_name in             allocModulesAreClosedAndPackaged             purePolicyFixtureExecutesRealImportedAtto             lifecycleStateMachinesExecuteInAtto             aliasIdentityAndUntrustedShadowNeverOverridePackagedSource             invalidPackagePathCannotFallBackToAmbientModule; do
+          for test_name in             allocModulesAreClosedAndPackaged             purePolicyFixtureExecutesRealImportedAtto             lifecycleStateMachinesExecuteInAtto             aliasIdentityAndUntrustedShadowNeverOverridePackagedSource             invalidPackagePathCannotFallBackToAmbientModule             movedRegionOwnerCannotBeUsedAfterTransfer; do
             grep -Fq "name=\"$test_name\"" "$report"
           done
           ! grep -Eq '(errors|failures|skipped)="[1-9][0-9]*"' "$report"
-          echo "JAVA_ATTO_ALLOC_GUEST_TESTS_EXECUTED=5"
+          echo "JAVA_ATTO_ALLOC_GUEST_TESTS_EXECUTED=6"
       - name: Record final pinned source head
         shell: bash
         env:
