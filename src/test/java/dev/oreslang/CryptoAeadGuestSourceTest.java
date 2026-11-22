@@ -61,16 +61,29 @@ final class CryptoAeadGuestSourceTest {
                         }
                         """));
         assertTrue(algorithm.getMessage().contains("algorithm"));
-        PolyglotException byteRange = assertThrows(PolyglotException.class,
-                () -> run("""
-                        import * as crypto from "std.crypto";
-                        pub routine main(): void {
-                          val key = crypto.aead_new_key(1);
-                          val sealed = crypto.aead_seal(key, [], [256]);
-                          return;
-                        }
-                        """));
-        assertTrue(byteRange.getMessage().contains("0..255"));
+        assertEquals("true", run("""
+                import * as crypto from "std.crypto";
+                pub routine main(): void {
+                  val key = crypto.aead_new_key(1);
+                  val sealed = crypto.aead_seal(key, [], [256]);
+                  stdio.stdout.write(sealed.is_err());
+                  crypto.aead_close(key);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void typedCryptoErrorConstantsAreSealedAndVisible() {
+        assertEquals("true", run("""
+                import * as crypto from "std.crypto";
+                pub routine main(): void {
+                  val CryptoError failed = crypto.authentication_failed;
+                  val CryptoError invalid = crypto.invalid_input;
+                  stdio.stdout.write(failed neq invalid);
+                  return;
+                }
+                """));
     }
 
     @Test
