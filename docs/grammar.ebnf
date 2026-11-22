@@ -327,7 +327,18 @@ switch_stmt     = [ "do" ] "switch" expression [ ";" ]
 switch_case     = "case" expression { "," expression } "->" block ;
 switch_default  = "default" "->" block ;
 
-try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
+try_stmt        = "try" ( block braced_try_tail
+                            | { statement } keyword_try_tail "end" ) ;
+braced_try_tail = "catch" catch_header block [ "finally" block ]
+                | "finally" block ;
+keyword_try_tail= "catch" catch_header { statement } [ "finally" { statement } ]
+                | "finally" { statement } ;
+catch_header    = "(" [ IDENT | "Error" IDENT ] ")" ;
+(* Unbraced try statements stop each clause at the next top-level catch,
+   finally or end. Nested statements consume their own delimiters.
+   catch() is a catch-all with no accessible binder. Typed catches currently
+   admit the built-in Error; subclass matching must be explicitly lowered.
+   Braced tries do not use end; arm styles cannot mix within one try. *)
 
 select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
                   "select" [ select_policy ] select_static_body ;

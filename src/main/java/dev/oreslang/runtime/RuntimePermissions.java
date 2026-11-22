@@ -204,6 +204,48 @@ public final class RuntimePermissions {
         }
     }
 
+    /**
+     * Check the raw lexical path without consulting filesystem metadata. This is
+     * a *preflight* only, never a substitute for the canonical resolved-path
+     * permission check at the actual I/O boundary.
+     *
+     * Allowed/denied path scopes are canonicalized once when the policy is
+     * constructed. The candidate is normalized lexically (no toRealPath,
+     * Files.exists or isSymbolicLink) so a forbidden target is not probed before
+     * a scoped grant is established.
+     */
+    public void requireLexicalFilesystemPath(
+            Permission permission, String resource, String api) {
+        if (permission != Permission.READ && permission != Permission.WRITE) {
+            throw new IllegalArgumentException("lexical filesystem preflight requires READ or WRITE");
+        }
+        Rule rule = rules.get(permission);
+        boolean allowed = false;
+        if (rule != null && !rule.denyAll() && safeScope(resource)) {
+            String path = Path.of(resource).toAbsolutePath().normalize().toString();
+            allowed = !matchesLexicalPath(path, rule.denied())
+                    && (rule.allowAll() || matchesLexicalPath(path, rule.allowed()));
+        }
+        if (!allowed) {
+            // Never echo control bytes or malformed Unicode into host diagnostics.
+            String rendered = safeScope(resource) ? resource : "<invalid>";
+            throw new SecurityException(
+                    "Oreslang permission denied: " + permission.cliName()
+                            + " access to '" + rendered + "' required by " + api);
+        }
+    }
+
+    private static boolean matchesLexicalPath(String resource, Set<String> scopes) {
+        for (String scope : scopes) {
+            if (resource.equals(scope)) return true;
+            String separator = java.io.File.separator;
+            if (resource.startsWith(scope.endsWith(separator) ? scope : scope + separator)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean allows(Permission permission, String resource) {
         Rule rule = rules.get(permission);
         if (rule == null || !safeScope(resource)) return false;

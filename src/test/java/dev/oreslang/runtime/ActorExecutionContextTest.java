@@ -143,6 +143,47 @@ final class ActorExecutionContextTest {
         }
     }
 
+    /**
+     * A mailbox handler failure must not leave a logical actor identity on
+     * the reused single private carrier. This covers the exception path
+     * after successful publication, complementing the mint-failure test.
+     */
+    @Test
+    void handlerFailureDoesNotPoisonReusedPrivateCarrier() throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 8))) {
+            AtomicReference<ExecutionContext> failedTurn = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> failing = runtime.spawnPrivate(
+                    () -> (message, turn) -> {
+                        failedTurn.set(ActorRuntime.currentActorExecutionContext());
+                        throw new IllegalStateException("intentional actor turn failure");
+                    });
+            failing.send("fail");
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> failing.done().get(5, TimeUnit.SECONDS));
+            assertTrue(String.valueOf(failure.getCause()).contains(
+                    "intentional actor turn failure"));
+            assertNotNull(failedTurn.get());
+
+            AtomicReference<ExecutionContext> healthyTurn = new AtomicReference<>();
+            CountDownLatch ran = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> healthy = runtime.spawnPrivate(
+                    () -> (message, turn) -> {
+                        assertEquals(turn.self().id(),
+                                ActorRuntime.currentActorId().orElseThrow());
+                        healthyTurn.set(ActorRuntime.currentActorExecutionContext());
+                        ran.countDown();
+                    });
+            healthy.send("ok");
+            assertTrue(ran.await(5, TimeUnit.SECONDS),
+                    "the single carrier must admit a fresh actor turn");
+            assertNotNull(healthyTurn.get());
+            assertNotEquals(failedTurn.get().id(), healthyTurn.get().id());
+            assertNotEquals(failedTurn.get().allocationDomain().domain(),
+                    healthyTurn.get().allocationDomain().domain());
+        }
+    }
+
     private static boolean waitFor(List<?> list, int size) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (list.size() < size) {

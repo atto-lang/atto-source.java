@@ -34,6 +34,16 @@ define module numeric as
   // Native Oreslang wrappers around the Java backend's sealed named
   // intrinsics. Other backends must independently implement the same contract
   // before claiming support; do not fall back to Java interoperability.
+  // Public native-Oreslang wrappers for checked sign operations. The
+  // backend intrinsic is sealed and shadow-aware; no Java interop is exposed.
+  pub fnc abs_int(int value): int {
+    return Math.abs(value);
+  }
+
+  pub fnc neg_int(int value): int {
+    return Math.neg(value);
+  }
+
   pub fnc rem_int(int dividend, int divisor): int {
     return Integer.rem(dividend, divisor);
   }

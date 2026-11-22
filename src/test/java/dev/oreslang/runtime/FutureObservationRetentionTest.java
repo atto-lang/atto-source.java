@@ -71,7 +71,7 @@ final class FutureObservationRetentionTest {
     }
 
     @Test
-    void allSettledCancellationDetachesWithoutCancellingBorrowedChildren() {
+    void allSettledCancellationDetachesWithoutCancellingBorrowedChildren() throws Exception {
         // allSettled is a nonowning observer. Its cancellation detaches only
         // subscriptions; the caller's TaskScope retains child cancel authority.
         OresFuture<Integer> uncancellable = new OresFuture<>(() -> false, () -> fail("not admitted"));
@@ -88,6 +88,8 @@ final class FutureObservationRetentionTest {
                 "cancelling a borrowed observer must not revoke an independently owned child");
         assertTrue(uncancellable.completeFromRuntime(42));
         assertTrue(cancellable.completeFromRuntime(7));
+        assertEquals(42, uncancellable.get());
+        assertEquals(7, cancellable.get());
         assertTrue(aggregate.isCancelled());
     }
 }

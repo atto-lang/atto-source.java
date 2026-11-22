@@ -1485,6 +1485,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_source_file_bound_matches_current_tree_scale_and_fails_closed(self):
+        self.assertEqual(pub.MAX_FILES, 4096)
+        extra = self.source / "second.ores"
+        extra.write_text("safe")
+        old_limit = pub.MAX_FILES
+        pub.MAX_FILES = 1
+        try:
+            with self.assertRaisesRegex(pub.Denied, "bounded capacity"):
+                pub.collect_source(self.source, self.root)
+        finally:
+            pub.MAX_FILES = old_limit
+
     def test_nested_regular_source_files_keep_expected_paths(self):
         directory = self.source / "nested"
         directory.mkdir()

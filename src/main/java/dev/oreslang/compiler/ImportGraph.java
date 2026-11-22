@@ -143,6 +143,8 @@ final class ImportGraph {
                             && fn.kind() == Ast.CallableKind.FNC
                             && fn.actorKind() == Ast.ActorKind.NONE
                             && fn.genericParameters().isEmpty()
+                            // Imported first-class signatures cannot erase suspend effects.
+                            && !fn.suspends()
                             && fn.name().equals(name);
                     case ACTOR -> decl instanceof Ast.ClassDecl klass
                             && klass.actorKind() != Ast.ActorKind.NONE

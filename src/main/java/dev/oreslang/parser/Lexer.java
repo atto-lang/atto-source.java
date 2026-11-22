@@ -9,6 +9,8 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
+    // Bound hostile source while scanning, not only after constructing a name.
+    private static final int MAX_QUOTED_SYMBOL_UNITS = 1_024;
 
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
@@ -124,7 +126,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE); case '•' -> add(BULLET);
             case '-' -> add(match('>') ? ARROW : MINUS);
@@ -202,6 +204,9 @@ public final class Lexer {
                 };
             }
             value.append(ch);
+            if (value.length() > MAX_QUOTED_SYMBOL_UNITS) {
+                throw error("quoted Symbol name exceeds normalization budget");
+            }
         }
         if (isAtEnd()) throw error("unterminated quoted Symbol literal");
         advance();
