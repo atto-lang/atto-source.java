@@ -6,7 +6,7 @@ use namespace http;
 
   // Typed, validated HTTP metadata only. Raw bytes and privileged I/O are
   // owned by the transport; these values are not network capabilities.
-  pub define class HeaderField as
+  define pub class HeaderField as
     pub val String name;
     pub val String value;
     pub constructor(String name, String value) {
@@ -18,7 +18,7 @@ use namespace http;
     }
   end
 
-  pub define class RequestMeta as
+  define pub class RequestMeta as
     pub val String method;
     pub val String target;
     // -1 means unspecified, NOT zero and NOT an admitted stream length.
@@ -34,7 +34,7 @@ use namespace http;
     }
   end
 
-  pub define class ResponseMeta as
+  define pub class ResponseMeta as
     pub val int status;
     pub val bool can_have_body;
     pub constructor(int status, bool is_head, bool is_connect) {
@@ -46,7 +46,7 @@ use namespace http;
     }
   end
 
-  pub define class RequestLine as
+  define pub class RequestLine as
     pub val String method;
     pub val String target;
 
@@ -81,7 +81,7 @@ use namespace http;
            c == 96 || c == 124 || c == 126;
   }
 
-  pub fnc method_valid(String method): bool {
+  define pub fnc method_valid(String method): bool {
     // Fast preflight prevents unbounded scalar snapshots on invalid input.
     if method.length == 0 || method.length > 64 then return false; fi
     val points = method.codepoints();
@@ -92,16 +92,16 @@ use namespace http;
     return true;
   }
 
-  pub fnc method_is_safe(String method): bool {
+  define pub fnc method_is_safe(String method): bool {
     return method == "GET" || method == "HEAD" ||
            method == "OPTIONS" || method == "TRACE";
   }
 
-  pub fnc method_is_idempotent(String method): bool {
+  define pub fnc method_is_idempotent(String method): bool {
     return method_is_safe(method) || method == "PUT" || method == "DELETE";
   }
 
-  pub fnc header_name_valid(String name): bool {
+  define pub fnc header_name_valid(String name): bool {
     if name.length == 0 || name.length > 1024 then return false; fi
     val points = name.codepoints();
     if points.size == 0 || points.size > 1024 then return false; fi
@@ -114,7 +114,7 @@ use namespace http;
   // Deliberately narrower than all RFC-valid field values: US-ASCII SP,
   // HTAB or visible ASCII only. This is a strict safe subset, not an
   // internationalized header codec. CR, LF, NUL and DEL fail closed.
-  pub fnc header_value_valid(String value): bool {
+  define pub fnc header_value_valid(String value): bool {
     if value.length > 65536 then return false; fi
     val points = value.codepoints();
     if points.size > 65536 then return false; fi
@@ -127,7 +127,7 @@ use namespace http;
 
   // Limits apply to the exact ASCII field wire line "name: value".
   // A transport must independently enforce aggregate byte and field budgets.
-  pub fnc header_line_valid(String name, String value, int max_bytes): bool {
+  define pub fnc header_line_valid(String name, String value, int max_bytes): bool {
     if max_bytes < 2 || max_bytes > 65536 then return false; fi
     // Preflight bounded lengths before the codepoint snapshots/character
     // validation. After ASCII admission these counts equal wire bytes.
@@ -143,7 +143,7 @@ use namespace http;
   // Origin-form only: disallow absolute/authority-form, fragments and ASCII
   // whitespace. Raw %-escape decoding, URL normalization and host admission
   // remain transport responsibilities, never implicit network authorization.
-  pub fnc origin_target_valid(String target): bool {
+  define pub fnc origin_target_valid(String target): bool {
     if target.length == 0 || target.length > 8192 then return false; fi
     if !target.starts_with("/") || target.starts_with("//") then return false; fi
     val points = target.codepoints();
@@ -163,7 +163,7 @@ use namespace http;
   }
 
   // Single already-separated request line only, never a wire read/parser.
-  pub fnc parse_request_line(String line): Result<RequestLine, String> {
+  define pub fnc parse_request_line(String line): Result<RequestLine, String> {
     if line.length == 0 || line.length > 8192 then
       return Err("request line size out of bounds");
     fi
@@ -181,18 +181,18 @@ use namespace http;
     return Ok(new RequestLine(method, target));
   }
 
-  pub fnc status_valid(int status): bool {
+  define pub fnc status_valid(int status): bool {
     return status >= 100 && status <= 599;
   }
 
-  pub fnc status_is_success(int status): bool {
+  define pub fnc status_is_success(int status): bool {
     return status >= 200 && status <= 299;
   }
 
   // HEAD and successful CONNECT never deliver an HTTP message body; CONNECT
   // bytes thereafter belong to the tunnel, NOT the HTTP response body.
   // 205 is a no-content status, like 204, regardless of Content-Length.
-  pub fnc response_body_allowed(int status, bool is_head, bool is_connect): bool {
+  define pub fnc response_body_allowed(int status, bool is_head, bool is_connect): bool {
     if !status_valid(status) || is_head then return false; fi
     if status < 200 || status == 204 || status == 205 || status == 304 then return false; fi
     if is_connect && status_is_success(status) then return false; fi
@@ -202,7 +202,7 @@ use namespace http;
   // HTTP/1.1 conservative framing policy. Reject TE+CL smuggling and reject
   // non-final chunked encodings. Caller parses exact field names and values,
   // duplicate Content-Length, trailer fields, and connection retirement.
-  pub fnc request_framing_allowed(bool has_transfer_encoding, bool has_content_length,
+  define pub fnc request_framing_allowed(bool has_transfer_encoding, bool has_content_length,
                                   bool final_transfer_is_chunked): bool {
     if has_transfer_encoding && has_content_length then return false; fi
     if has_transfer_encoding then return final_transfer_is_chunked; fi
@@ -213,7 +213,7 @@ use namespace http;
   // Reject duplicate CL even if equal; reject TE+CL, multiple TE fields and
   // unsupported transfer codings. This deliberately narrower HTTP/1.1
   // policy prevents independently parsing ambiguous framing.
-  pub fnc request_framing_fields_allowed(int content_length_fields,
+  define pub fnc request_framing_fields_allowed(int content_length_fields,
                                          int transfer_encoding_fields,
                                          bool final_chunked,
                                          bool unsupported_transfer_coding): bool {
@@ -232,7 +232,7 @@ use namespace http;
 
   // Stateless per-chunk admission, safe even near the maximum integer.
   // It is a size policy, not proof of body-stream ownership.
-  pub fnc body_chunk_allowed(int accumulated_bytes, int next_chunk_bytes,
+  define pub fnc body_chunk_allowed(int accumulated_bytes, int next_chunk_bytes,
                              int max_body_bytes): bool {
     if accumulated_bytes < 0 || next_chunk_bytes < 0 ||
        max_body_bytes < 0 || max_body_bytes > 1073741824 then
@@ -243,12 +243,12 @@ use namespace http;
   }
 
   // Subtraction-free length admission: no untrusted offset+length addition.
-  pub fnc body_bytes_allowed(int bytes, int max_body_bytes): bool {
+  define pub fnc body_bytes_allowed(int bytes, int max_body_bytes): bool {
     if bytes < 0 || max_body_bytes < 0 then return false; fi
     return bytes <= max_body_bytes;
   }
 
-  pub fnc header_budget_allowed(int head_bytes, int fields,
+  define pub fnc header_budget_allowed(int head_bytes, int fields,
                                 int max_head_bytes, int max_fields): bool {
     if head_bytes < 0 || fields < 0 then return false; fi
     if max_head_bytes < 0 || max_fields < 0 then return false; fi
@@ -257,14 +257,14 @@ use namespace http;
 
   // Header fields are constructed through a checked factory, not by
   // interpreting unbounded line input or silently normalizing values.
-  pub fnc header_field(String name, String value, int max_line_bytes): Result<HeaderField, String> {
+  define pub fnc header_field(String name, String value, int max_line_bytes): Result<HeaderField, String> {
     if !header_line_valid(name, value, max_line_bytes) then
       return Err("invalid or oversized header field");
     fi
     return Ok(new HeaderField(name, value));
   }
 
-  pub fnc request_meta(String method, String target,
+  define pub fnc request_meta(String method, String target,
                        int content_length): Result<RequestMeta, String> {
     if !method_valid(method) || !origin_target_valid(target) then
       return Err("invalid HTTP request metadata");
@@ -275,7 +275,7 @@ use namespace http;
     return Ok(new RequestMeta(method, target, content_length));
   }
 
-  pub fnc response_meta(int status, bool is_head,
+  define pub fnc response_meta(int status, bool is_head,
                         bool is_connect): Result<ResponseMeta, String> {
     if !status_valid(status) then return Err("invalid response status"); fi
     return Ok(new ResponseMeta(status, is_head, is_connect));
@@ -283,7 +283,7 @@ use namespace http;
 
   // Strictly parse *three* ASCII decimal digits. An HTTP status line's reason
   // phrase is advisory, so this routine does not interpret it.
-  pub fnc parse_status_code(String digits): Result<int, String> {
+  define pub fnc parse_status_code(String digits): Result<int, String> {
     val points = digits.codepoints();
     if points.size != 3 then return Err("status must have three digits"); fi
     let int status = 0;
@@ -298,7 +298,7 @@ use namespace http;
 
   // This only validates a complete, pre-bounded ASCII HTTP/1.1 status line;
   // it does not read a socket or accept HTTP/2 pseudo-headers.
-  pub fnc parse_status_line(String line): Result<int, String> {
+  define pub fnc parse_status_line(String line): Result<int, String> {
     if line.length < 12 || line.length > 1024 then
       return Err("status line size out of bounds");
     fi
@@ -317,7 +317,7 @@ use namespace http;
 
   // Overflow-safe decimal Content-Length. Callers MUST reject duplicate or
   // conflicting framing headers, even if individually well-formed.
-  pub fnc parse_content_length(String raw, int max_body_bytes): Result<int, String> {
+  define pub fnc parse_content_length(String raw, int max_body_bytes): Result<int, String> {
     if max_body_bytes < 0 || max_body_bytes > 1073741824 then
       return Err("invalid Content-Length budget");
     fi
@@ -342,7 +342,7 @@ use namespace http;
     return Ok(value);
   }
 
-  pub fnc content_length_valid(String raw, int max_body_bytes): bool {
+  define pub fnc content_length_valid(String raw, int max_body_bytes): bool {
     return parse_content_length(raw, max_body_bytes).is_ok();
   }
 
@@ -361,7 +361,7 @@ use namespace http;
   // Only literal and :named segments are supported. Wildcards, percent-
   // escaped paths, dot-segments and repeated separators need the future
   // canonical URL/router layer, and are deliberately denied here.
-  pub fnc route_pattern_valid(String pattern): bool {
+  define pub fnc route_pattern_valid(String pattern): bool {
     if !origin_target_valid(pattern) || pattern.contains_literal("?") ||
        pattern.contains_literal("%") || pattern.contains_literal("//") then
       return false;
@@ -386,7 +386,7 @@ use namespace http;
 
   // Query is not part of the route. The returned bool carries NO authority:
   // host admission, endpoint permissions and body limits still apply.
-  pub fnc route_matches(String pattern, String target): bool {
+  define pub fnc route_matches(String pattern, String target): bool {
     if !route_pattern_valid(pattern) || !origin_target_valid(target) then
       return false;
     fi
@@ -414,7 +414,7 @@ use namespace http;
     return true;
   }
 
-  pub fnc route_matches_method(String expected_method, String pattern,
+  define pub fnc route_matches_method(String expected_method, String pattern,
                                 String request_method, String target): bool {
     if !method_valid(expected_method) || !method_valid(request_method) then
       return false;
@@ -425,7 +425,7 @@ use namespace http;
   // Stream admission accounting owned by a single request/response reader.
   // Does not read, allocate, decompress, or issue host network operations.
   // Call admit() BEFORE allocating/copying any inbound transport chunk.
-  pub define class BodyBudget as
+  define pub class BodyBudget as
     let int max_bytes;
     let mut int consumed_bytes = 0;
     let mut bool closed = false;
@@ -465,7 +465,7 @@ use namespace http;
     }
   end
 
-  pub fnc body_budget(int max_bytes): Result<BodyBudget, String> {
+  define pub fnc body_budget(int max_bytes): Result<BodyBudget, String> {
     if max_bytes < 0 || max_bytes > 1073741824 then
       return Err("body budget out of bounds");
     fi
@@ -474,7 +474,7 @@ use namespace http;
 
   // Resource ceilings only; not a token, grant or authenticated network
   // capability. The transport intersects stronger private actor/tenant limits.
-  pub define class ClientLimits as
+  define pub class ClientLimits as
     pub val int max_body_bytes;
     pub val int max_header_bytes;
     pub val int max_redirects;
@@ -495,7 +495,7 @@ use namespace http;
     }
   end
 
-  pub fnc client_limits(int max_body_bytes, int max_header_bytes,
+  define pub fnc client_limits(int max_body_bytes, int max_header_bytes,
                         int max_redirects, int timeout_ms): Result<ClientLimits, String> {
     if max_body_bytes < 0 || max_body_bytes > 1073741824 then
       return Err("client body ceiling invalid");
@@ -513,7 +513,7 @@ use namespace http;
                                max_redirects, timeout_ms));
   }
 
-  pub define class ServerLimits as
+  define pub class ServerLimits as
     pub val int max_connections;
     pub val int max_request_body_bytes;
     pub val int max_header_bytes;
@@ -531,7 +531,7 @@ use namespace http;
     }
   end
 
-  pub fnc server_limits(int max_connections, int max_request_body_bytes,
+  define pub fnc server_limits(int max_connections, int max_request_body_bytes,
                         int max_header_bytes): Result<ServerLimits, String> {
     if max_connections < 1 || max_connections > 65536 then
       return Err("server connection ceiling invalid");
@@ -549,7 +549,7 @@ use namespace http;
   // Pure structural redirect candidate only. The transport MUST perform
   // new egress/DNS/TLS/IP/credential authorization on every hop. A caller
   // cannot confer permissions by passing true to a public Atto function.
-  pub fnc redirect_candidate(int status, bool has_location,
+  define pub fnc redirect_candidate(int status, bool has_location,
                              int completed_hops, int max_hops): bool {
     if !has_location || completed_hops < 0 || max_hops < 0 then return false; fi
     if completed_hops >= max_hops then return false; fi
@@ -561,7 +561,7 @@ use namespace http;
   // transport must independently determine whether a request was sent,
   // whether the request body can be replayed, and if auth remains valid.
   // Conservative default: only GET/HEAD, only before response is observed.
-  pub fnc retry_candidate(String method, int prior_retries,
+  define pub fnc retry_candidate(String method, int prior_retries,
                           int max_retries, bool response_started): bool {
     if method != "GET" && method != "HEAD" then return false; fi
     if prior_retries < 0 || max_retries < 0 || max_retries > 8 then return false; fi
