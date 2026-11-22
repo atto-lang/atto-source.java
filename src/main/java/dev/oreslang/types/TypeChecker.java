@@ -7894,6 +7894,7 @@ public final class TypeChecker {
                     }
                     case "write_text", "write_text_blocking",
                             "write_text_atomic", "write_text_atomic_blocking", "write_text_atomic_async",
+                            "write_text_durable_atomic_async",
                             "append_text", "append_text_blocking" -> {
                         result = Primitive.VOID;
                         parameters = List.of(Primitive.STRING, Primitive.STRING);
