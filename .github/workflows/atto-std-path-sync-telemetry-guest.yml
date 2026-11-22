@@ -9,6 +9,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/StdPathSyncTelemetryGuestTest.java'
       - 'src/test/java/dev/oreslang/runtime/NativeTraceStdlibTest.java'
       - 'tests/fixtures/path_sync_telemetry_v1.atto'
+      - 'tests/fixtures/atto_std_pure_policy_guest_v1.atto'
       - '.github/workflows/atto-std-path-sync-telemetry-guest.yml'
   workflow_dispatch:
 permissions:
@@ -35,6 +36,7 @@ jobs:
           for path in \
             stdlib/path.atto stdlib/sync.atto stdlib/telemetry.atto \
             tests/fixtures/path_sync_telemetry_v1.atto \
+            tests/fixtures/atto_std_pure_policy_guest_v1.atto \
             src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java \
             src/test/java/dev/oreslang/runtime/StdPathSyncTelemetryGuestTest.java; do
             blob="$(git hash-object --no-filters -- "$path")"
@@ -72,6 +74,7 @@ jobs:
                   "importedNativeAttoPoliciesExecuteInLinkedGuest",
                   "applicationFilesCannotShadowTrustedStdModules",
                   "invalidPathInstancesFailInGuestBeforeReturning",
+                  "all134SharedPolicyVectorsExecuteAndMutationChangesGuestExitStatus",
               },
               "dev.oreslang.runtime.NativeTraceStdlibTest": {
                   "independentlyPackagedTelemetryPolicyAndBatchExecuteInGuest",
