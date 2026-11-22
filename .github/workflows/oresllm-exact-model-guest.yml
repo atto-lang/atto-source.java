@@ -1,0 +1,42 @@
+name: Real OresLLM Models linked guest via full Graal/JVM compiler
+on:
+  push:
+    branches: ['test/oresllm-exact-private-model-guest-20261031']
+  pull_request:
+    paths:
+      - '.github/workflows/oresllm-exact-model-guest.yml'
+      - 'src/test/java/dev/oreslang/OresLlmExactModelGuestTest.java'
+      - 'src/test/resources/oresllm-private-mirror/**'
+permissions:
+  contents: read
+jobs:
+  graal-exact-model-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact private source and workflow checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$(git hash-object src/test/resources/oresllm-private-mirror/src/llm_models.ores)" = '02398b2d75f904d53a7104ebc95fe807d00d1306'
+          test "$(git hash-object src/test/resources/oresllm-private-mirror/tests/native-contract-smoke.ores)" = '2a4fb075a40b249303312fa3cac073a0418c5bf8'
+          echo "COMPILER_HEAD=$EXPECTED_HEAD"
+          echo "COMPILER_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute actual linked OresLLM Models source + guest
+        run: mvn -B -ntp -Dtest=OresLlmExactModelGuestTest,OresLlmExplicitOwnershipSyntaxTest test
