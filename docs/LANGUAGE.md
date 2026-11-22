@@ -4,7 +4,13 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 ## Files, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A source file may begin with an optional, flat, compile-time `namespace name;` declaration. The source namespace identifies the source unit for compiler metadata and ABI invalidation; it is **not** a runtime value, a type-only declaration container, an import alias, or a replacement for the physical source-unit identity. It does not grant access to private declarations, and cross-file imports still require explicit paths and selectors. Dotted/nested source namespaces are not part of the current syntax.
+
+A source file may contain multiple named modules. A module owns declarations and is itself a runtime-qualified value scope: exported members are accessed through the module name, such as `math.add(1, 2)`. Modules may expose functions, classes, bindings, and module state; type names and value names are checked in their respective declaration namespaces. Modules are flat and cannot contain other modules. The implementation-reserved name `__root__` represents file-root declarations and cannot be declared or imported as a module.
+
+A source namespace does **not** imply that all backend implementations can link or execute it. In particular, the native LLVM backend currently fails closed on runtime namespace use and on linked namespace/type identities; Java/Graal support must not be advertised as cross-backend parity.
+
+The compiler reserves `__root__` for its synthetic file-root module. User code cannot define `namespace __root__`, `define module __root__`, import `module __root__`, or use `__root__` as an import alias. A synthetic root module is **not** a public namespace export. The compiler keeps `CompiledUnit.namespace` separate from `CompiledUnit.packageId`; absent verified manifest grouping, each normalized source file receives a singleton package identity.
 
 ```ores
 define module math
@@ -104,6 +110,43 @@ specific sequencing relationship *between* two init hooks in the same cycle,
 that relationship should be made explicit in application code rather than
 inferred from the import edges.
 
+## Compile-time-only forward type declarations (v1 admission slice)
+
+`declare` is contextual at the start of a file-root or module declaration.
+Only `type`, `trait`, and `interface` support forward signatures:
+
+```ores
+declare type UserId;
+define type UserId = int;
+
+declare pub trait Printable<T>;
+define pub trait Printable<T> as
+  fnc print(T value) => void;
+end
+
+declare pub interface Named;
+define pub interface Named as
+  name: String;
+end
+```
+
+These forward signatures **do not** create runtime values, constructors,
+reflection descriptors, or executable AST nodes. They merely authorize a
+same-file, **same-scope** reference to a definition that must also be present in
+the compilation unit. The parser rejects an unresolved forward, duplicate
+forward, mismatched type/trait/interface kind, visibility changes in either
+direction, generic parameter mismatches and a type declaration resolved to a
+class or other value declaration.
+
+Do not use `declare class`, `declare actor`, `declare enum`, `declare model`
+or arbitrary external declaration stubs. Cross-file unresolved forward
+declarations and ABI import/export signatures are **not supported** by this
+slice; a different source module does not complete a declaration. Existing
+concrete `define` forms and runtime type/value distinction remain unchanged.
+
+This is an initial **parser-enforced** capability. It is not proof of
+cross-backend compiler parity or first-class runtime type objects.
+
 ## Module contracts
 
 Module shape is described by a dedicated `contract`, not by a trait or ordinary type interface. Traits are for structs, classes, actors, and other types; contracts are for modules.
@@ -120,9 +163,22 @@ define module math conforms MathApi as
 end
 ```
 
-Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
+Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants, functions, and a public nominal actor declaration. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
 
-A module contract is not a class/struct interface and cannot be implemented by a class or actor.
+```atto
+define contract ActorApi as
+  actor Worker;
+end
+
+define module workers conforms ActorApi as
+  pub define actor Worker as
+  end
+end
+```
+
+The `actor Worker;` requirement is a **static type-presence requirement**, not an actor instance, runtime capability, synthesized handler, or permission to read actor-owned memory. A private, generic, or different-module actor, or an ordinary class named `Worker`, cannot satisfy it. The actor requirement's name also cannot collide with a required field or function, including inherited names. Contract inheritance retains this requirement, and exported ABI fingerprints include it.
+
+A module contract is not a class/struct interface and cannot be implemented by a class or actor. External receiver-method definitions (`mtd name(Actor a)(...)`), `define actor A as a;`, and required receiver method hooks are separately proposed and are **not enabled by this actor-type requirement**. See [actor/module contracts v1](ACTOR_MODULE_CONTRACTS_V1.md).
 
 ## Functions and returns
 
@@ -349,15 +405,52 @@ finite sequence shapes.
 
 ## Bindings
 
-Every local binding is declared as exactly one of:
+Every local binding is declared with a fixed/rebindable permission:
 
-- `const`: compile-time constant; cannot be reassigned.
-- `val`: runtime single-assignment binding; cannot be reassigned.
-- `let`: mutable binding and the only local binding kind that may be reassigned.
+- `const`: fixed readonly local binding; its checked initializer is evaluated
+  eagerly once in lexical order and the binding cannot be reassigned. A typed
+  scalar `const` (and every type-first local) must be compile-time evaluable;
+  see below.
+- `val`: runtime single-assignment binding; it cannot be reassigned and keeps
+  its existing referent-mutation permission subject to ownership checks.
+- `let`: rebindable binding and the only local binding kind that may be
+  reassigned.
+
+A **typed scalar const** (`int`, `bool`, `string`/`String`) is a compile-time
+constant: `const int x = e;` and the type-right `const x: int = e;` require an
+initializer the checker can evaluate without running guest code (literals,
+prior typed scalar constants, checked `+ - *`, comparisons, `! && || ^^`,
+string `+` within a size budget, and conditionals over those). Anything else
+is rejected with `E_NON_CONST_INITIALIZER`; overflow is `E_CONST_OVERFLOW`;
+`const mut` on a scalar is `E_CONST_MUT_UNSUPPORTED`. Untyped `const x = e;`
+is unchanged in this stage: a fixed readonly binding whose value is folded
+when it is constant (spec chapter 27, stage one). Contexts such as switch/case
+patterns that require a compile-time constant expression check that property
+explicitly.
+
+Primitive type-first locals are exactly typed scalar constants:
+
+```ores
+int answer = 6 * 7;      // same as const int answer = 6 * 7;
+bool ready = true;
+```
+
+A runtime initializer needs an explicit runtime binding:
+
+```ores
+val int answer = compute();   // or: val answer = compute();
+let int retries = 0;          // rebindable
+```
+
+`int answer = compute();` is rejected with `E_NON_CONST_INITIALIZER`; it is
+never reinterpreted as `val`. A bare `mut int x = e;` is rejected with
+`E_MUT_QUALIFIER`. Reassigning a `const`/`val` binding is
+`E_IMMUTABLE_REBIND`. Use explicit `let` when rebinding is intended.
 
 ```ores
 const max = 10;
-val request_id = process.context_id;
+const request_id = process.context_id;
+val mutable_view = process.mutable_view;
 let retries = 0;
 retries = retries + 1;
 ```
@@ -382,7 +475,7 @@ A bare `_` is a sequence discard pattern: it consumes that array/tuple position 
 [_, _, const final] = (1, 2, 3);
 ```
 
-`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
+`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding, matching standalone local `const` binding semantics; neither spelling by itself requires the initializer value to be known at compile time.
 
 Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
 
@@ -518,6 +611,61 @@ end
 ```
 
 Anonymous structs and array literals are values, not classes, and cannot be inherited from.
+
+## Record type positions versus record value positions
+
+`record { ... }` is unambiguous because the *enclosing grammar* selects
+whether the braces contain field types or field values. The compiler must not
+infer the grammar from whether a field payload is a literal or an identifier.
+
+```ores
+type T = record { foo: string };       // type declaration; foo has type string
+
+pub fnc make(string value): T {
+    const T x = record { foo: value }; // value binding; foo evaluates value
+    return x;
+}
+
+pub fnc inline(): record { foo: string } {
+    return record { foo: "hello" };
+}
+```
+
+A plain record literal is a value and never implicitly binds an undeclared type
+name. In the current compiler, `const T x = record {...}` requires `T` to be
+an existing type alias. `const T x = infer<T> record {...}` or the proven
+short named-inference form may instead capture a *lexical*, readonly structural
+type alias, but must not manufacture nominal identity or a runtime type object.
+
+The equivalent name-first declaration syntax is supported for explicit
+inferred-struct capture. It preserves the same lexical type identity and
+closed-shape checking as the type-first spelling:
+
+```ores
+fnc create(): float {
+    const point: Point = infer<Point> struct { x: 3.0, y: 4.0 };
+    const next: Point = infer struct { x: 5.0, y: 6.0 };
+    return next.y;
+}
+```
+
+The checked short capture `const point: Point = infer struct {...}` may
+also introduce `Point` if that name is unbound and safe to introduce. The
+corresponding type-first spelling is `const Point point = infer struct {...}`.
+These are compile-time aliases, not runtime type objects; they do not
+permit record-to-struct coercion, field-set growth, or mutation through a
+readonly `const` value.
+
+Type declarations are immutable by definition. `const type T = ...` is invalid;
+`type T = ...` defines a type, whereas `const type T x = ...` may use
+`type T` as an explicit named-type marker in a value binding.
+
+Function-/routine-local standalone declarations such as
+`fnc make(): T { type T = record { foo: string }; ... }` remain **proposed**,
+not executable in this compiler revision. Supporting them requires
+compile-time lexical type registration, return-signature dependency resolution,
+public ABI serialization, and ownership/backend conformance. Do not treat a
+local `type` statement as a runtime value or silently export its name.
 
 ## Inline values
 
@@ -935,20 +1083,29 @@ fi
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
-Inline value binding is supported with an explicit boolean predicate:
+Inline captures preserve their initializer value and use ordinary `let` ownership:
 
 ```ores
-if some_call() as let value when value > 0 {
+if is_ready(some_call() as let value) {
   consume(value);
-} fi
-while some_call() as let value when value > 0 {
+fi
+if (some_call() as let value) > 0 then
+  consume(value);
+fi
+while is_ready(some_call() as let value) {
   consume(value);
 }
+if let Some(value) = maybe_call() then
+  consume(value);
+fi
 ```
 
-Each reached initializer is evaluated once. The `if` binding is scoped to its
-predicate and remaining branch chain; a `while` binding is recreated on every
-test, including after `continue`. See [the full contract](VALUE_BOUNDARIES.md).
+Each reached initializer evaluates once. Captures are scoped to that condition
+and matching body, and loops recreate them for every test. The condition is
+bool; capturing does not add truthiness or duplicate ownership. A consuming
+predicate moves its argument; explicitly borrow when the body needs the owner.
+The older `expr as let value when predicate` head remains supported with its
+original remaining-branch-chain scope. See [the full contract](VALUE_BOUNDARIES.md).
 
 ## Exceptions and defer
 
@@ -1448,7 +1605,7 @@ Iterator variables are declarations, so every `for ... of ...` header must expli
 
 Bare forms such as `for item of values` are rejected at compile time with `variable used before declared`. `val` is not accepted as a for-of binder; the iterator surface intentionally uses only `const` and `let`.
 
-`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn. It does **not** claim that the element value is a compile-time constant; the ordinary compile-time-constant initializer rule for standalone `const` declarations does not apply to this compiler-initialized slot. `let` creates the same per-iteration slot but permits rebinding that local.
+`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn, the same binding-level immutability used by standalone local `const`. It does **not** claim that the element value is a compile-time constant. `let` creates the same per-iteration slot but permits rebinding that local.
 
 Parentheses may fence the entire iterator header when that improves readability or avoids syntactic ambiguity:
 
@@ -1909,7 +2066,7 @@ fnc inspect(borrow Bar value): void {
 }
 ```
 
-Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
+Exclusive mutable borrowing uses `rt mut borrow value` and `borrow mut T`:
 
 ```ores
 fnc change(borrow mut Bar value): void {
@@ -1919,7 +2076,7 @@ fnc change(borrow mut Bar value): void {
 
 fnc example(): void {
   val Bar b = new Bar();
-  change(rt borrow mut b);
+  change(rt mut borrow b);
   stdio.println(b.foo);
   return;
 }
@@ -1972,7 +2129,10 @@ Oreslang keeps four related operations separate:
 - `match` performs proof-checked pattern partitioning, while `switch` is
   constant/equality case dispatch.
 
-Every `if` closes with `fi`, even when its branch bodies use braces.
+Every `if` closes with `fi`. In braced conditionals, `{` replaces `then`,
+`} elif` / `} else` separate branches, and `fi` closes the final branch; there
+is no final `}` before `fi`. The historical `} fi` is accepted with a migration
+diagnostic.
 Executable match/switch arms use `->`; `=>` remains type-level syntax.
 
 Plain `match` is exclusive-by-default. The checker proves every pair of

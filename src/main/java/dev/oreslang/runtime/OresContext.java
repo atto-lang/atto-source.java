@@ -10,6 +10,8 @@ import dev.oreslang.ast.Ast;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -22,6 +24,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 public final class OresContext implements AutoCloseable {
+    // A failed physical shutdown must never let Truffle/actor heaps disappear
+    // merely because the host dropped the context wrapper. This quarantine is
+    // released only after every mandatory retirement gate has succeeded.
+    private static final java.util.Set<OresContext> QUARANTINED_CONTEXTS =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
 
     private final OresLanguage language;
@@ -31,10 +38,49 @@ public final class OresContext implements AutoCloseable {
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
+    private final SourceActorPubSub actorPubSub;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    // Host-provisioned at context creation; default is DENY with no service.
+    private final WorkflowHostServiceRegistry workflowHostServices;
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    // Guest-visible timers (process.sleep_async). Revoked before actor and
+    // native I/O retirement so no clock callback outlives the context.
+    private final OresTimers guestTimers = new OresTimers();
+    public OresTimers guestTimers() { return guestTimers; }
+    /** Typed intrinsic only; returns guest-owned scalar data, never host handles. */
+    public OresFuture<java.util.List<Object>> submitWorkflowGuest(Object payload) {
+        requireCapability(IsolatePolicy.Capability.WORKFLOW_STORAGE, "rt workflow_request");
+        if (isolatePolicy.adversarial()
+                || ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+            throw new SecurityException("untrusted actor/isolate cannot invoke workflow host services");
+        }
+        return WorkflowGuestPort.submit(workflowHostServices, payload);
+    }
+    private final OutboundEgressPolicy.Policy outboundHttpPolicy =
+            OutboundEgressPolicy.Policy.loopbackOnly();
+    private final PinnedHttpTransport.ConnectionBudget outboundHttpBudget =
+            new PinnedHttpTransport.ConnectionBudget(
+                    outboundHttpPolicy.limits());
+    private BoundedDnsResolver outboundDnsResolver;
+
+    OutboundEgressPolicy.Policy outboundHttpPolicy() {
+        return outboundHttpPolicy;
+    }
+
+    PinnedHttpTransport.ConnectionBudget outboundHttpBudget() {
+        return outboundHttpBudget;
+    }
+
+    synchronized BoundedDnsResolver outboundDnsResolver() {
+        if (outboundDnsResolver == null) {
+            outboundDnsResolver = BoundedDnsResolver.system(
+                    nativeIo,
+                    outboundHttpPolicy.limits().connectTimeout());
+        }
+        return outboundDnsResolver;
+    }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 
@@ -75,9 +121,14 @@ public final class OresContext implements AutoCloseable {
         long contextPerf = CorePerf.start();
         this.language = language;
         this.env = env;
-        this.input = new BufferedReader(new InputStreamReader(env.in()));
-        this.output = new PrintWriter(env.out(), true);
+        this.input = new BufferedReader(new InputStreamReader(env.in(), StandardCharsets.UTF_8));
+        this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
+        // No host workflow service may enter an adversarial VM context.
+        // Consume a one-shot provision even when forbidden so it cannot leak
+        // into a later trusted context on this embedding thread.
+        this.workflowHostServices = WorkflowHostServiceRegistry.forNewContext(
+                !isolatePolicy.adversarial());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
@@ -110,13 +161,20 @@ public final class OresContext implements AutoCloseable {
                     isolatePolicy,
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
-                    vm::executeControl);
+                    vm::executeControl,
+                    vm::executePhysicalStop);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
+            // Install BEFORE publishing this actor runtime to any guest.
+            // The arena-release gate runs before actorExitHook and is notified
+            // by the final physical worker/resource-loan receipt.
+            actors.setNativeIoLoanRetirementGate(nativeIo::actorPhysicallyRetired);
+            nativeIo.setActorLoanRetiredListener(actors::onNativeIoLoanRetired);
             actors.setActorExitHook(gc::retireActorDomain);
 
             this.vm = vm;
             this.actors = actors;
+            this.actorPubSub = new SourceActorPubSub(actors);
             this.asyncRuntime = async;
             this.garbageCollector = gc;
         } catch (RuntimeException | Error failure) {
@@ -142,6 +200,7 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+    public SourceActorPubSub actorPubSub() { return actorPubSub; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -426,36 +485,106 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
-    @Override
-    public void close() {
-        nativeIo.close();
-        http.close();
+    /**
+     * Two-phase physical context retirement. Separate sealing/revocation from
+     * the physical joins, so an actor holding a socket loan cannot make the
+     * context wait for a worker before any cancellation has been requested.
+     *
+     * Each phase is independently attempted on failure; neither actor nor
+     * native ownership may be reclaimed without BOTH joins succeeding.
+     * Package access permits exercising this exact production sequence in
+     * deterministic unit tests without constructing a Truffle environment.
+     */
+    static void joinActorsAndNativeIo(ActorRuntime actors, AsyncNativeIo nativeIo) {
+        java.util.Objects.requireNonNull(actors);
+        java.util.Objects.requireNonNull(nativeIo);
         RuntimeException failure = null;
         try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            actors.sealShutdownAdmission();
+        } catch (RuntimeException sealFailure) {
+            failure = sealFailure;
+        }
+        try {
+            nativeIo.requestShutdown();
+        } catch (RuntimeException revokeFailure) {
+            if (failure == null) failure = revokeFailure;
+            else if (failure != revokeFailure) failure.addSuppressed(revokeFailure);
         }
         try {
             actors.close();
         } catch (RuntimeException actorFailure) {
             if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
+            else if (failure != actorFailure) failure.addSuppressed(actorFailure);
+        }
+        try {
+            nativeIo.close();
+        } catch (RuntimeException ioFailure) {
+            if (failure == null) failure = ioFailure;
+            else if (failure != ioFailure) failure.addSuppressed(ioFailure);
+        }
+        if (failure != null) {
+            throw new IllegalStateException(
+                    "Oreslang actor and native I/O retirement incomplete", failure);
+        }
+    }
+
+    @Override
+    public void close() {
+        // Hold the entire actor, scheduler, Truffle code image and GC graph
+        // strongly reachable until BOTH physical joins succeed.
+        QUARANTINED_CONTEXTS.add(this);
+        guestTimers.close();
+        // Revoke workflow admission and drain callbacks before JNI teardown.
+        // On timeout, retain the context rather than freeing live host state.
+        try {
+            workflowHostServices.close();
+        } catch (RuntimeException incomplete) {
+            output.flush();
+            throw new IllegalStateException(
+                    "workflow host service retirement incomplete; context quarantined",
+                    incomplete);
+        }
+        try {
+            joinActorsAndNativeIo(actors, nativeIo);
+        } catch (RuntimeException incomplete) {
+            output.flush();
+            throw new IllegalStateException(
+                    "Oreslang context cleanup incomplete; physical state quarantined",
+                    incomplete);
+        }
+        RuntimeException failure = null;
+        try {
+            http.close();
+        } catch (RuntimeException httpFailure) {
+            failure = httpFailure;
+        }
+        try {
+            asyncRuntime.close();
+        } catch (RuntimeException asyncFailure) {
+            if (failure == null) failure = asyncFailure;
+            else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
         }
         try {
             vm.close();
         } catch (RuntimeException vmFailure) {
             if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
-            }
-            garbageCollector.close();
-            output.flush();
+            else if (failure != vmFailure) failure.addSuppressed(vmFailure);
         }
-        if (failure != null) throw failure;
+        if (failure != null) {
+            output.flush();
+            throw new IllegalStateException(
+                    "Oreslang context auxiliary shutdown incomplete; context quarantined",
+                    failure);
+        }
+
+        synchronized (this) {
+            linkedCodeUnits.clear();
+            linkedImportResolutions.clear();
+            sharedCodeImages.close();
+        }
+        actorPubSub.close();
+        garbageCollector.close();
+        output.flush();
+        QUARANTINED_CONTEXTS.remove(this);
     }
 }

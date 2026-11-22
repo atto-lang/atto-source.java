@@ -52,6 +52,39 @@ class OresSymbolTest {
         assertEquals(OresSymbol.process("café"), OresSymbol.process("cafe\u0301"));
     }
 
+    @Test void rawNormalizationBudgetAndLongIdentifierRoundTrip() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresSymbol.process("a".repeat(100_000)));
+        OresSymbol longName = OresSymbol.process("a".repeat(129));
+        String rendered = longName.toString();
+        assertTrue(rendered.startsWith("#\""), "unquoted Symbol exceeds lexical limit");
+        List<Token> parsed = new Lexer(rendered).scan();
+        assertEquals(Token.Type.SYMBOL_LITERAL, parsed.getFirst().type());
+        assertEquals(longName.name(), parsed.getFirst().lexeme());
+    }
+
+    @Test void taggedPropertyKeyDomainsPreserveCanonicalIdentity() {
+        OresPropertyKey text = OresPropertyKey.fromGuestValue("café");
+        OresPropertyKey canonical = OresPropertyKey.fromGuestValue(OresSymbol.process("café"));
+        OresPropertyKey decomposed = OresPropertyKey.fromGuestValue(OresSymbol.process("cafe\u0301"));
+        assertNotEquals(text, canonical);
+        assertEquals(canonical, decomposed);
+        assertEquals(OresPropertyKey.Domain.STRING, text.domain());
+        assertEquals(OresPropertyKey.Domain.PROCESS_SYMBOL, canonical.domain());
+
+        OresPropertyKey stable = OresPropertyKey.fromGuestValue(
+                OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000"));
+        assertEquals(OresPropertyKey.Domain.STABLE_SYMBOL, stable.domain());
+        assertNotEquals(OresPropertyKey.fromGuestValue(
+                OresSymbol.process("550e8400-e29b-41d4-a716-446655440000")), stable);
+        assertThrows(IllegalArgumentException.class, () -> OresPropertyKey.fromGuestValue(1));
+        Map<OresPropertyKey, Integer> fields = new LinkedHashMap<>();
+        fields.put(text, 1);
+        fields.put(canonical, 2);
+        assertEquals(2, fields.size());
+        assertEquals(2, fields.get(decomposed));
+    }
+
     @Test void onlyPublicCoreSymbolsPassDefaultUntrustedPolicy() {
         assertTrue(OresSymbol.process("ready").publicToUntrustedCoreV1());
         assertTrue(OresSymbol.process("error").publicToUntrustedCoreV1());
@@ -71,6 +104,22 @@ class OresSymbolTest {
         assertEquals(longName, roundTrip.getFirst().lexeme());
         assertEquals("Symbol.stable(\"550e8400-e29b-41d4-a716-446655440000\")",
                 OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000").toString());
+    }
+
+    @Test void dynamicallyCreatedSymbolNamesRenderAsParseableLiterals() {
+        String maxBareName = "a".repeat(128);
+        String longIdentifierName = "a".repeat(129);
+        assertEquals("#" + maxBareName, OresSymbol.process(maxBareName).toString());
+        assertEquals("#\"" + longIdentifierName + "\"", OresSymbol.process(longIdentifierName).toString());
+        assertNotSame(OresSymbol.process("ready"), OresSymbol.process("ready"));
+        assertEquals(OresSymbol.process("ready"), OresSymbol.process("ready"));
+        for (String name : List.of(longIdentifierName, "café", "hello world", "quote\" and slash\\ x")) {
+            String rendered = OresSymbol.process(name).toString();
+            List<Token> tokens = new Lexer(rendered).scan();
+            assertEquals(Token.Type.SYMBOL_LITERAL, tokens.getFirst().type());
+            assertEquals(name, tokens.getFirst().lexeme());
+            assertEquals(Token.Type.EOF, tokens.get(1).type());
+        }
     }
 
     @Test void hashLiteralScannerKeepsColonAndStringKeysSeparate() {

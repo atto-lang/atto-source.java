@@ -1,0 +1,90 @@
+{
+  "contract": "oreslang.actor-pubsub.v1",
+  "status": "backend-draft-portable-core-not-executed",
+  "scope": "in-memory",
+  "abstractions": {
+    "actor_group": "many-to-many cooperation membership; never lifecycle ownership",
+    "topic": "typed ephemeral event stream scoped to one actor group or runtime namespace",
+    "subscription": "explicit revocable per-actor registration",
+    "publisher": "capability of an authorized member to publish; not a distinct actor kind"
+  },
+  "source_surface": {
+    "types": [
+      "ActorGroup",
+      "Topic<T>",
+      "Subscription<T>",
+      "PublishReceipt"
+    ],
+    "new_actor_keywords": [],
+    "publisher_keyword": false,
+    "subscriber_keyword": false
+  },
+  "semantics": {
+    "membership": "an actor may belong to multiple groups concurrently; duplicate join is idempotent",
+    "group_leave": "leaving one group revokes only that group's subscriptions and authority",
+    "leave_barrier": "after leave returns, no new publish, subscribe, or read admission may commit under the revoked membership; deliveries committed before the barrier are not recalled",
+    "publish_without_subscribe": true,
+    "subscribe_requires_membership": true,
+    "delivery": "at-most-once per accepted subscription publication",
+    "ordering": "FIFO per publisher-to-subscription pair; no cross-topic total order",
+    "bounded": true,
+    "durable": false,
+    "replay": false,
+    "success_means": "delivery admission, not handler completion or business acknowledgement",
+    "reliable_cancellation": "cancelling a pending RELIABLE publication revokes its still-pending owned admissions and releases their bounded accounting; deliveries already committed to subscriber queues are not recalled",
+    "cross_tenant": "deny by default",
+    "actor_termination": "automatically revoke memberships and subscriptions",
+    "critical_body_may_suspend": false,
+    "payload_sendability": "recursive concrete owned Sendable data only; reject functions, bound methods, closures and nested callable fields at compile time and runtime",
+    "lexical_capture_transfer": "forbidden, including callable values without an explicit capture"
+  },
+  "delivery_policies": {
+    "RELIABLE": "portable-core candidate on Java; bounded all-recipient admission, pending source-level try_publish execution proof",
+    "LATEST": "Java extension outside portable-v1; capacity one and coalesce unread older value",
+    "LOSSY": "Java extension outside portable-v1; drop new value when subscriber queue is full"
+  },
+  "transport": {
+    "in_memory": "normative v1 semantics",
+    "redis": "future adapter; must not silently claim stronger delivery semantics than provider supplies",
+    "serializable": "separate codec/schema-qualified requirement for Redis/network/persistence, not required for local in-memory topics and never an override for Sendable"
+  },
+  "golden_fixture": "contracts/v1/fixtures/actor-pubsub-v1.ores",
+  "golden_expected_stdout": "subscribed|p-1",
+  "conformance_cases": [
+    "single-publisher-single-subscriber",
+    "multiple-subscribers",
+    "multiple-publishers",
+    "publisher-without-subscription",
+    "multiple-subscriptions-per-actor",
+    "multiple-groups-per-actor",
+    "duplicate-group-join-idempotent",
+    "leave-one-group-preserves-other-memberships",
+    "subscription-close",
+    "resubscribe-after-close",
+    "publish-racing-with-unsubscribe",
+    "actor-termination-cleanup",
+    "supervisor-restart-resubscription",
+    "stale-actor-generation-rejection",
+    "subscriber-queue-full",
+    "bounded-reliable-backpressure",
+    "cancellation-during-publication",
+    "critical-suspension-rejection",
+    "cross-tenant-publication-rejection",
+    "fifo-per-publisher-subscription",
+    "callable-topic-payload-rejection",
+    "nested-callable-topic-payload-rejection",
+    "runtime-callable-payload-rejection"
+  ],
+  "portable_core": {
+    "reference": "oreslang-platform-conformance#305",
+    "status": "NOT_EXECUTED",
+    "delivery_policy": "RELIABLE",
+    "admission": "atomic all-recipient nonblocking try_publish; failure consumes no sequence and performs no partial delivery",
+    "sequence": "one nonwrapping topic sequence after full admission; zero-recipient success still consumes a sequence",
+    "backend_mapping": "Java host/runtime publish substrate is not source-level portable-core execution evidence",
+    "extensions": [
+      "LATEST",
+      "LOSSY"
+    ]
+  }
+}

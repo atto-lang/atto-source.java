@@ -39,6 +39,20 @@ public final class NativeBuildMode {
     public static ManagedReferenceMode managedReferenceMode() {
         return MANAGED_REFERENCE_MODE;
     }
+    /**
+     * These are *certification* boundaries, not mode switches. Building the
+     * Java/Truffle host with Native Image still interprets guest .atto source
+     * in the current AOT profile. A compressed Java reference is not an
+     * actor-owned offset and Native Image's managed heap can still collect.
+     *
+     * Do not promote these claims with a runtime system property. A future
+     * offline guest compiler must embed verifiable build-time code artifacts,
+     * ownership/drop evidence and measured process/guest memory receipts.
+     */
+    public static boolean fullGuestAotProven() { return false; }
+    public static boolean zeroGuestTracingGcProven() { return false; }
+    public static boolean zeroProcessGcProven() { return false; }
+
     public static String defaultExecutionMode() {
         return switch (KIND) {
             case JVM -> "jit";

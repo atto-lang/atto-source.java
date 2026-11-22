@@ -1,0 +1,10 @@
+// This callback is well-typed, but its called helper needs an independently
+// resolved transitive effect summary before a pure contract can be granted.
+fnc log_and_increment(int x): int {
+  stdio.println(x);
+  return x + 1;
+}
+
+fnc increment(Option<int> value): Option<int> {
+  return value.map((int x) -> log_and_increment(x));
+}

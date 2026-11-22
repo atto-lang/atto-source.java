@@ -53,12 +53,21 @@ public final class OresSymbol {
 
     public static String normalizeAndValidate(String input) {
         Objects.requireNonNull(input, "Symbol name");
-        // Canonical NFC composition cannot compress an arbitrarily large
-        // UTF-16 input into a <=256-byte Symbol name. Guard the raw input
-        // before invoking Normalizer, which otherwise allocates and scans
-        // caller-supplied strings of unbounded size.
+        // Bound caller input before normalization; NFC must never process
+        // unbounded attacker-controlled strings (including quoted literals).
         if (input.length() > 1_024) {
             throw new IllegalArgumentException("Symbol source name exceeds normalization budget");
+        }
+        // Reject malformed UTF-16 before invoking the host Unicode normalizer.
+        for (int i = 0; i < input.length(); i++) {
+            char ch = input.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= input.length() || !Character.isLowSurrogate(input.charAt(++i))) {
+                    throw new IllegalArgumentException("unpaired UTF-16 surrogate in Symbol");
+                }
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("unpaired UTF-16 surrogate in Symbol");
+            }
         }
         String value = Normalizer.normalize(input, Normalizer.Form.NFC);
         if (value.isEmpty() || value.getBytes(StandardCharsets.UTF_8).length > 256) {
