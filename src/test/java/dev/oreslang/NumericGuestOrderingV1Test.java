@@ -29,4 +29,41 @@ final class NumericGuestOrderingV1Test {
             assertEquals(42L, context.eval(OresLanguage.ID, source).asLong());
         }
     }
+    @Test void signedIntegerAboveTwoToThe53rdOrdersExactlyAgainstBinaryFloat() {
+        String source = """
+                pub fnc main(): int {
+                  val int exact = 9007199254740993;
+                  val float rounded = 9007199254740992.0;
+                  if exact > rounded then
+                    return 42;
+                  fi
+                  return 1;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(OresLanguage.ID, source).asLong());
+        }
+    }
+
+    @Test void infinityRemainsOrderedWithoutNaNComparability() {
+        String source = """
+                pub fnc main(): int {
+                  val float infinity = 1.0 / 0.0;
+                  val float nan = infinity / infinity;
+                  if infinity > 1.0 && infinity >= 1.0 then
+                    if nan < infinity || nan >= infinity then
+                      return 1;
+                    fi
+                    return 42;
+                  fi
+                  return 2;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(OresLanguage.ID, source).asLong());
+        }
+    }
+
 }
