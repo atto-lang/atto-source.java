@@ -8277,7 +8277,7 @@ public final class TypeChecker {
                         new Function(List.of(key, bytes, bytes), result);
                 case "aead_close" -> new Function(List.of(key), Primitive.VOID);
                 case "authentication_failed", "invalid_input",
-                        "resource_exhausted" -> error;
+                        "key_exhausted" -> error;
                 default -> {
                     StandardCryptoNamespace.Signature policy =
                             StandardCryptoNamespace.signature(name);
