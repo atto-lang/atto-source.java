@@ -4,7 +4,7 @@
 // Owner-local Array<int> storage; no implicit Send/Sync or actor transfer.
 use namespace atto_alloc_set;
 
-pub define class BoundedIntSet as
+define pub class BoundedIntSet as
   let int domain;
   let mut Array<int> flags = new Array<int>();
   let mut int members = 0;
@@ -115,7 +115,7 @@ end
 // A real, bounded open-addressed Set of arbitrary *signed integer* keys.
 // No generic Hash/Eq or cross-thread sharing is inferred from this class.
 // States: 0=empty, 1=live, 2=tombstone.
-pub define class IntHashSet as
+define pub class IntHashSet as
   let int limit;
   let mut Array<int> states = new Array<int>();
   let mut Array<int> keys = new Array<int>();

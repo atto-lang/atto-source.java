@@ -5,7 +5,7 @@
 // Do not expose this mutable ledger as a shared or actor-transportable capability.
 use namespace atto_alloc_arc;
 
-pub define class ArcLedger as
+define pub class ArcLedger as
   let mut int strong = 1;
   // Includes one implicit weak sentinel while payload exists / drop pending.
   let mut int weak = 1;

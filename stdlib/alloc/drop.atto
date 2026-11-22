@@ -5,7 +5,7 @@
 // authenticated owner handles or deallocation capabilities.
 use namespace atto_alloc_drop;
 
-pub define class DropStack as
+define pub class DropStack as
   let int limit;
   let mut Array<int> tickets = new Array<int>();
   let mut int depth = 0;

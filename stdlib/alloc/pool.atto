@@ -4,7 +4,7 @@
 // Lease numbers are NOT authentication capabilities or cross-actor handles.
 use namespace atto_alloc_pool;
 
-pub define class PoolLease as
+define pub class PoolLease as
   pub val int slot;
   pub val int generation;
 
@@ -20,7 +20,7 @@ end
 
 // state: 0=free, 1=leased, 2=permanently retired.
 // A retired generation is never reused. O(capacity) bounded first-fit scan.
-pub define class SlotPool as
+define pub class SlotPool as
   let int limit;
   let mut Array<int> states = new Array<int>();
   let mut Array<int> generations = new Array<int>();

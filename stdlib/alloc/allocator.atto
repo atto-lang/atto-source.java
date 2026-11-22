@@ -85,7 +85,7 @@ pub fnc aligned_stride(int element_bytes, int alignment,
   return element_bytes + padding;
 }
 
-pub define class Layout as
+define pub class Layout as
   pub val int bytes;
   pub val int alignment;
 
@@ -140,7 +140,7 @@ pub fnc layout(int bytes, int alignment): Layout {
 // authority: no public integer ticket may cause raw memory access or free.
 // The trusted allocator must authenticate its own opaque receipt, then update
 // the Atto ledger only AFTER successful allocation/destruction.
-pub define class Reservation as
+define pub class Reservation as
   pub val int slot;
   pub val int generation;
   pub val int bytes;
@@ -159,7 +159,7 @@ end
 // 0=empty, 1=reserved, 2=allocated, 3=retirement pending, 4=exhausted.
 // Generation increases on every cancelled/freed slot; no wrapping/reuse at
 // INT_MAX. A failed physical allocation must cancel, never report success.
-pub define class ReservationLedger as
+define pub class ReservationLedger as
   let int limit;
   let int quota;
   let mut Array<int> states = new Array<int>();

@@ -5,7 +5,7 @@
 // No GC weak references or unchecked host-pointer fallback is authorized.
 use namespace atto_alloc_weak;
 
-pub define class WeakKey as
+define pub class WeakKey as
   pub val int domain;
   pub val int slot;
   pub val int generation;
