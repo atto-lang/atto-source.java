@@ -98,7 +98,7 @@ public final class NativeHttp implements AutoCloseable {
         }
         if (lengths != null) {
             long parsed = Long.parseLong(lengths.get(0));
-            if (parsed > bodyLimit) throw new IllegalArgumentException("body too large");
+            if (parsed > bodyLimit) throw new RequestBodyTooLargeException();
         }
     }
 
@@ -218,11 +218,16 @@ public final class NativeHttp implements AutoCloseable {
         return true;
     }
 
+    /** Dedicated transport-owned quota marker: never classify by message text. */
+    static final class RequestBodyTooLargeException extends IllegalArgumentException {
+        RequestBodyTooLargeException() { super("body too large"); }
+    }
+
     /** An invalid request-body framing stream is a client error, not HTTP 500.
      * Keep response-side I/O failures as server errors, and preserve 413 limits.
      */
     static int operationFailureStatus(Throwable failure, boolean requestBodyRead) {
-        if ("body too large".equals(failure.getMessage())) return 413;
+        if (requestBodyRead && failure instanceof RequestBodyTooLargeException) return 413;
         if (requestBodyRead && failure instanceof IOException) return 400;
         // Strict UTF-8 decoding in bodyText() wraps CharacterCodingException.
         // This is malformed client payload, not an internal server error.
@@ -501,7 +506,7 @@ public final class NativeHttp implements AutoCloseable {
                     else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
                 }
             } catch (IllegalArgumentException invalid) {
-                admission.release(); reject(raw, invalid.getMessage().equals("body too large") ? 413 : 400);
+                admission.release(); reject(raw, invalid instanceof RequestBodyTooLargeException ? 413 : 400);
             } catch (RuntimeException failure) {
                 if (state != null && active.contains(state)) state.abort(500);
                 else { admission.release(); raw.close(); }
@@ -876,7 +881,7 @@ public final class NativeHttp implements AutoCloseable {
             }
             return bodyOperation(() -> {
                 byte[] bytes = state.raw.getRequestBody().readNBytes(state.server.bodyLimit + 1);
-                if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("body too large");
+                if (bytes.length > state.server.bodyLimit) throw new RequestBodyTooLargeException();
                 return utf8(bytes);
             });
         }
@@ -891,7 +896,7 @@ public final class NativeHttp implements AutoCloseable {
             return bodyOperation(() -> {
                 byte[] bytes = state.raw.getRequestBody().readNBytes(Math.min(maximum, state.server.bodyLimit - state.bodyBytes + 1));
                 state.bodyBytes += bytes.length;
-                if (state.bodyBytes > state.server.bodyLimit) throw new IllegalArgumentException("body too large");
+                if (state.bodyBytes > state.server.bodyLimit) throw new RequestBodyTooLargeException();
                 List<Object> owned = new ArrayList<>(bytes.length);
                 for (byte value : bytes) owned.add((long) (value & 255));
                 return owned;

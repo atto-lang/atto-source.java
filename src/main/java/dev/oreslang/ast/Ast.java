@@ -218,6 +218,20 @@ public final class Ast {
             arguments = List.copyOf(arguments);
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        /** A compile-time, binding-derived type; never a runtime typeof call. */
+        public static TypeRef typeQuery(String binding) {
+            if (binding == null || binding.isBlank()) {
+                throw new IllegalArgumentException("typeof requires a binding name");
+            }
+            return new TypeRef("$typeof$", List.of(simple(binding)), false);
+        }
+        public boolean isTypeQuery() { return name.equals("$typeof$"); }
+        public String queriedBinding() {
+            if (!isTypeQuery() || arguments.size() != 1 || !arguments.getFirst().arguments().isEmpty()) {
+                throw new IllegalStateException("malformed typeof binding query");
+            }
+            return arguments.getFirst().name();
+        }
         /** A complement in type position. The token '!' is not a value operator here. */
         public static TypeRef complement(TypeRef excluded) {
             return excluded.isComplement()
@@ -1086,7 +1100,7 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, RecordPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, RecordPattern, TuplePattern, ConstructorPattern, SequencePattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -1139,6 +1153,52 @@ public final class Ast {
             elements = List.copyOf(elements);
             if (elements.size() < 2) {
                 throw new IllegalArgumentException("tuple patterns require at least two elements");
+            }
+        }
+    }
+
+    /**
+     * A statically checked positional Bytes pattern, not an array/index
+     * expression and not the typed-width segment in binary { payload: bytes[n] }.
+     * The bounded AST is suitable for a fixed-size AOT comparison plan.
+     */
+    public enum SequenceUnit { BYTE, BIT }
+
+    public record SequenceElement(Integer literal, String binding) {
+        public SequenceElement {
+            if ((literal == null) == (binding == null)) {
+                throw new IllegalArgumentException("sequence element needs one literal or binding");
+            }
+            if (binding != null && (binding.isBlank() || !binding.matches("[A-Za-z_][A-Za-z0-9_]*"))) {
+                throw new IllegalArgumentException("invalid sequence binding");
+            }
+        }
+    }
+
+    public record SequencePattern(
+            SequenceUnit unit, List<SequenceElement> elements, String tail) implements Pattern {
+        public SequencePattern {
+            java.util.Objects.requireNonNull(unit, "sequence unit");
+            elements = List.copyOf(elements);
+            if (elements.size() > 256) {
+                throw new IllegalArgumentException("sequence pattern exceeds 256 elements");
+            }
+            if (tail != null && (elements.isEmpty() || !tail.matches("[A-Za-z_][A-Za-z0-9_]*"))) {
+                throw new IllegalArgumentException("sequence pattern needs a nonempty prefix and final tail");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (SequenceElement element : elements) {
+                if (element.literal() != null &&
+                        (element.literal() < 0 || element.literal() > (unit == SequenceUnit.BYTE ? 255 : 1))) {
+                    throw new IllegalArgumentException("sequence pattern literal outside byte/bit range");
+                }
+                if (element.binding() != null && !element.binding().equals("_")
+                        && !seen.add(element.binding())) {
+                    throw new IllegalArgumentException("duplicate sequence pattern binding");
+                }
+            }
+            if (tail != null && !tail.equals("_") && !seen.add(tail)) {
+                throw new IllegalArgumentException("duplicate sequence pattern tail binding");
             }
         }
     }
@@ -1351,7 +1411,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr,
-            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr,
+            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr, NamedArgExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
             TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
@@ -1614,6 +1674,20 @@ public final class Ast {
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
 
+    /**
+     * Named call argument. The AST preserves the source label and expression
+     * at the original lexical position; only a checked call plan may map it
+     * to a formal ABI slot. It is not independently executable.
+     */
+    public record NamedArgExpr(String name, Expr value) implements Expr {
+        public NamedArgExpr {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("named argument name cannot be blank");
+            }
+            java.util.Objects.requireNonNull(value, "named argument value");
+        }
+    }
+
     /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
     public enum CallOrigin {
         DIRECT,
@@ -1683,6 +1757,69 @@ public final class Ast {
      * cached type metadata from retaining abandoned compilation units.
      * Runtime reads fail closed for ASTs that never passed type checking.
      */
+    /**
+     * Channel I/O direction shorthand (atto-spec io-direction-shorthand-v1).
+     * The parser desugars {@code sink << value;} to {@code writech sink, value}
+     * and {@code source >> val name;} / {@code val name << source;} to a binding
+     * initialized by {@code readch source}, so the shorthand has exactly the
+     * suspension, backpressure, cancellation and ownership rules of the explicit
+     * spelling. A read always declares a fresh {@code val}/{@code let} binding.
+     * This side table only remembers which writes were spelled {@code <<}, so a
+     * non-channel sink gets a diagnostic that points at the bit-shift spelling.
+     * {@code <<} and {@code >>} are never integer shifts: those are
+     * {@code <<<}, {@code >>>} and {@code ashr}.
+     */
+    public static final class IoShorthand {
+        private IoShorthand() { }
+
+        private static final java.lang.ref.ReferenceQueue<ChannelOpExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Set<Key> WRITES = new java.util.HashSet<>();
+
+        private static final class Key extends java.lang.ref.WeakReference<ChannelOpExpr> {
+            private final int hash;
+            private Key(ChannelOpExpr write, java.lang.ref.ReferenceQueue<ChannelOpExpr> queue) {
+                super(write, queue);
+                hash = System.identityHashCode(write);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof Key key)) return false;
+                ChannelOpExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        /** {@code sink << value;} as the blocking writech it means. */
+        public static synchronized ChannelOpExpr write(Expr sink, Expr value) {
+            expunge();
+            ChannelOpExpr write = new ChannelOpExpr(ChannelOperation.WRITE, WaitMode.BLOCKING, sink, value);
+            WRITES.add(new Key(write, CLEARED));
+            return write;
+        }
+
+        /** {@code source >> val name;} and {@code val name << source;} read with readch. */
+        public static ChannelOpExpr read(Expr source) {
+            return new ChannelOpExpr(ChannelOperation.READ, WaitMode.BLOCKING, source, null);
+        }
+
+        public static synchronized boolean isShorthandWrite(ChannelOpExpr write) {
+            expunge();
+            return WRITES.contains(new Key(write, null));
+        }
+
+        public static boolean isDirectionOperator(String operator) {
+            return "<<".equals(operator) || ">>".equals(operator);
+        }
+
+        private static void expunge() {
+            for (java.lang.ref.Reference<? extends ChannelOpExpr> cleared; (cleared = CLEARED.poll()) != null; ) {
+                WRITES.remove(cleared);
+            }
+        }
+    }
+
     public static final class CheckedOptionDepth {
         private CheckedOptionDepth() { }
 
@@ -1940,6 +2077,10 @@ public final class Ast {
         for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
             transfer.copy(source, target);
         }
+        // The call-plan side table lives in the types package rather than
+        // inside Ast, so it has an explicit transfer hook outside the enum
+        // that enumerates only Ast-owned side tables.
+        dev.oreslang.types.CheckedCallPlan.copyCheckedMetadata(source, target);
     }
 
     static java.util.Set<String> checkedMetadataTransferPolicy() {
@@ -1960,7 +2101,16 @@ public final class Ast {
         public NewExpr { arguments = List.copyOf(arguments); }
     }
 
-    public record AwaitExpr(Expr expression) implements Expr { }
+    /**
+     * The std.await value-pipeline stage reuses ordinary await semantics.
+     * Preserve the compiler-owned spelling for lexical namespace validation.
+     */
+    public record AwaitExpr(Expr expression, boolean coreAdapter) implements Expr {
+        public AwaitExpr {
+            java.util.Objects.requireNonNull(expression, "await expression");
+        }
+        public AwaitExpr(Expr expression) { this(expression, false); }
+    }
 
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }

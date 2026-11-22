@@ -44,7 +44,7 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc bad(): void {
                     const Point point = infer<Point> struct{x: 3.0, y: 4.0};
                     const key = "x";
-                    const int value = point[key];
+                    val int value = point[key];
                     return;
                 }
                 """);
@@ -52,7 +52,7 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc bad(): void {
                     const tuple = tuple(3.0, 4.0);
                     const index = 0;
-                    const int value = tuple[index];
+                    val int value = tuple[index];
                     return;
                 }
                 """);
@@ -64,7 +64,7 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc read(): string {
                     const row = record{x: 3.0, y: "boo"};
                     const key = "y";
-                    const string value = row[key];
+                    val string value = row[key];
                     return value;
                 }
                 """);
@@ -72,7 +72,7 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc bad(): void {
                     const row = record{x: 3.0, y: "boo"};
                     const key = "y";
-                    const int value = row[key];
+                    val int value = row[key];
                     return;
                 }
                 """);
@@ -107,7 +107,7 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc exact_const_index(): string {
                     const tuple = tuple(3.0, "boo");
                     const index = 1;
-                    const string value = tuple[index];
+                    val string value = tuple[index];
                     return value;
                 }
                 """);
@@ -128,7 +128,7 @@ final class DynamicPropertyAccessBoundaryTest {
         rejected("""
                 fnc bad(int index): void {
                     const empty = tuple();
-                    const int value = empty[index];
+                    val int value = empty[index];
                     return;
                 }
                 """);
@@ -184,8 +184,8 @@ final class DynamicPropertyAccessBoundaryTest {
         accepted("""
                 fnc parse(String line): String {
                     const parts = line.split_literal("=");
-                    const String left = parts[0];
-                    const String right = parts[1];
+                    val String left = parts[0];
+                    val String right = parts[1];
                     return left + right;
                 }
                 """);
@@ -378,7 +378,7 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc read(Holder holder): int {
                     const {id} = holder;
                     const key = "id";
-                    const int indexed = holder[key];
+                    val int indexed = holder[key];
                     return id + indexed;
                 }
                 """);
@@ -614,14 +614,14 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc record_read(): int {
                     const row = record{id: 1, payload: new Payload()};
                     const key = "id";
-                    const int value = row[key];
+                    val int value = row[key];
                     return value;
                 }
 
                 fnc tuple_read(): int {
                     const row = tuple(1, new Payload());
                     const index = 0;
-                    const int value = row[index];
+                    val int value = row[index];
                     return value;
                 }
 
@@ -633,7 +633,7 @@ final class DynamicPropertyAccessBoundaryTest {
                 fnc class_read(): int {
                     const Holder holder = new Holder();
                     const key = "id";
-                    const int value = holder[key];
+                    val int value = holder[key];
                     return value;
                 }
                 """);
