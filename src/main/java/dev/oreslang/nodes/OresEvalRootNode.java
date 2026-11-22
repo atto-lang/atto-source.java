@@ -7,6 +7,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.imports.StandardCryptoNamespace;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
@@ -250,6 +251,10 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ImportDecl> hostFunctionImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private boolean standardCryptoImported;
+        // Lazily materialized checked Atto source functions. Never looked up
+        // from a caller-controlled path and never registered as an importable
+        // user code image.
+        private volatile Evaluator bundledCryptoPolicy;
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
         private final Map<String, HostClassFacade> hostSymbols = new HashMap<>();
@@ -9099,7 +9104,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("crypto") && standardCryptoImported)
-                    return new CryptoAeadFacade(context);
+                    return new CryptoAeadFacade(context, this);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -10481,8 +10486,12 @@ public final class OresEvalRootNode extends RootNode {
                     case "aead_seal" -> (Invokable) crypto::seal;
                     case "aead_open" -> (Invokable) crypto::open;
                     case "aead_close" -> (Invokable) crypto::close;
-                    default -> throw new IllegalArgumentException(
-                            "unknown crypto member " + name);
+                    default -> {
+                        if (StandardCryptoNamespace.hasPolicyMember(name)) {
+                            yield (Invokable) arguments -> crypto.sourcePolicy(name, arguments);
+                        }
+                        throw new IllegalArgumentException("unknown crypto member " + name);
+                    }
                 };
             }
             if (receiver instanceof EnvFacade environment) {
@@ -11717,6 +11726,41 @@ public final class OresEvalRootNode extends RootNode {
                 return null;
             }
             return exported instanceof ClassFacade klass ? klass : null;
+        }
+
+        private Object invokeBundledCryptoPolicy(String name, List<Object> arguments) {
+            StandardCryptoNamespace.Signature signature =
+                    StandardCryptoNamespace.signature(name);
+            if (signature == null) {
+                throw new IllegalArgumentException("unknown std.crypto source policy " + name);
+            }
+            if (arguments.size() != signature.arguments().size()) {
+                throw new IllegalArgumentException(
+                        "std.crypto." + name + " expects "
+                                + signature.arguments().size() + " argument(s)");
+            }
+            // The source program is parsed, typechecked, and ownership checked
+            // exactly once from the Maven-packaged .atto source resources.
+            // Each guest evaluator gets its own pure policy evaluator and
+            // cannot replace its immutable code with a linked user unit.
+            Evaluator policy = bundledCryptoPolicy;
+            if (policy == null) {
+                synchronized (this) {
+                    policy = bundledCryptoPolicy;
+                    if (policy == null) {
+                        Ast.Program checked = StandardCryptoNamespace.checkedProgram();
+                        policy = new Evaluator(
+                                checked, context, "builtin/std.crypto.policy.atto",
+                                Ast.CheckedTaskCaptures.requireProgramEpoch(checked),
+                                checkedI64Arithmetic);
+                        bundledCryptoPolicy = policy;
+                    }
+                }
+            }
+            // These are exclusively ordinary, synchronous, public Atto fncs,
+            // so invoking the checked body does not require code-unit linking,
+            // untrusted filesystem resolution, or startup scheduling.
+            return policy.invokePublic(name, arguments.toArray());
         }
 
         private Object importedValue(String name) {
@@ -14401,7 +14445,11 @@ public final class OresEvalRootNode extends RootNode {
 
     // The host implementation is not an arbitrary FFI export. The only guest
     // entrypoints are these four immutable, typed compiler-owned calls.
-    private record CryptoAeadFacade(OresContext context) {
+    private record CryptoAeadFacade(OresContext context, Evaluator evaluator) {
+        private Object sourcePolicy(String member, List<Object> arguments) {
+            return evaluator.invokeBundledCryptoPolicy(member, arguments);
+        }
+
         private static final int GUEST_MAX_BYTES = 1024 * 1024;
         private static final int NONCE_BYTES = AeadPrimitives.NONCE_BYTES;
         private static final int TAG_BYTES = AeadPrimitives.TAG_BYTES;
