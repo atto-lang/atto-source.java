@@ -58,6 +58,8 @@ public final class NativeChildProcesses implements AutoCloseable {
                     && failure.getCause() != null) failure = failure.getCause();
             String kind = failure instanceof SecurityException ? "permission_denied"
                     : failure instanceof OutputLimitException ? "output_limit"
+                    : failure instanceof java.util.concurrent.CancellationException ? "cancelled"
+                    : failure instanceof java.util.concurrent.TimeoutException ? "timeout"
                     : failure instanceof RejectedExecutionException ? "capacity"
                     : failure instanceof IOException ? "spawn_or_io"
                     : failure instanceof IllegalArgumentException ? "invalid_command"
@@ -78,6 +80,9 @@ public final class NativeChildProcesses implements AutoCloseable {
         private final Process process;
         private final CompletableFuture<ExitStatus> exit;
         private final AtomicBoolean outputExceeded = new AtomicBoolean();
+        // A guest may call terminate() repeatedly. Escalation is a single
+        // per-child state transition, never a new virtual thread per call.
+        private final AtomicBoolean terminationRequested = new AtomicBoolean();
         private final CompletableFuture<Capture> stdout = new CompletableFuture<>();
         private final CompletableFuture<Capture> stderr = new CompletableFuture<>();
         private final CompletableFuture<Void> retired;
@@ -120,7 +125,7 @@ public final class NativeChildProcesses implements AutoCloseable {
         }
 
         public CompletableFuture<ExitStatus> terminate() {
-            if (process.isAlive()) {
+            if (process.isAlive() && terminationRequested.compareAndSet(false, true)) {
                 process.destroy();
                 // A graceful signal must not create an unbounded await if
                 // the child ignores it. Escalation runs on a virtual thread,
