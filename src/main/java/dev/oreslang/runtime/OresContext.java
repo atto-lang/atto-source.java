@@ -38,6 +38,9 @@ public final class OresContext implements AutoCloseable {
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
+    // One trusted WAL shard registry per OresContext; not guest-exposed.
+    private final DbWalTrustedGrantRegistry dbWalGrants;
+    DbWalTrustedGrantRegistry dbWalGrants() { return dbWalGrants; }
     private final SourceActorPubSub actorPubSub;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
@@ -174,6 +177,7 @@ public final class OresContext implements AutoCloseable {
 
             this.vm = vm;
             this.actors = actors;
+            this.dbWalGrants = new DbWalTrustedGrantRegistry(actors);
             this.actorPubSub = new SourceActorPubSub(actors);
             this.asyncRuntime = async;
             this.garbageCollector = gc;
@@ -540,6 +544,9 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        // Revoke new WAL shard-grant admission before actors/physical I/O
+        // begin their shutdown joins. Keep issued grants through quiescence.
+        dbWalGrants.seal();
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
