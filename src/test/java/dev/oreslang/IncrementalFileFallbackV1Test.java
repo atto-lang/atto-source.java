@@ -173,6 +173,58 @@ final class IncrementalFileFallbackV1Test {
     }
 
     @Test
+    void publicParameterRenameInvalidatesNamedArgumentImporters() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put("lib.atto", """
+                pub fnc identity(int before): int { return before; }
+                """);
+        files.put("caller.atto", """
+                import fnc {identity} from './lib.atto';
+                pub fnc main(): void { return; }
+                """);
+        files.put("other.atto", TWO);
+        compiler.compile(files);
+
+        Map<String, String> renamed = new LinkedHashMap<>(files);
+        renamed.put("lib.atto", """
+                pub fnc identity(int after): int { return after; }
+                """);
+        var result = compiler.compile(renamed);
+        assertEquals(Set.of("lib.atto"), result.reparsedUnits());
+        assertTrue(result.rebuilt("lib.atto"));
+        assertTrue(result.rebuilt("caller.atto"),
+                "public parameter names participate in named-argument call ABI");
+        assertTrue(result.reused("other.atto"));
+    }
+
+    @Test
+    void publicDeclarationReorderIsNotAnApiChange() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put("lib.atto", """
+                pub fnc first(): int { return 1; }
+                pub fnc second(): int { return 2; }
+                """);
+        files.put("caller.atto", """
+                import fnc {first} from './lib.atto';
+                pub fnc main(): void { return; }
+                """);
+        compiler.compile(files);
+
+        Map<String, String> reordered = new LinkedHashMap<>(files);
+        reordered.put("lib.atto", """
+                pub fnc second(): int { return 2; }
+                pub fnc first(): int { return 1; }
+                """);
+        var result = compiler.compile(reordered);
+        assertEquals(Set.of("lib.atto"), result.reparsedUnits());
+        assertEquals(Set.of("lib.atto"), result.rebuiltUnits(),
+                "reordering independent public declarations must preserve importer ABI");
+        assertTrue(result.reused("caller.atto"));
+    }
+
+    @Test
     void addingOrRemovingNamespaceHeaderChangesOnlyOwningFile() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> files = Map.of(
