@@ -23,6 +23,17 @@ final class ActorProtocolTypestateV1Test {
               end
               terminal state Closed
             end
+            define class Config as end
+            define class Sql as end
+            define class Topic as end
+            define class ConnectedAck as end
+            define class ClosedAck as end
+            define class QueryReply as end
+            define class DataEvent as end
+            define class Connect implements UnaryRequest<ConnectedAck> as end
+            define class Close implements UnaryRequest<ClosedAck> as end
+            define class Query implements UnaryRequest<QueryReply> as end
+            define class Subscribe implements StreamRequest<DataEvent> as end
             define actor Connection implements ConnectionProtocol as
               receive(ActorMail<String> mail): void { return; }
             end
