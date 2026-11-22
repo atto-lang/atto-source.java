@@ -255,6 +255,46 @@ final class NativeChildProcessesTest {
         }
     }
 
+    @Test void closeDuringCanonicalAuthorizationCannotLaunchOrLeakAReservation() throws Exception {
+        NativeChildProcesses manager = new NativeChildProcesses();
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger checks =
+                new java.util.concurrent.atomic.AtomicInteger();
+        try (java.util.concurrent.ExecutorService closer =
+                java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var pending = manager.spawn(javaExe(), probe("sleep"), cwd(), (exe, dir) -> {
+                if (checks.incrementAndGet() == 2) {
+                    entered.countDown();
+                    try {
+                        if (!release.await(8, TimeUnit.SECONDS))
+                            throw new IllegalStateException("authorization barrier timed out");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("authorization barrier interrupted",
+                                interrupted);
+                    }
+                }
+            });
+            assertTrue(entered.await(8, TimeUnit.SECONDS));
+            var closing = closer.submit(manager::close);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+            while (!manager.isAdmissionClosed() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(manager.isAdmissionClosed(),
+                    "context close must seal admissions before joining the launch worker");
+            release.countDown();
+            assertThrows(ExecutionException.class, () -> pending.get(8, TimeUnit.SECONDS));
+            closing.get(8, TimeUnit.SECONDS);
+            assertEquals(0, manager.reservedCount());
+            assertEquals(2, checks.get());
+        } finally {
+            release.countDown();
+            manager.close();
+        }
+    }
+
     @Test void rejectsArgumentsWithEmbeddedNulWithoutLaunch() {
         try (NativeChildProcesses manager = new NativeChildProcesses()) {
             assertThrows(IllegalArgumentException.class,
