@@ -1,0 +1,65 @@
+name: Atto alloc heap arena region actual JVM guest (exact head)
+on:
+  pull_request:
+    paths:
+      - 'stdlib/alloc/**'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
+      - 'src/test/java/dev/oreslang/AttoAllocLibraryGuestTest.java'
+      - 'tests/fixtures/alloc-heap-arena-region-*.atto'
+      - '.github/workflows/atto-alloc-library-guest-jvm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  java-atto-alloc-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact, credential-free PR commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Assert exact source identity and checked-in fixture files
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          for file in stdlib/alloc/heap.atto stdlib/alloc/arena.atto stdlib/alloc/region.atto                       tests/fixtures/alloc-heap-arena-region-policy.atto                       tests/fixtures/alloc-heap-arena-region-stateful.atto; do
+            test -f "$file" && test ! -L "$file"
+            test "$(git rev-parse "HEAD:$file")" = "$(git hash-object --no-filters "$file")"
+          done
+          printf 'ALLOCATION_GUEST_SOURCE_HEAD=%s\n' "$EXPECTED_HEAD"
+          printf 'ALLOCATION_GUEST_SOURCE_TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+      - name: Set up GraalVM 25 / Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Run actual compiler import and guest execution tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -DfailIfNoTests=true -Dtest=AttoAllocLibraryGuestTest clean test
+          report=target/surefire-reports/TEST-dev.oreslang.AttoAllocLibraryGuestTest.xml
+          test -s "$report"
+          for test_name in             allocModulesAreClosedAndPackaged             purePolicyFixtureExecutesRealImportedAtto             lifecycleStateMachinesExecuteInAtto             aliasIdentityAndUntrustedShadowNeverOverridePackagedSource             invalidPackagePathCannotFallBackToAmbientModule; do
+            grep -Fq "name=\"$test_name\"" "$report"
+          done
+          ! grep -Eq '(errors|failures|skipped)="[1-9][0-9]*"' "$report"
+          echo "JAVA_ATTO_ALLOC_GUEST_TESTS_EXECUTED=5"
+      - name: Record final pinned source head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          printf 'JAVA_ALLOC_GUEST_EXACT_HEAD=%s\n' "$EXPECTED_HEAD"
