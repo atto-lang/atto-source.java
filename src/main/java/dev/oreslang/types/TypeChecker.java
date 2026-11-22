@@ -335,6 +335,51 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * The canonical syntax reserves an explicit 'infer' result, but this Java
+     * compiler cannot yet prove all return-path joins before ABI generation.
+     * Reject it at both strict check entrypoints (including imported-unit
+     * linking) rather than resolving it as an arbitrary nominal type.
+     *
+     * Do not inspect lambda expression bodies here: contextual lambda
+     * inference has a separate contract and does not authorize named infer.
+     */
+    private static void rejectUnprovedStrictNamedReturns(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function) {
+                    rejectUnprovedNamedReturn(function.name(), function.returnType());
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        rejectUnprovedNamedReturn(klass.name() + "." + method.name(),
+                                method.returnType());
+                    }
+                } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    for (Ast.InterfaceMember member : iface.members()) {
+                        if (member instanceof Ast.InterfaceFunctionDecl function) {
+                            rejectUnprovedNamedReturn(iface.name() + "." + function.name(),
+                                    function.returnType());
+                        } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                            rejectUnprovedNamedReturn(iface.name() + "." + method.name(),
+                                    method.returnType());
+                        }
+                    }
+                } else if (declaration instanceof Ast.ExternalActorMethodDecl method) {
+                    rejectUnprovedNamedReturn(method.actorName() + "." + method.name(),
+                            method.returnType());
+                }
+            }
+        }
+    }
+
+    private static void rejectUnprovedNamedReturn(String name, Ast.TypeRef result) {
+        if (result != null && "infer".equals(result.name())
+                && result.arguments().isEmpty() && !result.inferArguments()) {
+            throw new IllegalArgumentException("E_RETURN_INFER: named callable '"
+                    + name + "' requires a proven static return type before guest emission");
+        }
+    }
+
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         rejectUnloweredSealedActorState(program);
         return checkTypesWithDiagnostics(program, false);
@@ -351,6 +396,7 @@ public final class TypeChecker {
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
+        if (strictAttoEquality) rejectUnprovedStrictNamedReturns(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
@@ -564,6 +610,7 @@ public final class TypeChecker {
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
+        if (strictAttoEquality) rejectUnprovedStrictNamedReturns(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
@@ -2121,6 +2168,32 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
+            // Canonical class 'const' has a constexpr contract, unlike 'val'
+            // and 'final'. Reject every effectful or non-provable initializer
+            // before construction, even if ordinary field typing could accept
+            // its runtime value. Never borrow constructor parameters or guest
+            // capabilities while evaluating compile-time constants.
+            if (strictAttoEquality && field.bindingKind() == Ast.BindingKind.CONST) {
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException(
+                            "E_CONST: class constant '" + klass.name() + "." + field.name()
+                                    + "' requires a compile-time initializer");
+                }
+                Object constant;
+                try {
+                    constant = evaluateScalarConstant(field.initializer(), new Env(null), 0);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalArgumentException(
+                            "E_CONST_OVERFLOW: class constant '" + klass.name() + "."
+                                    + field.name() + "' overflows during compile-time evaluation", overflow);
+                }
+                if (constant == null) {
+                    throw new IllegalArgumentException(
+                            "E_CONST: class constant '" + klass.name() + "." + field.name()
+                                    + "' must be provably compile-time evaluable; runtime calls, "
+                                    + "constructor parameters, effects, and unsupported values are forbidden");
+                }
+            }
             if (klass.actorKind() == Ast.ActorKind.NONE
                     && field.initializer() != null
                     && fieldInitializerMaySuspend(field.initializer(), fieldInitializerEnv)) {
@@ -8479,7 +8552,8 @@ public final class TypeChecker {
                                 && root.name().equals("self");
                         if (!initializingInConstructor) {
                             throw new IllegalArgumentException(
-                                    "field '" + field.owner().name() + "." + field.field().name()
+                                    (strictAttoEquality ? "E_IMMUTABLE: " : "")
+                                            + "field '" + field.owner().name() + "." + field.field().name()
                                             + "' is immutable/final; cannot reassign fixed class field");
                         }
                         if (constructorFixedFieldWrites == null
@@ -11684,7 +11758,8 @@ public final class TypeChecker {
             String name) {
         if (visibility == Ast.Visibility.PRIVATE && currentClassOwner != owner) {
             throw new IllegalArgumentException(
-                    "private " + kind + " '" + owner.name() + "." + name
+                    (strictAttoEquality ? "E_PRIVATE: " : "")
+                            + "private " + kind + " '" + owner.name() + "." + name
                             + "' is accessible only from code declared in class " + owner.name());
         }
     }
