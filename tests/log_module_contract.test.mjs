@@ -18,7 +18,7 @@ const severityName = atto_pure(source, 'severity_name');
 const sinkByteBudgetOk = atto_pure(source, 'sink_byte_budget_ok');
 
 test('standard numeric severities and OFF are disjoint', () => {
-  assert.deepEqual([10,20,30,40,50,60].map(validSeverity), [true,true,true,true,true,true]);
+  assert.deepEqual([10,20,30,40,50,60].map(level=>validSeverity(level)), [true,true,true,true,true,true]);
   for (const n of [-1,0,1,9,11,35,65,70,71,2147483647]) {
     assert.equal(validSeverity(n), false);
   }
@@ -27,7 +27,7 @@ test('standard numeric severities and OFF are disjoint', () => {
 });
 
 test('level labels are stable and unrecognized values are distinct', () => {
-  assert.deepEqual([10,20,30,40,50,60,70,-1].map(severityName),
+  assert.deepEqual([10,20,30,40,50,60,70,-1].map(level=>severityName(level)),
     ['TRACE','DEBUG','INFO','WARN','ERROR','FATAL','UNKNOWN','UNKNOWN']);
 });
 
