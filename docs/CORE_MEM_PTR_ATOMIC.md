@@ -1,6 +1,6 @@
 # Java-owned `core/mem`, `core/ptr`, and `core/atomic` (.atto)
 
-**Status: source-only policy helpers, not installed/import-linked Atto core APIs.**
+**Status: compiler-packaged Atto core-policy source; native guest execution not yet verified.**
 Each compiler owns and may implement its `.atto` modules independently.
 These Java-local helpers intentionally do not depend on `alloc`, `std`,
 host Java, a scheduler, an OS, or a garbage collector.
@@ -68,3 +68,34 @@ Before marking these modules usable in an actual Atto build:
    Rust [#419](https://github.com/atto-lang/atto-source.rs/pull/419),
    atomic spec [#175](https://github.com/atto-lang/atto-spec/pull/175)
    and pointer spec [#18](https://github.com/atto-lang/atto-spec/pull/18).
+
+## 2026-11-22 Java core import integration
+
+Java's `CoreLibrarySources` closed registry now explicitly admits the three
+`ores.core/mem`, `ores.core/ptr`, and `ores.core/atomic` modules from
+`src/main/resources/dev/oreslang/core/*.atto`. Each packaged resource's
+Git blob SHA was independently re-fetched and verified identical to its
+corresponding backend-owned `stdlib/core/*.atto` source. Unapproved .ores
+aliases and traversal paths must remain rejected.
+
+`CoreMemoryPolicyGuestTest` adds compiler parsing/typechecking,
+`LinkedProgramRunner.validate`, and real guest exit-status tests for a
+checked `mem` result (42), `ptr` offset (42), and an imported atomic-order
+helper used with the already implemented Java local `Atomic<int>` runtime
+(42). It also tests exact resource/source identity and closed import paths.
+These are executable *test definitions*, not a claim that they have run.
+
+**CI gate:** Source Actions at Java PR #1771 head
+`66b7b2be57238ebd0d5168a40f2f338cedd08252` reported failures, with
+sampled `compiler-and-guest`, `prohibit-python`, and `host` jobs recording
+**zero steps**. Classify as NOT_EXECUTED / runner-admission blocked, not
+compiler failures. Run `mvn -Dtest=CoreMemoryPolicyGuestTest test` with an
+approved full JDK/Graal toolchain on an admitted runner. Any private
+cross-organization mirror requires separately authenticated source export
+authorization, a verified destination and full-tree/blob proof; do not mirror
+without those controls.
+
+Java `Atomic<int>` currently has existing local guest coverage. This core
+module validates memory-order parameters only; no newly ordered atomic load,
+store, CAS, hardware fence, untrusted cross-actor sharing, or fully sealed
+AOT-lowered guest capability is implemented by this change.
