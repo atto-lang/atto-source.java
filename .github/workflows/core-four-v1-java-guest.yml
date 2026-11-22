@@ -56,6 +56,7 @@ jobs:
           grep -F 'name="requiresFalseRemainsTrappableInGuestExecution"' "$report"
           grep -F 'name="coreImportsAreCompilerOwnedAndAliasToOneUnit"' "$report"
           grep -F 'name="coreModulesParseAndTypecheck"' "$report"
+          grep -F 'name="importedCoreCellCannotBypassCompilerOwnershipChecks"' "$report"
           grep -F 'skipped="0"' "$report"
           grep -Eq 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
           echo 'CORE_FOUR_JAVA_GUEST_JUNIT=EXECUTED; native-image=NOT_EXECUTED'
