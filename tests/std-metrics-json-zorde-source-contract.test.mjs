@@ -188,3 +188,24 @@ test("bootstrap envelope vectors and bounded metric aggregation (reference only)
     accepted: h.accepted, rejected: h.rejected, sum: h.sum, bucket_counts: h.bucket_counts
   });
 });
+
+test("Java integration preserves main core/stdlib registry and sealed core ownership source", () => {
+  const registry = read("src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java");
+  const coreMatch = registry.match(/CORE_SOURCES\s*=\s*Set\.of\(([\s\S]*?)\);/);
+  const hostedMatch = registry.match(/STD_SOURCES\s*=\s*Set\.of\(([\s\S]*?)\);/);
+  assert.ok(coreMatch, "missing freestanding core registry");
+  assert.ok(hostedMatch, "missing hosted std registry");
+  const names = m => [...m[1].matchAll(/"([^"]+\.atto)"/g)].map(v => v[1]);
+  const core = names(coreMatch);
+  const hosted = names(hostedMatch);
+  for (const id of ["numeric.atto", "protocols.atto", "collections.atto", "borrow_admission.atto"])
+    assert.ok(core.includes(id), "lost core module " + id);
+  for (const id of ["telemetry.atto", "metrics.atto", "json.atto", "zorde.atto",
+                    "task_parallel_policy.atto", "source_budget_policy.atto"])
+    assert.ok(hosted.includes(id), "lost hosted module " + id);
+  assert.equal(new Set(core).size, core.length, "duplicate core module");
+  assert.equal(new Set(hosted).size, hosted.length, "duplicate hosted module");
+  assert.ok(existsSync(path.join(repo, "src/main/resources/dev/oreslang/core/borrow_admission.atto")));
+  assert.ok(!existsSync(path.join(repo, "stdlib/core/borrow_admission.atto")),
+            "duplicated borrow-admission package root");
+});
