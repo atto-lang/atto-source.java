@@ -126,6 +126,42 @@ final class NativeTimeStdlibTest {
     }
 
     @Test
+    void compiledGuestRunsCanonicalFiftyTwoCaseTimeContract() throws Exception {
+        Path fixture = Path.of("examples", "atto-time-contract.atto");
+        assertTrue(Files.isRegularFile(fixture), "backend-owned Atto guest fixture missing");
+        String source = Files.readString(fixture);
+        assertTrue(source.contains("import module time from \"std/time\";"));
+        assertFalse(source.contains("import class Duration from"));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream errors = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(fixture,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, errors);
+        assertTrue(linked.units().containsKey("@std/time.atto"),
+                "time fixture must link compiler-owned .atto source");
+        String[] lines = output.toString(StandardCharsets.UTF_8)
+                .replace("\\r", "").strip().split("\\n");
+        assertEquals(53, lines.length, () -> errors.toString(StandardCharsets.UTF_8));
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (int i = 0; i < 52; ++i) {
+            assertTrue(lines[i].startsWith("TIME-PASS|"),
+                    "guest failed or emitted unexpected line " + i + ": " + lines[i]);
+            assertTrue(names.add(lines[i]), "duplicate guest check: " + lines[i]);
+        }
+        assertEquals("TIME-CONTRACT-DONE", lines[52]);
+        for (String required : java.util.List.of(
+                "TIME-PASS|ceil-sub-ms",
+                "TIME-PASS|hours-overflow",
+                "TIME-PASS|manual-overflow-atomic",
+                "TIME-PASS|clock-mismatch",
+                "TIME-PASS|timer-no-repeat",
+                "TIME-PASS|interval-coalesce",
+                "TIME-PASS|deadline-overflow")) {
+            assertTrue(names.contains(required), "guest contract case missing: " + required);
+        }
+    }
+
+    @Test
     void projectLocalFakeTimeMustNotShadowCompilerOwnedTime()
             throws Exception {
         Path fake = Files.createDirectories(temp.resolve("std"));
