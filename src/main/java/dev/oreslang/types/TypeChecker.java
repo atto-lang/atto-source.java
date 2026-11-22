@@ -741,6 +741,7 @@ public final class TypeChecker {
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "HttpClientResponse", "HttpClientBody",
+                "ChildProcess", "ExitStatus", "ProcessOutput", "ProcessError",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorGroup", "Topic", "Subscription", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
@@ -5862,6 +5863,25 @@ public final class TypeChecker {
                              && root.name().equals("std") && env.lookup("std") == null))) {
                 return new Function(List.of(Primitive.INT), Primitive.VOID);
             }
+            if (member.member().equals("spawn")
+                    && ((member.receiver() instanceof Ast.NameExpr processName
+                             && processName.name().equals("process")
+                             && env.lookup("process") == null)
+                        || (member.receiver() instanceof Ast.MemberExpr namespace
+                             && namespace.member().equals("process")
+                             && namespace.receiver() instanceof Ast.NameExpr root
+                             && root.name().equals("std")
+                             && env.lookup("std") == null))) {
+                // One restricted, explicit-cwd JVM host call. It cannot be
+                // confused with the source actor spawn keyword. No shell,
+                // environment inheritance, actor ownership or raw PID.
+                Type child = new Named("ChildProcess", List.of());
+                Type error = new Named("ProcessError", List.of());
+                Type result = new Named("Result", List.of(child, error));
+                return new Function(List.of(
+                        Primitive.STRING, new ListType(Primitive.STRING),
+                        Primitive.STRING), new Named("Future", List.of(result)));
+            }
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
@@ -5902,6 +5922,51 @@ public final class TypeChecker {
                 };
             }
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if (sumReceiver instanceof Named processType
+                    && processType.arguments().isEmpty()) {
+                if (processType.name().equals("ChildProcess")) {
+                    Type error = new Named("ProcessError", List.of());
+                    Type status = new Named("ExitStatus", List.of());
+                    Type output = new Named("ProcessOutput", List.of());
+                    return switch (member.member()) {
+                        case "wait", "terminate", "kill" ->
+                                new Function(List.of(), new Named("Future", List.of(
+                                        new Named("Result", List.of(status, error)))));
+                        case "collect_output" ->
+                                new Function(List.of(), new Named("Future", List.of(
+                                        new Named("Result", List.of(output, error)))));
+                        case "try_wait" -> new Function(List.of(),
+                                new Named("Option", List.of(status)));
+                        case "alive" -> Primitive.BOOL;
+                        case "close" -> new Function(List.of(), Primitive.VOID);
+                        default -> throw new IllegalArgumentException(
+                                "unknown ChildProcess member '" + member.member() + "'");
+                    };
+                }
+                if (processType.name().equals("ExitStatus")) {
+                    return switch (member.member()) {
+                        case "code" -> Primitive.INT;
+                        case "signaled" -> Primitive.BOOL;
+                        case "success" -> new Function(List.of(), Primitive.BOOL);
+                        default -> throw new IllegalArgumentException(
+                                "unknown ExitStatus member '" + member.member() + "'");
+                    };
+                }
+                if (processType.name().equals("ProcessOutput")) {
+                    return switch (member.member()) {
+                        case "stdout", "stderr" -> Primitive.STRING;
+                        default -> throw new IllegalArgumentException(
+                                "unknown ProcessOutput member '" + member.member() + "'");
+                    };
+                }
+                if (processType.name().equals("ProcessError")) {
+                    return switch (member.member()) {
+                        case "kind", "message" -> Primitive.STRING;
+                        default -> throw new IllegalArgumentException(
+                                "unknown ProcessError member '" + member.member() + "'");
+                    };
+                }
+            }
             // Nested extraction consumes the receiver. unwrap_all also
             // requires a checked static-depth proof bound to the CallExpr's
             // identity. A first-class method value would bypass both direct
