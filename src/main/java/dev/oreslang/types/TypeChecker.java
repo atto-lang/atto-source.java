@@ -870,6 +870,7 @@ public final class TypeChecker {
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
         if ("Symbol".equals(name) || "Newable".equals(name)
+                || "AeadKey".equals(name) || "SecretBytes".equals(name) || "CryptoError".equals(name)
                 || "Atomic".equals(name) || "AtomicCompareExchange".equals(name)) {
             throw new IllegalArgumentException(name
                     + " is a reserved compiler-owned nominal type; cannot declare "
@@ -8752,6 +8753,10 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
+        }
+        if (named.name().equals("AeadKey") || named.name().equals("SecretBytes")) {
+            throw new IllegalArgumentException(
+                    where + " cannot transfer opaque crypto secrets across actor boundaries");
         }
         if (named.name().equals("Map")) {
             throw new IllegalArgumentException(
