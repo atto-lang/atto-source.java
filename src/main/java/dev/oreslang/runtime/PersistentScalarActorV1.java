@@ -15,8 +15,10 @@ import java.util.OptionalLong;
  * An ambiguous commit failure poisons the activation; a new activation must
  * load authoritative storage instead of assuming rollback succeeded.
  *
- * Runtime wiring into the general source ActorRuntime is intentionally still
- * gated. Guest actors are not allowed to create this trusted executor/store.
+ * Only the checked scalar source subset is wired through ActorRuntime by
+ * PersistentScalarCodeExecutor. General guest durable handlers and async
+ * persistence suspension are still gated; guest actors cannot create this
+ * trusted executor/store.
  */
 public final class PersistentScalarActorV1 implements AutoCloseable {
     private final PersistentScalarMirV1.Plan plan;
