@@ -19,6 +19,10 @@ public final class NativeChildProcessesSmoke {
     }
 
     private static String javaBinary() {
+        // In a native-image executable java.home need not point at a JDK.
+        String configured = System.getenv("ATTO_TEST_JAVA_EXECUTABLE");
+        if (configured != null && !configured.isBlank())
+            return Path.of(configured).toAbsolutePath().normalize().toString();
         String ext = System.getProperty("os.name").startsWith("Windows") ? ".exe" : "";
         return Path.of(System.getProperty("java.home"), "bin", "java" + ext)
                 .toAbsolutePath().normalize().toString();
@@ -30,7 +34,8 @@ public final class NativeChildProcessesSmoke {
     }
 
     private static List<String> child(String mode) {
-        return List.of("-cp", System.getProperty("java.class.path"),
+        String classes = System.getenv("ATTO_TEST_JAVA_CLASSPATH");
+        return List.of("-cp", classes != null ? classes : System.getProperty("java.class.path"),
                 NativeChildProcessesSmoke.class.getName(), mode);
     }
 
