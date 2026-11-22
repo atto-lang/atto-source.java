@@ -185,6 +185,7 @@ public final class Parser {
         List<String> names = new ArrayList<>();
         boolean wildcard = false;
         String namespace = null;
+        java.util.Map<String, String> constAliases = new java.util.LinkedHashMap<>();
 
         if (match(STAR)) {
             kind = Ast.ImportKind.ALL;
@@ -199,23 +200,37 @@ public final class Parser {
             else if (match(ACTOR)) kind = Ast.ImportKind.ACTOR;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
+            else if (match(CONST)) kind = Ast.ImportKind.CONST;
             else if (match(INTERFACE)) kind = Ast.ImportKind.INTERFACE;
             else if (match(CONTRACT)) kind = Ast.ImportKind.CONTRACT;
             else if (match(TRAIT)) kind = Ast.ImportKind.TRAIT;
             else if (match(STRUCT)) kind = Ast.ImportKind.STRUCT;
             else if (match(TYPE)) kind = Ast.ImportKind.TYPE;
             else if (match(TYPES)) kind = Ast.ImportKind.TYPES;
-            else throw error(peek(), "expected module, actor, class, fnc, interface, contract, trait, struct, type, types, or * after import");
+            else throw error(peek(), "expected module, actor, class, fnc, const, interface, contract, trait, struct, type, types, or * after import");
 
             if (match(STAR)) {
+                if (kind == Ast.ImportKind.CONST) {
+                    throw error(previous(), "import const requires named selections, not wildcard");
+                }
                 wildcard = true;
                 consume(AS, "wildcard import requires 'as <namespace>'");
                 namespace = consume(IDENT, "expected import namespace").lexeme();
+            } else if (kind == Ast.ImportKind.CONST) {
+                do {
+                    String name = consume(IDENT, "expected imported constant name").lexeme();
+                    if (names.contains(name)) throw error(previous(), "duplicate imported constant source name");
+                    names.add(name);
+                    if (match(AS)) {
+                        String alias = consume(IDENT, "expected imported constant alias").lexeme();
+                        constAliases.put(name, alias);
+                    }
+                } while (match(COMMA));
             } else {
                 parseImportSelection(kind, names);
             }
 
-            if (!wildcard && match(AS)) {
+            if (!wildcard && kind != Ast.ImportKind.CONST && match(AS)) {
                 if (names.size() != 1) {
                     throw error(previous(), "named import aliases require exactly one selected name");
                 }
@@ -224,10 +239,14 @@ public final class Parser {
         }
 
         consume(FROM, "expected 'from' in import");
+        // The explicit `pkg` introducer is optional for qualified static
+        // constant namespace selectors; the linker's package resolution is
+        // separately capability/identity checked and currently fail-closed.
+        if (kind == Ast.ImportKind.CONST && check(IDENT) && peek().lexeme().equals("pkg")) advance();
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
         consume(SEMICOLON, "expected ';' after import");
-        return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+        return new Ast.ImportDecl(kind, names, wildcard, namespace, path, constAliases);
     }
 
     private void parseImportSelection(Ast.ImportKind kind, List<String> names) {
