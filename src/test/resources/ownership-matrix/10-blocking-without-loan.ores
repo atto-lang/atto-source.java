@@ -1,0 +1,5 @@
+define class Box as
+ pub let int value = 7;
+end
+suspends fnc wait_blocking(): int { rt cooperate; return 7; }
+pub async routine main(): void { stdio.stdout.write(wait_blocking()); return; }

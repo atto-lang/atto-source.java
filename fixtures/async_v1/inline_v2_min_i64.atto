@@ -1,0 +1,6 @@
+pub fnc main(): int {
+  val answer = sync task<int> {
+    return -9223372036854775808;
+  };
+  return answer;
+}

@@ -1,0 +1,21 @@
+import fnc roodles from "./imported.ores";
+
+fnc roodles(): int { return 99; }
+
+define class Foo as
+  pub roodles(): int { return 7; }
+  pub park_it(): void {
+    stdio.stdout.write(roodles());
+    stdio.stdout.write("|");
+    stdio.stdout.write(self.roodles());
+    stdio.stdout.write("|");
+    stdio.stdout.write(pkg::roodles());
+    stdio.stdout.write("|");
+    stdio.stdout.write(imports::roodles());
+  }
+end
+
+pub routine main(): void {
+  val foo = new Foo();
+  foo.park_it();
+}

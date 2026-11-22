@@ -1,0 +1,16 @@
+// The hot workload is native AttoLang guest code, not a Java vector loop.
+// The Java test observes host allocations outside a repeated Context.eval batch.
+define module app
+  pub fnc main(): void {
+    let mut Vector[int] values = [];
+    for let i = 0; i < 256; i++ do
+      values.add(i);
+    done
+    let int checksum = 0;
+    for let index = 0; index < values.size; index++ do
+      checksum = checksum + values[index];
+    done
+    stdio.println(checksum);
+    return;
+  }
+end

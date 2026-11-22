@@ -204,6 +204,21 @@ as the verified original, before the private destination's root commit/ref
 can be created. No transfer is authorized merely because a filesystem
 directory has a trusted-looking name.
 
+The publisher's destination commit now carries exact, machine-readable
+`Oreslang-Source-Repo`, `Oreslang-Source-Commit`,
+`Oreslang-Source-Tree` and `Oreslang-Destination-Prefix` trailers.
+The destination CI checks the actual `HEAD:private-oreslang-source` tree
+against that recorded tree hash, and the publisher rejects the response if
+the newly created branch ref does not point to its expected commit.
+
+**Important distinction:** commit trailers are self-asserted, not a
+cryptographic source-organization signature. Their match proves local
+commit/subtree consistency, **not** that the original source organization
+approved the export. Only the protected-source policy and source-side
+checked publisher authorize private transfer. A manually fabricated
+destination commit with matching trailers must never be treated as an
+approved source snapshot without separate trusted origin evidence.
+
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
