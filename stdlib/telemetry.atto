@@ -1,0 +1,130 @@
+// Java/Graal Atto stdlib telemetry VALUE model, not a trusted span provider.
+// Scope ownership, trace/span ID generation, sampling authority, and JIT probe
+// activation belong to compiler/runtime, not to user-constructible Atto values.
+// No I/O, exporter, GC promises, reflection or synchronous blocking in this file.
+define module Telemetry as
+  // Trace identifiers are two opaque 64-bit bit-patterns (a 128-bit trace ID).
+  // Negative signed limbs are valid bit patterns. Zero/zero is invalid.
+  // This is a display/export snapshot, NOT an ambient or forgeable capability.
+  pub define class SpanRecord as
+    pub val int trace_id_high;
+    pub val int trace_id_low;
+    pub val int span_id;
+    pub val int parent_span_id;
+    pub val int trace_flags;
+    pub val int operation_id;
+    pub val int code_generation;
+    pub val int span_kind;
+    pub val int started_ns;
+    pub val int ended_ns;
+    pub val int status_code;
+  end
+
+  // The full W3C traceparent parser must separately verify ASCII/hex,
+  // exact field widths, delimiters, and version-specific extensions.
+  pub fnc traceparent_v00_fields_valid(int version, int trace_high, int trace_low, int span_id, int flags): bool {
+    if version != 0 then return false; fi
+    if trace_high == 0 && trace_low == 0 then return false; fi
+    if span_id == 0 then return false; fi
+    return flags >= 0 && flags <= 255;
+  }
+
+  pub fnc sampled_flag(int flags): bool {
+    if flags < 0 || flags > 255 then return false; fi
+    return flags % 2 == 1;
+  }
+
+  // OpenTelemetry-compatible decisions: 0=DROP, 1=RECORD_ONLY,
+  // 2=RECORD_AND_SAMPLE. 3 is a parent-based policy selector, not a decision.
+  // A parent sampled bit guides policy; it never substitutes for is_recording.
+  pub fnc sampling_decision(int policy, bool parent_sampled): int {
+    if policy == 1 then return 1; fi
+    if policy == 2 then return 2; fi
+    if policy == 3 && parent_sampled then return 2; fi
+    return 0;
+  }
+
+  pub fnc decision_is_recording(int decision): bool {
+    return decision == 1 || decision == 2;
+  }
+
+  pub fnc decision_is_sampled(int decision): bool {
+    return decision == 2;
+  }
+
+  // Activation of dormant, already-compiled sites only. The trusted runtime
+  // separately authenticates requests and enforces tenant/effect boundaries.
+  // 0=none, 1=boundaries, 2=calls, 3=full. Adaptive JIT is NOT this function.
+  pub fnc dormant_probe_admissible(int compiled_ceiling, int requested, bool authorized): bool {
+    if !authorized then return false; fi
+    if compiled_ceiling < 1 || compiled_ceiling > 3 then return false; fi
+    if requested < 1 || requested > 3 then return false; fi
+    return requested <= compiled_ceiling;
+  }
+
+  pub fnc span_window_valid(int started_ns, int ended_ns): bool {
+    if started_ns < 0 || ended_ns < 0 then return false; fi
+    return ended_ns >= started_ns;
+  }
+
+  pub fnc export_queue_admissible(int queued, int capacity, int new_bytes, int bytes_remaining): bool {
+    if queued < 0 || capacity < 1 || queued >= capacity then return false; fi
+    if new_bytes < 0 || bytes_remaining < 0 then return false; fi
+    return new_bytes <= bytes_remaining;
+  }
+
+  // Actor-owned bounded queue model. Never call an exporter or network sink
+  // from a scope exit. The owner must serialize access; there is no shared
+  // mutability, implicit cross-actor transfer or unbounded growth.
+  pub define class SpanBatch as
+    let mut Array<SpanRecord> items = new Array<SpanRecord>();
+    let int capacity;
+    let mut int dropped = 0;
+
+    pub constructor(int capacity) {
+      if capacity < 1 || capacity > 65536; do
+        rt fail("Telemetry.SpanBatch: capacity must be 1..65536");
+      fi
+      self.capacity = capacity;
+    }
+
+    pub record(mut self)(int trace_high, int trace_low, int span_id,
+                         int parent_id, int trace_flags, int operation_id,
+                         int code_generation, int span_kind, int started_ns,
+                         int ended_ns, int status_code): bool {
+      if trace_high == 0 && trace_low == 0 then return false; fi
+      if span_id == 0 then return false; fi
+      if trace_flags < 0 || trace_flags > 255 then return false; fi
+      if operation_id <= 0 || code_generation < 0 then return false; fi
+      if span_kind < 0 || span_kind > 5 then return false; fi
+      if status_code < 0 || status_code > 2 then return false; fi
+      if !span_window_valid(started_ns, ended_ns) then return false; fi
+      if self.items.size >= self.capacity; do
+        if self.dropped < 2147483647; do
+          self.dropped = self.dropped + 1;
+        fi
+        return false;
+      fi
+      self.items.add(new SpanRecord(trace_high, trace_low, span_id, parent_id,
+                                    trace_flags, operation_id, code_generation,
+                                    span_kind, started_ns, ended_ns, status_code));
+      return true;
+    }
+
+    pub count(): int {
+      return self.items.size;
+    }
+
+    pub dropped_count(): int {
+      return self.dropped;
+    }
+
+    pub at(int index): SpanRecord {
+      return self.items.get(index);
+    }
+  end
+
+  pub fnc batch(int capacity): SpanBatch {
+    return new SpanBatch(capacity);
+  }
+end
