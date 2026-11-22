@@ -45,6 +45,11 @@ final class ChannelStdlibAttoSourceTest {
     }
 
     @Test
+    void ownedArrayPayloadMovesThroughGenericAttoFunctionBoundary() throws Exception {
+        assertEquals("accepted:56", run("owned_payload.atto"));
+    }
+
+    @Test
     void negativeCapacityFailsClosedWithoutCreatingChannel() throws Exception {
         PolyglotException failure = assertThrows(PolyglotException.class,
                 () -> run("negative_capacity.atto"));
