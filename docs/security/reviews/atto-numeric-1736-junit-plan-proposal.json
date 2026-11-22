@@ -27,7 +27,10 @@
       "src/test/java/dev/oreslang/NumericValueEqualityExactTest.java": "333d94a33eb15da1469d24571ab822b53feb35ae",
       "src/test/java/dev/oreslang/NumericIntegerDivisionV1Test.java": "e9d517c7f25703d9103dae189d4ae4157aacaa07",
       "src/test/java/dev/oreslang/NumericTrapResultV1Test.java": "093bb1346939102b2625b86dff13da4a7895834d",
-      "src/test/java/dev/oreslang/NumericErrorAbiTest.java": "00fe4003cb0818c7c71bd91d7f6627ed24282feb"
+      "src/test/java/dev/oreslang/NumericErrorAbiTest.java": "00fe4003cb0818c7c71bd91d7f6627ed24282feb",
+      "src/test/java/dev/oreslang/NumericValueOrderingTest.java": "c91a1ba61bed0e8f1d2012ce84bb65acdc27684a",
+      "src/main/java/dev/oreslang/runtime/NumericErrorAbi.java": "240079e5ba85213b66078a985626a797c6ae1d3e",
+      "contracts/v1/numeric-error-abi.json": "2c8eec35d1effad99207354f78d0f63618d5951a"
     },
     "commands": [
       {
