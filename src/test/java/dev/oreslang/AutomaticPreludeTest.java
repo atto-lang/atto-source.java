@@ -95,6 +95,8 @@ final class AutomaticPreludeTest {
         assertEquals(CoreTypeRegistry.Scope.CORE, string.scope());
         assertEquals(CoreTypeRegistry.Ownership.COPY, string.ownership());
         assertEquals(CoreTypeRegistry.LoweringStatus.JAVA_LEGACY_SCALAR, string.javaStatus());
+        assertEquals(CoreTypeRegistry.lookup("string").orElseThrow().canonicalIdentity(),
+                string.canonicalIdentity(), "string and String are spelling aliases of one scalar type");
         assertEquals(CoreTypeRegistry.Allocation.NONE, string.allocation(),
                 "Java String remains the immutable scalar/view, not allocator-owned alloc::String");
         assertTrue(AutomaticPrelude.lookup("String", AutomaticPrelude.Profile.CORE).isPresent());
