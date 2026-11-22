@@ -38,5 +38,12 @@ pub routine main(): void {
   stdio.println(histogram_snapshot.bucket_count(0).unwrap());
   stdio.println(h.count());
   stdio.println(h.bucket_count(0).unwrap());
+  let gauge_snapshot = g.snapshot();
+  stdio.println(gauge_snapshot.value());
+  stdio.println(gauge_snapshot.minimum());
+  stdio.println(gauge_snapshot.maximum());
+  stdio.println(g.set(2));
+  stdio.println(gauge_snapshot.value());
+  stdio.println(g.value());
   return;
 }
