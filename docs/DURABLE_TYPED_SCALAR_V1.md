@@ -43,12 +43,37 @@ Stack: `atto-source.java#1515` (SQLite), `#1523` (checked i64 scalar),
   host-owned daemon worker. Calls return completion stages immediately;
   exhausted queues reject, never park the requesting actor carrier.
   `closeAsync` drains admitted operations before closing the connection.
-  **Do not call `.join()` / `.get()` on actor carriers.** The general
-  `ActorRuntime` bridge currently calls synchronous `DurableActorStore`
-  and therefore does NOT yet meet the nonparking I/O admission requirement.
+  **Do not call `.join()` / `.get()` on actor carriers.**
+- **New opt-in async execution route**: trusted host code calls
+  `AsyncPersistentScalarCodeExecutorV1.prepare(...)` to activate and replay
+  a bounded, verified inbox on the isolated SQLite worker, then calls
+  `ActorRuntime.spawnPreparedPersistentScalarActor(...)`. Its
+  `initializeActor` creates private scalar state without disk I/O.
+  Each scalar increment/read captures an actor turn, submits fenced SQLite
+  operations, and invokes `ActorRuntime.suspendCurrentUserMailboxUntil`
+  on `OresFuture.from(stage)`. `enqueueOnCompletion` publishes state
+  and result only through an actor-affine continuation before the suspended
+  user mail is marked processed. Incoming user mail stays FIFO.
+  **This is a separate opt-in profile**, not a silent behavior change to
+  `PersistentScalarCodeExecutor`, which still executes synchronous JDBC.
+- **Preparation/STOP caveats**: the supervisor must quiesce external ingress
+  while preparing (otherwise a later unconsumed inbox record correctly
+  prevents newer turns from leapfrogging it). Source readiness follows the
+  prepared snapshot, but a concurrent newer activation may invalidate its
+  epoch before the first mail; per-turn fences reject it. Graceful teardown
+  queues nonblocking hibernation, but its `ActorRuntime` STOP future does
+  **not** currently certify the durable hibernation receipt. Pending outbox
+  intents fail closed before prepare; generic actor handlers are unsupported.
   The async provider is host-only until scheduler continuation wiring exists.
 
 ## Current strict limitations
+
+0. The async route uses the **existing** source mailbox suspend/resume
+   mechanism, not a new scheduler. `AsyncPersistentScalarActorRuntimeTest`
+   targets actual SQLite, FIFO continuations, duplicate responses, cold
+   reopen and stale epoch fencing. Exact-head JUnit runs have not yet
+   executed steps. Crash-after-commit/receipt-loss faults still require an
+   admitted runner and dedicated subprocess stress fixtures.
 
 1. The verified source compiler currently recognizes **one i64 state field**
    and only `increment`/`get_count`; it does not parse or type-check general
@@ -76,7 +101,10 @@ real SQLite JUnit). Tests include:
 - `PersistentScalarActorV1Test`: original committed result after a retry,
   explicit legacy inbox replay and poison on conflicting reuse;
 - `PersistentScalarActorRuntimeBridgeTest`: actual ActorRuntime mailbox
-  integration and cold-process recovery as an existing source test.
+  integration and cold-process recovery as an existing source test;
+- `AsyncPersistentScalarActorRuntimeTest`: new opt-in prepared async actor
+  execution, FIFO mailbox suspension, retries returning original receipts,
+  replayed legacy/versioned inputs and old-epoch revocation.
 
 **Evidence boundary (2026-11-21):** The exact
 `DurableScalarSchemaV1.java` Git blob
