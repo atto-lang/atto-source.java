@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'stdlib/alloc/**'
+      - 'pom.xml'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - 'tests/fixtures/alloc-collections-v1/**'
       - 'src/test/java/dev/oreslang/AttoAllocCollectionsGuestTest.java'
       - '.github/workflows/atto-alloc-collections-guest.yml'
@@ -49,12 +52,15 @@ jobs:
             allocModulesParseAsAttoLangSource \
             bitsetGuestExecutesWordBoundariesAndIntersections \
             linkedListGuestExecutesOrderingAndRecycling \
-            mapGuestExecutesCollisionsTombstonesAndQuota
+            mapGuestExecutesCollisionsTombstonesAndQuota \
+            allocImportRegistryHasStableCanonicalIdentityAndRejectsTraversal \
+            canonicalAllocImportsActuallyLinkAndExecuteAllGuestCollections \
+            unknownReservedAllocModuleCannotFallBackToProjectFilesystem
           do
             grep -F "name=\"$testname\"" "$report"
           done
           grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
-          echo 'ATTO_ALLOC_JAVA_GUEST=EXECUTED 3/3'
+          echo 'ATTO_ALLOC_JAVA_GUEST=EXECUTED 7/7 methods, 3/3 canonical guests'
       - name: Preserve evidence boundary
         if: always()
         run: |
