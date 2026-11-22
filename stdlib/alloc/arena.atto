@@ -74,6 +74,12 @@ define module arena as
                      outstanding_loans, live_owned_values) then
         return false;
       fi
+      // Nontrivial rewinds must fence every old offset before its bytes may
+      // be reused; refusing generation wrap prevents stale-handle ABA.
+      if saved_offset < self.offset then
+        if self.generation >= 2147483647 then return false; fi
+        self.generation = self.generation + 1;
+      fi
       self.offset = saved_offset;
       return true;
     }
