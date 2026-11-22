@@ -42,11 +42,17 @@ test('review packet does not weaken any active source policy or carrier contract
   const contracts = JSON.parse(read('.github/private-ci-carrier-contracts.json'));
   assert.equal(contracts.schema, 1);
   for (const candidate of packet.candidates) {
-    assert.equal(
-      Object.hasOwn(contracts.carriers, candidate.repository), false,
-      'active carrier contract cannot claim an unauthorized Atto origin'
-    );
+    // A carrier may be mentioned for a legacy Oreslang PR, but that
+    // independently reviewed grant is never transferable to Atto #1736.
+    const contract = contracts.carriers[candidate.repository];
+    for (const plan of Object.values(contract?.test_plans ?? {})) {
+      assert.equal(
+        plan.allowed_prs.includes(packet.source.pull_request), false,
+        'no approved carrier test plan may authorize Atto #1736'
+      );
+    }
   }
+  assert.equal(packet.legacy_publisher.v3_atto_test_plan_approved, false);
 });
 
 test('reviewed publisher capacity covers tree count but does not override the deny gate', () => {
