@@ -56,5 +56,11 @@
     "carrier_maven_dependencies_prefetched_in_source_free_phase",
     "security_owner_approves_exact_pr_head_and_tree"
   ],
-  "note": "The existing Oreslang V3 validator correctly rejects this Atto source_repo. Never install or reference this proposed test plan in an active carrier contract without independent review. Native guest AOT requires a separate reviewed plan and execution path."
+  "note": "The existing Oreslang V3 validator correctly rejects this Atto source_repo. Never install or reference this proposed test plan in an active carrier contract without independent review. Native guest AOT requires a separate reviewed plan and execution path.",
+  "source_head_drift": {
+    "observed_new_head_sha": "c908c6c824c2dbb5caed3023b2c5e3e975a05834",
+    "observed_new_root_tree_sha": "103e305a8157e1cabce214b888df68e0777844cf",
+    "stale": true,
+    "resolution": "DO_NOT_AUTO_REPIN_REQUIRES_INDEPENDENT_REVIEW_AND_NEW_EXACT_HEAD_PROOF"
+  }
 }
