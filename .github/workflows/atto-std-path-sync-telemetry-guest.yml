@@ -71,6 +71,7 @@ jobs:
                   "exactCompilerOwnedRegistryContainsNativeAttoSourceOnly",
                   "importedNativeAttoPoliciesExecuteInLinkedGuest",
                   "applicationFilesCannotShadowTrustedStdModules",
+                  "invalidPathInstancesFailInGuestBeforeReturning",
               },
               "dev.oreslang.runtime.NativeTraceStdlibTest": {
                   "independentlyPackagedTelemetryPolicyAndBatchExecuteInGuest",
