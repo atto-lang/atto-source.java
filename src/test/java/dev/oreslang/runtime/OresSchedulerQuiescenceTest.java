@@ -14,6 +14,21 @@ import org.junit.jupiter.api.Timeout;
 /** A Future cancellation is NOT proof that a physical guest carrier has exited. */
 @Timeout(15)
 final class OresSchedulerQuiescenceTest {
+    /**
+     * onQuiescent may signal its test latch before returning. A latch signal is
+     * not a physical retirement receipt: the live-set removal must happen
+     * only after the callback returns successfully.
+     */
+    private static void awaitPhysicalRetirement(OresScheduler scheduler)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (scheduler.hasIncompleteCleanup() && System.nanoTime() < deadline) {
+            TimeUnit.MILLISECONDS.sleep(1);
+        }
+        assertFalse(scheduler.hasIncompleteCleanup(),
+                "physical retirement must eventually release the live-set lease");
+    }
+
     @Test
     void cancellationDoesNotRetireRunningTaskUntilCarrierUnwinds() throws Exception {
         CountDownLatch insideGuest = new CountDownLatch(1);
@@ -47,6 +62,7 @@ final class OresSchedulerQuiescenceTest {
             }
             assertTrue(retired.await(3, TimeUnit.SECONDS));
             assertEquals(1, retires.get());
+            awaitPhysicalRetirement(scheduler);
             java.lang.reflect.Field tasksField =
                     OresScheduler.class.getDeclaredField("tasks");
             tasksField.setAccessible(true);
@@ -90,6 +106,7 @@ final class OresSchedulerQuiescenceTest {
             release.countDown();
             assertTrue(retired.await(3, TimeUnit.SECONDS));
             assertEquals(1, callbacks.get());
+            awaitPhysicalRetirement(scheduler);
             java.lang.reflect.Field tasksField =
                     OresScheduler.class.getDeclaredField("tasks");
             tasksField.setAccessible(true);
@@ -1012,6 +1029,37 @@ final class OresSchedulerQuiescenceTest {
             for (OresScheduler scheduler : schedulers) scheduler.close();
         }
         assertEquals(original, OresScheduler.availableWallDeadlineAdmissions());
+    }
+
+    @Test
+    void callbackSignalDoesNotReleasePhysicalQuiescenceUntilCallbackReturns()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> result = scheduler.start(
+                    resume -> OresScheduler.done(77), () -> {
+                        entered.countDown();
+                        try {
+                            assertTrue(release.await(3, TimeUnit.SECONDS),
+                                    "retirement callback was never released");
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    });
+            try {
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertTrue(scheduler.hasIncompleteCleanup(),
+                        "callback entry cannot remove a task from its live set");
+                assertFalse(result.isDone(),
+                        "Future must not publish physical success during a held release");
+            } finally {
+                release.countDown();
+            }
+            assertEquals(77, result.get(3, TimeUnit.SECONDS));
+            awaitPhysicalRetirement(scheduler);
+        }
     }
 
     @Test

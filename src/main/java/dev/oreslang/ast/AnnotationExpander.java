@@ -93,12 +93,29 @@ public final class AnnotationExpander {
         return key;
     }
 
+    private static boolean hasCopyPolicy(List<Ast.Annotation> annotations) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("NoCopy") || annotation.name().equals("WarnOnCopy")
+                    || annotation.name().equals("Copyable")) return true;
+        }
+        return false;
+    }
+
     private static Ast.ModuleDecl expandModule(Ast.ModuleDecl module) {
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
+        if (hasCopyPolicy(module.annotations())) {
+            throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on module " + module.name());
+        }
         for (Ast.Decl declaration : module.declarations()) {
             if (declaration instanceof Ast.ClassDecl klass) {
                 declarations.add(expandClass(klass));
             } else {
+                if (declaration instanceof Ast.FieldDecl field && hasCopyPolicy(field.annotations())) {
+                    throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on module binding " + field.name());
+                }
+                if (declaration instanceof Ast.FunctionDecl function && hasCopyPolicy(function.annotations())) {
+                    throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on callable " + function.name());
+                }
                 if (declaration instanceof Ast.FieldDecl field && fromJsonKey(field) != null) {
                     throw new IllegalArgumentException("@FromJson is only valid on class fields, not module binding '" + field.name() + "'");
                 }
@@ -112,9 +129,15 @@ public final class AnnotationExpander {
     }
 
     private static Ast.ClassDecl expandClass(Ast.ClassDecl klass) {
+        if (klass.constructor() != null && hasCopyPolicy(klass.constructor().annotations())) {
+            throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on constructor " + klass.name());
+        }
         List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
         Map<String, Ast.MethodDecl> signatures = new HashMap<>();
         for (Ast.MethodDecl method : methods) {
+            if (hasCopyPolicy(method.annotations())) {
+                throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on method '" + klass.name() + "." + method.name() + "'");
+            }
             if (hasAnnotation(method.annotations(), FROM_JSON)) {
                 throw new IllegalArgumentException("@FromJson is only valid on class fields, not method '" + klass.name() + "." + method.name() + "'");
             }
@@ -161,7 +184,9 @@ public final class AnnotationExpander {
                 klass.fields(),
                 klass.constructor(),
                 methods,
-                klass.actorConcurrency());
+                klass.actorConcurrency(),
+                klass.sealedStateFields(),
+                klass.annotations());
     }
 
     private static void addGeneratedAccessor(

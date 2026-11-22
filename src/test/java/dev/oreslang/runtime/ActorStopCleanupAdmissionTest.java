@@ -388,7 +388,8 @@ final class ActorStopCleanupAdmissionTest {
                     "cleanup must not overwrite the original actor failure");
             ExecutionException failure = assertThrows(ExecutionException.class,
                     () -> actor.done().get(3, TimeUnit.SECONDS));
-            assertSame(crash, failure.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failure.getCause());
+            assertSame(crash, actor.failure().orElseThrow());
             var verifier = mutex.tryLock().orElseThrow();
             verifier.release();
         }

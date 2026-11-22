@@ -1,0 +1,16 @@
+define module m as
+  define class Box as
+    read_value(): int {
+      return 40;
+    }
+    pub answer(): int {
+      return read_value() + 2;
+    }
+  end
+end
+
+pub routine main(): void {
+  val box = new m.Box();
+  stdio.stdout.write(box.answer());
+  return;
+}

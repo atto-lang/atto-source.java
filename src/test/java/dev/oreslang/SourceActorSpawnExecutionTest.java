@@ -149,7 +149,9 @@ final class SourceActorSpawnExecutionTest {
                         PolyglotException.class,
                         () -> run(program, "source-actor-startup-failure.ores"));
         assertTrue(
-                failure.getMessage().contains("did not initialize field 'required'"),
+                // #1223: the spawning guest sees the cause-free snapshot, not the
+                // child's diagnostic text.
+                failure.getMessage().contains("terminated: FAILURE"),
                 failure.getMessage());
     }
 
@@ -276,7 +278,7 @@ final class SourceActorSpawnExecutionTest {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
                 () -> run(program, "source-await-spawn-failure.ores"));
-        assertTrue(error.getMessage().contains("did not initialize field 'required'"),
+        assertTrue(error.getMessage().contains("terminated: FAILURE"),
                 error.getMessage());
     }
 

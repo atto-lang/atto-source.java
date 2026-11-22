@@ -117,7 +117,9 @@ final class ActorEndCleanupTest {
                     assertThrows(
                             java.util.concurrent.CompletionException.class,
                             () -> ref.done().join());
-            assertEquals("cleanup failed", failed.getCause().getMessage());
+            // #1223: observers see the snapshot; the raw cause is host-only.
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertEquals("cleanup failed", ref.failure().orElseThrow().getMessage());
             assertFalse(ref.isAlive());
             assertEquals(
                     "cleanup failed",
@@ -173,7 +175,8 @@ final class ActorEndCleanupTest {
             actor.send("go");
             var failure = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> actor.done().get(2, java.util.concurrent.TimeUnit.SECONDS));
-            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failure.getCause());
+            assertInstanceOf(IllegalStateException.class, actor.failure().orElseThrow());
             assertFalse(actor.isAlive());
             assertEquals("buffered", actor.outputs().next().join().value().value());
             assertThrows(java.util.concurrent.CompletionException.class, () -> actor.outputs().next().join());
