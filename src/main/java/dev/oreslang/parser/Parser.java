@@ -670,6 +670,24 @@ public final class Parser {
                     namespace, packageImportPath(identity));
         }
 
+        // Canonical compact static namespace import:
+        //   import http from "std/http.atto";
+        // Equivalent to import * as http from "std/http.atto".
+        // A namespace is a checked linker binding, NEVER a runtime object,
+        // and this sugar cannot grant a host or package capability.
+        if (check(IDENT) && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == FROM) {
+            String alias = consumeImportAlias("expected import namespace alias");
+            consume(FROM, "expected 'from' in namespace import");
+            boolean packageSelector = check(IDENT) && "pkg".equals(peek().lexeme());
+            if (packageSelector) advance();
+            String path = consume(STRING, "expected quoted namespace source").lexeme();
+            if (path.isBlank()) throw error(previous(), "import path cannot be empty");
+            if (packageSelector) path = packageImportPath(path);
+            consume(SEMICOLON, "expected ';' after namespace import");
+            return new Ast.ImportDecl(Ast.ImportKind.ALL, List.of(), true, alias, path);
+        }
+
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
         boolean wildcard = false;
