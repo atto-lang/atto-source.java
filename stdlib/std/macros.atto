@@ -1,0 +1,10 @@
+// Java/Graal compiler-owned std macro library.
+// The Const<int> contract proves closed compile-time input, NOT a value range.
+// The consuming runtime API still checks timeout/retry limits.
+define pub macro const_retry_count(Const<int> count) -> Syntax<Expr> {
+  return quote(count);
+}
+
+define pub macro const_timeout_ns(Const<int> duration_ns) -> Syntax<Expr> {
+  return quote(duration_ns);
+}
