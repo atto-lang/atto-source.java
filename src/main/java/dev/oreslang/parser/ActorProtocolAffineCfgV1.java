@@ -84,11 +84,14 @@ public final class ActorProtocolAffineCfgV1 {
         Map<Integer, Owner> owners = new LinkedHashMap<>();
         Map<Integer, Lease> leases = new LinkedHashMap<>();
         Map<Integer, Loan> loans = new LinkedHashMap<>();
+        // Single-result V1: one affine capability may be returned per path.
+        int returnedHandles;
         Facts copy() {
             Facts result = new Facts();
             result.owners.putAll(owners);
             result.leases.putAll(leases);
             result.loans.putAll(loans);
+            result.returnedHandles = returnedHandles;
             return result;
         }
     }
@@ -126,6 +129,8 @@ public final class ActorProtocolAffineCfgV1 {
             throw error("E_PROTOCOL_LOAN_JOIN", block, 0);
         if (!left.leases.equals(right.leases))
             throw error("E_PROTOCOL_LEASE_JOIN", block, 0);
+        if (left.returnedHandles != right.returnedHandles)
+            throw error("E_PROTOCOL_RETURN_JOIN", block, 0);
         Facts result = left.copy();
         Set<Integer> ids = new LinkedHashSet<>(left.owners.keySet());
         ids.addAll(right.owners.keySet());
@@ -355,7 +360,10 @@ public final class ActorProtocolAffineCfgV1 {
                     Owner owner = live(facts, returned.place(), id, i);
                     if (loanOn(facts, returned.place()))
                         throw error("E_PROTOCOL_LOAN_CONFLICT", id, i);
+                    if (facts.returnedHandles != 0)
+                        throw error("E_PROTOCOL_MULTIPLE_RETURN_HANDLES", id, i);
                     facts.owners.put(returned.place(), owner.moved());
+                    facts.returnedHandles++;
                 } else if (op instanceof Return) {
                     if (!facts.loans.isEmpty()) throw error("E_PROTOCOL_LOAN_ESCAPE", id, i);
                     if (!facts.leases.isEmpty()) throw error("E_PROTOCOL_LEASE_ESCAPE", id, i);
