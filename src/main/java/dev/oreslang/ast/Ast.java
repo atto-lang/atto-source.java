@@ -14,15 +14,30 @@ public final class Ast {
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
     }
 
-    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
+    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, CONST, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
 
+    /**
+     * Explicit import kind and selected source names. Only typed `import const`
+     * carries per-member local aliases; the fifth-parameter constructor remains
+     * source compatible with existing typed imports and fixtures.
+     *
+     * These aliases are checked static bindings, not guest runtime globals.
+     */
     public record ImportDecl(
             ImportKind kind,
             List<String> names,
             boolean wildcard,
             String namespace,
-            String path) {
-        public ImportDecl { names = List.copyOf(names); }
+            String path,
+            java.util.Map<String, String> constAliases) {
+        public ImportDecl {
+            names = List.copyOf(names);
+            constAliases = java.util.Map.copyOf(constAliases);
+        }
+        public ImportDecl(ImportKind kind, List<String> names, boolean wildcard,
+                          String namespace, String path) {
+            this(kind, names, wildcard, namespace, path, java.util.Map.of());
+        }
     }
 
     public record ModuleDecl(String name, Visibility visibility, List<Annotation> annotations,
