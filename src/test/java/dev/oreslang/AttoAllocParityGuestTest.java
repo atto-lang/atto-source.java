@@ -23,10 +23,22 @@ import static org.junit.jupiter.api.Assertions.*;
 final class AttoAllocParityGuestTest {
     private static final Path MANIFEST =
             Path.of("tests", "fixtures", "alloc-java-guest", "alloc-parity-v1.tsv");
-    private static final List<String> CONTRACT_CASES = List.of(
-            "layout.negative_size", "layout.invalid_alignment", "layout.overflow",
-            "ledger.reserve_commit_retire", "ledger.over_quota",
-            "ledger.duplicate_retirement", "ledger.stale_generation");
+    private record Case(String id, String phase, String outcome, String fixture) { }
+    private static final List<Case> CONTRACT_CASES = List.of(
+            new Case("layout.negative_size", "runtime", "REJECT",
+                    "tests/fixtures/alloc-java-guest/parity-v1/layout-negative-size.atto"),
+            new Case("layout.invalid_alignment", "runtime", "REJECT",
+                    "tests/fixtures/alloc-java-guest/parity-v1/layout-invalid-alignment.atto"),
+            new Case("layout.overflow", "runtime", "REJECT",
+                    "tests/fixtures/alloc-java-guest/parity-v1/layout-overflow.atto"),
+            new Case("ledger.reserve_commit_retire", "guest", "PASS",
+                    "tests/fixtures/alloc-java-guest/allocator-transactions-positive.atto"),
+            new Case("ledger.over_quota", "guest", "REJECT",
+                    "tests/fixtures/alloc-java-guest/parity-v1/ledger-over-quota.atto"),
+            new Case("ledger.duplicate_retirement", "guest", "REJECT",
+                    "tests/fixtures/alloc-java-guest/parity-v1/ledger-duplicate-retirement.atto"),
+            new Case("ledger.stale_generation", "guest", "REJECT",
+                    "tests/fixtures/alloc-java-guest/parity-v1/ledger-stale-generation.atto"));
 
     private static String gitBlobSha(byte[] bytes) throws Exception {
         MessageDigest hash = MessageDigest.getInstance("SHA-1");
@@ -46,9 +58,11 @@ final class AttoAllocParityGuestTest {
             String[] fields = rows.get(i).split("\t", -1);
             assertEquals(4, fields.length, "invalid manifest row");
             String id = fields[0], phase = fields[1], outcome = fields[2];
-            assertEquals(CONTRACT_CASES.get(i), id, "wrong semantic case ordering");
-            assertTrue(phase.equals("guest") || phase.equals("runtime"), id);
-            assertTrue(outcome.equals("PASS") || outcome.equals("REJECT"), id);
+            Case expected = CONTRACT_CASES.get(i);
+            assertEquals(expected.id(), id, "wrong semantic case ordering");
+            assertEquals(expected.phase(), phase, "wrong contract execution phase");
+            assertEquals(expected.outcome(), outcome, "wrong semantic outcome");
+            assertEquals(expected.fixture(), fields[3], "wrong exact fixture mapping");
             Path path = Path.of(fields[3]).normalize();
             assertTrue(path.startsWith(Path.of("tests", "fixtures", "alloc-java-guest")),
                     "guest fixture escaped allowed directory");
