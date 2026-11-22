@@ -1,0 +1,6 @@
+// A public module remains addressable through a wildcard namespace alias.
+import * as lib from "./http-module-private-lib.atto";
+pub routine main(): void {
+  stdio.println(lib.public_api.allowed() == 42);
+  return;
+}
