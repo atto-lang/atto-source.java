@@ -169,6 +169,28 @@ final class AutomaticPreludeTest {
                 """);
     }
 
+
+    @Test
+    void coreProfileRejectsAllocatorTypesWithoutMisclassifyingLegacyString() {
+        for (String source : new String[]{
+                "fnc uses_list(List<int> value): int { return 0; }",
+                "fnc uses_map(Map<int, int> value): int { return 0; }",
+                "fnc uses_box(Box<int> value): int { return 0; }"
+        }) {
+            var program = assertDoesNotThrow(() -> Parser.parse(source));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypesWithDiagnostics(
+                            program, false, AutomaticPrelude.Profile.CORE));
+            assertTrue(error.getMessage().contains("E_ALLOC_PROFILE_REQUIRED"), error::getMessage);
+        }
+
+        var legacyScalar = assertDoesNotThrow(() ->
+                Parser.parse("fnc legacy(): String { return \"ok\"; }"));
+        assertDoesNotThrow(() -> TypeChecker.checkTypesWithDiagnostics(
+                legacyScalar, false, AutomaticPrelude.Profile.CORE),
+                "the historical Java immutable String scalar is not alloc::String");
+    }
+
     @Test
     void unqualifiedImportAliasCannotForgeAnAdtType() {
         assertPreludeSpoofRejected("""
