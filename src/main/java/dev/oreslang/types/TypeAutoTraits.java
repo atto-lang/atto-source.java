@@ -145,6 +145,8 @@ public final class TypeAutoTraits {
             // Actor-affine, context-owned secret handles are never Send/Sync/Serializable.
             // Container auto-traits must not launder either one into a message.
             case "AeadKey", "SecretBytes" -> Optional.of(NONE);
+            case "CryptoError" -> Optional.of(
+                    named.arguments().isEmpty() ? SCALAR : NONE);
             case "$builtin$Symbol", "ActorId", "ActorKind" ->
                     Optional.of(named.arguments().isEmpty() ? SCALAR : NONE);
             case "ActorRef" ->
