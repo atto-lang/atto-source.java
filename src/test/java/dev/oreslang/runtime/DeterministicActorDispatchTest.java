@@ -218,4 +218,30 @@ final class DeterministicActorDispatchTest {
         assertThrows(IllegalStateException.class,
                 () -> run(17, new Trace(authentic.seed(), decisions, authentic.observed())));
     }
+
+    @Test
+    void perActorMailboxPreservesFifoAcrossControlledPhysicalTurns() throws Exception {
+        ControlledDispatchers driver = new ControlledDispatchers();
+        List<Integer> observed = new ArrayList<>();
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                config, Runnable::run, ActorRuntime.ControlDispatcher.unavailable(),
+                null, driver)) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                observed.add(message);
+                if (message == 2) context.self().stop();
+            });
+            ref.send(1);
+            ref.send(2);
+            int turns = 0;
+            while (!driver.enabled().isEmpty()) {
+                if (++turns > 32)
+                    throw new IllegalStateException("FIFO mailbox test exhausted turn budget");
+                driver.choose(driver.enabled().get(0));
+            }
+            assertEquals(List.of(1, 2), observed,
+                    "deterministic dispatch controls turns but must not reorder a FIFO mailbox");
+            assertTrue(ref.awaitTermination(1, TimeUnit.SECONDS));
+        }
+    }
 }
