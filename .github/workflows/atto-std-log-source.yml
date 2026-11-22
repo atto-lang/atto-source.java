@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'stdlib/log.atto'
+      - 'examples/log-namespace-guest-smoke.atto'
       - 'tests/log_module_contract.test.mjs'
       - 'docs/ATTO_STD_LOG.md'
       - '.github/workflows/atto-std-log-source.yml'
@@ -25,7 +26,19 @@ jobs:
       - name: Checkout PR source (no persisted credentials)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Require exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet
+          git diff --cached --quiet
+          echo "ATTO_LOG_SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_LOG_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Set up Node.js 22
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -37,3 +50,40 @@ jobs:
         run: |
           echo 'SOURCE_ONLY: not native Atto guest execution, async sink, Java compiler, or Native Image evidence.' >> "$GITHUB_STEP_SUMMARY"
           echo 'Zero-step jobs are NOT_EXECUTED. Private mirror requires independent authorization.' >> "$GITHUB_STEP_SUMMARY"
+
+  native-guest-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head and clean checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet
+          git diff --cached --quiet
+          echo "ATTO_LOG_GUEST_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_LOG_GUEST_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Install GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile and execute native Atto namespace source
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -DskipTests compile exec:java -Dexec.args="examples/log-namespace-guest-smoke.atto" | tee /tmp/atto-log-guest.out
+          grep -F 'ATTO_STD_LOG_GUEST_OK' /tmp/atto-log-guest.out
