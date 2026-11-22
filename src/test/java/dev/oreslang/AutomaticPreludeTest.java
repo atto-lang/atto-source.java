@@ -41,9 +41,12 @@ final class AutomaticPreludeTest {
         var all = AutomaticPrelude.catalog();
         assertEquals(all.size(), new HashSet<>(all.keySet()).size());
         for (var entry : all.values()) {
-            assertTrue(entry.canonical().endsWith("/" + entry.name()));
+            assertFalse(entry.canonical().isBlank());
             assertFalse(entry.canonical().contains(".."));
+            assertFalse(entry.canonical().startsWith("/"));
         }
+        assertEquals(all.get("int").canonical(), all.get("Int").canonical());
+        assertEquals(all.get("string").canonical(), all.get("String").canonical());
         assertThrows(UnsupportedOperationException.class, () -> all.clear());
     }
 
