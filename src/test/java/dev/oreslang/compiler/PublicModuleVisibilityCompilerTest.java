@@ -54,6 +54,24 @@ final class PublicModuleVisibilityCompilerTest {
     }
 
     @Test
+    void publicFunctionInsidePrivateModuleIsNotAnExport() {
+        String library = """
+                define module internal as
+                  pub fnc leak(): int { return 7; }
+                end
+                """;
+        String importer = """
+                import fnc leak from "./lib.atto";
+                pub fnc main(): int { return 42; }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(
+                        Map.of("lib.atto", library, "app.atto", importer)));
+        assertTrue(error.getMessage().contains("leak"), error.getMessage());
+        assertTrue(error.getMessage().contains("export"), error.getMessage());
+    }
+
+    @Test
     void publicModuleCanBeImportedByTheRealSourceGraph() {
         var result = assertDoesNotThrow(() -> new IncrementalCompiler().compile(
                 Map.of("lib.atto", PUBLIC, "app.atto", IMPORTER)));
