@@ -236,6 +236,21 @@ public final class Parser {
             else break;
         }
 
+        // Once a package namespace participates, require unique local import
+        // bindings across *all* import forms, including legacy selections.
+        // The later verified linker must additionally check top-level
+        // declarations and declared public exports before guest lowering.
+        if (imports.stream().anyMatch(i -> i.path().startsWith(UNLINKED_PACKAGE_PREFIX))) {
+            var boundNames = new java.util.HashSet<String>();
+            for (Ast.ImportDecl imported : imports) {
+                for (String name : dev.oreslang.imports.ImportRules.exposedBindings(imported)) {
+                    if (!boundNames.add(name)) {
+                        throw error(previous(), "duplicate local import binding '" + name + "'");
+                    }
+                }
+            }
+        }
+
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
@@ -444,6 +459,33 @@ public final class Parser {
         }
     }
 
+    private static final String UNLINKED_PACKAGE_PREFIX = "pkg:";
+
+    private String packageImportPath(String identity) {
+        // Separate package identity from all relative-file and Java host imports.
+        // Until the package graph linker is implemented, ImportRules rejects
+        // this tag before any filesystem or host-class resolution.
+        if (identity == null || identity.isBlank() || identity.length() > 4096
+                || identity.contains("..") || identity.endsWith(".")
+                || identity.indexOf('\\') >= 0
+                || identity.chars().anyMatch(Character::isISOControl)) {
+            throw error(previous(), "invalid package identity in import");
+        }
+        return UNLINKED_PACKAGE_PREFIX + identity;
+    }
+
+    private String implicitPackageNamespace(String identity) {
+        String name = identity.substring(identity.lastIndexOf('.') + 1);
+        // Use the actual Atto lexer to reject reserved words instead of
+        // duplicating an incomplete keyword table in the import parser.
+        List<Token> candidate = new Lexer(name).scan();
+        if (candidate.size() != 2 || candidate.getFirst().type() != IDENT
+                || ROOT_MODULE.equals(name) || "pkg".equals(name)) {
+            throw error(previous(), "package import requires explicit 'as <namespace>'");
+        }
+        return name;
+    }
+
     private Ast.ImportDecl parseImport() {
         // Backend-qualified sugar for the existing capability-gated class import.
         // Produce the identical AST as: import class Math as M from "java:java.lang.Math".
@@ -462,6 +504,19 @@ public final class Parser {
         if (check(IDENT) && "dotnet".equals(peek().lexeme())) {
             throw error(peek(), "dotnet host imports require the .NET backend");
         }
+        // import pkg 'z'; is a namespace binding, not a side-effect-only
+        // import and not a source-file namespace declaration.
+        if (check(IDENT) && "pkg".equals(peek().lexeme())) {
+            advance();
+            String identity = consume(STRING, "expected quoted package identity").lexeme();
+            String namespace = match(AS)
+                    ? consumeImportAlias("expected package namespace alias")
+                    : implicitPackageNamespace(identity);
+            consume(SEMICOLON, "expected ';' after package import");
+            return new Ast.ImportDecl(Ast.ImportKind.ALL, List.of(), true,
+                    namespace, packageImportPath(identity));
+        }
+
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
         boolean wildcard = false;
@@ -505,8 +560,11 @@ public final class Parser {
         }
 
         consume(FROM, "expected 'from' in import");
+        boolean isPackage = check(IDENT) && "pkg".equals(peek().lexeme());
+        if (isPackage) advance();
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
+        if (isPackage) path = packageImportPath(path);
         consume(SEMICOLON, "expected ';' after import");
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
     }
