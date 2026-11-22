@@ -4,6 +4,8 @@ name: AttoLang canonical native test harness JVM
 on:
   pull_request:
     paths:
+      - 'atto-test.toml'
+      - 'tests/test_atto_harness_migration.sh'
       - 'stdlib/testing.atto'
       - 'src/main/java/dev/oreslang/**'
       - 'src/test/java/dev/oreslang/Atto*Test.java'
