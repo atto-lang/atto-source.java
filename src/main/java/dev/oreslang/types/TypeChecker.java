@@ -624,6 +624,10 @@ public final class TypeChecker {
             rejectUnloweredCheckedClassEffects(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
+            if (CoreTypeRegistry.protectedIdentity(linked.name())) {
+                throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked contract/trait cannot "
+                        + "replace compiler-owned core identity " + linked.name());
+            }
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
         program = AnnotationExpander.expand(program);
@@ -682,6 +686,14 @@ public final class TypeChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
+            // Check both the import spelling and authenticated source origin;
+            // a harmless local alias must not cloak a forged builtin identity.
+            if (CoreTypeRegistry.protectedIdentity(name)
+                    || CoreTypeRegistry.protectedIdentity(declaration.name())) {
+                throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked class identity '"
+                        + name + "' / '" + declaration.name()
+                        + "' cannot replace a compiler-owned core type");
+            }
 
             String linkedModuleAlias = null;
             boolean importedDirectly = declaration.actorKind() == Ast.ActorKind.NONE
@@ -733,6 +745,10 @@ public final class TypeChecker {
                 if (alias.getKey() == null || alias.getValue() == null
                         || !alias.getKey().equals(alias.getValue().name())) {
                     throw new IllegalArgumentException("invalid private linked field type alias");
+                }
+                if (CoreTypeRegistry.protectedIdentity(alias.getKey())) {
+                    throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked private alias cannot "
+                            + "replace compiler-owned core type " + alias.getKey());
                 }
             }
             checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
