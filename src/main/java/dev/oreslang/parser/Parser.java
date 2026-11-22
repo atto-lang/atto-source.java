@@ -194,10 +194,21 @@ public final class Parser {
         // guest code path may erase their unary/stream cardinality or claim
         // unverified runtime-issued affine authority.
         if (ActorProtocolTypestateV1.containsProtocol(tokens)) {
-            ActorProtocolTypestateV1.parseTokens(tokens);
+            ActorProtocolTypestateV1.Catalog protocol =
+                    ActorProtocolTypestateV1.parseTokens(tokens);
+            List<Token> withoutProtocol =
+                    ActorProtocolTypestateV1.withoutProtocolPrelude(tokens);
+            // Use the REAL Parser and source-local nominal class/interface AST;
+            // never manufacture reply modes from user-supplied string maps.
+            Ast.Program nominalAst = new Parser(withoutProtocol,
+                    attoCallableVersion, canonicalAttoSource).parseProgram();
+            ActorProtocolNominalResolverV1.resolve(protocol, nominalAst);
+            // The declaration proof is not a runtime-owned affine handle,
+            // a stream continuation, or a validated guest backend.
             throw new IllegalArgumentException("E_UNSUPPORTED_PROTOCOL_LOWERING: "
-                    + "requires verified nominal message resolution, ownership, "
-                    + "generation-fenced stream replies and guest AOT lowering");
+                    + "source-local nominal response modes verified, but affine "
+                    + "ownership, generation-fenced stream replies and guest AOT "
+                    + "lowering are not implemented");
         }
         // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
         // execution regions and quantum fail-closed, but allow canonical task
