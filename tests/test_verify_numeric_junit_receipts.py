@@ -31,8 +31,8 @@ class NumericReceiptVerifierTest(unittest.TestCase):
     def write(self, name, contents):
         (self.dir / ("TEST-dev.oreslang." + name + ".xml")).write_text(contents)
 
-    def test_all_eight_unique_nonempty_suites_accepted(self):
-        self.assertEqual(verify_module.verify(self.dir), 8)
+    def test_all_nine_unique_nonempty_suites_accepted(self):
+        self.assertEqual(verify_module.verify(self.dir), 9)
         # A synthetic receipt must never emit a production PASS marker into
         # CI logs where it could be mistaken for executed AttoLang guest tests.
         with contextlib.redirect_stdout(io.StringIO()) as captured:
