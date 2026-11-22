@@ -219,8 +219,11 @@ checked publisher authorize private transfer. A manually fabricated
 destination commit with matching trailers must never be treated as an
 approved source snapshot without separate trusted origin evidence.
 
-The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
-per file, requires the source directory to remain **inside the trusted
+The publisher bounds the export to 4,096 files / 40 MiB total / 10 MiB
+per file (as enforced by `legacy.MAX_FILES = 4096` in the currently reviewed
+code). This is a **capacity bound, not transfer authorization**; every other
+origin, approval, carrier and isolation gate still applies. It requires the
+source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
 prevent parent-directory symlink swap races. It rejects symbolic links,
 hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
