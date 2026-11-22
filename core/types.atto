@@ -3,7 +3,7 @@
 // These are VALUE widths and range admission checks, not host ABI size/alignment.
 // int is signed i64. A bool is not an integer and void is not a value.
 // Do not use these functions as an unchecked cast or as nominal TypeId.
-define module types as
+define pub module types as
   pub fnc int_value_bits() -> int { return 64; }
   pub fnc bool_value_bits() -> int { return 1; }
   pub fnc byte_value_bits() -> int { return 8; }
