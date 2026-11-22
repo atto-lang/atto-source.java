@@ -39,3 +39,42 @@ drop! owned; // exactly once T destructor, weak.upgrade() becomes None
 - Concurrency: CAS/upgrade versus last drop races; count underflow/overflow; cancellation/unwind; no actor-local or cross-worker sharing without explicit domain proofs.
 
 **Verification classification for this change:** `.atto` source authored; real backend compile/guest execution = **NOT_EXECUTED**. Do not mark Ready based only on source review or a host-side transition oracle.
+
+## Extended alloc/allocator, alloc/set, alloc/drop source slice
+
+- `allocator.Layout` performs alignment, checked array span and logical
+  allocation-bound arithmetic in native `.atto`. No pointer or allocator
+  receipt is exposed. Physical allocation and failure propagation are still
+  compiler/runtime responsibilities. Zero-sized layouts carry no fabricated
+  address.
+- `set.BoundedIntSet` is an **implemented integer-domain set** backed by an
+  owner-local `Array<int>`: duplicate insert/no-op remove, membership,
+  deterministic ascending enumeration, union/intersection/difference and
+  subset checks. Key domain must be 1..65536. This is not a generic hash set,
+  not thread-safe, and does not synthesize unproved Hash/Eq/ownership.
+- `drop.DropStack` tracks LIFO destructor obligations and blocks duplicate,
+  out-of-order, or unfinished transitions. Its numeric tickets are advisory
+  bookkeeping, not trusted destructor receipts. The compiler must still
+  emit exact-once drop glue and perform every destructor on all exit paths.
+- `arc.ArcLedger.is_consistent()` adds an owner-local state invariant check.
+  The serial ledger does not become a native atomic `Arc<T>`.
+
+### Guest checks to execute when module linking is available
+
+```atto
+// Source-owned module entry points. Call through authenticated alloc imports.
+allocator.self_test();
+set.self_test();
+drop.self_test();
+arc.self_test();
+```
+
+Also check bad alignment, overflowing spans, out-of-range/duplicate set
+keys, domain mismatches (no mutation), LIFO/double drop, last-strong
+destructor pending, weak upgrades during destruction and stale generations.
+
+**Evidence:** files are authored on the draft PR branch. Native `.atto`
+parsing/import linking/guest execution, compiler-generated drop glue, atomic
+race tests, ASan/UBSan, and AOT are **NOT_EXECUTED** on this increment.
+This source-only implementation must not be represented as safe release-grade
+physical allocation, generic Set<T>, or shared Arc<T>.

@@ -1,0 +1,156 @@
+// alloc/allocator -- backend-owned, checked allocation layout policy in Atto.
+// This module does NOT fabricate pointers, receipts, allocator authority or
+// successful physical allocations. The compiler/runtime owns those operations.
+// Arithmetic is bounded before additions/multiplications to avoid overflow.
+define module allocator as
+
+  pub fnc valid_alignment(int alignment): bool {
+    return alignment > 0 && alignment <= 1048576 &&
+           (alignment & (alignment - 1)) == 0;
+  }
+
+  pub fnc valid_layout(int bytes, int alignment): bool {
+    return bytes >= 0 && valid_alignment(alignment);
+  }
+
+  // -1 means invalid, overflowing or out of bounds. The returned offset is
+  // logical only. Zero-size requests do not advance or align the cursor.
+  pub fnc aligned_start(int offset, int bytes, int alignment,
+                        int limit): int {
+    if offset < 0 || bytes < 0 || limit < 0 || offset > limit ||
+       !valid_alignment(alignment); do
+      return -1;
+    fi
+    if bytes == 0; do
+      return offset;
+    fi
+    let int remainder = offset - (offset / alignment) * alignment;
+    let mut int padding = 0;
+    if remainder != 0; do
+      padding = alignment - remainder;
+    fi
+    if padding > limit - offset; do
+      return -1;
+    fi
+    let int start = offset + padding;
+    if bytes > limit - start; do
+      return -1;
+    fi
+    return start;
+  }
+
+  pub fnc aligned_end(int offset, int bytes, int alignment,
+                      int limit): int {
+    let int start = aligned_start(offset, bytes, alignment, limit);
+    if start < 0; do
+      return -1;
+    fi
+    return start + bytes;
+  }
+
+  // Total byte length of count densely packed elements; zero-sized elements
+  // contribute zero physical bytes but still need compiler-owned identity.
+  pub fnc array_bytes(int element_bytes, int count, int limit): int {
+    if element_bytes < 0 || count < 0 || limit < 0; do
+      return -1;
+    fi
+    if element_bytes == 0 || count == 0; do
+      return 0;
+    fi
+    if count > limit / element_bytes; do
+      return -1;
+    fi
+    return count * element_bytes;
+  }
+
+  // Byte stride is size rounded up to the element's alignment, with no
+  // overflow. A separate provider decides whether to allocate it.
+  pub fnc aligned_stride(int element_bytes, int alignment,
+                         int limit): int {
+    if !valid_layout(element_bytes, alignment) || limit < 0; do
+      return -1;
+    fi
+    if element_bytes == 0; do
+      return 0;
+    fi
+    let int remainder = element_bytes -
+                          (element_bytes / alignment) * alignment;
+    let mut int padding = 0;
+    if remainder != 0; do
+      padding = alignment - remainder;
+    fi
+    if element_bytes > limit || padding > limit - element_bytes; do
+      return -1;
+    fi
+    return element_bytes + padding;
+  }
+
+  pub define class Layout as
+    pub val int bytes;
+    pub val int alignment;
+
+    pub constructor(int bytes, int alignment) {
+      if !valid_layout(bytes, alignment); do
+        rt fail("alloc/allocator: invalid layout");
+      fi
+      self.bytes = bytes;
+      self.alignment = alignment;
+    }
+
+    pub is_empty(): bool { return self.bytes == 0; }
+
+    pub end_after(int cursor, int quota): int {
+      return aligned_end(cursor, self.bytes, self.alignment, quota);
+    }
+
+    pub stride(int quota): int {
+      if quota < 0; do
+        return -1;
+      fi
+      if self.bytes == 0; do
+        return 0;
+      fi
+      let int remainder = self.bytes -
+                           (self.bytes / self.alignment) * self.alignment;
+      if remainder == 0; do
+        if self.bytes > quota; do return -1; fi
+        return self.bytes;
+      fi
+      let int padding = self.alignment - remainder;
+      if self.bytes > quota || padding > quota - self.bytes; do
+        return -1;
+      fi
+      return self.bytes + padding;
+    }
+
+    pub array_span(int count, int quota): int {
+      let int step = self.stride(quota);
+      if step < 0; do return -1; fi
+      return array_bytes(step, count, quota);
+    }
+  end
+
+  pub fnc layout(int bytes, int alignment): Layout {
+    return new Layout(bytes, alignment);
+  }
+
+  pub fnc self_test(): bool {
+    let Layout word = new Layout(3, 4);
+    if !valid_alignment(4) || valid_alignment(3) ||
+       valid_layout(-1, 8) || word.stride(12) != 4 ||
+       word.array_span(3, 12) != 12 ||
+       word.array_span(4, 12) != -1; do
+      return false;
+    fi
+    if aligned_start(3, 4, 4, 8) != 4 ||
+       aligned_end(3, 4, 4, 8) != 8 ||
+       aligned_start(7, 2, 8, 8) != -1 ||
+       aligned_start(3, 0, 8, 8) != 3; do
+      return false;
+    fi
+    return array_bytes(4, 3, 12) == 12 &&
+           array_bytes(4, 4, 12) == -1 &&
+           array_bytes(0, 100, 0) == 0 &&
+           aligned_end(2147483646, 4, 8, 2147483647) == -1;
+  }
+end

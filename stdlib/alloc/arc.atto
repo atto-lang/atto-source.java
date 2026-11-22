@@ -87,6 +87,22 @@ define module arc as
       return true;
     }
 
+    // Owner-local invariant audit; not a concurrency or atomicity proof.
+    pub is_consistent(): bool {
+      if self.strong < 0 || self.strong > 1048576 ||
+         self.weak < 0 || self.weak > 1048576; do
+        return false;
+      fi
+      if self.strong > 0; do
+        return self.weak >= 1 && !self.pending_drop &&
+               !self.payload_dropped;
+      fi
+      if self.pending_drop; do
+        return self.weak >= 1 && !self.payload_dropped;
+      fi
+      return self.payload_dropped;
+    }
+
     pub strong_count(): int { return self.strong; }
 
     pub external_weak_count(): int {
@@ -128,7 +144,7 @@ define module arc as
        !counts.finish_drop() || counts.finish_drop(); do
       return false;
     fi
-    return counts.is_payload_dropped() &&
+    return counts.is_consistent() && counts.is_payload_dropped() &&
            counts.can_reclaim_control() &&
            counts.strong_count() == 0 &&
            counts.external_weak_count() == 0;
