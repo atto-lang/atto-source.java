@@ -49,6 +49,14 @@ use namespace http;
   pub define class RequestLine as
     pub val String method;
     pub val String target;
+
+    pub constructor(String method, String target) {
+      if !method_valid(method) || !origin_target_valid(target) then
+        rt fail("invalid HTTP request line construction");
+      fi
+      self.method = method;
+      self.target = target;
+    }
   end
 
   fnc is_alpha(int c): bool {
