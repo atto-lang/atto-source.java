@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.io.ByteArrayOutputStream;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
@@ -65,11 +64,15 @@ public final class CryptoPrimitives {
                     "PBKDF2 output bytes must be 1.." + MAX_DERIVED_BYTES);
         }
 
+        // Avoid a ByteArrayOutputStream whose internal secret-bearing buffer
+        // cannot be explicitly zeroized. Fill exactly the output byte length.
+        byte[] result = new byte[outputBytes];
+        boolean complete = false;
         try {
             Mac mac = hmac(password);
             int hashBytes = mac.getMacLength();
             int blocks = (outputBytes + hashBytes - 1) / hashBytes;
-            ByteArrayOutputStream output = new ByteArrayOutputStream(blocks * hashBytes);
+            int cursor = 0;
             for (int block = 1; block <= blocks; block++) {
                 byte[] counter = new byte[] {
                         (byte) (block >>> 24),
@@ -77,28 +80,33 @@ public final class CryptoPrimitives {
                         (byte) (block >>> 8),
                         (byte) block
                 };
-                mac.update(salt);
-                byte[] u = mac.doFinal(counter);
-                byte[] t = u.clone();
+                byte[] u = null;
+                byte[] t = null;
                 try {
+                    mac.update(salt);
+                    u = mac.doFinal(counter);
+                    t = u.clone();
                     for (int round = 1; round < iterations; round++) {
                         byte[] next = mac.doFinal(u);
                         Arrays.fill(u, (byte) 0);
                         u = next;
                         for (int i = 0; i < t.length; i++) t[i] ^= u[i];
                     }
-                    output.writeBytes(t);
+                    int copy = Math.min(hashBytes, outputBytes - cursor);
+                    System.arraycopy(t, 0, result, cursor, copy);
+                    cursor += copy;
                 } finally {
-                    Arrays.fill(u, (byte) 0);
-                    Arrays.fill(t, (byte) 0);
+                    Arrays.fill(counter, (byte) 0);
+                    if (u != null) Arrays.fill(u, (byte) 0);
+                    if (t != null) Arrays.fill(t, (byte) 0);
                 }
             }
-            byte[] expanded = output.toByteArray();
-            byte[] result = Arrays.copyOf(expanded, outputBytes);
-            Arrays.fill(expanded, (byte) 0);
+            complete = true;
             return result;
         } catch (java.security.GeneralSecurityException impossible) {
             throw new IllegalStateException("HmacSHA256 unavailable", impossible);
+        } finally {
+            if (!complete) Arrays.fill(result, (byte) 0);
         }
     }
 
