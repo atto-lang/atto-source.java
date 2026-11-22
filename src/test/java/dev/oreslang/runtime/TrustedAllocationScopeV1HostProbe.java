@@ -272,6 +272,56 @@ public final class TrustedAllocationScopeV1HostProbe {
             rejects(scope::close, "poisoned native owner must not be silently retired");
         }
     }
+
+    private static void boundedAndAuthoritySensitiveCleanupFailures() {
+        try (ActorLinearArena arena = new ActorLinearArena(1024, 128)) {
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var mark = scope.begin_lexical_scope();
+            for (int i = 0; i < 75; i++) {
+                scope.allocate_word(() -> {
+                    throw new IllegalStateException("bad destructor");
+                });
+            }
+            try {
+                scope.end_lexical_scope(mark);
+                throw new AssertionError("missing destructor failures");
+            } catch (IllegalStateException expected) {
+                check(expected.getSuppressed().length == 64,
+                        "unbounded host cleanup exception retention");
+            }
+            check(arena.liveAllocations() == 75,
+                    "quarantined failed native allocations were falsely released");
+            rejects(scope::close, "poisoned allocations must not report success");
+        }
+        try (ActorLinearArena arena = new ActorLinearArena(64, 4)) {
+            var observed = new ArrayList<Integer>();
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var mark = scope.begin_lexical_scope();
+            scope.allocate_word(() -> {
+                observed.add(1);
+                throw new IllegalStateException("ordinary later");
+            });
+            var security = new SecurityException("authority denial");
+            scope.allocate_word(() -> {
+                observed.add(2);
+                throw security;
+            });
+            scope.allocate_word(() -> {
+                observed.add(3);
+                throw new IllegalArgumentException("ordinary earlier");
+            });
+            try {
+                scope.end_lexical_scope(mark);
+                throw new AssertionError("authority failure was ignored");
+            } catch (SecurityException expected) {
+                check(expected == security && expected.getSuppressed().length == 2,
+                        "authority failure must win while retaining both diagnostics");
+            }
+            check(observed.equals(List.of(3, 2, 1)),
+                    "failed cleanup must still execute remaining destructors");
+            check(arena.liveAllocations() == 3, "poisoned handles freed without success");
+        }
+    }
     private static void admissionAndForeignOwner() {
         try (ActorLinearArena arena = new ActorLinearArena(8, 1)) {
             var first = TrustedAllocationScopeV1.trusted_open(arena);
@@ -294,6 +344,7 @@ public final class TrustedAllocationScopeV1HostProbe {
         lexicalCleanupAndBoundedOwnerMetadata();
         lexicalFailureStillDropsOtherOwners();
         checkedLexicalUnwindOnRealArena();
+        boundedAndAuthoritySensitiveCleanupFailures();
         System.out.println("ATTO_TRUSTED_ALLOC_SCOPE_JDK21_PASS");
     }
 }

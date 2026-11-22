@@ -20,6 +20,7 @@ import java.util.Objects;
  */
 final class TrustedAllocationScopeV1 implements AutoCloseable {
     private static final int MAX_LEXICAL_DEPTH = 1024;
+    private static final int MAX_CLEANUP_SUPPRESSED = 64;
     private final ActorLinearArena arena;
     private final Thread ownerThread;
     private final ArrayList<Owner> owners = new ArrayList<>();
@@ -153,8 +154,7 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
                 dropInternal(owner);
                 owners.remove(i);
             } catch (RuntimeException | Error ex) {
-                if (failure == null) failure = ex;
-                else if (ex != failure) failure.addSuppressed(ex);
+                failure = aggregate_cleanup_failure(failure, ex);
             }
         }
         if (failure instanceof RuntimeException ex) throw ex;
@@ -165,6 +165,27 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
     int tracked_owner_count() {
         requireThread();
         return owners.size();
+    }
+
+    /**
+     * Preserve a fatal cleanup/authority failure over an earlier ordinary
+     * destructor failure and cap suppressed diagnostics under hostile teardown.
+     */
+    private static Throwable aggregate_cleanup_failure(Throwable primary, Throwable next) {
+        if (primary == null) return next;
+        if (primary == next) return primary;
+        boolean primaryFatal = primary instanceof Error || primary instanceof SecurityException;
+        boolean nextFatal = next instanceof Error || next instanceof SecurityException;
+        if (nextFatal && !primaryFatal) {
+            if (next.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
+                next.addSuppressed(primary);
+            }
+            return next;
+        }
+        if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
+            primary.addSuppressed(next);
+        }
+        return primary;
     }
 
     private void checkOwner(Owner owner) {
@@ -229,8 +250,7 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
             try {
                 dropInternal(owner);
             } catch (RuntimeException | Error ex) {
-                if (failure == null) failure = ex;
-                else if (failure != ex) failure.addSuppressed(ex);
+                failure = aggregate_cleanup_failure(failure, ex);
             }
         }
         if (failure == null) {
