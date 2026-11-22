@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 
 REQUIRED = (
     "NumericValueOrderingTest",
+    "NumericExactIndependentOracleTest",
     "NumericValueEqualityExactTest",
     "NumericGuestOrderingV1Test",
     "TreeShakerNumericEqualityTest",
