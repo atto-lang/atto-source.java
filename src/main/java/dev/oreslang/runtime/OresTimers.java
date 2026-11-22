@@ -79,9 +79,12 @@ public final class OresTimers implements AutoCloseable {
      */
     public OresFuture<Void> afterNanos(long delayNanos) {
         if (delayNanos < 0) throw new IllegalArgumentException("negative timer delay");
+        // Measure from before registration. Never add delayNanos to an
+        // arbitrary System.nanoTime() origin: signed overflow is legal there.
+        final long startedNs = System.nanoTime();
         AtomicReference<ScheduledFuture<?>> scheduled = new AtomicReference<>();
         OresFuture<Void> future = new OresFuture<>(() -> {
-            ScheduledFuture<?> event = scheduled.get();
+            ScheduledFuture<?> event = scheduled.getAndSet(null);
             if (event != null) event.cancel(false);
         });
         synchronized (admission) {
@@ -105,16 +108,41 @@ public final class OresTimers implements AutoCloseable {
                 });
                 registeredCleanup = true;
                 active.add(future);
-                scheduled.set(CLOCK.schedule(
-                        () -> {
-                            IN_CLOCK_THREAD.set(Boolean.TRUE);
-                            try {
-                                future.completeFromRuntime(null);
-                            } finally {
-                                IN_CLOCK_THREAD.remove();
+                // A scheduler or platform timer may fire before its nominal
+                // deadline. Recheck the same monotonic origin before settling.
+                // Rescheduling is only an implementation detail of the host
+                // timer; it never executes a guest continuation on CLOCK.
+                Runnable expire = new Runnable() {
+                    @Override public void run() {
+                        IN_CLOCK_THREAD.set(Boolean.TRUE);
+                        try {
+                            if (future.isDone()) return;
+                            long elapsedNs = System.nanoTime() - startedNs;
+                            if (elapsedNs < 0 || elapsedNs < delayNanos) {
+                                long remainingNs = elapsedNs < 0
+                                        ? delayNanos : delayNanos - elapsedNs;
+                                try {
+                                    ScheduledFuture<?> retry = CLOCK.schedule(
+                                            this, remainingNs, TimeUnit.NANOSECONDS);
+                                    scheduled.set(retry);
+                                    // Cancellation may win between the first
+                                    // isDone() and storing the new registration.
+                                    if (future.isDone()) retry.cancel(false);
+                                } catch (RejectedExecutionException unavailable) {
+                                    future.failFromRuntime(unavailable);
+                                }
+                                return;
                             }
-                        },
-                        delayNanos, TimeUnit.NANOSECONDS));
+                            future.completeFromRuntime(null);
+                        } finally {
+                            IN_CLOCK_THREAD.remove();
+                        }
+                    }
+                };
+                ScheduledFuture<?> first = CLOCK.schedule(
+                        expire, delayNanos, TimeUnit.NANOSECONDS);
+                scheduled.set(first);
+                if (future.isDone()) first.cancel(false);
             } catch (RuntimeException | Error failure) {
                 // No Future escapes before this block exits. Settle it to
                 // run the same exact-once cleanup on failed admission.
