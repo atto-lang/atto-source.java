@@ -32,11 +32,18 @@ public final class AsyncNioUdp {
             try {
                 context.nativeIo().register(socket);
                 return OresFuture.completed(socket);
-            } catch (RuntimeException failure) {
-                kernel.close();
-                throw failure;
+            } catch (Exception failure) {
+                // register() declares checked Exception and may reject a
+                // context concurrently sealing I/O admission. Never leak
+                // the newly opened descriptor on a failed registration.
+                try {
+                    kernel.close();
+                } catch (IOException cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+                return OresFuture.failed(failure);
             }
-        } catch (IOException | RuntimeException failure) {
+        } catch (Exception failure) {
             return OresFuture.failed(failure);
         }
     }
