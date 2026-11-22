@@ -97,6 +97,16 @@ final class AutomaticPreludeTest {
         assertTrue(CoreTypeRegistry.lookup("HashMap").orElseThrow().scope()
                 == CoreTypeRegistry.Scope.EXPLICIT);
         assertTrue(CoreTypeRegistry.lookup("Object").isEmpty());
+        assertEquals("core/primitive/i64",
+                CoreTypeRegistry.lookup("int").orElseThrow().canonicalIdentity());
+        assertEquals(CoreTypeRegistry.lookup("int").orElseThrow().canonicalIdentity(),
+                CoreTypeRegistry.lookup("Int").orElseThrow().canonicalIdentity());
+        assertEquals(CoreTypeRegistry.Ownership.COPY,
+                CoreTypeRegistry.lookup("bool").orElseThrow().ownership());
+        assertEquals(CoreTypeRegistry.SendPolicy.ALWAYS,
+                CoreTypeRegistry.lookup("bool").orElseThrow().sendPolicy());
+        assertEquals(0, CoreTypeRegistry.lookup("int").orElseThrow().minGenericArity());
+        assertTrue(AutomaticPrelude.lookup("int", AutomaticPrelude.Profile.CORE).isPresent());
         assertFalse(CoreTypeRegistry.lookup("Option").orElseThrow().acceptsArity(2));
         assertFalse(CoreTypeRegistry.lookup("Result").orElseThrow().acceptsArity(1));
         assertTrue(CoreTypeRegistry.coreSumCarrier("Option", 1));
