@@ -1,0 +1,20 @@
+import module zorde from "std/zorde";
+pub routine main(): void {
+  let mut Array<int> payload = new Array<int>();
+  payload.add(0);
+  payload.add(255);
+  let raw = zorde.encode_frame(7, 1, payload);
+  stdio.println(raw.is_ok());
+  let decoded = zorde.decode_frame(raw.unwrap());
+  stdio.println(decoded.is_ok());
+  stdio.println(decoded.unwrap().schema());
+  stdio.println(decoded.unwrap().version());
+  stdio.println(decoded.unwrap().length());
+  stdio.println(decoded.unwrap().bytes().get(1));
+  let mut Array<int> bad = decoded.unwrap().bytes();
+  stdio.println(zorde.decode_frame(bad).is_err());
+  let mut reader = zorde.reader(raw.unwrap());
+  stdio.println(reader.read_byte().unwrap());
+  stdio.println(reader.read_byte().unwrap());
+  return;
+}
