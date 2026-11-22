@@ -19,6 +19,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Context-owned child OS processes; no guest can obtain a raw Process, PID, shell,
@@ -76,6 +77,7 @@ public final class NativeChildProcesses implements AutoCloseable {
     public static final class Child implements AutoCloseable {
         private final Process process;
         private final CompletableFuture<ExitStatus> exit;
+        private final AtomicBoolean outputExceeded = new AtomicBoolean();
         private final CompletableFuture<Capture> stdout = new CompletableFuture<>();
         private final CompletableFuture<Capture> stderr = new CompletableFuture<>();
         private final CompletableFuture<Void> retired;
@@ -99,10 +101,13 @@ public final class NativeChildProcesses implements AutoCloseable {
 
         /** Both pipes drain concurrently from launch, even if guest only waits. */
         public CompletableFuture<Output> collectOutput() {
-            return retired.thenApply(ignored -> {
+            return retired.handle((ignored, failure) -> {
+                // An output-limit kill may also close the other pipe. Do not
+                // mistakenly report that collateral stream close as I/O error.
+                if (outputExceeded.get()) throw new OutputLimitException();
+                if (failure != null) throw new CompletionException(failure);
                 Capture out = stdout.join();
                 Capture err = stderr.join();
-                if (out.exceeded() || err.exceeded()) throw new OutputLimitException();
                 return new Output(
                         new String(out.bytes(), StandardCharsets.UTF_8),
                         new String(err.bytes(), StandardCharsets.UTF_8));
@@ -150,23 +155,34 @@ public final class NativeChildProcesses implements AutoCloseable {
             if (process.isAlive()) process.destroyForcibly();
         }
 
-        private static void drain(InputStream input, CompletableFuture<Capture> target) {
+        private void drain(InputStream input, CompletableFuture<Capture> target) {
+            ByteArrayOutputStream bounded = new ByteArrayOutputStream();
+            boolean exceeded = false;
             try (input) {
-                ByteArrayOutputStream bounded = new ByteArrayOutputStream();
                 byte[] chunk = new byte[8192];
-                boolean exceeded = false;
                 int read;
                 while ((read = input.read(chunk)) != -1) {
                     int remaining = MAX_CAPTURE_BYTES - bounded.size();
                     int accepted = Math.min(remaining, read);
                     if (accepted > 0) bounded.write(chunk, 0, accepted);
-                    if (accepted < read) exceeded = true;
-                    // Keep draining after the cap: never deadlock a child on its
-                    // pipe, and never allocate more than MAX_CAPTURE_BYTES.
+                    if (accepted < read && !exceeded) {
+                        exceeded = true;
+                        // Fail closed immediately. Continuing to drain forever
+                        // would let an untrusted infinite-output process live
+                        // and consume unbounded CPU after the capture budget.
+                        outputExceeded.set(true);
+                        if (process.isAlive()) process.destroyForcibly();
+                    }
                 }
                 target.complete(new Capture(bounded.toByteArray(), exceeded));
             } catch (IOException failure) {
-                target.completeExceptionally(failure);
+                if (outputExceeded.get()) {
+                    // Killing a child can invalidate a pipe while readers are
+                    // draining it. The original output quota is the error.
+                    target.complete(new Capture(bounded.toByteArray(), true));
+                } else {
+                    target.completeExceptionally(failure);
+                }
             } catch (RuntimeException failure) {
                 target.completeExceptionally(failure);
             }
@@ -296,6 +312,7 @@ public final class NativeChildProcesses implements AutoCloseable {
         int used = 0;
         List<String> copy = new ArrayList<>(args.size());
         for (String arg : args) {
+            if (arg == null) throw new IllegalArgumentException("null argv element");
             // Empty argv elements are valid; command path and cwd may not be.
             String value = checkedString(arg.isEmpty() ? " " : arg, MAX_ARGUMENT_BYTES, "argument");
             if (arg.isEmpty()) value = "";
