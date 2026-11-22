@@ -69,10 +69,23 @@ calls `time.*` factories. It shares exact fixture Git blob
 `4937c0d975b4d87ea65cb93957175b6ba557b5c1` with LLVM.
 `NativeTimeStdlibTest.compiledGuestRunsCanonicalFiftyTwoCaseTimeContract`
 invokes `LinkedProgramRunner` and requires 52 distinct pass markers plus
-`TIME-CONTRACT-DONE`. The source workflow rejects fewer than five JUnit
+`TIME-CONTRACT-DONE`. The source workflow rejects fewer than eight JUnit
 tests in that class. Until a current-HEAD, stepful JUnit job finishes,
 the compiled Atto guest and GraalVM native-image cells remain **NOT_EXECUTED**.
 
 The protected `main` private-source export allowlist has **no approved
 alternate destination**. Never mirror this private compiler to an unrelated
 test organization merely because its GHA runner has spare minutes.
+
+### Borrow-checked core time values (pending exact-head guest execution)
+
+The compiler-owned `Duration.nanos` and `Instant.ticks_ns` fields are
+fixed after initialization; a `val` (`const mut`) receiver does not
+permit rewriting either field. The seventh/eighth JUnit additions exercise
+valid mutable-receiver calls and compile-negative fixed-field writes,
+and require real `LinkedProgramRunner` diagnostics.
+
+The five scaled constructors distinguish `NegativeDuration` from positive
+`DurationOverflow`, matching the 28-vector conformance candidate. The
+Java workflow now requires **all eight** native time test methods. These
+remain `NOT_EXECUTED` until a stepful, current-HEAD job finishes.
