@@ -1,0 +1,23 @@
+// expect-stdout: empty:7
+// An empty immediate probe must not consume the next message or register.
+import module channel from "std/channel";
+
+pub routine main(): void {
+  val Channel<int> ch = channel.bounded<int>(1);
+  val Option<int> first = channel.try_receive<int>(ch);
+  do match first over
+    on None -> { stdio.stdout.write("empty"); }
+    on Some(value) -> { stdio.stdout.write("unexpected-ready"); }
+  end
+  writech ch, 7;
+  val Option<int> second = channel.try_receive<int>(ch);
+  do match second over
+    on None -> { stdio.stdout.write("unexpected-empty"); }
+    on Some(value) -> {
+      stdio.stdout.write(":");
+      stdio.stdout.write(value);
+    }
+  end
+  channel.close<int>(ch);
+  return;
+}
