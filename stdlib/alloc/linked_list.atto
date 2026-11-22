@@ -86,6 +86,24 @@ define module linked_list as
       return;
     }
 
+    // Checks logical quota before mutation. This does not claim recovery
+    // from a physical allocation-provider failure.
+    pub try_push_front(mut self)(int value): Result<int, String> {
+      if self.free_head == -1 && self.values.size >= 1048576; do
+        return Err("CapacityExceeded");
+      fi
+      self.push_front(value);
+      return Ok(self.length);
+    }
+
+    pub try_push_back(mut self)(int value): Result<int, String> {
+      if self.free_head == -1 && self.values.size >= 1048576; do
+        return Err("CapacityExceeded");
+      fi
+      self.push_back(value);
+      return Ok(self.length);
+    }
+
     pub front(): Option<int> {
       if self.head == -1; do
         return None;
