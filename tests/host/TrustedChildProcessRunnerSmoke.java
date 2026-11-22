@@ -45,6 +45,10 @@ public final class TrustedChildProcessRunnerSmoke {
                   List.of(java, "\0"), Map.of(), null, Duration.ofSeconds(1), 1024));
                   throw new AssertionError("NUL admitted");
             } catch (IllegalArgumentException expected) { }
+            try { runner.run(new TrustedChildProcessRunner.LaunchSpec(
+                  List.of(java, "\uD800"), Map.of(), null, Duration.ofSeconds(1), 1024));
+                  throw new AssertionError("malformed Unicode admitted");
+            } catch (IllegalArgumentException expected) { }
             var sleep = new java.util.ArrayList<>(base);
             sleep.set(sleep.size() - 1, "sleep");
             var timeout = runner.run(new TrustedChildProcessRunner.LaunchSpec(
