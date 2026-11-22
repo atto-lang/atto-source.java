@@ -35,3 +35,11 @@ destructor. OOME during owner publication rolls back native allocation.
 PR-head SHA and compiles the **real** `ActorLinearArena` alongside the new
 adapter and its independent test probe on JDK21. The test marker counts
 only when an actual runnable job executes.
+
+## Additional hardening: recursive destruction
+
+The scope now rejects allocation, borrowing and nested drop during an active
+destructor callback. A failed native arena drop (including an exception) marks
+the owner **POISONED**, rather than leaving a misleading DROPPING state.
+A real-actor-arena host probe checks recursive callback rejection, cleanup
+ordering, rejected poison replay and the absence of an illicit native refund.

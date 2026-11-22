@@ -23,6 +23,9 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
     private final Thread ownerThread;
     private final ArrayList<Owner> owners = new ArrayList<>();
     private boolean closed;
+    // Prevent destructor callbacks from re-entering allocation, borrowing or
+    // another destructor while the enclosing owner is in a partial drop state.
+    private boolean dispatchingDestructor;
 
     private TrustedAllocationScopeV1(ActorLinearArena arena) {
         this.arena = Objects.requireNonNull(arena, "native actor arena");
@@ -43,6 +46,9 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
 
     private void requireOpen() {
         requireThread();
+        if (dispatchingDestructor) {
+            throw new IllegalStateException("native allocation scope is running a destructor");
+        }
         if (closed || arena.closed()) {
             throw new IllegalStateException("native allocation scope is closed");
         }
@@ -100,18 +106,25 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
         if (owner.readers != 0 || owner.writer != null) {
             throw new IllegalStateException("outstanding borrow blocks destructor");
         }
+        if (dispatchingDestructor) {
+            throw new IllegalStateException("recursive native destructor admission");
+        }
         owner.state = State.DROPPING;
+        dispatchingDestructor = true;
         try {
             owner.destructor.run();
-        } catch (RuntimeException | Error failedDestructor) {
+            // A failed arena call (including an exception) must quarantine the
+            // owner instead of leaving it incorrectly marked DROPPING.
+            if (!arena.dropOwned(owner.handle)) {
+                throw new IllegalStateException("native handle retirement failed");
+            }
+            owner.state = State.RETIRED;
+        } catch (RuntimeException | Error failure) {
             owner.state = State.POISONED;
-            throw failedDestructor;
+            throw failure;
+        } finally {
+            dispatchingDestructor = false;
         }
-        if (!arena.dropOwned(owner.handle)) {
-            owner.state = State.POISONED;
-            throw new IllegalStateException("native handle retirement failed");
-        }
-        owner.state = State.RETIRED;
     }
 
     @Override

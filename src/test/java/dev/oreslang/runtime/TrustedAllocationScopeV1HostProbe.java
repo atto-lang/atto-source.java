@@ -107,6 +107,36 @@ public final class TrustedAllocationScopeV1HostProbe {
         }
     }
 
+    private static void destructorReentrancyAndQuarantine() {
+        try (ActorLinearArena arena = new ActorLinearArena(64, 4)) {
+            List<Integer> observed = new ArrayList<>();
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var normal = scope.allocate_word(() -> observed.add(1));
+            var holder = new TrustedAllocationScopeV1.Owner[1];
+            holder[0] = scope.allocate_word(() -> {
+                rejects(() -> scope.allocate_word(() -> {}), "no allocation in destructor");
+                rejects(() -> scope.drop(normal), "no reentrant owner drop");
+                rejects(holder[0]::borrow_read, "no borrow during destructor");
+                observed.add(2);
+            });
+            scope.close();
+            check(observed.equals(List.of(2, 1)), "destructor dispatch order or reentry gate");
+            check(arena.liveAllocations() == 0, "reentrancy test left physical bytes live");
+        }
+        try (ActorLinearArena arena = new ActorLinearArena(64, 4)) {
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var poisoned = scope.allocate_word(() -> {
+                throw new IllegalStateException("destructor failed");
+            });
+            rejects(() -> scope.drop(poisoned), "failed destructor must propagate");
+            check(arena.liveAllocations() == 1, "poisoned bytes recycled");
+            rejects(() -> scope.drop(poisoned), "poisoned owner cannot be dropped twice");
+            rejects(() -> poisoned.borrow_write(), "poisoned owner cannot be borrowed");
+            rejects(scope::close, "poisoned owner must not be marked retired");
+            check(arena.liveAllocations() == 1, "unacknowledged deallocation");
+        }
+    }
+
     private static void admissionAndForeignOwner() {
         try (ActorLinearArena arena = new ActorLinearArena(8, 1)) {
             var first = TrustedAllocationScopeV1.trusted_open(arena);
@@ -125,6 +155,7 @@ public final class TrustedAllocationScopeV1HostProbe {
         loansAndConfinement();
         unwindAndPoison();
         admissionAndForeignOwner();
+        destructorReentrancyAndQuarantine();
         System.out.println("ATTO_TRUSTED_ALLOC_SCOPE_JDK21_PASS");
     }
 }
