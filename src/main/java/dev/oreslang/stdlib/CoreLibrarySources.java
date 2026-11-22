@@ -63,7 +63,8 @@ public final class CoreLibrarySources {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
         return normalized.startsWith(STD_IMPORT_PREFIX)
-                || normalized.startsWith(LEGACY_STD_IMPORT_PREFIX);
+                || normalized.startsWith(LEGACY_STD_IMPORT_PREFIX)
+                || normalized.equals("std.http");
     }
 
     /**
@@ -82,7 +83,10 @@ public final class CoreLibrarySources {
         return normalized.equals("ores.core")
                 || normalized.equals("ores.std")
                 || normalized.startsWith(CORE_IMPORT_PREFIX)
-                || normalized.startsWith(STD_IMPORT_PREFIX);
+                || normalized.startsWith(STD_IMPORT_PREFIX)
+                || normalized.equals("std") || normalized.startsWith("std.")
+                || normalized.equals("core") || normalized.startsWith("core.")
+                || normalized.equals("alloc") || normalized.startsWith("alloc.");
     }
 
     public static Set<String> packagedCorePaths() {
@@ -156,6 +160,9 @@ public final class CoreLibrarySources {
 
     private static String canonicalStdRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
+        // Only explicit built-in identities may use dotted syntax. Do not
+        // resolve unknown std.* names through filesystem/package fallback.
+        if (importPath.equals("std.http")) return "http.atto";
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
             return canonicalMigratedStdPath(
                     canonicalPathBody(importPath, STD_IMPORT_PREFIX, STD_SOURCES));
