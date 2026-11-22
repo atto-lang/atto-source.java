@@ -25,6 +25,11 @@ final class ChannelStdlibAttoSourceTest {
         assertTrue(CoreLibrarySources.packagedSourcePaths().contains("channel.atto"));
         String canonical = CoreLibrarySources.source("std/channel");
         assertEquals(canonical, CoreLibrarySources.source("ores.std/channel"));
+        assertEquals(canonical, CoreLibrarySources.source("std/channel.atto"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.source("std/channel.ores"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.source("std/../channel"));
         assertTrue(canonical.startsWith("// AttoLang std/channel"));
         Parser.parse(canonical);
     }
@@ -47,6 +52,21 @@ final class ChannelStdlibAttoSourceTest {
     @Test
     void ownedArrayPayloadMovesThroughGenericAttoFunctionBoundary() throws Exception {
         assertEquals("accepted:56", run("owned_payload.atto"));
+    }
+
+    @Test
+    void closingTwicePreservesCommittedFifoValues() throws Exception {
+        assertEquals("34:closed", run("close_drain.atto"));
+    }
+
+    @Test
+    void immediateReceiveDistinguishesEmptyAndReadyWithoutDropping() throws Exception {
+        assertEquals("empty:7", run("try_read.atto"));
+    }
+
+    @Test
+    void closedImmediateSendReturnsOriginalOwnedArray() throws Exception {
+        assertEquals("closed:56", run("closed_move.atto"));
     }
 
     @Test
