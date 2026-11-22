@@ -582,6 +582,30 @@ public final class IncrementalCompiler {
             abi.append(" implements ");
             for (Ast.TypeRef iface : klass.interfaces()) abi.append(typeRef(iface)).append(',');
             abi.append('\n');
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                // These are capabilities and process-isolation guarantees, not
+                // implementation details. If they change, importers must never
+                // reuse a previously admitted actor send/receive type judgment.
+                Ast.ActorMessageContract contract = klass.actorMessageContract();
+                abi.append(" actor-DATA-receives=")
+                        .append(contract.receives() == null ? "<undeclared>"
+                                : typeRef(contract.receives()))
+                        .append(" sends=")
+                        .append(contract.sends() == null ? "<undeclared>"
+                                : typeRef(contract.sends()))
+                        .append('\n');
+                Ast.ActorConcurrency policy = klass.actorConcurrency();
+                abi.append(" actor-policy=")
+                        .append(policy.transport()).append(':')
+                        .append(policy.requestConcurrency()).append(':')
+                        .append(policy.messageConcurrency()).append(':')
+                        .append(policy.serialReceive()).append('\n');
+                for (Ast.ProtectedStateField state : klass.sealedStateFields()) {
+                    abi.append(" sealed-state=")
+                            .append(state.name()).append(':')
+                            .append(typeRef(state.type())).append('\n');
+                }
+            }
             // Computed class indexing is checked against the complete instance-field
             // domain, not only the public ABI surface. The first non-public field
             // changes an external dynamic receiver[key] from safe to rejected, so
