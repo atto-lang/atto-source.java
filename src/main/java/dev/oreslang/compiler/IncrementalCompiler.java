@@ -278,6 +278,10 @@ public final class IncrementalCompiler {
                 Ast.ClassDecl resolved = null;
                 Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
                 for (Ast.ModuleDecl module : source.modules()) {
+                    // Visibility of an inner class is not a substitute for
+                    // visibility of its owning module.
+                    if (!module.name().equals(Parser.ROOT_MODULE)
+                            && module.visibility() != Ast.Visibility.PUBLIC) continue;
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.ClassDecl klass
                                 && klass.name().equals(name)
