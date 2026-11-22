@@ -1,0 +1,11 @@
+// This source MUST compile and MUST fail at runtime in require_success.
+// A structurally inconsistent summary must never become a green CI receipt.
+import class RunSummary from 'ores.std/testing';
+import fnc require_success from 'ores.std/testing';
+
+pub routine main(): void {
+  val RunSummary forged = new RunSummary(1, 1, 0, 1, 0);
+  require_success(rt borrow forged);
+  stdio.stdout.println("UNEXPECTED_SUCCESS");
+  return;
+}
