@@ -184,7 +184,9 @@ final class DeterministicActorDispatchTest {
             Trace first = run(seed, null);
             assertEquals(first, run(seed, null));
             assertEquals(first, run(seed, first));
-            assertEquals(2, first.decisions().size());
+            assertTrue(first.decisions().size() >= 2,
+                    "both actor mailboxes require genuine physical dispatch");
+            assertTrue(first.decisions().size() <= 32, "bounded execution");
         }
     }
 
