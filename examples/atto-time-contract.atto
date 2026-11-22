@@ -1,19 +1,19 @@
 // Compiler-backed guest conformance fixture for native Atto std/time.
 // Run and verify TIME-PASS lines; file existence alone is not test evidence.
-import class Duration from '../stdlib/std/time';
-import class Instant from '../stdlib/std/time';
-import class Deadline from '../stdlib/std/time';
-import class Timer from '../stdlib/std/time';
-import class Interval from '../stdlib/std/time';
-import fnc nanoseconds from '../stdlib/std/time';
-import fnc microseconds from '../stdlib/std/time';
-import fnc milliseconds from '../stdlib/std/time';
-import fnc seconds from '../stdlib/std/time';
-import fnc minutes from '../stdlib/std/time';
-import fnc hours from '../stdlib/std/time';
-import fnc deadline_after from '../stdlib/std/time';
-import fnc one_shot from '../stdlib/std/time';
-import fnc interval from '../stdlib/std/time';
+import class Duration from '../stdlib/time';
+import class Instant from '../stdlib/time';
+import class Deadline from '../stdlib/time';
+import class Timer from '../stdlib/time';
+import class Interval from '../stdlib/time';
+import fnc nanoseconds from '../stdlib/time';
+import fnc microseconds from '../stdlib/time';
+import fnc milliseconds from '../stdlib/time';
+import fnc seconds from '../stdlib/time';
+import fnc minutes from '../stdlib/time';
+import fnc hours from '../stdlib/time';
+import fnc deadline_after from '../stdlib/time';
+import fnc one_shot from '../stdlib/time';
+import fnc interval from '../stdlib/time';
 
 fnc check(bool condition, String name): void {
   if !condition; do rt fail("TIME-FAIL|" + name); fi
