@@ -228,8 +228,8 @@ public final class NativeChildProcesses implements AutoCloseable {
     private final Set<Child> live = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final AtomicInteger reserved = new AtomicInteger();
     // Admission is explicitly bounded to MAX_CHILDREN before task scheduling.
-    // A virtual-thread-per-task executor avoids abandoned queued launch jobs
-    // and unreleased reservations during shutdownNow().
+    // Shutdown is graceful, not shutdownNow(): every reserved launch must
+    // finish and either register/reap its child or release its reservation.
     private final ExecutorService launches = Executors.newVirtualThreadPerTaskExecutor();
     private volatile boolean closed;
 
@@ -306,19 +306,27 @@ public final class NativeChildProcesses implements AutoCloseable {
                         process.destroyForcibly();
                         throw failed;
                     }
+                    // Always register an OS process before handling a
+                    // concurrent close, even if the context was sealed after
+                    // ProcessBuilder.start(). Otherwise shutdown can falsely
+                    // report clean retirement while an untracked child exists.
+                    final boolean closing;
                     synchronized (guard) {
-                        if (closed) {
-                            child.close();
-                            throw new RejectedExecutionException("process context closed");
-                        }
                         live.add(child);
                         registered = true;
                         child.retired.whenComplete((ignored, failure) -> {
                             live.remove(child);
                             reserved.decrementAndGet();
                         });
+                        closing = closed;
                     }
-                    if (!published.complete(child)) child.close();
+                    if (closing) {
+                        child.close();
+                        published.completeExceptionally(
+                                new RejectedExecutionException("process context closed"));
+                    } else if (!published.complete(child)) {
+                        child.close();
+                    }
                 } catch (IOException | RuntimeException failed) {
                     if (!registered) reserved.decrementAndGet();
                     published.completeExceptionally(failed);
@@ -373,23 +381,38 @@ public final class NativeChildProcesses implements AutoCloseable {
     }
 
     @Override public void close() {
-        List<Child> owned;
+        // This is a HOST context teardown operation, never a guest actor
+        // carrier operation. First seal admission, then join every launch
+        // worker before taking the definitive child snapshot. shutdownNow()
+        // would abandon reserved tasks and could interrupt a process between
+        // OS start and handle registration.
         synchronized (guard) {
             closed = true;
-            launches.shutdownNow();
-            owned = List.copyOf(live);
+            launches.shutdown();
         }
-        for (Child child : owned) child.close();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         boolean interrupted = false;
+        boolean launchesRetired = false;
         try {
+            long remaining = Math.max(0L, deadline - System.nanoTime());
+            launchesRetired = launches.awaitTermination(remaining, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException failure) {
+            interrupted = true;
+        }
+        // Even a timed-out launch can have published a child. Issue immediate
+        // revocation to every already-known child, but never certify complete
+        // cleanup while a still-running launch may publish another.
+        List<Child> owned = List.copyOf(live);
+        for (Child child : owned) child.close();
+        if (launchesRetired && !interrupted) {
             for (Child child : owned) {
                 long remaining = deadline - System.nanoTime();
                 if (remaining <= 0) break;
                 try {
                     child.retired.get(remaining, TimeUnit.NANOSECONDS);
                 } catch (ExecutionException failure) {
-                    // Failed pipe collection still has a completed physical reader.
+                    // All component futures completed: failed pipe capture is
+                    // not evidence of a physically still-live reader.
                 } catch (java.util.concurrent.TimeoutException failure) {
                     break;
                 } catch (InterruptedException failure) {
@@ -397,13 +420,14 @@ public final class NativeChildProcesses implements AutoCloseable {
                     break;
                 }
             }
-        } finally {
-            if (interrupted) Thread.currentThread().interrupt();
         }
-        if (!live.isEmpty() || reserved.get() != 0) {
-            // Keep manager and native children reachable on context quarantine;
-            // never certify clean teardown while launch or reaping is pending.
-            throw new IllegalStateException("child process retirement incomplete");
+        if (interrupted) Thread.currentThread().interrupt();
+        if (!launchesRetired || interrupted || !live.isEmpty()
+                || reserved.get() != 0) {
+            // OresContext retains the manager in its quarantine on failure.
+            // A later close retry is safe; source/native owners are not freed.
+            throw new IllegalStateException(
+                    "child process retirement incomplete; context quarantined");
         }
     }
 }
