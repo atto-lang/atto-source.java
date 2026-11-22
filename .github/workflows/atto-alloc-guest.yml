@@ -42,9 +42,9 @@ jobs:
               raise SystemExit(f"expected one AttoAllocGuestTest JUnit receipt, found {files}")
           root = E.parse(files[0]).getroot()
           tests = int(root.attrib.get("tests", 0))
-          if tests != 5 or any(int(root.attrib.get(k, 0)) != 0 for k in ("errors", "failures", "skipped")):
+          if tests != 9 or any(int(root.attrib.get(k, 0)) != 0 for k in ("errors", "failures", "skipped")):
               raise SystemExit("missing/failed/skipped Atto alloc guest tests")
-          print("ATTO_ALLOC_JAVA_GUEST_PASS tests=5")
+          print("ATTO_ALLOC_JAVA_GUEST_PASS tests=9")
           PY
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Preserve material JUnit evidence

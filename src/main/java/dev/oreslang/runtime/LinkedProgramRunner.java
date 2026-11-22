@@ -481,6 +481,14 @@ public final class LinkedProgramRunner {
                 continue;
             }
 
+            if (CoreLibrarySources.isAllocImport(imported.path())) {
+                String targetId = CoreLibrarySources.allocUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAllocImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
+
             if (CoreLibrarySources.isOresCoreImport(imported.path())) {
                 String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
@@ -560,6 +568,10 @@ public final class LinkedProgramRunner {
                 CoreLibrarySources.unitId(imported.path());
                 continue;
             }
+            if (CoreLibrarySources.isAllocImport(imported.path())) {
+                CoreLibrarySources.allocUnitId(imported.path());
+                continue;
+            }
             if (CoreLibrarySources.isOresCoreImport(imported.path())) {
                 CoreLibrarySources.oresCoreUnitId(imported.path());
                 continue;
@@ -575,6 +587,68 @@ public final class LinkedProgramRunner {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
                 collectStdImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            } else if (CoreLibrarySources.isAllocImport(imported.path())) {
+                String targetId = CoreLibrarySources.allocUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAllocImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            } else {
+                String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectOresCoreImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            }
+        }
+    }
+
+    /**
+     * Compiler-owned allocation layer. Dependencies are closed to alloc or
+     * core only; neither user files nor hosted std nor Java may be imported.
+     */
+    private static void collectAllocImportClosure(
+            String importPath,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
+        String id = CoreLibrarySources.allocUnitId(importPath);
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+
+        String source = CoreLibrarySources.allocSource(importPath);
+        budget.admit(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id, CoreLibrarySources.allocFileName(importPath), source);
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "compiler-owned atto.alloc cannot include Java source islands: " + importPath);
+        }
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException("atto.alloc cannot import Java host classes: "
+                        + importPath + " -> " + imported.path());
+            }
+            if (!CoreLibrarySources.isAllocImport(imported.path())
+                    && !CoreLibrarySources.isOresCoreImport(imported.path())) {
+                throw new IllegalArgumentException(
+                        "atto.alloc cannot import hosted std, project or ambient modules: "
+                                + importPath + " -> " + imported.path());
+            }
+            if (CoreLibrarySources.isAllocImport(imported.path())) {
+                CoreLibrarySources.allocUnitId(imported.path());
+            } else {
+                CoreLibrarySources.oresCoreUnitId(imported.path());
+            }
+        }
+        units.put(id, mixed);
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (CoreLibrarySources.isAllocImport(imported.path())) {
+                String targetId = CoreLibrarySources.allocUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAllocImportClosure(imported.path(), units, importResolutions,
                         budget, depth + 1);
             } else {
                 String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());

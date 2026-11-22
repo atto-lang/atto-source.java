@@ -32,8 +32,8 @@ final class AttoAllocGuestTest {
         Files.copy(source, temp.resolve(module + ".atto"));
     }
 
-    private void runPositive(String module) throws Exception {
-        stageLibrary(module);
+    private void runPositive(String module, boolean packaged) throws Exception {
+        if (!packaged) stageLibrary(module);
         Path fixture = ROOT.resolve("tests/fixtures/alloc/" + module + "_smoke.atto");
         assertTrue(Files.isRegularFile(fixture) && !Files.isSymbolicLink(fixture));
         String source = Files.readString(fixture, StandardCharsets.UTF_8);
@@ -43,8 +43,10 @@ final class AttoAllocGuestTest {
         assertEquals(1, source.split(java.util.regex.Pattern.quote(ending), -1).length - 1);
         // Local source graph tests independent of package namespace install.
         // A failed early return does not emit 42, preventing false-green guests.
-        source = source.replace(originalImport, "\"./" + module + "\"")
-                .replace(ending, "  stdio.stdout.write(42);\n  return 0;\n}");
+        if (!packaged) {
+            source = source.replace(originalImport, "\"./" + module + "\"");
+        }
+        source = source.replace(ending, "  stdio.stdout.write(42);\n  return 0;\n}");
         Path entry = temp.resolve("main.atto");
         Files.writeString(entry, source, StandardCharsets.UTF_8);
         assertEquals(2, LinkedProgramRunner.validate(entry, Map.of()).units().size());
@@ -68,15 +70,42 @@ final class AttoAllocGuestTest {
     }
 
     @Test void slabGuestRejectsCollisionsAndStaleHandles() throws Exception {
-        runPositive("slab");
+        runPositive("slab", false);
     }
 
     @Test void dequeGuestMaintainsRingAndReserveSemantics() throws Exception {
-        runPositive("deque");
+        runPositive("deque", false);
     }
 
     @Test void actorHeapGuestRejectsForeignHandlesAndDoubleRelease() throws Exception {
-        runPositive("actor_heap");
+        runPositive("actor_heap", false);
+    }
+
+    @Test void packagedSlabCompilesAndRunsWithoutAmbientPaths() throws Exception {
+        runPositive("slab", true);
+    }
+
+    @Test void packagedDequeCompilesAndRunsWithoutAmbientPaths() throws Exception {
+        runPositive("deque", true);
+    }
+
+    @Test void packagedActorHeapCompilesAndRunsWithoutAmbientPaths() throws Exception {
+        runPositive("actor_heap", true);
+    }
+
+    @Test void allocRegistryRejectsUnknownAndTraversalBeforeFilesystemFallback() throws Exception {
+        assertEquals(Set.of("slab.atto", "deque.atto", "actor_heap.atto"),
+                dev.oreslang.stdlib.CoreLibrarySources.packagedAllocPaths());
+        assertEquals("@atto.alloc/slab.atto",
+                dev.oreslang.stdlib.CoreLibrarySources.allocUnitId("atto.alloc/slab"));
+        assertEquals("@atto.alloc/slab.atto",
+                dev.oreslang.stdlib.CoreLibrarySources.allocUnitId("alloc/slab"));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.stdlib.CoreLibrarySources.allocSource("atto.alloc/unknown"));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.stdlib.CoreLibrarySources.allocUnitId("atto.alloc/../slab"));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.stdlib.CoreLibrarySources.allocSource("atto.alloc/slab.ores"));
     }
 
     @Test void slabPrivateTokenCannotBeReadByImporter() throws Exception {
