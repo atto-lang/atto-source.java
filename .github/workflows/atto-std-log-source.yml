@@ -7,6 +7,7 @@ on:
       - 'tests/log_sink_contract.test.mjs'
       - 'examples/log-namespace-guest-smoke.atto'
       - 'tests/log_module_contract.test.mjs'
+      - 'tests/atto_pure_subset.mjs'
       - 'docs/ATTO_STD_LOG.md'
       - '.github/workflows/atto-std-log-source.yml'
   push:
@@ -15,6 +16,7 @@ on:
       - 'stdlib/log_sink.atto'
       - 'tests/log_sink_contract.test.mjs'
       - 'tests/log_module_contract.test.mjs'
+      - 'tests/atto_pure_subset.mjs'
       - 'docs/ATTO_STD_LOG.md'
       - '.github/workflows/atto-std-log-source.yml'
   workflow_dispatch:
