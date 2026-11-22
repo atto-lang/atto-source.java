@@ -11639,8 +11639,12 @@ public final class OresEvalRootNode extends RootNode {
             implements dev.oreslang.runtime.UntrappableTaskFailure {
         private OresPanic(String message) { super(message, null, true, false); }
     }
-    private static final class OresCastError extends RuntimeException {
-        private OresCastError(String message) { super(message, null, false, false); }
+    /** Checked explicit cast failures are ordinary guest errors, never JVM host values. */
+    private static final class OresCastError extends OresGuestError {
+        private OresCastError(String message) {
+            // Type identity is stable; the cross-backend cast ABI is not yet assigned.
+            super("CastError", 0, message);
+        }
     }
     private static List<Object> immutableIoStrings(List<Object> args) {
         // Only immutable host values may cross into an I/O worker.
