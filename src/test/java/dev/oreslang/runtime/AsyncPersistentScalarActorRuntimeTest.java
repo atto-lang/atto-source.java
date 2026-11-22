@@ -153,6 +153,31 @@ final class AsyncPersistentScalarActorRuntimeTest {
         }
     }
 
+    private static String process(String mode, Path db) throws Exception {
+        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String classpath = System.getProperty(
+                "surefire.test.class.path", System.getProperty("java.class.path"));
+        Process process = new ProcessBuilder(java, "-cp", classpath,
+                AsyncPersistentScalarRuntimeProcessMain.class.getName(),
+                mode, db.toString()).redirectErrorStream(true).start();
+        if (!process.waitFor(30, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new AssertionError("async durable subprocess did not exit");
+        }
+        String output = new String(process.getInputStream().readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, process.exitValue(), output);
+        return output;
+    }
+
+    @Test
+    void abruptProcessHaltAfterCommittedReceiptRecoversStateAndOriginalResult()
+            throws Exception {
+        Path db = temp.resolve("async-abrupt-halt.db");
+        assertTrue(process("crash", db).contains("ASYNC_DURABLE_BEFORE_CRASH=2"));
+        assertTrue(process("recover", db).contains("ASYNC_DURABLE_AFTER_RECOVERY=3"));
+    }
+
     @Test
     void preparationFailsClosedForUnknownCodeGenerationAndFutureWireVersion()
             throws Exception {
