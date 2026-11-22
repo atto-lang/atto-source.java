@@ -1,0 +1,65 @@
+name: Native Atto std/task real guest (exact PR head)
+on:
+  pull_request:
+    paths:
+      - 'stdlib/task.atto'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/test/resources/stdlib-parity/task-v1.atto'
+      - 'src/test/java/dev/oreslang/runtime/NativeTaskAttoStdlibTest.java'
+      - '.github/workflows/native-std-task-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  std-task-jvm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Require exact source head and real .atto files
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -s stdlib/task.atto
+          test -s src/test/resources/stdlib-parity/task-v1.atto
+          test "$(git rev-parse 'HEAD:stdlib/task.atto')" = "$(git hash-object --no-filters stdlib/task.atto)"
+          test "$(git rev-parse 'HEAD:src/test/resources/stdlib-parity/task-v1.atto')" = "$(git hash-object --no-filters src/test/resources/stdlib-parity/task-v1.atto)"
+          echo "TASK_SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "TASK_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          sha256sum stdlib/task.atto src/test/resources/stdlib-parity/task-v1.atto
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile compiler and execute real guest plus cancellation regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true \
+            -Dtest=NativeTaskAttoStdlibTest,SourceTaskCancelTest test
+      - name: Reject missing, skipped, or unsuccessful JUnit execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in \
+              dev.oreslang.runtime.NativeTaskAttoStdlibTest \
+              dev.oreslang.SourceTaskCancelTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report" || { echo "MISSING_SUITE $suite" >&2; exit 1; }
+            grep -Eq 'tests="[1-9][0-9]*"' "$report" || { echo "ZERO_TESTS $suite" >&2; exit 1; }
+            if grep -Eq '(<skipped|<failure|<error|skipped="[1-9]|failures="[1-9]|errors="[1-9])' "$report"; then
+              echo "SKIPPED_OR_FAILED $suite" >&2
+              exit 1
+            fi
+            echo "REAL_ATTO_TASK_JUNIT_PASS $suite"
+          done
