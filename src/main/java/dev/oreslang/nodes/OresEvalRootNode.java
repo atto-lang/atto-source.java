@@ -9114,6 +9114,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof String text && name.equals("length")) {
+                return (long) text.codePointCount(0, text.length());
+            }
             if (receiver instanceof NominalEnumValue nominal) {
                 Ast.FunctionDecl enumMethod = findSingleFunction(nominal.enumName() + "$" + name);
                 if (enumMethod != null) return (Invokable) args -> {
@@ -9455,7 +9458,10 @@ public final class OresEvalRootNode extends RootNode {
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
                                 "network." + name, () -> network.connect(values));
                     };
-                    default -> throw new IllegalArgumentException("unknown network member " + name);
+                    default -> {
+                        network.context().requireCapability(dev.oreslang.runtime.IsolatePolicy.Capability.NETWORK, "network." + name);
+                        throw new IllegalArgumentException("unknown network member " + name);
+                    }
                 };
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Listener listener) {
@@ -9902,7 +9908,11 @@ public final class OresEvalRootNode extends RootNode {
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
                                 "http." + name, () -> http.postText(values));
                     };
-                    default -> throw new IllegalArgumentException("unknown http member " + name);
+                    default -> {
+                        // Authority comes from the namespace: deny before reporting the member.
+                        http.context().requireCapability(dev.oreslang.runtime.IsolatePolicy.Capability.NETWORK, "http." + name);
+                        throw new IllegalArgumentException("unknown http member " + name);
+                    }
                 };
             }
             if (receiver instanceof IntNamespace) {

@@ -5655,6 +5655,11 @@ public final class TypeChecker {
                     && member.member().equals("length")) {
                 return Primitive.INT;
             }
+            // string.length counts Unicode codepoints (codepoints().length), never host UTF-16 units.
+            if ((sumReceiver == Primitive.STRING || sumReceiver instanceof StringLiteral)
+                    && member.member().equals("length")) {
+                return Primitive.INT;
+            }
             if (sumReceiver instanceof Function) {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
