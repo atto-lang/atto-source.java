@@ -52,8 +52,12 @@ final class NumericValueOrderingTest {
                 NumericValueOrdering.compare(BigInteger.ONE.shiftLeft(4096), -Double.MAX_VALUE));
     }
 
-    @Test void unsupportedNumberCarrierFailsClosed() {
+    @Test void unsupportedNumberCarrierFailsClosedIncludingNonfiniteShortcuts() {
         assertThrows(IllegalArgumentException.class,
                 () -> NumericValueOrdering.compare(new AtomicInteger(1), 1L));
+        assertThrows(IllegalArgumentException.class,
+                () -> NumericValueOrdering.compare(new AtomicInteger(1), Double.POSITIVE_INFINITY));
+        assertThrows(IllegalArgumentException.class,
+                () -> NumericValueOrdering.compare(Double.NaN, new AtomicInteger(1)));
     }
 }
