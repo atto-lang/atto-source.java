@@ -59,6 +59,39 @@ final class StdPathSyncTelemetryGuestTest {
                 () -> stderr.toString(StandardCharsets.UTF_8));
     }
     @Test
+    void invalidPathInstancesFailInGuestBeforeReturning() throws Exception {
+        // Do not accept an import/parser rejection as proof that the Path
+        // constructor itself enforced its lexical safety contract.
+        for (String malformed : new String[] {
+                "../escape", "CON.txt", "a//b", "C:/private"
+        }) {
+            Path entry = Files.createTempFile("atto-path-invalid-", ".atto");
+            try {
+                Files.writeString(entry, """
+                        import module path from "std/path";
+                        pub routine main(): void {
+                          stdio.println(17);
+                          val invalid = path.relative_path("%s", true);
+                          stdio.println(invalid.component_count());
+                          stdio.println(99);
+                          return;
+                        }
+                        """.formatted(malformed));
+                ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+                ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+                assertThrows(Exception.class, () -> LinkedProgramRunner.run(
+                        entry, IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(), stdout, stderr));
+                assertEquals("17",
+                        stdout.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+                        "must enter real guest before constructor rejects " + malformed);
+            } finally {
+                Files.deleteIfExists(entry);
+            }
+        }
+    }
+
+    @Test
     void applicationFilesCannotShadowTrustedStdModules() throws Exception {
         Path root = Files.createTempDirectory("atto-stdlib-shadow-");
         try {
