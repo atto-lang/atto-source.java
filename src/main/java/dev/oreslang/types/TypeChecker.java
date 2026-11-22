@@ -3694,8 +3694,11 @@ public final class TypeChecker {
                     yield Primitive.BOOL;
                 }
                 case "<", "<=", ">", ">=" -> {
-                    if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
-                        throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
+                    boolean sameNumeric = Types.isNumeric(left) && left.equals(right);
+                    if (!sameNumeric && !(isStringLike(left) && isStringLike(right))) {
+                        throw new IllegalArgumentException(
+                                "comparison requires the same numeric type or two strings; "
+                                + "use an explicit checked conversion");
                     }
                     yield Primitive.BOOL;
                 }
@@ -4060,7 +4063,11 @@ public final class TypeChecker {
             }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
-                return typeIntegerIntrinsicCall(integerIntrinsic, call, env, generics, self);
+                return typeIntegerIntrinsicCall("Integer", integerIntrinsic, call, env, generics, self);
+            }
+            String mathIntrinsic = mathIntrinsicName(call, env);
+            if (mathIntrinsic != null) {
+                return typeMathIntrinsicCall(mathIntrinsic, call, env, generics, self);
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
@@ -6726,12 +6733,27 @@ public final class TypeChecker {
                 || modules.containsKey("Integer")
                 || findClass("Integer") != null) return null;
         return switch (member.member()) {
-            case "rem", "mod", "pow", "bitXor" -> member.member();
+            case "rem", "mod", "pow", "bitXor", "toFloatExact", "abs", "neg" -> member.member();
             default -> null;
         };
     }
 
-    private Type typeIntegerIntrinsicCall(
+    /** Sealed Math unary namespace; lexical/imported/user Math always wins. */
+    private String mathIntrinsicName(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr owner)
+                || !owner.name().equals("Math")
+                || env.lookup("Math") != null
+                || importedNames.contains("Math")
+                || modules.containsKey("Math")
+                || findClass("Math") != null) return null;
+        return switch (member.member()) {
+            case "abs", "neg" -> member.member();
+            default -> null;
+        };
+    }
+
+    private Type typeMathIntrinsicCall(
             String name,
             Ast.CallExpr call,
             Env env,
@@ -6739,21 +6761,57 @@ public final class TypeChecker {
             Type self) {
         if (call.typeArgumentsPresent()) {
             throw new IllegalArgumentException(
-                    "Integer." + name + " does not accept type arguments");
+                    "Math." + name + " does not accept type arguments");
+        }
+        if (call.arguments().size() != 1
+                || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+            throw new IllegalArgumentException(
+                    "Math." + name + " expects exactly one numeric argument");
+        }
+        Type operand = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+        if (operand == Primitive.INT || operand == Primitive.FLOAT) {
+            return operand;
+        }
+        throw new IllegalArgumentException(
+                "Math." + name + " requires int or float; exact BigInt/Decimal "
+                        + "overloads are unavailable until their source types are enabled");
+    }
+
+    private Type typeIntegerIntrinsicCall(
+            String owner,
+            String name,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    owner + "." + name + " does not accept type arguments");
+        }
+        if (name.equals("toFloatExact") || name.equals("abs") || name.equals("neg")) {
+            if (call.arguments().size() != 1
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                throw new IllegalArgumentException(
+                        owner + "." + name + " expects exactly one int argument");
+            }
+            requireInteger(
+                    deref(typeOf(call.arguments().getFirst(), env, generics, self)),
+                    owner + "." + name + " argument");
+            return name.equals("toFloatExact") ? Primitive.FLOAT : Primitive.INT;
         }
         if (call.arguments().size() != 2) {
             throw new IllegalArgumentException(
-                    "Integer." + name + " expects exactly two int arguments");
+                    owner + "." + name + " expects exactly two int arguments");
         }
         for (int i = 0; i < 2; i++) {
             Ast.Expr argument = call.arguments().get(i);
             if (argument instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException(
-                        "Integer." + name + " does not admit spreads");
+                        owner + "." + name + " does not admit spreads");
             }
             requireInteger(
                     deref(typeOf(argument, env, generics, self)),
-                    "Integer." + name + " argument " + (i + 1));
+                    owner + "." + name + " argument " + (i + 1));
         }
         return Primitive.INT;
     }
@@ -10558,7 +10616,9 @@ public final class TypeChecker {
 
     private Type numericJoin(Type left, Type right, String op) {
         Type result = Types.numericJoin(left, right);
-        if (result == Unknown.INSTANCE) throw new IllegalArgumentException("operator '" + op + "' needs numeric operands");
+        if (result == Unknown.INSTANCE) throw new IllegalArgumentException(
+                "operator '" + op + "' needs identical numeric operand types; "
+                + "use an explicit checked conversion");
         return result;
     }
 
