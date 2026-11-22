@@ -1,0 +1,40 @@
+name: Java Atto core namespace source real guest
+on:
+  pull_request:
+    paths:
+      - 'core/namespace/**'
+      - 'src/test/java/dev/oreslang/runtime/AttoCoreNamespaceGuestTest.java'
+      - '.github/workflows/atto-core-namespace-java.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  namespace-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check exact PR head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet
+          git diff --cached --quiet
+          test -z "$(git ls-files --others --exclude-standard)"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Compile, link and run namespace-owned scalar Atto guests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AttoCoreNamespaceGuestTest -DfailIfNoTests=true test
+          echo "ATTO_CORE_NAMESPACE_JAVA_GUEST_EXECUTED=TRUE"
