@@ -2495,7 +2495,7 @@ public final class Parser {
                     // @Inject(MutableStateContainer()) to avoid parse-error
                     // misclassification and, more importantly, silent admission.
                     "Inject", "StateBacked", "MutableStateContainer",
-                    "StateContainer").contains(name)) {
+                    "StateContainer", "DefaultArgVals").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
