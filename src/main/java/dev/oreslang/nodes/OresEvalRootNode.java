@@ -9989,6 +9989,16 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
+                    case "bind_udp" -> (Invokable) args -> {
+                        requireTwo(args, "network.bind_udp");
+                        String host = requireString(args.get(0), "UDP numeric host");
+                        if (!(args.get(1) instanceof Number port) || !isIntegral(port)
+                                || port.longValue() < 0 || port.longValue() > 65535) {
+                            throw new IllegalArgumentException("UDP bind port must be integer 0..65535");
+                        }
+                        return dev.oreslang.runtime.AsyncNioUdp.bindAsync(
+                                context, host, port.intValue());
+                    };
                     case "listen_async" -> (Invokable) args -> {
                         requireTwo(args, "network.listen_async");
                         String host = requireString(args.get(0), "network.listen_async host");
@@ -10007,6 +10017,51 @@ public final class OresEvalRootNode extends RootNode {
                                 "network." + name, () -> network.connect(values));
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioUdp.Socket udp) {
+                return switch (name) {
+                    case "local_port" -> (Invokable) args -> {
+                        requireZero(args, "udp.local_port");
+                        return udp.localPort();
+                    };
+                    case "send_to" -> (Invokable) args -> {
+                        requireTwo(args, "udp.send_to");
+                        if (!(args.get(0) instanceof Number port) || !isIntegral(port)
+                                || port.longValue() < 1 || port.longValue() > 65535) {
+                            throw new IllegalArgumentException("UDP destination port must be integer 1..65535");
+                        }
+                        if (!(args.get(1) instanceof List<?> octets)) {
+                            throw new IllegalArgumentException("UDP payload must be a List<int>");
+                        }
+                        return udp.sendTo(port.intValue(), octets);
+                    };
+                    case "recv_from" -> (Invokable) args -> {
+                        requireOne(args, "udp.recv_from");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)
+                                || n.longValue() < 1 || n.longValue() > 65507) {
+                            throw new IllegalArgumentException("UDP receive capacity must be 1..65507");
+                        }
+                        return udp.receiveFrom(n.intValue());
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "udp.close");
+                        return udp.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown UDP socket member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioUdp.Packet packet) {
+                return switch (name) {
+                    case "bytes" -> (Invokable) args -> {
+                        requireZero(args, "udp.packet.bytes");
+                        return packet.bytes();
+                    };
+                    case "source_port" -> (Invokable) args -> {
+                        requireZero(args, "udp.packet.source_port");
+                        return packet.sourcePort();
+                    };
+                    default -> throw new IllegalArgumentException("unknown UDP packet member " + name);
                 };
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Listener listener) {
