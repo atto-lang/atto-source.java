@@ -49,3 +49,13 @@ Negative guest fixtures explicitly reject fabricated `Arc<T>`,
 `HashSet<T>` and physical `Allocator` imports until those APIs have
 compiler-verified semantics. Keep these negatives in the linked guest gate;
 do not turn them into placeholder constructors.
+
+## Dependency layering (Java compiler linker)
+
+- `ores.core/*`: `ores.core/*` dependencies only.
+- `atto.alloc/*`: `atto.alloc/*` and `ores.core/*` only.
+- `ores.std/*` and legacy `std/*`: `ores.std/*`,
+  `atto.alloc/*`, and `ores.core/*`; no project, Java, or ambient imports.
+
+Resolution uses the same closed import registry and budget for every edge,
+including transitive `std -> alloc -> core` dependencies.

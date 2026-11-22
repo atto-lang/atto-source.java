@@ -531,7 +531,7 @@ public final class LinkedProgramRunner {
 
     /**
      * Collects compiler-owned hosted source under ores.std/* (and the temporary
-     * legacy std/* spelling). Hosted std may depend on ores.core or ores.std,
+     * legacy std/* spelling). Hosted std may depend on ores.core, atto.alloc or ores.std,
      * but never on application/ambient modules or Java source islands.
      */
     private static void collectStdImportClosure(
@@ -572,6 +572,10 @@ public final class LinkedProgramRunner {
                 CoreLibrarySources.oresCoreUnitId(imported.path());
                 continue;
             }
+            if (CoreLibrarySources.isAttoAllocImport(imported.path())) {
+                CoreLibrarySources.attoAllocSource(imported.path());
+                continue;
+            }
             throw new IllegalArgumentException(
                     "ores.std cannot import project or ambient modules: "
                             + importPath + " -> " + imported.path());
@@ -583,6 +587,11 @@ public final class LinkedProgramRunner {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
                 collectStdImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            } else if (CoreLibrarySources.isAttoAllocImport(imported.path())) {
+                String targetId = CoreLibrarySources.attoAllocUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAttoAllocImportClosure(imported.path(), units, importResolutions,
                         budget, depth + 1);
             } else {
                 String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());

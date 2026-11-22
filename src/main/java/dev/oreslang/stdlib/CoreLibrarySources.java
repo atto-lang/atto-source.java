@@ -16,10 +16,12 @@ import java.util.Set;
 /**
  * Loads compiler-owned Oreslang library source from packaged resources.
  *
- * <p>Oreslang exposes exactly two public library namespaces:
- * {@code ores.core/*} is freestanding/no-OS source and {@code ores.std/*}
- * is hosted/platform source. Legacy {@code std/*} remains a compatibility
- * spelling for {@code ores.std/*}; it is not a third library layer.</p>
+ * <p>This backend links three closed source-library layers:
+ * {@code ores.core/*} is freestanding/no-OS, {@code atto.alloc/*} adds
+ * allocator and owner-local collections, and {@code ores.std/*} is hosted.
+ * Legacy {@code std/*} remains a compatibility spelling for ores.std.
+ * Library code may depend only downward; none of these roots falls through
+ * to an ambient filesystem or package source.</p>
  */
 public final class CoreLibrarySources {
     private static final String CORE_IMPORT_PREFIX = "ores.core/";
