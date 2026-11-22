@@ -1,7 +1,8 @@
 package dev.oreslang.imports;
 
 import dev.oreslang.ast.Ast;
-import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TypeChecker;
 import dev.oreslang.parser.Parser;
 
 import java.io.IOException;
@@ -129,10 +130,13 @@ public final class StandardCryptoNamespace {
                 List.of(),
                 List.of(new Ast.ModuleDecl(Parser.ROOT_MODULE, all)),
                 List.of());
-        // The same actual parser, typechecker, ownership and checked
-        // source-task path used for other Atto programs owns this AST.
-        Ast.Program checked = OresCompiler.analyze(merged);
-        return new Bundle(checked, signatures);
+        // Compile the merged units with the STRICT Atto profile, never the
+        // permissive legacy default. Preserve source-task ownership proofs.
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(merged, true);
+        OwnershipChecker.check(
+                checked.program(), checked.shortInferredAliases());
+        return new Bundle(checked.program(), signatures);
     }
 
     private static boolean isInteger(Ast.TypeRef type) {
