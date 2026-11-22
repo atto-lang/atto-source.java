@@ -877,10 +877,34 @@ def publish(repository, source, branch, trusted_root, source_commit):
                           {"path": PREFIX, "mode": "040000", "type": "tree",
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
+    # Check GitHub's persisted root tree before creating an executable CI
+    # commit. An API response containing only a plausible tree hash does not
+    # establish that PREFIX was actually replaced with the reviewed source.
+    observed_root = gh_api(f"repos/{repository}/git/trees/{new_tree_sha}")
+    if (observed_root.get("sha") != new_tree_sha
+            or observed_root.get("truncated") is not False
+            or not isinstance(observed_root.get("tree"), list)):
+        raise Denied("destination root Git tree could not be independently verified")
+    matching = [entry for entry in observed_root["tree"]
+                if isinstance(entry, dict) and entry.get("path") == PREFIX]
+    if (len(matching) != 1
+            or matching[0].get("type") != "tree"
+            or matching[0].get("mode") != "040000"
+            or matching[0].get("sha") != isolated_sha):
+        raise Denied("destination root Git tree did not preserve exact source subtree")
     authorize_write()
+    # Audit metadata is useful to destination CI but is NOT an independent
+    # source authorization signature. Only the protected-origin approval and
+    # the exact-tree check above grant permission to export private bytes.
+    message = (
+        "ci: source snapshot from approved private Oreslang checkout\n\n"
+        f"Oreslang-Source-Repo: {SOURCE_REPO}\n"
+        f"Oreslang-Source-Commit: {source_commit}\n"
+        f"Oreslang-Source-Tree: {expected_source_tree}\n"
+        f"Oreslang-Destination-Prefix: {PREFIX}\n"
+    )
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
-        "tree": new_tree_sha, "parents": [base_sha]
+        "message": message, "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
@@ -888,8 +912,17 @@ def publish(repository, source, branch, trusted_root, source_commit):
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    if (created.get("ref") != "refs/heads/" + branch
+            or valid_sha(created.get("object", {}).get("sha")) != commit_sha):
+        raise Denied("GitHub did not attest the exact new CI branch target")
+    # The create-ref POST body alone is not sufficient evidence of persisted
+    # repository state; independently fetch the fresh ref and fail closed if
+    # another writer changed it or if the API response was inconsistent.
+    observed = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    if (observed.get("ref") != "refs/heads/" + branch
+            or observed.get("object", {}).get("type") != "commit"
+            or valid_sha(observed.get("object", {}).get("sha")) != commit_sha):
+        raise Denied("destination CI ref readback differs from published commit")
     return commit_sha, len(files)
 
 
