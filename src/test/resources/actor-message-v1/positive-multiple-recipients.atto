@@ -1,0 +1,16 @@
+// Stage-1 typed ingress; independent ActorRef destinations, no sends effect asserted.
+define actor TextSink receives String as
+  receive(ActorMail<String> mail): void { return; }
+end
+define actor NumberSink receives int as
+  receive(ActorMail<int> mail): void { return; }
+end
+pub routine main(): void {
+  val first = spawn TextSink();
+  val second = spawn TextSink();
+  val counter = spawn NumberSink();
+  first.send("alpha");
+  second.send("beta");
+  counter.send(7);
+  return;
+}
