@@ -802,6 +802,12 @@ public final class TypeChecker {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
+                // An explicit import alias may not redirect a compiler-owned
+                // ADT constructor/type to a user package or host interop symbol.
+                if (AutomaticPrelude.protectedIdentity(name)) {
+                    throw new IllegalArgumentException("E_PRELUDE_SPOOF: explicit import cannot "
+                            + "rebind compiler-owned prelude identity '" + name + "'");
+                }
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
                 if (localNames.contains(name)
@@ -853,6 +859,10 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
+        if (AutomaticPrelude.protectedIdentity(name)) {
+            throw new IllegalArgumentException("E_PRELUDE_SPOOF: compiler-owned prelude identity '"
+                    + name + "' cannot be declared as " + declarationKind);
+        }
         if ("Symbol".equals(name) || "Newable".equals(name)
                 || "Atomic".equals(name) || "AtomicCompareExchange".equals(name)) {
             throw new IllegalArgumentException(name
@@ -862,6 +872,10 @@ public final class TypeChecker {
     }
 
     private void putFunction(String module, Ast.FunctionDecl fn) {
+        if (AutomaticPrelude.protectedIdentity(fn.name())) {
+            throw new IllegalArgumentException("E_PRELUDE_SPOOF: compiler-owned prelude identity '"
+                    + fn.name() + "' cannot be declared as a function");
+        }
         String qualified = module + "." + fn.name();
         putFunctionSlot(qualified, fn);
 
