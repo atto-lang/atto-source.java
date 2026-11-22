@@ -1,17 +1,35 @@
-# std.process — Java backend implementation (draft)
+# std/process — Java backend implementation (draft)
+
+## Public import naming
+
+The normal import is `import module Process from "std/process";`.
+The explicit disambiguating import is `import module Process from
+"atto.std/process";`. The two forms share one compiler-owned source and
+one linked code-unit identity. `atto.std/*` is reserved before project-file
+resolution, so a local package cannot impersonate it. The unqualified
+`std/*` spelling is supported as the normal hosted path.
+
+`ores.std/process` and `ores.std/process_policy` are **not accepted**.
+Older `ores.std/*` imports for previously shipped modules remain temporary
+compatibility aliases. Do not expand the old namespace for new modules.
 
 ## Implemented in this draft
 
-- `stdlib/process_policy.atto` (`ores.std/process_policy`): pure admission and size-policy helpers.
-- `stdlib/process.atto` (`ores.std/process`): `Process.Command`, `Process.ExitStatus`, explicit stdio modes, `command`, `command_with_args`, `with_stdio`, `valid_stdio`, and `succeeded`. These are guest-side **value contracts, not a launcher**. The host must snapshot and revalidate any mutable arrays.
+- `stdlib/process_policy.atto` (`std/process_policy` or `atto.std/process_policy`): pure admission and size-policy helpers.
+- `stdlib/process.atto` (`std/process` or `atto.std/process`): `Process.Command`, `Process.ExitStatus`, explicit stdio modes, `command`, `command_with_args`, `with_stdio`, `valid_stdio`, and `succeeded`. These are guest-side **value contracts, not a launcher**. The host must snapshot and revalidate any mutable arrays.
 - `src/main/java/dev/oreslang/runtime/TrustedChildProcessRunner.java`: **host-only**, package-private, direct-argv `ProcessBuilder` execution; bounded 1..32 child permits, bounded reader/wait executors, concurrent stdout/stderr capture (4 MiB maximum per stream), timeout/force-kill/reap, closed stdin, explicitly supplied environment, and a mandatory host admission callback.
 - `tests/host/run-std-process-smoke.sh`: independent JDK executable smoke for real child launch/capture, host gate denial, bad argv, byte capture limit, and timeout termination; invokes `javac` and `java` without Maven. Run with `bash tests/host/run-std-process-smoke.sh`.
 - `tests/fixtures/std-process-policy-v1/main.atto` and `tests/fixtures/std-process-v1/main.atto`: **source-only** guest fixtures with expected exit 42 (NOT EXECUTED on compiler).
 
+The standalone JDK script now also compiles `CoreLibrarySources.java` and
+tests `std/*` vs `atto.std/*` source identity, path hardening, and legacy
+process import rejection. These tests are **committed but unexecuted** at the
+current exact PR head.
+
 ## Future public guest API — NOT IMPLEMENTED
 
 ```atto
-import module Process from "ores.std/process";
+import module Process from "std/process";
 // Planned API; the following call does NOT compile or execute yet:
 let Result<Process.ChildProcess, Process.ProcessError> started =
     await Process.spawn(Process.command("/usr/bin/tool"));
@@ -53,11 +71,11 @@ safe work may occur between fork and exec.
 
 ## Testing and evidence
 
-A local JDK 21 standalone run of the host prototype executed and reported
+A previous local JDK 21 standalone run of the host prototype was reported to produce
 `STD_PROCESS_HOST_SMOKE_PASS` for capture, admission rejection, argv validation,
-capture limit and timeout. This is **not** a GitHub Actions run, full-project
+capture limit and timeout. The newly changed files on this PR head have **not** been re-executed on a runner. The prior checkpoint is **not** a GitHub Actions run, full-project
 compile, or native-image test. The real compiler `.atto` guest fixture and
 GraalVM AOT have **NOT EXECUTED** on this head; do not mark PR Ready or claim
-`std.process` parity. Source-org zero-step Actions must be treated as
+`std/process` parity. Source-org zero-step Actions must be treated as
 `NOT_EXECUTED`. Private cross-org CI mirroring requires independent approval
 of source tree and destination, and full blob/tree verification.
