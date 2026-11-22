@@ -1,11 +1,6 @@
 package dev.oreslang;
 
-import dev.oreslang.ast.Ast;
-import dev.oreslang.parser.ActorProtocolNominalResolverV1;
 import dev.oreslang.parser.ActorProtocolSourceCfgV1;
-import dev.oreslang.parser.ActorProtocolTypestateV1;
-import dev.oreslang.parser.Lexer;
-import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -39,14 +34,8 @@ final class ActorProtocolSourceCfgV1Test {
 
     private static ActorProtocolSourceCfgV1.Projection analyze(
             String function, String name, Map<String,String> trusted) {
-        String complete = PRELUDE + "\n" + function;
-        var tokens = new Lexer(complete).scan();
-        var catalog = ActorProtocolTypestateV1.parseTokens(tokens);
-        Ast.Program ast = new Parser(
-                ActorProtocolTypestateV1.withoutProtocolPrelude(tokens)).parseProgram();
-        ActorProtocolNominalResolverV1.ResolvedDeclarations nominal =
-                ActorProtocolNominalResolverV1.resolve(catalog, ast);
-        return ActorProtocolSourceCfgV1.verifyFunction(ast, name, nominal, trusted);
+        return ActorProtocolSourceCfgV1.verifySource(
+                PRELUDE + "\n" + function, name, trusted);
     }
     private static void denied(String source, String fn, String expected) {
         var ex = assertThrows(IllegalArgumentException.class, () ->
@@ -164,6 +153,21 @@ final class ActorProtocolSourceCfgV1Test {
                   return handle;
                 }
                 ""","invalid","E_PROTOCOL_SOURCE_UNREACHABLE");
+    }
+
+    @Test void declarationCannotSpoofCompilerOwnedProtocolHandles() {
+        String forged = "define class ProtocolHandle as end\n" + PRELUDE + "\n"
+                + """
+                  define fnc move_handle(ProtocolHandle<Connection> handle): ProtocolHandle<Connection> {
+                    const ProtocolHandle<Connection> moved = take! handle;
+                    return moved;
+                  }
+                  """;
+        var fail = assertThrows(IllegalArgumentException.class,
+                () -> ActorProtocolSourceCfgV1.verifySource(forged,
+                        "move_handle", Map.of("handle", "Connection")));
+        assertTrue(fail.getMessage().contains("E_PROTOCOL_SOURCE_FORGED_HANDLE_TYPE"),
+                fail::getMessage);
     }
 
     @Test void unsupportedExceptionAndDeferredCleanupNeverDisappear() {
