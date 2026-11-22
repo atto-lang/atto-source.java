@@ -1,0 +1,49 @@
+name: Generic HasFuture await (real Graal guest)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/generic-has-future-await.yml'
+      - 'pom.xml'
+      - 'src/main/java/**'
+      - 'src/test/java/dev/oreslang/GenericHasFutureAwaitTest.java'
+      - 'stdlib/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generic-has-future-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guest-regressions:
+    name: Real GraalVM guest tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact PR source without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up GraalVM Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Record exact source and runtime provenance
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          git rev-parse HEAD
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Compile and run real HasFuture guest tests
+        run: mvn -B -ntp -Dtest=GenericHasFutureAwaitTest test
+      - name: Verify adjacent async and generic behavior
+        run: mvn -B -ntp '-Dtest=AsyncAwaitLanguageTest,GenericsAndOperatorsHardeningTest,SuspendsContractLanguageTest,BindingMutableReceiverContractTest' test
+      - name: Full Maven regression verification
+        run: mvn -B -ntp verify

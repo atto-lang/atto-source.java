@@ -1105,6 +1105,15 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         consume(AS, "expected 'as' after class header");
+        // Also accept 'class Name as implements Trait<T> as ... end'.
+        // The first 'as' always opens the class declaration header.
+        if (match(IMPLEMENTS, IMPL)) {
+            if (!interfaces.isEmpty()) {
+                throw error(previous(), "class cannot declare 'implements' both before and after 'as'");
+            }
+            interfaces = parseTypeRefList();
+            consume(AS, "expected 'as' after class implements clause");
+        }
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
@@ -2022,7 +2031,9 @@ public final class Parser {
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }
-            if (match(FNC)) {
+            // Trait/interface signatures allow the canonical bare instance
+            // method form: get_future(): Future<T>;
+            if (match(FNC) || (check(IDENT) && checkNext(LPAREN))) {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
                 validateInterfaceCallableModifiers(memberModifiers);
                 CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);

@@ -5223,6 +5223,55 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private boolean guestHasFuture(OresObject object) {
+            Ast.InterfaceDecl trait = object.owner.findInterface("HasFuture");
+            return trait != null && !trait.moduleContract()
+                    && object.owner.classImplements(
+                            object.klass, trait, new LinkedHashSet<>(),
+                            new LinkedHashSet<>());
+        }
+
+        private OresFuture<?> guestFuture(OresObject object, Env env) {
+            if (object.klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "actor state may not be projected as HasFuture; await an ActorRef instead");
+            }
+            // Recheck the effective runtime override. A base implementation
+            // cannot prove that an inherited dynamic override remains pure.
+            Ast.MethodDecl projection = object.owner.findMethod(
+                    object.klass, CallableSelector.instance("get_future", 0));
+            if (projection == null || projection.isStatic()
+                    || projection.async() || projection.suspends()
+                    || projection.isAbstract()
+                    || !projection.genericParameters().isEmpty()
+                    || (projection.explicitReceiverType() != null
+                        && projection.explicitReceiverType().mutableBorrow())
+                    || projection.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalStateException(
+                        "HasFuture.get_future() must be a public synchronous method");
+            }
+            // The synchronous projection may run guest code. Guard checks
+            // precede invocation, so side effects cannot bypass borrow rules.
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "cannot project HasFuture while holding a live MutexGuard");
+            }
+            Object result = object.owner.invoke(
+                    object.owner.prepareBoundMethodInvocation(
+                            object, "get_future", List.of(), env.accessClass()));
+            // The projection may change ambient state. Do not let a new guard
+            // slip past the preflight even when the future is already resolved.
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "HasFuture projection retained a live MutexGuard across await");
+            }
+            if (!(result instanceof OresFuture<?> future)) {
+                throw new IllegalStateException(
+                        "HasFuture.get_future() must return a native Future<T>");
+            }
+            return future;
+        }
+
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
@@ -5234,6 +5283,13 @@ public final class OresEvalRootNode extends RootNode {
             } else if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
                 // Preserve the reference result; await only actor initialization.
                 future = actorRef.readyRef();
+            } else if (value instanceof OresObject object && guestHasFuture(object)) {
+                try {
+                    future = guestFuture(object, env);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
             } else if (value instanceof Awaitable<?> awaitable) {
                 // The host projection itself may have side effects: preflight
                 // must happen before getAwaited(), not just before Task.await.
@@ -9142,6 +9198,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (value instanceof OresFuture<?> future) {
                     return AsyncRuntime.await(future);
+                }
+                if (value instanceof OresObject object && guestHasFuture(object)) {
+                    return AsyncRuntime.await(guestFuture(object, env));
                 }
                 if (value instanceof CompletionStage<?> stage) {
                     return AsyncRuntime.await(stage);

@@ -1034,6 +1034,30 @@ public final class TypeChecker {
 
     private void checkInterface(Ast.InterfaceDecl iface) {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
+        // Awaitability is nominal, never inferred from an arbitrary method
+        // named get_future. Reserve the precise generic trait contract.
+        if (iface.name().equals("HasFuture") && !iface.moduleContract()) {
+            boolean valid = iface.genericParameters().size() == 1
+                    && iface.parents().isEmpty() && iface.members().size() == 1
+                    && iface.members().getFirst() instanceof Ast.InterfaceFunctionDecl method
+                    // awaitability is a nominal capability, never a structural
+                    // duck-typed witness inferred from a similarly named method.
+                    && !method.structural()
+                    && method.name().equals("get_future")
+                    && method.parameters().isEmpty()
+                    && method.genericParameters().isEmpty()
+                    && method.returnType().name().equals("Future")
+                    && !method.returnType().inferArguments()
+                    && method.returnType().arguments().size() == 1
+                    && method.returnType().arguments().getFirst().name()
+                            .equals(iface.genericParameters().getFirst())
+                    && method.returnType().arguments().getFirst().arguments().isEmpty()
+                    && !method.returnType().arguments().getFirst().inferArguments();
+            if (!valid) {
+                throw new IllegalArgumentException(
+                        "HasFuture<T> must declare exactly get_future(): Future<T>");
+            }
+        }
         Type interfaceSelf = iface.moduleContract() ? null : new SelfType(nominalInterfaceType(iface));
 
         Set<String> interfaceFieldNames = new LinkedHashSet<>();
@@ -2203,6 +2227,24 @@ public final class TypeChecker {
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.name().equals("HasFuture")) {
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor classes cannot implement HasFuture<T>; use ActorRef<T> readiness instead");
+                }
+                ResolvedMethod projection = findMethodTarget(
+                        klass, nominalClassType(klass), "get_future", 0,
+                        new LinkedHashSet<>());
+                if (projection == null || projection.method().isStatic()
+                        || projection.method().async() || projection.method().suspends()
+                        || projection.method().isAbstract()
+                        || !projection.method().genericParameters().isEmpty()
+                        || (projection.method().explicitReceiverType() != null
+                            && projection.method().explicitReceiverType().mutableBorrow())) {
+                    throw new IllegalArgumentException(
+                            "HasFuture.get_future() must be a concrete synchronous zero-argument method");
+                }
+            }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
@@ -2224,6 +2266,41 @@ public final class TypeChecker {
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+            }
+        }
+        // An inherited HasFuture<T> witness constrains the effective
+        // implementation slot even when the child never says 'implements'.
+        // In particular, a child override cannot substitute Future<U>
+        // for the parent's specialized Future<T> (Future is invariant).
+        Type projected = hasFutureResult(nominalClassType(klass), new LinkedHashSet<>());
+        if (projected != null) {
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor classes cannot implement inherited HasFuture<T>");
+            }
+            ResolvedMethod method = findMethodTarget(
+                    klass, nominalClassType(klass), "get_future", 0, new LinkedHashSet<>());
+            if (method == null || method.method().isStatic()
+                    || method.method().async() || method.method().suspends()
+                    || method.method().isAbstract()
+                    || !method.method().genericParameters().isEmpty()
+                    || method.method().visibility() != Ast.Visibility.PUBLIC
+                    || (method.method().explicitReceiverType() != null
+                        && method.method().explicitReceiverType().mutableBorrow())) {
+                throw new IllegalArgumentException(
+                        "effective HasFuture.get_future() must be a public non-mutating synchronous method");
+            }
+            Type pattern = resolve(
+                    method.method().returnType(),
+                    Set.copyOf(method.owner().genericParameters()),
+                    new SelfType(method.ownerType()));
+            Type concrete = substituteGenerics(
+                    pattern, classGenericBindings(method.owner(), method.ownerType()));
+            Type required = new Named("Future", List.of(projected));
+            if (!concrete.equals(required)) {
+                throw new IllegalArgumentException(
+                        "effective HasFuture.get_future() returns " + concrete
+                        + " but inherited capability requires " + required);
             }
         }
     }
@@ -6058,6 +6135,31 @@ public final class TypeChecker {
                     && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
+            Type projectedResult = hasFutureResult(awaitedType, new LinkedHashSet<>());
+            if (projectedResult != null) {
+                if (awaitedType instanceof Named wrapper) {
+                    Ast.ClassDecl concrete = findClass(wrapper.name());
+                    if (concrete != null) {
+                        if (concrete.actorKind() != Ast.ActorKind.NONE) {
+                            throw new IllegalArgumentException(
+                                    "await of actor HasFuture<T> is forbidden; use ActorRef<T>");
+                        }
+                        ResolvedMethod method = findMethodTarget(
+                                concrete, wrapper, "get_future", 0, new LinkedHashSet<>());
+                        if (method == null || method.method().isStatic()
+                                || method.method().async() || method.method().suspends()
+                                || method.method().isAbstract()
+                                || !method.method().genericParameters().isEmpty()
+                                || (method.method().explicitReceiverType() != null
+                                    && method.method().explicitReceiverType().mutableBorrow())
+                                || method.method().visibility() != Ast.Visibility.PUBLIC) {
+                            throw new IllegalArgumentException(
+                                    "await requires a public synchronous HasFuture.get_future() projection");
+                        }
+                    }
+                }
+                return projectedResult;
+            }
             if (awaitedType instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 // await spawn Actor() is a readiness barrier, not a termination
@@ -6066,7 +6168,7 @@ public final class TypeChecker {
                 return actorRef;
             }
             throw new IllegalArgumentException(
-                    "await requires Future<T> or ActorRef<T>; got " + awaitedType);
+                    "await requires Future<T>, HasFuture<T>, or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type sink = typeOf(channelOp.channel(), env, generics, self);
@@ -13336,6 +13438,69 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    /**
+     * Resolve the generic result of a nominal HasFuture<T> capability.
+     * Follow instantiated class/interface parent edges rather than
+     * guessing a result from a method name, and reject ambiguous paths.
+     */
+    private Type hasFutureResult(Type candidate, Set<Named> seen) {
+        if (!(candidate instanceof Named named)) return null;
+        // Type arguments can change along a recursive nominal edge:
+        // Loop<T> -> Loop<Array<T>> -> Loop<Array<Array<T>>> ...
+        // Checking equality of the complete Named<T> is not a cycle guard.
+        // Use a path-local nominal identity guard and release it on return,
+        // so both sides of a legal diamond still contribute to ambiguity checks.
+        for (Named ancestor : seen) {
+            if (ancestor.name().equals(named.name())) {
+                throw new IllegalArgumentException(
+                        "cyclic HasFuture<T> class/trait inheritance involving " + named.name());
+            }
+        }
+        seen.add(named);
+        try {
+            Ast.InterfaceDecl iface = findInterface(named.name());
+            if (iface != null && iface.name().equals("HasFuture")) {
+                if (iface.moduleContract() || named.arguments().size() != 1) return null;
+                return named.arguments().getFirst();
+            }
+            Type result = null;
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) {
+                for (Ast.TypeRef ref : klass.interfaces()) {
+                    Type discovered = hasFutureResult(
+                            concreteClassReference(ref, klass, named), seen);
+                    result = mergeAwaitResult(result, discovered);
+                }
+                for (Ast.TypeRef ref : klass.parents()) {
+                    Ast.ClassDecl parent = resolveClassParent(ref, klass);
+                    if (parent == null) continue;
+                    Type discovered = hasFutureResult(
+                            concreteClassReference(ref, klass, named), seen);
+                    result = mergeAwaitResult(result, discovered);
+                }
+            }
+            if (iface != null && !iface.moduleContract()) {
+                for (Ast.TypeRef ref : iface.parents()) {
+                    Type discovered = hasFutureResult(
+                            concreteInterfaceParentType(ref, iface, named), seen);
+                    result = mergeAwaitResult(result, discovered);
+                }
+            }
+            return result;
+        } finally {
+            seen.remove(named);
+        }
+    }
+
+    private Type mergeAwaitResult(Type prior, Type next) {
+        if (next == null) return prior;
+        if (prior != null && !prior.equals(next)) {
+            throw new IllegalArgumentException(
+                    "ambiguous HasFuture<T> result types: " + prior + " and " + next);
+        }
+        return next;
     }
 
     private boolean classTypeImplements(Named actualType, Named expectedInterfaceType, Set<Named> seen) {
