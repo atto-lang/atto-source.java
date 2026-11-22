@@ -71,9 +71,10 @@ final class NativeAttoMetricsJsonZordeTest {
 
     @Test
     void zordeGuestRoundtripsDeterministicFrame() throws Exception {
-        assertGuest("zorde", "true", "true", "7", "1", "2", "255", "true", "90",
-                "79", "true", "2", "300", "0", "true", "1", "true", "true", "true",
-                "-1073741824", "1073741823", "true", "true", "true", "3", "20", "0",
-                "false", "0", "true");
+        assertGuest("zorde", "true", "10", "7", "1", "2", "true", "7",
+                "1", "2", "255", "true", "90", "79", "true",
+                "2", "300", "0", "true", "1", "true", "true",
+                "true", "-1073741824", "1073741823", "true", "true", "true", "3",
+                "20", "0", "false", "0", "true", "true");
     }
 }
