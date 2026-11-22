@@ -16,6 +16,10 @@ test('review packet is inert and does not grant a private source export', () => 
   assert.match(packet.source.observed_root_tree_sha, /^[a-f0-9]{40}$/);
   assert.equal(packet.source.private, true);
   assert.equal(packet.source.observed_main_protected, false);
+  assert.equal(packet.source_head_drift.stale, true);
+  assert.notEqual(packet.source_head_drift.observed_new_head_sha,
+      packet.source.observed_head_sha,
+      'original exact-head snapshot must be invalidated when #1736 changes');
   assert.equal(packet.source_free_evidence.actual_atto_guest_executed, false);
   assert.equal(packet.source_free_evidence.actual_atto_full_guest_aot_executed, false);
   assert.equal(packet.source_free_evidence.private_source_files_transferred, 0);
@@ -74,6 +78,12 @@ test('inert numerical Maven plan pins exact tree components but cannot grant exe
   const proposal = JSON.parse(read('docs/security/reviews/atto-numeric-1736-junit-plan-proposal.json'));
   assert.equal(proposal.schema, 'atto.numeric-ci-test-plan-proposal.v1');
   assert.equal(proposal.status, 'REVIEW_ONLY_NOT_AUTHORIZED');
+  assert.equal(proposal.source_head_drift.stale, true);
+  assert.equal(proposal.source_head_drift.observed_new_head_sha,
+      packet.source_head_drift.observed_new_head_sha);
+  assert.notEqual(proposal.candidate_source.head_sha,
+      proposal.source_head_drift.observed_new_head_sha,
+      'never silently move an immutable test plan onto a later PR head');
   assert.deepEqual(proposal.candidate_source, {
     repo: packet.source.repository,
     pr: packet.source.pull_request,
