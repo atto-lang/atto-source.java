@@ -50,6 +50,17 @@ public final class CompilerTypedEffectV1 {
                 deny("E_EFFECT_UNKNOWN", "AST traversal budget");
         }
 
+        /** Lexical bindings never escape blocks or mutually exclusive arms. */
+        void scopedStatements(List<Ast.Stmt> body, int depth) {
+            Set<String> prior = Set.copyOf(locals);
+            try {
+                for (Ast.Stmt next : body) statement(next, depth);
+            } finally {
+                locals.clear();
+                locals.addAll(prior);
+            }
+        }
+
         void statement(Ast.Stmt stmt, int depth) {
             tick(depth);
             if (stmt instanceof Ast.ReturnStmt ret) {
@@ -63,15 +74,13 @@ public final class CompilerTypedEffectV1 {
                 }
                 expression(bind.initializer(), depth + 1);
             } else if (stmt instanceof Ast.BlockStmt block) {
-                for (Ast.Stmt child : block.body()) statement(child, depth + 1);
+                scopedStatements(block.body(), depth + 1);
             } else if (stmt instanceof Ast.IfStmt iff) {
                 for (Ast.IfBranch branch : iff.branches()) {
                     expression(branch.condition(), depth + 1);
-                    // A conservative lexical union may reject shadowing across
-                    // different arms, but can never certify an unknown binding.
-                    for (Ast.Stmt child : branch.body()) statement(child, depth + 1);
+                    scopedStatements(branch.body(), depth + 1);
                 }
-                for (Ast.Stmt child : iff.elseBody()) statement(child, depth + 1);
+                scopedStatements(iff.elseBody(), depth + 1);
             } else {
                 deny("E_EFFECT_UNKNOWN", "unmodeled statement: " + stmt.getClass().getSimpleName());
             }
