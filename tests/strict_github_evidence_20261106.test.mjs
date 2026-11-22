@@ -93,3 +93,27 @@ test('accept streamed reviews list only with allowArray true', async () => {
   await assert.rejects(read_strict_github_response(res([data])), EvidenceRejected);
   assert.deepEqual(await read_strict_github_response(res([data]), {allowArray:true}), [{state:'APPROVED'}]);
 });
+
+test('deny fractional repository identifiers rounded into authorized integers', () => {
+  // These source numbers are NOT the pinned integer even though Number()
+  // rounds them to precisely the expected repository identity.
+  for (const source of [
+    '{"id":1400792274.000000001}',
+    '{"id":1400792274.0000001}',
+    '{"id":14007922740000000001e-10}',
+    '{"id":9007199254740991.0000001}',
+    '{"id":9007199254740993.0}',
+    '{"id":1e-400}',
+  ]) rejected(source);
+});
+test('preserve exact integral decimal/exponent representations', () => {
+  for (const source of [
+    '{"id":1400792274}',
+    '{"id":1400792274.0000}',
+    '{"id":1400792274e0}',
+    '{"count":1.5e2}',
+    '{"count":100.01e2}',
+    '{"count":-2.00}',
+    '{"count":0.0}',
+  ]) assert.deepEqual(parse(source), JSON.parse(source));
+});

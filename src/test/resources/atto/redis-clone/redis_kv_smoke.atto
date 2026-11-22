@@ -4,8 +4,8 @@
 pub fnc main(): int {
     let Map<string,int> db = ~map<string,int>();
     db.set("answer", 41);
-    const int value = db["answer"];
-    const bool removed = db.delete("answer");
+    val int value = db["answer"];
+    val bool removed = db.delete("answer");
     if removed then
         if db.size eq 0 then
             return value + 1;

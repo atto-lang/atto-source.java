@@ -1,0 +1,2 @@
+// signed int64 lower boundary is accepted in source and JVM bytecode
+pub fnc main(): int -> -9223372036854775808;

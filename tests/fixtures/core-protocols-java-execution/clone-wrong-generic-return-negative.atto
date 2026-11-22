@@ -1,0 +1,5 @@
+import trait Clone from "ores.core/protocols";
+define class Broken implements Clone<int> as
+  pub clone_value(): bool { return true; }
+end
+pub fnc main(): void { return; }

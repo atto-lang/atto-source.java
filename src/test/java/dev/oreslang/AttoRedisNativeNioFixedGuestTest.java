@@ -44,6 +44,7 @@ final class AttoRedisNativeNioFixedGuestTest {
                 } catch (Exception failure) {
                     throw new RuntimeException(failure);
                 }
+                return null;
             });
             try (Socket client = connect(guest)) {
                 client.setSoTimeout(7000);

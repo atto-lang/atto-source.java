@@ -50,7 +50,9 @@ final class UntrustedLogicalQuotaTest {
     private record BlockedCarrierProbe(
             AtomicReference<OresFuture<Integer>> task,
             java.util.concurrent.CountDownLatch entered,
-            java.util.concurrent.CountDownLatch release) { }
+            java.util.concurrent.CountDownLatch release,
+            AtomicReference<Throwable> siblingRejected,
+            java.util.concurrent.CountDownLatch siblingAttempted) { }
     private static volatile BlockedCarrierProbe blockedCarrierProbe;
 
     private record ActorSingleWriterProbe(
@@ -533,23 +535,38 @@ final class UntrustedLogicalQuotaTest {
                 new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch release =
                 new java.util.concurrent.CountDownLatch(1);
-        blockedCarrierProbe = new BlockedCarrierProbe(sourceTask, entered, release);
+        AtomicReference<Throwable> siblingRejected = new AtomicReference<>();
+        java.util.concurrent.CountDownLatch siblingAttempted =
+                new java.util.concurrent.CountDownLatch(1);
+        blockedCarrierProbe = new BlockedCarrierProbe(
+                sourceTask, entered, release, siblingRejected, siblingAttempted);
         int originalGlobal = OresScheduler.availableWallDeadlineAdmissions();
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
                 BlockedCarrierProbe probe = blockedCarrierProbe;
-                probe.task().set(turn.runtime().startActorTask(resume -> {
-                    probe.entered().countDown();
-                    try {
-                        if (!probe.release().await(3, TimeUnit.SECONDS)) {
-                            throw new IllegalStateException("test carrier not released");
+                if (message.equals("start")) {
+                    probe.task().set(turn.runtime().startActorTask(resume -> {
+                        probe.entered().countDown();
+                        try {
+                            if (!probe.release().await(3, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("test carrier not released");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
                         }
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        throw new IllegalStateException(interrupted);
+                        return OresScheduler.done(42);
+                    }));
+                } else if (message.equals("sibling")) {
+                    try {
+                        turn.runtime().startActorTask(
+                                resume -> OresScheduler.done(99));
+                    } catch (Throwable failure) {
+                        probe.siblingRejected().set(failure);
+                    } finally {
+                        probe.siblingAttempted().countDown();
                     }
-                    return OresScheduler.done(42);
-                }));
+                }
             });
             try {
                 actor.send("start");
@@ -566,6 +583,14 @@ final class UntrustedLogicalQuotaTest {
                 assertEquals(originalGlobal - 1,
                         OresScheduler.availableWallDeadlineAdmissions(),
                         "global admission must likewise wait for physical quiescence");
+                actor.send("sibling");
+                assertTrue(siblingAttempted.await(3, TimeUnit.SECONDS),
+                        "mailbox must process the competing source-task admission");
+                assertTrue(siblingRejected.get() instanceof SecurityException,
+                        () -> "cancellation must not retire the logical quota while its carrier runs: "
+                                + siblingRejected.get());
+                assertEquals(1, actorTimedAdmissions(runtime, actor),
+                        "rejected sibling must not consume another timed admission");
             } finally {
                 release.countDown();
             }

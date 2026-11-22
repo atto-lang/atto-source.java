@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -24,6 +25,7 @@ public final class ActorStateLoans implements AutoCloseable {
             Collections.newSetFromMap(new IdentityHashMap<>());
     private ExclusiveLoan active;
     private long nextEpoch;
+    private boolean epochExhausted;
     private boolean closed;
     private boolean publishing;
 
@@ -40,6 +42,41 @@ public final class ActorStateLoans implements AutoCloseable {
         synchronized (monitor) { return active == null ? 0 : 1; }
     }
 
+    boolean epochExhausted() {
+        synchronized (monitor) { return epochExhausted; }
+    }
+
+    /**
+     * Immediate, non-queueing admission for a try-critical region. A contended
+     * guard returns empty without adding a waiter, retaining handler identity,
+     * or bypassing an earlier FIFO waiter. Logical ownership follows the
+     * supplied handler identity rather than the current carrier thread.
+     *
+     * This is an internal runtime primitive, NOT source-level critical{}
+     * lowering. The compiler must still prove no suspension inside its body.
+     */
+    public Optional<ExclusiveLoan> tryAcquire(Object handlerIdentity) {
+        Objects.requireNonNull(handlerIdentity, "handlerIdentity");
+        synchronized (monitor) {
+            if (closed) throw new IllegalStateException("actor state loans closed");
+            if (owners.contains(handlerIdentity)) {
+                throw new IllegalStateException(
+                        "handler already holds or awaits a state loan");
+            }
+            if (active != null || !pending.isEmpty()) return Optional.empty();
+            // Never reserve an identity or enqueue on the losing path.
+            if (nextEpoch == Long.MAX_VALUE)
+                throw new IllegalStateException("actor state loan epochs exhausted");
+            owners.add(handlerIdentity);
+            try {
+                return Optional.of(createLocked(handlerIdentity));
+            } catch (RuntimeException | Error failure) {
+                owners.remove(handlerIdentity);
+                throw failure;
+            }
+        }
+    }
+
     /**
      * Runtime supplies a unique identity for each logical handler. Re-entry
      * by the same handler is rejected rather than self-deadlocking.
@@ -48,6 +85,10 @@ public final class ActorStateLoans implements AutoCloseable {
         Objects.requireNonNull(handlerIdentity, "handlerIdentity");
         synchronized (monitor) {
             if (closed) return OresFuture.failed(new IllegalStateException("actor state loans closed"));
+            if (epochExhausted) {
+                return OresFuture.failed(new IllegalStateException(
+                        "actor state loan epochs exhausted"));
+            }
             if (!owners.add(handlerIdentity)) {
                 return OresFuture.failed(new IllegalStateException(
                         "handler already holds or awaits a state loan"));
@@ -77,12 +118,24 @@ public final class ActorStateLoans implements AutoCloseable {
     }
 
     private ExclusiveLoan createLocked(Object owner) {
-        if (nextEpoch == Long.MAX_VALUE) {
+        if (epochExhausted || nextEpoch == Long.MAX_VALUE) {
+            epochExhausted = true;
             throw new IllegalStateException("actor state loan epochs exhausted");
         }
         ExclusiveLoan loan = new ExclusiveLoan(owner, ++nextEpoch);
         active = loan;
+        if (nextEpoch == Long.MAX_VALUE) epochExhausted = true;
         return loan;
+    }
+
+    private void failPendingForEpochExhaustionLocked() {
+        if (!epochExhausted) return;
+        while (!pending.isEmpty()) {
+            Pending waiter = pending.removeFirst();
+            owners.remove(waiter.owner);
+            completions.addLast(() -> waiter.future.failFromRuntime(
+                    new IllegalStateException("actor state loan epochs exhausted")));
+        }
     }
 
     private void promoteLocked() {
@@ -133,6 +186,10 @@ public final class ActorStateLoans implements AutoCloseable {
                 // A cancellation after dequeue also loses the grant.
                 if (!waiter.future.completeFromRuntime(loan)) loan.close();
             });
+            // The last representable epoch belongs to this exact active
+            // handler. No future handler can be issued safely, so fail every
+            // remaining waiter now without revoking the active loan.
+            failPendingForEpochExhaustionLocked();
             return;
         }
     }

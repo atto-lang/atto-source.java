@@ -1,0 +1,21 @@
+define class Resource as
+  pub val int id = 7;
+end
+
+fnc consuming_predicate(Resource resource): bool {
+  return false;
+}
+
+fnc borrowed_predicate(borrow Resource resource): bool {
+  return false;
+}
+
+pub fnc main(): void {
+  let Resource resource = new Resource();
+  val int result = match 1 over {
+    on int x when consuming_predicate(resource) { return 1; }
+    on _ { return resource.id; }
+  };
+  stdio.stdout.write(result);
+  return;
+}

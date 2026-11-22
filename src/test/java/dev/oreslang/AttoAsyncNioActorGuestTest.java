@@ -57,7 +57,7 @@ final class AttoAsyncNioActorGuestTest {
                             "atto-nio2-spawned-actor-binary-echo.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
                 } catch (Exception failure) {
-                    throw new RuntimeException(failure);
+                    throw new RuntimeException("real Atto actor over NIO2 guest failed", failure);
                 }
             });
             boolean echoed = false;

@@ -1,4 +1,20 @@
-# `trap`: Option-valued non-throwing callables
+# `trap`: Result-valued non-throwing callables
+
+> **Normative update (2026-11-17, owner decision): `trap` yields `Result`, not `Option`.**
+> - `trap e` with `e: T` has type `Result<T, Error>`. Success is `Ok(v)`. A caught ordinary
+>   failure is `Err(Error)`, a sanitized value: a bounded type name and message, with no host
+>   exception, cause chain or stack.
+> - A `Result` is never wrapped again. With `e: Result<T, E>`, `trap e` has type
+>   `Result<T, E | Error>`, or just `Result<T, E>` when `E` already accepts `Error`. The
+>   value's own `Err(E)` passes through, and a caught failure becomes `Err(Error)`.
+> - Calls to `trap fnc f(): T` have the same type. Async and suspending trap boundaries
+>   settle their Future with it: `Future<Result<T, Error>>`.
+> - `trap await f` spans the suspension. A completed or suspended Future that fails yields
+>   `Err(Error)` (the #2690 decision).
+> - `panic`, `raise`, cancellation, forced termination and VM-fatal failures still bypass
+>   `trap`. `unwrap()` on an `Err` is still a panic.
+>
+> Sections below that mention `Option`, `Some` or `None` describe the previous contract.
 
 This document defines the Oreslang contract for the `trap` callable modifier
 and its interaction with `throw`, `raise`, `panic`, async/Future execution,
@@ -7,7 +23,7 @@ select, actors, and runtime cancellation.
 The central rule is intentionally small:
 
 > A call to a `trap` callable never exposes an ordinary `throw` to its caller.
-> Success is `Some(value)`; an uncaught ordinary throw is `None`.
+> Success is `Ok(value)`; an uncaught ordinary throw is `Err(Error)`.
 
 `raise`, `panic`, runtime cancellation, forced termination, and fatal host
 failures are not ordinary throws and are not converted to `None`.

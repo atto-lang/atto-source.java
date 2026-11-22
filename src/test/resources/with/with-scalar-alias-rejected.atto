@@ -1,0 +1,11 @@
+define type int = string;
+
+define class Box as
+    pub final int x: "not-an-int";
+end
+
+pub routine main(): void {
+    const Box box = new Box();
+    const Box updated = rt copy box with {x => "updated"};
+    return;
+}

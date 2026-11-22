@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>dev.oreslang</groupId>
   <artifactId>oreslang-source</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.0-hotload-SNAPSHOT</version>
   <name>Oreslang</name>
   <description>Oreslang reference implementation on GraalVM Truffle</description>
 
@@ -77,6 +77,12 @@
       </resource>
     </resources>
     <plugins>
+      <!-- Avoid newer default plugin metadata resolution varying by runner/mirror. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
