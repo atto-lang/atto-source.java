@@ -14525,9 +14525,18 @@ public final class OresEvalRootNode extends RootNode {
         private Object base64Decode(List<Object> arguments) {
             requireCrypto("crypto.base64_decode");
             requireOne(arguments, "crypto.base64_decode");
-            byte[] result = CryptoPrimitives.base64Decode(
-                    requireString(arguments.getFirst(), "Base64 input"));
+            String encoded = requireString(arguments.getFirst(), "Base64 input");
+            // Preflight encoded string length before decoding to prevent
+            // enormous boxed List<int> results in small actor heaps.
+            if (encoded.length() > (GUEST_MAX_BYTES * 4L / 3L) + 8L) {
+                throw new IllegalArgumentException("Base64 decoded output exceeds guest budget");
+            }
+            byte[] result = CryptoPrimitives.base64Decode(encoded);
             try {
+                if (result.length > GUEST_MAX_BYTES) {
+                    throw new IllegalArgumentException(
+                            "Base64 decoded output exceeds guest budget");
+                }
                 return guestBytes(result);
             } finally {
                 java.util.Arrays.fill(result, (byte) 0);
