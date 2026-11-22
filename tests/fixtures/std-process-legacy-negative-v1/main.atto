@@ -1,6 +1,6 @@
 // expect-compile-error: legacy ores.std/process must not resolve
 // A new Atto module must not reintroduce the retired Oreslang std namespace.
-import module Process from "ores.std/process";
+import module process from "ores.std/process";
 pub fnc main(): int {
   return 42;
 }
