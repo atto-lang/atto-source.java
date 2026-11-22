@@ -206,6 +206,10 @@ public final class OwnershipChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked ownership class: " + name);
             }
+            // A foreign nominal must not masquerade as a compiler-owned core
+            // owner/loan identity, even behind a qualified namespace import.
+            checker.rejectPreludeForge(name, "linked class binding");
+            checker.rejectPreludeForge(declaration.name(), "linked class origin");
             // A checked actor signature is transport/protocol metadata, not
             // a transferable actor instance. Link it only through an exact
             // named actor import; class imports cannot silently reclassify
