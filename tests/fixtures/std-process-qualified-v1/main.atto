@@ -1,14 +1,14 @@
 // expect-exit: 42
 // Compiled guest contract fixture; this source never spawns an OS process.
-import module Process from "atto.std/process";
+import module process from "atto.std/process";
 pub fnc main(): int {
-  if Process.valid_stdio(Process.command("/usr/bin/echo")) == false then return 1; fi
-  if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 2, 2, 2)) == false then return 2; fi
-  if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 3, 2, 2)) then return 3; fi
-  if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 0, -1, 2)) then return 4; fi
-  if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 0, 2, 3)) then return 5; fi
-  if Process.succeeded(Process.exit_status(0, false)) == false then return 6; fi
-  if Process.succeeded(Process.exit_status(1, false)) then return 7; fi
-  if Process.succeeded(Process.exit_status(0, true)) then return 8; fi
+  if process.valid_stdio(process.command("/usr/bin/echo")) == false then return 1; fi
+  if process.valid_stdio(process.with_stdio(process.command("/usr/bin/echo"), 2, 2, 2)) == false then return 2; fi
+  if process.valid_stdio(process.with_stdio(process.command("/usr/bin/echo"), 3, 2, 2)) then return 3; fi
+  if process.valid_stdio(process.with_stdio(process.command("/usr/bin/echo"), 0, -1, 2)) then return 4; fi
+  if process.valid_stdio(process.with_stdio(process.command("/usr/bin/echo"), 0, 2, 3)) then return 5; fi
+  if process.succeeded(process.exit_status(0, false)) == false then return 6; fi
+  if process.succeeded(process.exit_status(1, false)) then return 7; fi
+  if process.succeeded(process.exit_status(0, true)) then return 8; fi
   return 42;
 }
