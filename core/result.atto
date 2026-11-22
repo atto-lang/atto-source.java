@@ -3,6 +3,15 @@
 // Result operations consume their receiver; compiler must prove exact drops.
 use namespace core;
 define pub module result as
+  // Explicit read-only loan; neither active payload is extracted as owned.
+  pub fnc is_ok_borrowed<T, E>(borrow Result<T, E> input): bool {
+    return input.is_ok();
+  }
+
+  pub fnc is_err_borrowed<T, E>(borrow Result<T, E> input): bool {
+    return input.is_err();
+  }
+
   pub fnc flatten<T, E>(
     Result<Result<T, E>, E> input
   ): Result<T, E> {
