@@ -7,6 +7,9 @@
   components, overlong paths (4096 scalars, 256 components, 255 scalars each),
   Windows DOS device names, drive prefixes, alternate streams, and trailing
   dots. `is_canonical_relative` admits paths without dot components.
+  `normalized_component_start`, `normalized_component_length`, and
+  `normalized_component_scalar` expose the surviving normalized components
+  as offsets into the original codepoint stream, with `.. ` cancellation.
   `is_portable_relative` requires POSIX/Windows agreement and explicitly
   denies backslashes, which otherwise have different semantics by OS.
 - `stdlib/sync.atto` provides pure state-admission logic for mutex queues,
@@ -28,12 +31,12 @@ predicates are not lock acquisition or scheduler ownership. W3C parsing does
 not authenticate span provenance. The trusted runtime must enforce these
 properties, including cancellation, exact-once release and nonblocking wakeup.
 
-`normalized_depth` only returns a **count**, NOT a canonical serialized
-path. A true `Path`/`PathBuf` join/parent/extension API and native I/O provider
+`normalized_depth` returns only a count; component-view APIs expose
+surviving scalar offsets. Neither yields a canonical serialized native path. A true `Path`/`PathBuf` join/parent/extension API and native I/O provider
 remain further implementation milestones.
 
 ## Tests and current evidence
-`tests/fixtures/path_sync_telemetry_v1.atto` contains 22 guest output
+`tests/fixtures/path_sync_telemetry_v1.atto` contains 26 guest output
 vectors, including root escapes, Windows aliases, path ambiguity, waiter
 fairness, permit release on closed semaphore, 32-digit trace IDs and invalid
 headers. `StdPathSyncTelemetryGuestTest.java` tests closed registry/source
