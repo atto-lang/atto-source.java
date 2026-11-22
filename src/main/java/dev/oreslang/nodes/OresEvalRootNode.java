@@ -216,6 +216,7 @@ public final class OresEvalRootNode extends RootNode {
                 callableSlots = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
+        private final Map<String, Ast.ImportDecl> hostFunctionImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
@@ -363,6 +364,9 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' does not export invocable static member '" + sourceName + "'");
                     }
                     String localName = ImportRules.localName(imported, sourceName);
+                    if (hostFunctionImports.putIfAbsent(localName, imported) != null) {
+                        throw new IllegalArgumentException("duplicate Java fnc import " + localName);
+                    }
                     putHostFunction(localName, args -> {
                         context.requireCapability(
                                 IsolatePolicy.Capability.JAVA_INTEROP,
@@ -842,6 +846,7 @@ public final class OresEvalRootNode extends RootNode {
         private void executeActorLifecycleMethod(
                 OresObject object, Ast.MethodDecl method, String hook) {
             Env env = new Env(null, false, declaringClass(method), object);
+            env.instanceMethodOwner = declaringClass(method);
             env.define("self", object, Ast.BindingKind.VAL);
             bindCallableArguments(env, method.parameters(), List.of(), "actor " + hook);
             try {
@@ -1503,6 +1508,7 @@ public final class OresEvalRootNode extends RootNode {
                                         : declarationModules.get(function));
 
                         if (receiver != null) {
+                            params.instanceMethodOwner = declaringClass(method);
                             params.define(
                                     "self",
                                     receiver,
@@ -4686,6 +4692,19 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MemberExpr member) {
+                    if (isImportsMember(member) || isPkgRootMember(member)) {
+                        try {
+                            continuation.accept(task, null,
+                                    isImportsMember(member)
+                                            ? new IllegalArgumentException(
+                                                    "imports::" + member.member() + " is direct-call-only")
+                                            : new IllegalArgumentException(
+                                                    "pkg::" + member.member() + " is direct-call-only"));
+                        } catch (RuntimeException | Error failure) {
+                            continuation.accept(task, null, failure);
+                        }
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             member.receiver(),
@@ -5519,6 +5538,81 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            Ast.CallExpr implicit;
+            try {
+                implicit = implicitSelfMethodCall(call, env);
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+            if (implicit != null) {
+                evalSuspendableCall(task, implicit, env, continuation);
+                return;
+            }
+            try {
+                requireUnqualifiedRootCallNotShadowed(call, env);
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr imported && isImportsMember(imported)) {
+                if (call.origin() != Ast.CallOrigin.DIRECT) {
+                    continuation.accept(task, null, new IllegalArgumentException(
+                            "imports:: callable is direct-call-only"));
+                    return;
+                }
+                try {
+                    namedImportedFnc(imported.member());
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env,
+                        (t, args, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Invocation invocation = prepareExplicitImportInvocation(
+                                        imported.member(), args);
+                                completeSourceInvocation(t, invocation,
+                                        invocationDeclaresAsync(invocation), env, continuation);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
+                return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
+                if (call.origin() != Ast.CallOrigin.DIRECT) {
+                    continuation.accept(task, null, new IllegalArgumentException(
+                            "pkg:: callable is direct-call-only"));
+                    return;
+                }
+                Ast.FunctionDecl fn;
+                try {
+                    fn = pkgRootCallable(pkg.member(), call.arguments().size(), env);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env,
+                        (t, args, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Invocation invocation = functionInvocation(fn, args);
+                                completeSourceInvocation(t, invocation,
+                                        invocationDeclaresAsync(invocation), env, continuation);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
+                return;
+            }
             rejectUnloweredNamedArguments(call.arguments(), "suspendable call");
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
@@ -6757,6 +6851,7 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
             if (!method.isStatic()) {
+                env.instanceMethodOwner = declaringClass(method);
                 env.define("self", receiver, Ast.BindingKind.VAL, declaringClass(method));
             }
             bindCallableArguments(env, method.parameters(), args, "method " + method.name());
@@ -7654,6 +7749,105 @@ public final class OresEvalRootNode extends RootNode {
             return new ArrayList<>(tuple);
         }
 
+        private static boolean isPkgRootMember(Ast.MemberExpr member) {
+            return member.receiver() instanceof Ast.NameExpr root
+                    && root.name().equals(Parser.PKG_ROOT_NAMESPACE);
+        }
+
+        private static boolean isImportsMember(Ast.MemberExpr member) {
+            return member.receiver() instanceof Ast.NameExpr root
+                    && root.name().equals(Parser.IMPORTS_NAMESPACE);
+        }
+
+        private void requireUnqualifiedRootCallNotShadowed(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.NameExpr name)
+                    || env.lookup(name.name()) != Env.MISSING) return;
+            String local = name.name();
+            boolean imported = hostFunctionImports.containsKey(local)
+                    || (namedImports.containsKey(local)
+                        && namedImports.get(local).declaration().kind() == Ast.ImportKind.FUNCTION);
+            if (imported && functions.containsKey(Parser.ROOT_MODULE + "." + local)
+                    && findQualifiedFunction(
+                            Parser.ROOT_MODULE + "." + local, call.arguments().size()) == null) {
+                throw new IllegalArgumentException(
+                        "file-root function '" + local + "' has no matching arity; "
+                                + "use imports::" + local + "(...) for the explicit import");
+            }
+        }
+
+        private ImportedBinding namedImportedFnc(String name) {
+            if (hostFunctionImports.containsKey(name)) return null;
+            ImportedBinding bound = namedImports.get(name);
+            if (bound == null || bound.declaration().kind() != Ast.ImportKind.FUNCTION
+                    || bound.declaration().wildcard()) {
+                throw new IllegalArgumentException(
+                        "imports::" + name + " requires an explicitly named import fnc");
+            }
+            return bound;
+        }
+
+        private Invocation prepareExplicitImportInvocation(String name, List<Object> args) {
+            ImportedBinding bound = namedImportedFnc(name);
+            if (hostFunctionImports.containsKey(name)) {
+                Invokable host = hostFunctions.get(name);
+                if (host == null) throw new IllegalArgumentException(
+                        "imports::" + name + " has no authorized host invocation");
+                return invokableInvocation(host, args);
+            }
+            return importedTarget(bound.declaration()).prepareImportedInvocation(
+                    Ast.ImportKind.FUNCTION, bound.sourceName(), args);
+        }
+
+        private Object explicitImportValue(String name) {
+            throw new IllegalArgumentException(
+                    "imports::" + name + " is direct-call-only; imported function values "
+                            + "require a linked ownership/effect/lifetime signature");
+        }
+
+        private Object pkgRootFunctionValue(String name) {
+            throw new IllegalArgumentException(
+                    "pkg::" + name + " is direct-call-only in this checked profile");
+        }
+
+        private Ast.FunctionDecl pkgRootCallable(String name, int arity, Env env) {
+            if (name.equals("init")) {
+                throw new IllegalArgumentException("pkg::init is a runtime lifecycle hook");
+            }
+            requireExplicitClassCallableImport(env, name);
+            Ast.FunctionDecl fn = findQualifiedFunction(Parser.ROOT_MODULE + "." + name, arity);
+            if (fn == null || fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "pkg::" + name + " has no ordinary file-root callable at arity " + arity);
+            }
+            return fn;
+        }
+
+        /** Resolve only a direct bare call, not an extracted method value. */
+        private Ast.CallExpr implicitSelfMethodCall(Ast.CallExpr call, Env env) {
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr bareState
+                    && bareState.name().equals("handle_state")
+                    && env.instanceMethodOwner() != null
+                    && env.instanceMethodOwner().actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare actor handle_state "
+                                + "cannot resolve to an imported or file-root function");
+            }
+            if (call.origin() != Ast.CallOrigin.DIRECT
+                    || !(call.callee() instanceof Ast.NameExpr name)
+                    || CallableSelector.reservedImplicitReceiverCallName(name.name())
+                    || env.lookup(name.name()) != Env.MISSING) return null;
+            Ast.ClassDecl owner = env.instanceMethodOwner();
+            if (owner == null || env.accessClass() != owner) return null;
+            Object self = env.lookup("self");
+            if (!(self instanceof OresObject receiver)
+                    || !receiver.owner.hasInstanceMethodNamed(
+                            owner, name.name(), classVisitSet())) return null;
+            return call.rewrite(
+                    new Ast.MemberExpr(new Ast.NameExpr("self"), name.name()),
+                    call.typeArguments(), call.typeArgumentsPresent(), call.arguments());
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             CheckedDispatchPlansV1.Plan plan = checkedDispatchPlans.get(call);
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
@@ -7679,41 +7873,22 @@ public final class OresEvalRootNode extends RootNode {
                         arguments -> applyIntegerIntrinsic(integerIntrinsic, arguments),
                         values);
             }
-            // Resolve lexical self using the compiler-linked instance slot.
-            // Do not dynamically search arbitrary runtime receiver members:
-            // that could expose subtype-only methods or imported capabilities.
-            if (call.callee() instanceof Ast.NameExpr unqualified
-                    && env.lexicalContainerClass() != null
-                    && env.accessClass() != null // nlex closures lose receiver authority
-                    && env.lookup(unqualified.name()) == Env.MISSING
-                    && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
-                            "print", "task_context", "task_cancel_requested",
-                            "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
-                Object lexicalSelf = env.lookup("self");
-                if (lexicalSelf instanceof OresObject receiver) {
-                    CallableSelector selector =
-                            CallableSelector.instance(unqualified.name(), call.arguments().size());
-                    Ast.MethodDecl declared = findMethod(env.lexicalContainerClass(), selector);
-                    if (declared != null) {
-                        if (findFunction(unqualified.name(), call.arguments().size()) != null
-                                || namedImports.containsKey(unqualified.name())) {
-                            throw new IllegalArgumentException(
-                                    "ambiguous unqualified call '" + unqualified.name()
-                                            + "': both a self method and a free/imported callable match; "
-                                            + "write self." + unqualified.name() + "(...) or qualify the function");
-                        }
-                        Ast.MethodDecl selected = receiver.owner.findMethod(receiver.klass, selector);
-                        if (selected == null) {
-                            throw new IllegalStateException(
-                                    "linked receiver is missing a lexically checked method slot");
-                        }
-                        receiver.owner.requireClassMemberVisible(
-                                selected.visibility(), receiver.owner.declaringClass(selected),
-                                env.accessClass(), "method", selected.name());
-                        List<Object> args = evaluateArguments(call.arguments(), env);
-                        return receiver.owner.methodInvocation(receiver, selected, args);
-                    }
-                }
+            // A lexical instance family wins before arity and file/import lookup.
+            Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
+            if (implicit != null) return prepareInvocation(implicit, env);
+            requireUnqualifiedRootCallNotShadowed(call, env);
+            if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
+                if (call.origin() != Ast.CallOrigin.DIRECT)
+                    throw new IllegalArgumentException("pkg:: callable is direct-call-only");
+                Ast.FunctionDecl fn = pkgRootCallable(pkg.member(), call.arguments().size(), env);
+                return functionInvocation(fn, evaluateArguments(call.arguments(), env));
+            }
+            if (call.callee() instanceof Ast.MemberExpr imported && isImportsMember(imported)) {
+                if (call.origin() != Ast.CallOrigin.DIRECT)
+                    throw new IllegalArgumentException("imports:: callable is direct-call-only");
+                namedImportedFnc(imported.member());
+                return prepareExplicitImportInvocation(
+                        imported.member(), evaluateArguments(call.arguments(), env));
             }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
@@ -8245,6 +8420,10 @@ public final class OresEvalRootNode extends RootNode {
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
+                if (name.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                        || name.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                    throw new IllegalArgumentException("compiler qualifier cannot be evaluated as a value");
+                }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
@@ -8558,7 +8737,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
+            if (expr instanceof Ast.MemberExpr member) {
+                if (isImportsMember(member)) return explicitImportValue(member.member());
+                if (isPkgRootMember(member)) return pkgRootFunctionValue(member.member());
+                return member(eval(member.receiver(), env), member.member(), env);
+            }
             if (expr instanceof Ast.IndexExpr indexed) {
                 return indexValue(
                         eval(indexed.receiver(), env),
@@ -12273,6 +12456,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Ast.ClassDecl accessClass;
+        // Authenticated lexical method context, not a user-supplied self name.
+        private Ast.ClassDecl instanceMethodOwner;
         // Declaration-origin boundary survives nlex lambdas, which intentionally
         // discard private-member authority but must not acquire file ambient scope.
         private final Ast.ClassDecl lexicalContainerClass;
@@ -12336,6 +12521,9 @@ public final class OresEvalRootNode extends RootNode {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
+            this.instanceMethodOwner =
+                    parent == null || descendantsNonLexical
+                            ? null : parent.instanceMethodOwner;
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
@@ -12352,6 +12540,7 @@ public final class OresEvalRootNode extends RootNode {
         private long scopeEpoch() { return scopeEpoch; }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private Ast.ClassDecl accessClass() { return accessClass; }
+        private Ast.ClassDecl instanceMethodOwner() { return instanceMethodOwner; }
         private Ast.ClassDecl lexicalContainerClass() { return lexicalContainerClass; }
         private String lexicalModule() { return lexicalModule; }
         private boolean isInsideExplicitModule() {

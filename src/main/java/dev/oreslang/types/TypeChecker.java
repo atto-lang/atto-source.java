@@ -106,6 +106,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** Explicit local import fnc aliases only, never wildcard imports. */
+    private final Map<String, Ast.ImportDecl> importedFunctions = new HashMap<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -114,6 +116,9 @@ public final class TypeChecker {
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Compiler-owned lexical instance context, never synthesized from a variable
+    // merely named self (constructors and static methods do not qualify).
+    private Ast.ClassDecl currentInstanceMethodOwner;
     // Only an actual constructor may initialize an otherwise fixed, initially
     // absent class field. Class methods never inherit constructor privileges.
     private Ast.ClassDecl currentConstructorOwner;
@@ -507,6 +512,8 @@ public final class TypeChecker {
 
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
+        Set<String> rootFunctions = new HashSet<>();
+        Set<String> nonFunctionDeclarations = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "task_context", "task_cancel_requested", "And", "Or", "Xor", "BooleanOps",
@@ -519,11 +526,24 @@ public final class TypeChecker {
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
+        Set<String> builtinNames = Set.copyOf(localNames);
 
         for (Ast.ModuleDecl module : program.modules()) {
-            if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
+            if (!module.name().equals(Parser.ROOT_MODULE)) {
+                localNames.add(module.name());
+                nonFunctionDeclarations.add(module.name());
+            }
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    localNames.add(fn.name());
+                    if (module.name().equals(Parser.ROOT_MODULE)) {
+                        rootFunctions.add(fn.name());
+                    } else {
+                        // Only a true root callable may coexist with an import.
+                        // A module-owned declaration does not gain that exception.
+                        nonFunctionDeclarations.add(fn.name());
+                    }
+                }
                 else if (declaration instanceof Ast.ClassDecl klass) {
                     if (SEALED_ACTOR_PROTOCOL_TYPES.contains(klass.name())) {
                         throw new IllegalArgumentException(
@@ -535,9 +555,16 @@ public final class TypeChecker {
                                 klass.name() + " is a sealed HTTP transport type; user classes cannot shadow it");
                     }
                     localNames.add(klass.name());
+                    nonFunctionDeclarations.add(klass.name());
                 }
-                else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
-                else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
+                else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    localNames.add(iface.name());
+                    nonFunctionDeclarations.add(iface.name());
+                }
+                else if (declaration instanceof Ast.FieldDecl field) {
+                    localNames.add(field.name());
+                    nonFunctionDeclarations.add(field.name());
+                }
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     if (SEALED_ACTOR_PROTOCOL_TYPES.contains(alias.name())) {
                         throw new IllegalArgumentException(
@@ -548,6 +575,7 @@ public final class TypeChecker {
                                 "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
                     }
                     localNames.add(alias.name());
+                    nonFunctionDeclarations.add(alias.name());
                 }
             }
         }
@@ -557,8 +585,17 @@ public final class TypeChecker {
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
-                if (localNames.contains(name)) {
-                    throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
+                if (localNames.contains(name)
+                        && !(imported.kind() == Ast.ImportKind.FUNCTION
+                                && !imported.wildcard()
+                                && rootFunctions.contains(name)
+                                && !nonFunctionDeclarations.contains(name)
+                                && !builtinNames.contains(name))) {
+                    throw new IllegalArgumentException(
+                            "imported name '" + name + "' conflicts with a local or builtin name");
+                }
+                if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
+                    importedFunctions.put(name, imported);
                 }
                 // Cross-file imports are opaque to this per-unit typechecker.
                 // Runtime-bearing imports enter the value namespace. Oreslang
@@ -2098,9 +2135,11 @@ public final class TypeChecker {
             }
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousInstanceMethodOwner = currentInstanceMethodOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
+            currentInstanceMethodOwner = method.isStatic() ? null : klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
             Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
@@ -2112,6 +2151,7 @@ public final class TypeChecker {
                 strictCallableReturnSource = previousStrictReturnSource;
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                currentInstanceMethodOwner = previousInstanceMethodOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
             }
@@ -3178,6 +3218,10 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
+            if (name.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                    || name.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                throw new IllegalArgumentException("pkg/imports are compiler qualification-only namespaces");
+            }
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
@@ -3228,7 +3272,10 @@ public final class TypeChecker {
                 rejectUnimportedClassNamespace(classNamespace);
                 return new ClassNamespace(qualifiedClassName(classNamespace));
             }
-            if (importedValues.contains(name.name())) return Unknown.INSTANCE;
+            // File-root callable identity wins when an imported fnc has the
+            // same local spelling; imports::name explicitly selects the import.
+            if (importedValues.contains(name.name())
+                    && !importedFunctions.containsKey(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
                 rejectImplicitClassCallable(name.name());
@@ -3826,51 +3873,67 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
-            // Unqualified instance calls are lexical self calls, never ambient
-            // dynamic lookup. Reuse the exact explicit-self member checker so
-            // ownership, visibility, generics and suspension checks cannot drift.
-            if (call.callee() instanceof Ast.NameExpr unqualified
-                    && currentClassOwner != null && self != null
-                    && env.lookup("self") != null
-                    && env.lookup(unqualified.name()) == null
-                    && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
-                            "print", "task_context", "task_cancel_requested",
-                            "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
-                int implicitArity = fixedCallArity(
-                        call.arguments(), env, generics, self,
-                        "implicit method " + unqualified.name());
-                ResolvedMethod implicit = findMethodTarget(
-                        currentClassOwner, nominalClassType(currentClassOwner),
-                        unqualified.name(), implicitArity, new LinkedHashSet<>());
-                if (implicit != null) {
-                    if (findFunction(unqualified.name(), implicitArity) != null
-                            || importedValues.contains(unqualified.name())) {
-                        throw new IllegalArgumentException(
-                                "ambiguous unqualified call '" + unqualified.name()
-                                        + "': both a self method and a free/imported callable match; "
-                                        + "write self." + unqualified.name() + "(...) or qualify the function");
-                    }
-                    return typeOf(call.rewrite(
-                            new Ast.MemberExpr(new Ast.NameExpr("self"), unqualified.name()),
-                            call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
-                            env, generics, self);
-                }
-            }
-            // A lexical local that shadows an instance method wins, and implicit
-            // self never falls back to the method. Calling a non-callable local
-            // must therefore fail closed instead of typing as Unknown.
-            if (call.callee() instanceof Ast.NameExpr shadowing
-                    && currentClassOwner != null && self != null
-                    && env.lookup("self") != null
-                    && env.lookup(shadowing.name()) != null
-                    && !(typeOf(shadowing, env, generics, self) instanceof Function)
-                    && findMethodTarget(
-                            currentClassOwner, nominalClassType(currentClassOwner),
-                            shadowing.name(), call.arguments().size(), new LinkedHashSet<>()) != null) {
+            // Until compiler-owned sealed-state MIR exists on main, a bare
+            // actor handle_state cannot bind an imported/root function. The
+            // explicit imports::handle_state target remains a different symbol.
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && currentInstanceMethodOwner != null
+                    && currentInstanceMethodOwner.actorKind() != Ast.ActorKind.NONE
+                    && call.callee() instanceof Ast.NameExpr reservedState
+                    && reservedState.name().equals("handle_state")) {
                 throw new IllegalArgumentException(
-                        "local '" + shadowing.name() + "' shadows instance method '" + shadowing.name()
-                                + "' and is not callable; implicit self never falls back past a lexical binding, "
-                                + "write self." + shadowing.name() + "(...)");
+                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare handle_state "
+                                + "requires the compiler-owned current-actor critical loan; "
+                                + "use imports::handle_state(...) for an imported ordinary fnc");
+            }
+            // A direct unqualified call selects the entire *lexical* method
+            // family before arity selection or file-root/import fallback.
+            // The explicit self.method checker enforces all inherited visibility,
+            // generic, actor-turn, loan and suspension requirements.
+            if (currentInstanceMethodOwner != null
+                    && currentClassOwner == currentInstanceMethodOwner
+                    && call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr implicit
+                    && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
+                    && env.lookup(implicit.name()) == null
+                    && env.lookup("self") != null
+                    && !findMethodsByName(
+                            currentInstanceMethodOwner, implicit.name(),
+                            new LinkedHashSet<>()).isEmpty()) {
+                return typeOf(call.rewrite(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                                call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                        env, generics, self);
+            }
+            // A lexical value shadows all method overloads. A non-callable
+            // shadow is an error, not a reason to search another namespace.
+            if (currentInstanceMethodOwner != null
+                    && call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr shadowing
+                    && env.lookup(shadowing.name()) != null
+                    && !CallableSelector.reservedImplicitReceiverCallName(shadowing.name())
+                    && !(typeOf(shadowing, env, generics, self) instanceof Function)
+                    && !findMethodsByName(
+                            currentInstanceMethodOwner, shadowing.name(),
+                            new LinkedHashSet<>()).isEmpty()) {
+                throw new IllegalArgumentException(
+                        "local '" + shadowing.name() + "' shadows an instance method "
+                                + "and is not callable; write self." + shadowing.name() + "(...)");
+            }
+            // Import aliases never become arity fallbacks for a same-name
+            // file-root family. Call imports::name(...) to select the import.
+            if (call.callee() instanceof Ast.NameExpr localName
+                    && env.lookup(localName.name()) == null
+                    && importedFunctions.containsKey(localName.name())
+                    && functions.containsKey(Parser.ROOT_MODULE + "." + localName.name())) {
+                int arity = fixedCallArity(call.arguments(), env, generics, self,
+                        "file-root function " + localName.name());
+                if (findQualifiedFunction(
+                        Parser.ROOT_MODULE + "." + localName.name(), arity) == null) {
+                    throw new IllegalArgumentException(
+                            "file-root callable '" + localName.name() + "' has no matching arity; "
+                                    + "use imports::" + localName.name() + "(...) for the imported binding");
+                }
             }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
@@ -3941,18 +4004,46 @@ public final class TypeChecker {
             if (booleanIntrinsic != null) {
                 return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
             }
+            if (call.callee() instanceof Ast.MemberExpr importedCall
+                    && importedCall.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                if (!importedFunctions.containsKey(importedCall.member())) {
+                    throw new IllegalArgumentException(
+                            "imports::" + importedCall.member()
+                                    + " requires an explicitly named import fnc binding");
+                }
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "imports::" + importedCall.member()
+                                    + " cannot specialize an opaque imported fnc");
+                }
+                fixedCallArity(call.arguments(), env, generics, self,
+                        "imports::" + importedCall.member());
+                return Unknown.INSTANCE;
+            }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
-                    && env.lookup(namespace.name()) == null
-                    && modules.containsKey(namespace.name())) {
-                rejectUnimportedModuleNamespace(namespace.name());
+                    && (namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                            || env.lookup(namespace.name()) == null)
+                    && modules.containsKey(namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                            ? Parser.ROOT_MODULE : namespace.name())) {
+                boolean pkgRoot = namespace.name().equals(Parser.PKG_ROOT_NAMESPACE);
+                String moduleName = pkgRoot ? Parser.ROOT_MODULE : namespace.name();
+                if (pkgRoot && qualifiedCall.member().equals("init")) {
+                    throw new IllegalArgumentException("pkg::init is a lifecycle hook, not a callable");
+                }
+                // pkg:: is not an actor capability: same-file dependencies remain forbidden.
+                rejectUnimportedModuleNamespace(moduleName);
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
-                        "function " + namespace.name() + "." + qualifiedCall.member());
+                        "function " + (pkgRoot ? "pkg::" : moduleName + ".") + qualifiedCall.member());
                 Ast.FunctionDecl target = findQualifiedFunction(
-                        namespace.name() + "." + qualifiedCall.member(),
-                        arity);
+                        moduleName + "." + qualifiedCall.member(), arity);
                 if (target != null) {
+                    if (pkgRoot && target.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "pkg::" + target.name() + " cannot invoke an actor entry point");
+                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
@@ -3960,7 +4051,8 @@ public final class TypeChecker {
                                         + "' cannot be synchronously invoked from another actor turn; "
                                         + "use mailbox-oriented actor composition");
                     }
-                    String label = "function " + namespace.name() + "." + qualifiedCall.member();
+                    String label = "function " + (pkgRoot ? "pkg::" : moduleName + ".")
+                            + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     Type result = checkGenericCallable(
                             target.genericParameters(),
@@ -3975,6 +4067,11 @@ public final class TypeChecker {
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
                     return trappedCallableResult(target.trapped(), target.async(), target.suspends(), target.generator(), result);
+                }
+                if (pkgRoot) {
+                    throw new IllegalArgumentException(
+                            "pkg::" + qualifiedCall.member()
+                                    + " has no file-root function/routine at arity " + arity);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr bytesCall
@@ -5184,6 +5281,16 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace
+                    && (namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                            || namespace.name().equals(Parser.IMPORTS_NAMESPACE))) {
+                // Neither namespace grants an arbitrary callback value. An
+                // imported fnc has no linked lifetime/effect signature yet.
+                throw new IllegalArgumentException(
+                        (namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                                ? "pkg::" : "imports::")
+                                + member.member() + " is direct-call-only");
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")

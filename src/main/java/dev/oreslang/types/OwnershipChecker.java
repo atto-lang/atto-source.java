@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
@@ -88,6 +89,7 @@ public final class OwnershipChecker {
     private final Set<Ast.ClassDecl> linkedClassLayouts =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<String> modules = new HashSet<>();
+    private final Set<String> importedFncs = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
@@ -96,6 +98,8 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    // Only the compiler's actual instance-method frame may bind implicit self.
+    private Ast.ClassDecl currentInstanceMethodOwner;
     private final List<String> copyWarnings = new ArrayList<>();
     /** Opt-in in-pass trace; never permits guest code emission. */
     private BorrowMirAuditV1.Collector borrowMirAudit;
@@ -246,6 +250,13 @@ public final class OwnershipChecker {
     }
 
     private void index(Ast.Program program) {
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
+                for (String source : imported.names()) {
+                    importedFncs.add(dev.oreslang.imports.ImportRules.localName(imported, source));
+                }
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
@@ -453,8 +464,14 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            Ast.ClassDecl previousInstanceOwner = currentInstanceMethodOwner;
+            currentInstanceMethodOwner = method.isStatic() ? null : klass;
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentInstanceMethodOwner = previousInstanceOwner;
+                scope.close();
+            }
         }
     }
 
@@ -1635,6 +1652,13 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr qualifier
+                    && (qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
+                            || qualifier.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE))) {
+                throw error((qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
+                        ? "imports::" : "pkg::")
+                        + member.member() + " is direct-call-only without a checked callable value ABI");
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -2154,6 +2178,81 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.origin() == Ast.CallOrigin.DIRECT
+                && currentInstanceMethodOwner != null
+                && currentInstanceMethodOwner.actorKind() != Ast.ActorKind.NONE
+                && call.callee() instanceof Ast.NameExpr stateCall
+                && stateCall.name().equals("handle_state")) {
+            throw error("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare handle_state "
+                    + "must use a compiler-owned actor-critical loan, never a free/imported fnc");
+        }
+        if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)) {
+            if (!importedFncs.contains(qualified.member())) {
+                throw error("imports::" + qualified.member()
+                        + " requires an explicitly named import fnc binding");
+            }
+            if (call.typeArgumentsPresent()) {
+                throw error("imports::" + qualified.member()
+                        + " cannot specialize an opaque imported fnc");
+            }
+            // The other source unit's effects and parameter lifetimes are not
+            // yet linked. An active borrow or MutexGuard cannot escape.
+            checkSuspensionBorrows(scope, "call imports::" + qualified.member());
+            for (Ast.Expr arg : call.arguments()) {
+                ValueInfo passed = checkExpr(arg, scope, true);
+                if (isBorrowValue(passed) || passed.borrowSource != null
+                        || containsMutexGuardType(passed.type)) {
+                    throw error("imports::" + qualified.member()
+                            + " cannot transfer a borrow or MutexGuard without a linked lifetime ABI");
+                }
+            }
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE)) {
+            if (qualified.member().equals("init")) {
+                throw error("pkg::init is a lifecycle hook and cannot be called");
+            }
+            Ast.FunctionDecl fn = findFunction(
+                    dev.oreslang.parser.Parser.ROOT_MODULE + "." + qualified.member(),
+                    syntacticCallArgumentTypes(call.arguments(), scope).size());
+            if (fn == null || fn.actorKind() != Ast.ActorKind.NONE) {
+                throw error("pkg::" + qualified.member()
+                        + " has no ordinary file-root callable at this arity");
+            }
+            CallSignature signature = specializeCall(
+                    fn.genericParameters(), fn.genericParameters(),
+                    fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+            if (fn.suspends() && !fn.generator()) {
+                checkSuspensionBorrows(scope, "suspends call pkg::" + qualified.member());
+            }
+            checkArguments(call.arguments(), signature.parameters(), scope,
+                    "function pkg::" + qualified.member());
+            Ast.TypeRef result = callableResultType(
+                    signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
+            return new ValueInfo(result, kindOfType(result), null);
+        }
+        // Resolve names in the same order as TypeChecker: a lexical local
+        // wins, then the *entire* implicit receiver method family, only then
+        // file/import callables. Do not let wrong arity fall through.
+        if (currentInstanceMethodOwner != null
+                && call.origin() == Ast.CallOrigin.DIRECT
+                && call.callee() instanceof Ast.NameExpr implicit
+                && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
+                && scope.lookup(implicit.name()) == null
+                && scope.lookup("self") != null
+                && hasMethodNamed(
+                        currentInstanceMethodOwner, implicit.name(),
+                        new LinkedHashSet<>())) {
+            return checkCall(
+                    call.rewrite(
+                            new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                            call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                    scope);
+        }
         if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                 && call.callee() instanceof Ast.LambdaExpr lambda) {
             int arity = lambda.parameters().size();
@@ -4364,6 +4463,20 @@ public final class OwnershipChecker {
                 }
             }
         } else if (expr instanceof Ast.CallExpr e) {
+            // Original AST still has a bare name. A closure that invokes it
+            // captures the same borrowed self as an explicit self.method().
+            if (currentInstanceMethodOwner != null
+                    && e.origin() == Ast.CallOrigin.DIRECT
+                    && e.callee() instanceof Ast.NameExpr implicit
+                    && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
+                    && !locals.contains(implicit.name())
+                    && outer.lookup(implicit.name()) == null
+                    && hasMethodNamed(
+                            currentInstanceMethodOwner, implicit.name(),
+                            new LinkedHashSet<>())) {
+                scanExpr(new Ast.NameExpr("self"),
+                        locals, outer, recursiveBinding, captures, false);
+            }
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.SpreadExpr e) {

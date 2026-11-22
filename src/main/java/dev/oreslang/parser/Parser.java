@@ -10,6 +10,9 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
+    // '$' cannot appear in source identifiers; only parser can mint these namespaces.
+    public static final String PKG_ROOT_NAMESPACE = "$pkg_root$";
+    public static final String IMPORTS_NAMESPACE = "$imports$";
 
     public enum AttoCallableVersion { V1, V2 }
 
@@ -6565,10 +6568,19 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT, DOUBLE_COLON)) {
-                // Two explicit qualified-member spellings, one binding and
-                // evaluation path; no dynamic symbol lookup or macro rewrite.
+                Token.Type qualifier = previous().type();
                 String member = consumeMemberName();
-                expr = new Ast.MemberExpr(expr, member);
+                if (qualifier == DOUBLE_COLON && expr instanceof Ast.NameExpr namespace) {
+                    if (namespace.name().equals("pkg")) {
+                        expr = new Ast.MemberExpr(new Ast.NameExpr(PKG_ROOT_NAMESPACE), member);
+                    } else if (namespace.name().equals("imports")) {
+                        expr = new Ast.MemberExpr(new Ast.NameExpr(IMPORTS_NAMESPACE), member);
+                    } else {
+                        expr = new Ast.MemberExpr(expr, member);
+                    }
+                } else {
+                    expr = new Ast.MemberExpr(expr, member);
+                }
             } else if (expr instanceof Ast.NameExpr name
                     && check(LBRACE) && isLocalTypeName(name.name())) {
                 expr = parseLocalAggregateConstructor(name.name());
