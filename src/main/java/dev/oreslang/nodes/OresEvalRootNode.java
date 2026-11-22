@@ -59,6 +59,7 @@ public final class OresEvalRootNode extends RootNode {
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
+    public static final String INVOKE_ROOT_PUBLIC_COMMAND = "__atto_internal_invoke_root_public__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
@@ -121,6 +122,13 @@ public final class OresEvalRootNode extends RootNode {
                 try { return current.executeMain(new Object[0], true); }
                 catch (ProcessExitSignal exit) { return exit.exitStatus(); }
             });
+        }
+        if (arguments.length >= 2
+                && INVOKE_ROOT_PUBLIC_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof String functionName) {
+            current.link();
+            return context.runRootMain(() -> current.invokePublic(functionName,
+                    java.util.Arrays.copyOfRange(arguments, 2, arguments.length)));
         }
         if (arguments.length >= 2
                 && INVOKE_PUBLIC_COMMAND.equals(arguments[0])

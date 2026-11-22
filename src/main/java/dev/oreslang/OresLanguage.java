@@ -144,6 +144,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
         return singleThreaded
+                || dev.oreslang.runtime.HotReloadManager.isManagedEntryThread(thread)
                 || ActorRuntime.isActorCarrierThread()
                 || AsyncRuntime.isAsyncCarrierThread()
                 || OresScheduler.isSchedulerCarrierThread();
