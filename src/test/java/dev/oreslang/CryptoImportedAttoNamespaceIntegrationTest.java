@@ -94,6 +94,25 @@ final class CryptoImportedAttoNamespaceIntegrationTest {
                     stdio.println("OVERLONG-HKDF-ACCEPTED");
                     return;
                   fi
+                  // The same imported namespace must also dispatch to the
+                  // vetted JCA host while pure policy bodies run in Atto.
+                  val digest = crypto.sha256([97, 98, 99]);
+                  if digest.size neq 32 then
+                    stdio.println("HASH-HOST-DISPATCH-FAILED");
+                    return;
+                  fi
+                  val key = crypto.aead_new_key(1);
+                  val sealed = crypto.aead_seal(key, [1], [65, 66, 67]);
+                  if sealed.is_err() then
+                    stdio.println("AEAD-HOST-SEAL-FAILED");
+                    return;
+                  fi
+                  val opened = crypto.aead_open(key, [1], sealed.unwrap());
+                  if opened.is_err() then
+                    stdio.println("AEAD-HOST-OPEN-FAILED");
+                    return;
+                  fi
+                  crypto.aead_close(key);
                   stdio.println("CRYPTO_STDLIB_ATTO_LINK_PASS");
                   return;
                 }
