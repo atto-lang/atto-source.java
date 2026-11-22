@@ -46,7 +46,7 @@ public final class CoreLibrarySources {
             "http_wire", "actor_persistence");
 
     private static final Set<String> STD_SOURCES = Set.of(
-            "core.atto", "testing.ores", "assert.atto", "trace.atto", "telemetry.atto",
+            "core.atto", "testing.ores", "assert.atto", "trace.atto", "telemetry.atto", "path.atto", "sync.atto",
             "http_wire.atto", "compute.atto", "db_pool.atto",
             "actor_persistence.atto", "data_pool.ores", "otp/supervisor.ores", "bounds.atto", "text.atto");
 
