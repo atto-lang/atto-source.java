@@ -52,6 +52,8 @@ public final class AsyncNioUdp {
         private final OresContext context;
         private final UdpDatagramKernel kernel;
         private final AtomicBoolean closed = new AtomicBoolean();
+        private final AtomicBoolean descriptorClosed = new AtomicBoolean();
+        private final AtomicBoolean unregistered = new AtomicBoolean();
         // A UDP datagram is one indivisible operation. A single in-flight
         // operation also honors the VM NioReadinessGroup one-watch-per-channel
         // contract, preventing lost and cross-actor readiness notifications.
@@ -138,6 +140,23 @@ public final class AsyncNioUdp {
         @FunctionalInterface
         private interface NonblockingStep<T> { T tryOnce() throws IOException; }
 
+        // Unregistration is a physical-retirement receipt, not merely a
+        // user-visible cancellation flag. A cancelled Future can be terminal
+        // while a reactor callback is still inside its final permission or
+        // syscall step. Keep the registered handle pinned until both descriptor
+        // closure and physical operation completion have occurred.
+        private void retireIfIdle() {
+            if (descriptorClosed.get() && !operating.get()
+                    && unregistered.compareAndSet(false, true)) {
+                context.nativeIo().unregister(this);
+            }
+        }
+
+        private void releaseOperation() {
+            operating.set(false);
+            retireIfIdle();
+        }
+
         private <T> OresFuture<T> operate(int interest, NonblockingStep<T> attempt) {
             try {
                 checkLive("udp.io");
@@ -160,7 +179,7 @@ public final class AsyncNioUdp {
                 final class Retry {
                     void complete(T value, Throwable failure) {
                         if (!finished.compareAndSet(false, true)) return;
-                        if (!stepping.get()) operating.set(false);
+                        if (!stepping.get()) releaseOperation();
                         if (failure != null) callback.reject(failure);
                         else callback.resolve(value);
                     }
@@ -202,7 +221,7 @@ public final class AsyncNioUdp {
                         } finally {
                             stepping.set(false);
                             if (finished.get()) {
-                                operating.set(false);
+                                releaseOperation();
                             } else if (retryRequested.getAndSet(false)) {
                                 tick();
                             }
@@ -228,7 +247,7 @@ public final class AsyncNioUdp {
                     }
                     // Never free the operation slot while physical I/O may
                     // still be running. Its finally block owns retirement.
-                    if (!stepping.get()) operating.set(false);
+                    if (!stepping.get()) releaseOperation();
                 }
             });
         }
@@ -251,10 +270,15 @@ public final class AsyncNioUdp {
 
         @Override public void close() throws IOException {
             if (!closed.compareAndSet(false, true)) return;
-            // Close forces the readiness watch to fail, and the asynchronous
-            // operation will reject rather than publish packet bytes later.
-            context.nativeIo().unregister(this);
-            kernel.close();
+            // Close physically fences the descriptor immediately, but do not
+            // unregister/reclaim the native resource while a selector callback
+            // still holds the owning operation slot.
+            try {
+                kernel.close();
+            } finally {
+                descriptorClosed.set(true);
+                retireIfIdle();
+            }
         }
     }
 }
