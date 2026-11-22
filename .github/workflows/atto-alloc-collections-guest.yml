@@ -55,12 +55,13 @@ jobs:
             mapGuestExecutesCollisionsTombstonesAndQuota \
             allocImportRegistryHasStableCanonicalIdentityAndRejectsTraversal \
             canonicalAllocImportsActuallyLinkAndExecuteAllGuestCollections \
+            canonicalAndLegacyAllocAliasesLinkOnePhysicalUnit \
             unknownReservedAllocModuleCannotFallBackToProjectFilesystem
           do
             grep -F "name=\"$testname\"" "$report"
           done
           grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
-          echo 'ATTO_ALLOC_JAVA_GUEST=EXECUTED 7/7 methods, 3/3 canonical guests'
+          echo 'ATTO_ALLOC_JAVA_GUEST=EXECUTED 8/8 methods, 3/3 canonical guests'
       - name: Preserve evidence boundary
         if: always()
         run: |
