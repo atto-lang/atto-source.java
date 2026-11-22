@@ -70,6 +70,34 @@ final class SqliteDurableActorStoreTest {
     }
 
     @Test
+    void duplicateDeliveryIdMustBindOriginalBytesBeforeAndAfterConsumption() throws Exception {
+        try (var store = SqliteDurableActorStore.open(database())) {
+            store.bootstrap(A, snapshot(0, 0));
+            DurableActorStore.Inbound original = new DurableActorStore.Inbound(
+                    "command-1", new byte[] {1, 2, 3});
+            DurableActorStore.Inbound conflict = new DurableActorStore.Inbound(
+                    "command-1", new byte[] {1, 2, 4});
+            assertTrue(store.enqueue(A, original));
+            assertFalse(store.enqueue(A, original));
+            assertThrows(IllegalStateException.class, () -> store.enqueue(A, conflict));
+            long epoch = store.activate(A).epoch();
+            assertFalse(store.enqueueFenced(A, epoch, original));
+            assertThrows(IllegalStateException.class,
+                    () -> store.enqueueFenced(A, epoch, conflict));
+            assertEquals(1L, store.commitTurn(turn(epoch, 0, "command-1", List.of())));
+            assertFalse(store.enqueue(A, original));
+            assertThrows(IllegalStateException.class, () -> store.enqueue(A, conflict));
+            assertFalse(store.enqueueFenced(A, epoch, original));
+            assertThrows(IllegalStateException.class,
+                    () -> store.enqueueFenced(A, epoch, conflict));
+            assertEquals(1, store.activate(A).snapshot().stateVersion());
+            assertThrows(IllegalStateException.class,
+                    () -> store.enqueueFenced(A, epoch, original),
+                    "stale epoch must be checked before matching duplicate ID");
+        }
+    }
+
+    @Test
     void staleActivationCannotCommitAcknowledgeOrHibernate() throws Exception {
         try (var oldStore = SqliteDurableActorStore.open(database());
              var newStore = SqliteDurableActorStore.open(database())) {
