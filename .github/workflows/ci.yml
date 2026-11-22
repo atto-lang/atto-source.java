@@ -45,6 +45,26 @@ jobs:
           native-image --version
       - name: Verify JIT/JVM profile
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Execute linked core ownership guest tests on exact Java head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=CoreFourGuestTest -DfailIfNoTests=true test
+          report='target/surefire-reports/TEST-dev.oreslang.CoreFourGuestTest.xml'
+          test -s "$report"
+          for method in importsLinkAndGuestExecutesExactI64Vectors \
+                        importedCoreCellCannotBypassCompilerOwnershipChecks \
+                        coreImportsAreCompilerOwnedAndAliasToOneUnit \
+                        coreModulesParseAndTypecheck \
+                        requiresFalseRemainsTrappableInGuestExecution; do
+            grep -F "name=\"$method\"" "$report"
+          done
+          grep -F 'skipped="0"' "$report"
+          grep -Eq 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
+          echo 'JAVA_CORE_BORROW_GUEST=EXECUTED; AOT=NOT_EXECUTED'
       - name: Run showcase
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
       - name: Adversarial receipt-gate selftest (source-free, not a guest pass)
