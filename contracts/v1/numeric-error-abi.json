@@ -28,6 +28,17 @@
         "Math.abs",
         "Math.neg"
       ]
+    },
+    {
+      "type": "DivisionByZeroError",
+      "code": 65538,
+      "hex": "0x00010002",
+      "parent": "Error",
+      "default_checked": true,
+      "operations": [
+        "i64.div",
+        "i64.rem"
+      ]
     }
   ],
   "rules": {
@@ -45,6 +56,7 @@
   "notes": [
     "This registry defines cross-backend error identity only. It does not standardize a stack-unwinding implementation.",
     "Backends without a verified guest Error/effect ABI may retain a fail-closed trap for overflow, but must not claim typed ArithmeticOverflowError parity until catch/trap/effect behavior is proven.",
-    "The 65537 assignment preserves the existing Java/Graal branch identity and prevents other backends from inventing incompatible numeric error codes."
+    "The 65537 assignment preserves the existing Java/Graal branch identity and prevents other backends from inventing incompatible numeric error codes.",
+    "DivisionByZeroError is distinct from ArithmeticOverflowError; never recode division by zero as overflow or let host ArithmeticException escape."
   ]
 }
