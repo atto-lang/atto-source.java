@@ -159,6 +159,11 @@ final class ImportGraph {
             boolean matchedFunctionFamily = false;
             for (Ast.Decl decl : module.declarations()) {
                 boolean matched = switch (kind) {
+                    case CONST -> decl instanceof Ast.FieldDecl field
+                            && field.visibility() == Ast.Visibility.PUBLIC
+                            && field.bindingKind() == Ast.BindingKind.CONST
+                            && !field.mutableReferent()
+                            && field.name().equals(name);
                     case FUNCTION -> decl instanceof Ast.FunctionDecl fn
                             && fn.visibility() == Ast.Visibility.PUBLIC
                             && fn.kind() == Ast.CallableKind.FNC
