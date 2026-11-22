@@ -306,7 +306,7 @@ final class TelemetrySpanScopeTest {
         }
     }
     @Test
-    void otelStyleEventsAreBoundedOwnerCheckedAndNeverPersistAfterClose() {
+    void otelStyleEventsAreBoundedOwnerCheckedAndImmutableAfterClose() {
         TelemetrySpanScope.enableExistingSites(100, 10_000, "otel.");
         TraceContext previous = TraceContext.install(PARENT);
         try (TelemetrySpanScope scope = TelemetrySpanScope.open("otel.checkout")) {
