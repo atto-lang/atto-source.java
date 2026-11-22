@@ -99,3 +99,44 @@ Java `Atomic<int>` currently has existing local guest coverage. This core
 module validates memory-order parameters only; no newly ordered atomic load,
 store, CAS, hardware fence, untrusted cross-actor sharing, or fully sealed
 AOT-lowered guest capability is implemented by this change.
+
+## 2026-11-22 ordered AtomicI64Cell runtime hardening
+
+The existing real Java `AtomicI64Cell` guest backing primitive now has
+validated overloads for memory orders encoded by `core/atomic.atto`:
+0 relaxed, 1 acquire, 2 release, 3 acq_rel and 4 seq_cst.
+`load(order)` uses `getOpaque/getAcquire/get` for admitted orders;
+`store(value,order)` uses `setOpaque/setRelease/set`. RMW and
+strong compare-exchange conservatively strengthen all admitted modes
+to sequential consistency and still use checked arithmetic with no
+overflow publication. Illegal order/arity is rejected before an atomic.
+
+Six new `AtomicI64CellTest` JUnit methods cover invalid loads/stores,
+RMW result values, illegal CAS failure orderings, checked overflow,
+release/acquire publication and contended increments. The
+`CoreMemoryPolicyGuestTest` also has additional real linked-guest
+boundary test *definitions* for mem overflow, pointer one-past-end,
+and CAS-order policy. Java guest `Atomic<T>` methods still accept
+only their existing default sequentially consistent arities: explicit
+order arguments are intentionally rejected by the TypeChecker pending
+real typed/evaluated guest lowering.
+
+**Local separate JDK21 algorithm smoke test** (not a reconstruction of
+the repository's exact source blobs) executed successfully: ordered
+load/store/CAS validation, failed-mode no publication, overflow trap,
+release/acquire publication and 80,000 contended increments. This is
+not compiled Atto guest, GraalVM Native Image or exact-head JUnit
+evidence. Current Java PR Actions on intermediate heads have
+runner-admission/zero-step failures; the exact newest head still needs
+real executed JDK25/Graal compiler and guest CI.
+
+**Open overlapping import PR:** [Java #1416](https://github.com/atto-lang/atto-source.java/pull/1416)
+implements `atto.core/*` and `atto.std/*` identity-preserving aliases
+and touches `CoreLibrarySources.java`. This branch currently registers
+the new resources under `ores.core/*`. Incorporate #1416's unique
+alias behavior without discarding newer main changes before any merge;
+do not assert `atto.core/mem` has been compiler-verified yet.
+
+This library work must not enable raw `Pointer<T>` guest operations
+until the contradictory pointer specs #18 and #154 are reconciled and
+backend ownership/tenant/generation/lifetime proofs execute.
