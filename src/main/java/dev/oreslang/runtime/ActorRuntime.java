@@ -11372,18 +11372,19 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "nested actor carrier admission would overwrite the current actor context");
             }
-            // Mint before touching any ThreadLocal: this code is outside the
-            // try/finally that clears them, so a failure here must leave the
-            // carrier exactly as clean as the nested-admission check does.
+            // Mint before touching either ThreadLocal. Failures in minting
+            // must leave the carrier clean; publication itself belongs inside
+            // the cleanup scope so even a failed ThreadLocal.set cannot strand
+            // actor authority on a reused worker.
             ActorExecutionContext entered = new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), ref.generation(), kind, policy, executionDomain,
                     codeImage, codeActorType,
                     mintActorExecutionContext(storageActorOrdinal, ref.generation()));
-            currentActor.set(this);
-            CURRENT_ACTOR_EXECUTION.set(entered);
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
+                currentActor.set(this);
+                CURRENT_ACTOR_EXECUTION.set(entered);
                 // Admission may throw on a single-writer lease violation.
                 // The carrier's actor identity must still be cleared.
                 turnActive = beginTurn();
