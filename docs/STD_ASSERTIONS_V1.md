@@ -13,7 +13,7 @@ Legacy stdlib/assert.atto (Assert methods returning bool/rt fail) and stdlib/tes
 
 Closed source registry additions and Maven resource packaging are present. This is not proof that pkg "std.assert" resolves; the Java compiler still needs static package binding, permitted keyword member exports (true/false), generic Eq type checking, checked Error effect lowering, and typed catch/reporting in atto test. The assertion source and authored guest fixtures are NOT_EXECUTED, not guest passes.
 
-Run a SOURCE-ONLY lexical guard: python3 -m unittest discover -s tests -p test_assertions_source_only.py. Passing it verifies expected text, not compiler execution. Real guest pass and failure tests under interpreter/AOT/optimization and actor-isolation tests remain mandatory.
+Run a SOURCE-ONLY lexical guard: node --test tests/assertions_source_contract.test.mjs. Passing it verifies expected text, not compiler execution. Real guest pass and failure tests under interpreter/AOT/optimization and actor-isolation tests remain mandatory.
 
 Related work to reconcile: atto-spec#114, atto-source.rs#401, atto-source.java#1365 and #1394 (native test harness), atto-common-source#90 (eight-module ledger), atto-source.llvm#305/#317/#605 (independent assertion and testing candidates).
 
