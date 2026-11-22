@@ -84,6 +84,48 @@ final class AttoAsyncUdpGuestTest {
         }
     }
 
+    @Test void udpRejectsOutOfRangeGuestByteWithoutSending() {
+        String badPayload = """
+                pub async routine main(): int {
+                  val socket = await network.bind_udp("127.0.0.1", 0);
+                  val port = socket.local_port();
+                  await socket.send_to(port, [256]);
+                  await socket.close();
+                  return 0;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(badPayload));
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .arguments(OresLanguage.ID, new String[] {"--ores-capabilities=NETWORK"})
+                .build()) {
+            assertThrows(org.graalvm.polyglot.PolyglotException.class, () ->
+                context.eval(Source.newBuilder(OresLanguage.ID, badPayload,
+                        "udp-bad-octet.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).build()));
+        }
+    }
+
+    @Test void udpRejectsNonNumericHostDespiteNetworkCapability() {
+        String host = """
+                pub async routine main(): void {
+                  val socket = await network.bind_udp("localhost", 0);
+                  await socket.close();
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(host));
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .arguments(OresLanguage.ID, new String[] {"--ores-capabilities=NETWORK"})
+                .build()) {
+            assertThrows(org.graalvm.polyglot.PolyglotException.class, () ->
+                context.eval(Source.newBuilder(OresLanguage.ID, host,
+                        "udp-nonnumeric-host.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).build()));
+        }
+    }
+
     @Test void udpRejectsStringReceiveCapacityAtTypecheck() {
         String bad = """
                 pub async routine main(): void {
