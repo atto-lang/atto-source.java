@@ -105,3 +105,37 @@ GitHub source-org jobs have no runner steps. This is a draft and may require
 compiler work before the tests can pass. Callback type/effect capture, move,
 exception propagation and deterministic active-variant disposal require
 independent hardening rather than assuming generic source compatibility.
+
+## Borrow checking in core: no affine extraction from a loan
+
+The native `.atto` helpers are **not permitted to turn an immutable loan into
+an owned affine payload**. An unadorned `Option<T>` / `Result<T,E>` helper
+parameter is not by itself proof of consuming ownership, particularly as
+implicit borrowing is introduced for more aggregate parameter categories.
+Until the compiler proves the required consuming mode for generic sum
+adapters, do not promote `flatten`, `transpose`, `map`, `and_then`,
+`zip_with`, `to_option`, `err_option` or `unwrap_or_else` for affine
+payloads merely because scalar guests pass.
+
+The new `CoreOptionResultBorrowSafetyTest` exercises the **actual Java
+Parser, OwnershipChecker, TypeChecker and compiler entrypoint**, matching
+the already established `BorrowedSumExtractionOwnershipTest` behavior:
+read-only `is_some/is_none/is_ok` and Copy scalar reads must remain
+admissible; returning an owned `Box` through a borrowed nested `Option`,
+borrowed `Result`, `unwrap_safe` or `unwrap_or` must be rejected with
+the specific affine-borrow diagnostic. Parser exceptions alone are not
+accepted as a safety proof. The new test suite has not yet executed on a
+stepful runner.
+
+**Remaining compiler implementation:** type-check the *resolved generic
+helper's consuming formal*, enforce `take!` or an equivalent explicit
+verified carrier ownership mode when moving a non-Copy payload; preserve
+all live loan CFG facts across match arms, callback invocation, exceptional
+return and drop; verify `zip_with(None, Some(affine))` drops the right-hand
+unused owner exactly once. Where these rules are not proven, reject the
+generic instantiation rather than silently permitting it. Use
+`borrow! value` for explicit scoped read loans (the legacy `rt borrow`
+alias remains compatible); loans never authorize move, drop or share.
+Keep equivalent semantics across all eleven Atto backend implementations,
+with independent backend-owned source and capability-specific fail-closed
+coverage.
