@@ -192,23 +192,12 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
         Objects.requireNonNull(a, "address");
         Objects.requireNonNull(message, "message");
         checkBytes(message.payload());
-        return transaction(() -> {
-            try (PreparedStatement q = db.prepareStatement("""
-                    INSERT OR IGNORE INTO durable_inbox
-                    (tenant,workflow,run,node,delivery_id,payload)
-                    VALUES (?,?,?,?,?,?)""")) {
-                bind(q, a);
-                q.setString(5, message.deliveryId());
-                q.setBytes(6, message.payload());
-                return q.executeUpdate() == 1;
-            }
-        });
+        return transaction(() -> insertInbound(a, message));
     }
 
     /**
-     * Fenced actor-origin admission. Unlike external enqueue(), this rejects
-     * messages from an actor incarnation already replaced by a supervisor.
-     * The fence check and INSERT share a BEGIN IMMEDIATE transaction.
+     * Fenced actor-origin admission. Old epochs MUST fail before the
+     * idempotency lookup, even for an identical already-consumed delivery.
      */
     @Override
     public synchronized boolean enqueueFenced(Address a, long epoch, Inbound message) {
@@ -218,16 +207,42 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
         checkBytes(message.payload());
         return transaction(() -> {
             requireActiveRow(a, epoch, null);
-            try (PreparedStatement q = db.prepareStatement("""
-                    INSERT OR IGNORE INTO durable_inbox
-                    (tenant,workflow,run,node,delivery_id,payload)
-                    VALUES (?,?,?,?,?,?)""")) {
-                bind(q, a);
-                q.setString(5, message.deliveryId());
-                q.setBytes(6, message.payload());
-                return q.executeUpdate() == 1;
-            }
+            return insertInbound(a, message);
         });
+    }
+
+    /**
+     * The same delivery ID MUST bind the same original bytes for the entire
+     * retention period, regardless of whether its turn was already consumed.
+     * Conflict resolution runs inside the caller's BEGIN IMMEDIATE transaction.
+     */
+    private boolean insertInbound(Address a, Inbound message) throws SQLException {
+        byte[] incoming = message.payload();
+        try (PreparedStatement q = db.prepareStatement("""
+                INSERT INTO durable_inbox
+                (tenant,workflow,run,node,delivery_id,payload)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(tenant,workflow,run,node,delivery_id) DO NOTHING""")) {
+            bind(q, a);
+            q.setString(5, message.deliveryId());
+            q.setBytes(6, incoming);
+            int changed = q.executeUpdate();
+            if (changed == 1) return true;
+            if (changed != 0) throw new IllegalStateException("invalid inbox insertion count");
+        }
+        try (PreparedStatement q = db.prepareStatement("""
+                SELECT payload FROM durable_inbox
+                WHERE tenant=? AND workflow=? AND run=? AND node=? AND delivery_id=?""")) {
+            bind(q, a);
+            q.setString(5, message.deliveryId());
+            try (ResultSet existing = q.executeQuery()) {
+                if (!existing.next())
+                    throw new IllegalStateException("missing duplicate inbox record");
+                if (!MessageDigest.isEqual(incoming, existing.getBytes(1)))
+                    throw new IllegalStateException("DURABLE_DELIVERY_ID_PAYLOAD_CONFLICT");
+            }
+        }
+        return false;
     }
 
     /**
