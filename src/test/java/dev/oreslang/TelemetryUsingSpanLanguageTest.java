@@ -219,6 +219,39 @@ final class TelemetryUsingSpanLanguageTest {
         }
     }
 
+    @Test
+    void hostFlagSwitchesExistingCompiledGuestSpanSitesWithoutRestartOrJit() throws Exception {
+        String program = """
+                async fnc tick(): int {
+                  rt cooperate;
+                  return 1;
+                }
+                pub async fnc main(): void {
+                  using telemetry.span("switch.checkout") as span {
+                    val int ready = await tick();
+                    stdio.println(span.recording());
+                  }
+                  return;
+                }
+                """;
+        TelemetrySpanScope.disableExistingSites();
+        long beforeStarts = TelemetrySpanScope.startedCount();
+        long beforeEnds = TelemetrySpanScope.endedCount();
+        try {
+            assertEquals("false", run(program), "OFF preserves guest execution");
+            TelemetrySpanScope.enableExistingSites(100, 10_000, "other.");
+            assertEquals("false", run(program), "a nonmatching prefix does not record");
+            TelemetrySpanScope.enableExistingSites(100, 10_000, "switch.");
+            assertEquals("true", run(program), "ON records a compiled lexical span after await");
+            TelemetrySpanScope.disableExistingSites();
+            assertEquals("false", run(program), "OFF applies to subsequent guest invocations");
+            assertEquals(beforeStarts + 1, TelemetrySpanScope.startedCount());
+            assertEquals(beforeEnds + 1, TelemetrySpanScope.endedCount());
+        } finally {
+            TelemetrySpanScope.disableExistingSites();
+        }
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, sourceText, "using-telemetry-span.atto")

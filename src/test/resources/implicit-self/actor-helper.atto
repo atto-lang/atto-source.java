@@ -1,0 +1,9 @@
+define actor WalWriterActor as
+  ready(): bool {
+    return true;
+  }
+
+  admit_append(): bool {
+    return ready();
+  }
+end

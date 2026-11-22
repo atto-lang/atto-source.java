@@ -716,6 +716,67 @@ final class SourceLoopSoftPreemptionTest {
                 "while must lower to the same resumable budgeted backedge");
     }
 
+    @Test
+    void recursiveSynchronousFunctionUsesHeapOwnedSourceTaskBoundary() throws Exception {
+        assertEquals("4096", run("""
+                fnc descend(n: int): int {
+                  if n <= 0; do
+                    return 0;
+                  fi
+                  return descend(n - 1) + 1;
+                }
+
+                pub async routine main(): void {
+                  stdio.stdout.write(descend(4096));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void mutuallyRecursiveFunctionsUseHeapOwnedSourceTaskBoundaries() throws Exception {
+        assertEquals("true", run("""
+                fnc even(n: int): bool {
+                  if n <= 0; do
+                    return true;
+                  fi
+                  return odd(n - 1);
+                }
+
+                fnc odd(n: int): bool {
+                  if n <= 0; do
+                    return false;
+                  fi
+                  return even(n - 1);
+                }
+
+                pub async routine main(): void {
+                  stdio.stdout.write(even(4096));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void recursiveInstanceMethodUsesHeapOwnedSourceTaskBoundary() throws Exception {
+        assertEquals("4096", run("""
+                define class Counter as
+                  pub descend(int n): int {
+                    if n <= 0; do
+                      return 0;
+                    fi
+                    return self.descend(n - 1) + 1;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val counter = new Counter();
+                  stdio.stdout.write(counter.descend(4096));
+                  return;
+                }
+                """));
+    }
+
     private static String runAtto(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(

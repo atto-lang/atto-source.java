@@ -1,0 +1,8 @@
+import fnc async_decode from "./decode.atto";
+
+pub fnc main(): void {
+  // A future-returning import must not become an ordinary int automatically.
+  val int immediate = async_decode(41);
+  stdio.stdout.write(immediate);
+  return;
+}

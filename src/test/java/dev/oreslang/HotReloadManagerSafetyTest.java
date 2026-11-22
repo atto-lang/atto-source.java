@@ -64,7 +64,15 @@ final class HotReloadManagerSafetyTest {
 
     @Test
     void adversarialSupervisorCannotRemoveAdversarialModeInChild() {
-        IsolatePolicy parent = IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.HOT_CODE_LOAD);
+        // The adversarial permission ceiling forbids HOT_CODE_LOAD outright,
+        // so an adversarial supervisor can no longer even hold hot-reload
+        // authority, let alone hand a non-adversarial child to a guest.
+        IllegalArgumentException ceiling = assertThrows(IllegalArgumentException.class,
+                () -> IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.HOT_CODE_LOAD));
+        assertTrue(ceiling.getMessage().contains("adversarial isolates cannot grant HOT_CODE_LOAD"),
+                ceiling.getMessage());
+
+        IsolatePolicy parent = IsolatePolicy.strictFaas();
         IsolatePolicy weakerGuest = new IsolatePolicy(
                 Set.of(IsolatePolicy.Capability.STDOUT),
                 32L * 1024 * 1024,

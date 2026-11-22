@@ -1,0 +1,4 @@
+import trait Hash from "ores.core/protocols";
+define class Broken implements Hash as
+end
+pub fnc main(): void { return; }

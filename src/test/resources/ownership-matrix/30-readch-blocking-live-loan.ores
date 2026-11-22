@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+async fnc bad(): void { val Channel<int> ch = Channel.new<int>(1); val Box box = new Box(); val borrow Box view = rt borrow box; val n = readch ch; return; }

@@ -48,7 +48,8 @@ final class ParserAnnotationRetentionGateTest {
         for (String annotation : new String[] {
                 "@derive(Eq)", "@repr(c)", "@align(64)", "@cfg(test)",
                 "@inline(always)", "@GenerateBuilder", "@GenerateSchema",
-                "@ActorMessage", "@RequiresState(read)", "@expand(aot)"
+                "@ActorMessage", "@RequiresState(read)", "@expand(aot)",
+                "@CallerRole(Admin)", "@CallableBy(Admin)", "@DefaultArgVals(value=1)"
         }) {
             String source = annotation + "\n" + "define module demo as end";
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,

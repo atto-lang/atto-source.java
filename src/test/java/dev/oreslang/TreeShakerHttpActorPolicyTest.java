@@ -67,11 +67,13 @@ final class TreeShakerHttpActorPolicyTest {
     }
 
     @Test
-    void canonicalSerialAndExplicitHttpFixturesPreserveTheSameOptimizedPolicy() {
-        // Compiler-backed admission of unchanged portable .atto source, not
-        // HTTP socket execution. The exact same fixture bytes are in
-        // oreslang-platform-conformance#642.
-        Ast.ClassDecl serial = null;
+    void canonicalSerialAndExplicitHttpFixturesRetainDistinctReceivePolicies() {
+        // Both fixtures have HTTP transport and numeric 1x1 capacity, but
+        // only the serial declaration holds a live receive permit across
+        // suspension. The optimizer must NEVER invent or erase this bit.
+        // Compiler-backed admission only; no HTTP socket execution claim.
+        Ast.ActorConcurrency serial = null;
+        Ast.ActorConcurrency explicit = null;
         for (String fixture : List.of("serial-1x1.atto", "explicit-1x1.atto")) {
             TreeShaker.Result result = dev.oreslang.compiler.OresCompiler.compileForBuild(
                     fixture(fixture), BuildOptions.library(Map.of()));
@@ -83,13 +85,24 @@ final class TreeShakerHttpActorPolicyTest {
                     .map(Ast.ClassDecl.class::cast)
                     .filter(klass -> klass.name().equals("Endpoint"))
                     .findFirst().orElseThrow();
-            assertEquals(Ast.ActorConcurrency.serial(Ast.ActorTransport.HTTP),
-                    kept.actorConcurrency(),
+            Ast.ActorConcurrency policy = kept.actorConcurrency();
+            assertEquals(Ast.ActorTransport.HTTP, policy.transport(),
                     "whole compiler build must not launder HTTP transport into generic mail");
-            if (serial != null) assertEquals(serial, kept,
-                    "canonical serial alias and explicit 1x1 must optimize identically");
-            serial = kept;
+            assertEquals(1, policy.requestConcurrency());
+            assertEquals(1, policy.messageConcurrency());
+            if (fixture.startsWith("serial-")) {
+                assertTrue(policy.serialReceive(), "serial receive-only policy was erased");
+                serial = policy;
+            } else {
+                assertFalse(policy.serialReceive(),
+                        "explicit numeric 1x1 must never silently become serial");
+                explicit = policy;
+            }
         }
+        assertNotNull(serial);
+        assertNotNull(explicit);
+        assertNotEquals(serial, explicit,
+                "serial receive ownership is semantic, not numeric capacity");
     }
 
     @Test

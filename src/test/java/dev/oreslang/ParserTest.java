@@ -1309,6 +1309,93 @@ final class ParserTest {
         }
     }
 
+    @Test
+    void acceptsCanonicalRtMutBorrowSyntax() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt mut borrow value;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rejectsPointerSigilsAndLegacyMutableBorrowSyntaxAtParseTime() {
+        List<String> invalid = List.of(
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &mut value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val invalid = *value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(int* value): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc leak(borrow Account account): &Account {
+                  return account;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt borrow mut value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val pointer = rt ref value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt deref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt unref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(Pointer<int> pointer): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc main(RawPointer<int> pointer): void {
+                  return;
+                }
+                """
+        );
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+        }
+    }
+
     private static List<List<String>> permutations(String... tokens) {
         List<List<String>> out = new ArrayList<>();
         permute(new ArrayList<>(List.of(tokens)), new ArrayList<>(), out);
@@ -1366,5 +1453,30 @@ final class ParserTest {
                 .allMatch(warning -> warning.message().contains("use 'then'")));
     }
 
+
+
+    @Test
+    void canonicalRemainderSourceRejectsLegacyPercentWithoutTouchingComments() {
+        for (String expression : List.of(
+                "7 % 3", "-7 % -3", "(8 % 3) * 2",
+                "-9223372036854775808 % -1",
+                "Integer.bitXor(7 % 3, 5)")) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("pub fnc main(): int { return " + expression + "; }"));
+            assertTrue(rejected.getMessage().contains("noncanonical '%' source operator"),
+                    rejected::toString);
+        }
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): int {
+                  return 7 * 6;
+                }
+                """));
+        // Lexical comments may contain percent signs without creating an
+        // arithmetic operator or modifying the parsed executable AST.
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc main(): int { return 42; } // removed % operator"));
+    }
 
 }
