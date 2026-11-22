@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -25,6 +27,8 @@ public final class TelemetrySpanScope implements AutoCloseable {
     private static final int MAX_ATTRIBUTES = 16;
     private static final int MAX_ATTRIBUTE_KEY = 80;
     private static final int MAX_ATTRIBUTE_VALUE = 256;
+    private static final int MAX_EVENTS = 16;
+    private static final int MAX_EVENT_NAME = 80;
     private static final String HEX = "0123456789abcdef";
     private static final AtomicReference<Policy> POLICY =
             new AtomicReference<>(new Policy(false, 0, 0L, ""));
@@ -42,6 +46,8 @@ public final class TelemetrySpanScope implements AutoCloseable {
     private long finishedDurationNanos;
     private final AtomicBoolean ended = new AtomicBoolean();
     private final Map<String, String> attributes = new LinkedHashMap<>();
+    /** Actor-owned, bounded observer events; no exporter runs on the scope path. */
+    private final List<String> events = new ArrayList<>();
 
     private record Policy(boolean enabled, int samplePercent,
                           long expiresNanos, String prefix) {
@@ -236,6 +242,42 @@ public final class TelemetrySpanScope implements AutoCloseable {
             return; // bounded drop, never expand an untrusted actor's allocation.
         }
         attributes.put(key, safe);
+    }
+
+    /** Canonical snake_case guest observer delegates to existing bounded attribute API. */
+    public void setAttribute(String key, Object value) {
+        attribute(key, value);
+    }
+
+    /** No event payloads or user data; the bounded name is pure diagnostic metadata. */
+    public void addEvent(String eventName) {
+        requireOwner();
+        if (ended.get()) {
+            throw new IllegalStateException("telemetry span is closed");
+        }
+        if (!recording) return;
+        if (TraceContext.current() != active) {
+            throw new IllegalStateException("span events require the owning logical task scope");
+        }
+        if (eventName == null || eventName.isEmpty()
+                || eventName.length() > MAX_EVENT_NAME) {
+            throw new IllegalArgumentException("telemetry event name must have 1..80 ASCII characters");
+        }
+        for (int i = 0; i < eventName.length(); i++) {
+            char c = eventName.charAt(i);
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_')) {
+                throw new IllegalArgumentException("telemetry event name is not safe ASCII");
+            }
+        }
+        if (events.size() >= MAX_EVENTS) return;
+        events.add(eventName);
+    }
+
+    /** Trusted-host snapshot only; guest code cannot obtain the mutable event list. */
+    public List<String> eventsSnapshot() {
+        requireOwner();
+        return List.copyOf(events);
     }
 
     public String name() { requireOwner(); return name; }
