@@ -1,0 +1,44 @@
+// AttoLang core/option: allocation-free sum-value adapters.
+// Source-owned, compiler-specific. This module does not redefine Option<T>,
+// Some(T), or None, which remain sealed compiler-provided discriminated values.
+// Conversions consume their input sum; the compiler must insert active-variant
+// cleanup and reject unsafe affine/borrow escape. No host interop or I/O.
+define module option as
+
+  // Preserve the inner optional's tag; do not turn Some(None) into Some(_).
+  pub fnc flatten<T>(Option<Option<T>> nested): Option<T> {
+    return match nested over
+      on Some(inner) -> inner,
+      on None -> None,
+    end;
+  }
+
+  // Eager conversion: the error expression was evaluated before this call.
+  // The unused error must be dropped when value is Some.
+  pub fnc to_result<T, E>(Option<T> value, E error): Result<T, E> {
+    return match value over
+      on Some(payload) -> Ok(payload),
+      on None -> Err(error),
+    end;
+  }
+
+  // Discard Err's *active* error payload with deterministic cleanup.
+  pub fnc from_result<T, E>(Result<T, E> value): Option<T> {
+    return match value over
+      on Ok(payload) -> Some(payload),
+      on Err(_) -> None,
+    end;
+  }
+
+  // Option<Result<T,E>> -> Result<Option<T>,E>, with no erased Err.
+  pub fnc transpose<T, E>(Option<Result<T, E>> value): Result<Option<T>, E> {
+    return match value over
+      on None -> Ok(None),
+      on Some(inner) -> match inner over
+        on Ok(payload) -> Ok(Some(payload)),
+        on Err(error) -> Err(error),
+      end,
+    end;
+  }
+
+end
