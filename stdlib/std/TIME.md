@@ -1,7 +1,7 @@
 # AttoLang `std/time` (native .atto)
 
-Implementation: `stdlib/time.atto` (Java compiler-owned hosted std resource). Public import: `std/time` or
-`atto.std/time` when disambiguation is required. This backend owns its
+Implementation: `stdlib/time.atto` (Java compiler-owned hosted std resource). Admitted Java imports: `std/time` and `ores.std/time`. The `atto.std/time`
+spelling is NOT registered in this compiler's current closed std resolver. This backend owns its
 own .atto source; no cross-repository shared-source dependency is introduced.
 
 ## Implemented in this change
