@@ -64,6 +64,18 @@ encode an error and returns no successful status after timeout. The pending
 tests include a silent 30-second Java child with a 150-millisecond host
 deadline, normal exit before deadline, and invalid budget admission.
 
+The explicit `child.close()` path now marks a still-live child as
+owner-cancelled before forcibly destroying it. An observed `wait()` or
+`collect_output()` reports `Err(ProcessError(kind: "cancelled"))`,
+not an ordinary exit status. Closing an already-exited child does not
+retroactively cancel its recorded outcome. Explicit `kill()` and
+`terminate()` still produce an exit status after reaping, because they
+are deliberately requested process-control operations rather than scope
+abandonment. Timeout takes priority over owner cancellation if its
+deadline already fired; output-cap violations retain their distinct
+`output_limit` result for `collect_output()`. Regression cases cover
+owner close, context shutdown, normal completion and deadline cleanup.
+
 These watchdogs bound the directly owned OS child, **not its descendant tree**.
 A subprocess that forks children holding inherited pipes may still prevent
 clean pipe retirement. JVM `ProcessBuilder.start()` has an executable
