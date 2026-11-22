@@ -1,0 +1,28 @@
+// Freestanding AttoLang signed-integer math: host-free, allocator-free.
+// Real floating-point transcendental math needs separately approved intrinsics.
+// Every interval operation detects inverted bounds; no unchecked abs(MIN).
+define module math as
+  pub fnc min_int(int left, int right): int {
+    if left < right; do return left; fi
+    return right;
+  }
+  pub fnc max_int(int left, int right): int {
+    if left > right; do return left; fi
+    return right;
+  }
+  pub fnc signum_int(int value): int {
+    if value < 0; do return -1; fi
+    if value > 0; do return 1; fi
+    return 0;
+  }
+  pub fnc contains_closed_int(int value, int lower, int upper): bool {
+    if lower > upper; do return false; fi
+    return value >= lower && value <= upper;
+  }
+  pub fnc clamp_int_checked(int value, int lower, int upper): Result<int, String> {
+    if lower > upper; do return Err("InvalidBounds"); fi
+    if value < lower; do return Ok(lower); fi
+    if value > upper; do return Ok(upper); fi
+    return Ok(value);
+  }
+end
