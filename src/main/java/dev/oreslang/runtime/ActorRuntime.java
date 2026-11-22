@@ -1141,6 +1141,28 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
+    // Trusted operator control; disabled for all standalone runtimes by
+    // default. Context is stored in immutable envelope metadata, not payload.
+    private volatile boolean tracePropagationEnabled;
+    // Trusted runtime-owned, per-isolate bounded semantic staging only.
+    // Never expose to source actors or forward to userland interceptors.
+    private volatile SemanticTraceBuffer traceSpanBuffer;
+    void configureTraceSpanBuffer(SemanticTraceBuffer collector) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (collector != null && policyCeiling.adversarial()) {
+            throw new SecurityException("untrusted actor runtime cannot own tracing buffer");
+        }
+        traceSpanBuffer = collector;
+    }
+
+    void configureTracePropagation(boolean enabled) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (enabled && policyCeiling.adversarial()) {
+            throw new SecurityException("untrusted runtime cannot propagate trace context");
+        }
+        tracePropagationEnabled = enabled;
+    }
+
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
@@ -2592,16 +2614,18 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            TraceParent traceParent) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
-                long sequence) {
+                long sequence,
+                TraceParent traceParent) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence, traceParent);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -2610,7 +2634,8 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    null);
         }
 
         private boolean isContinuation() {
@@ -4100,6 +4125,139 @@ public final class ActorRuntime implements AutoCloseable {
         public String toString() {
             return "ActorRef[" + kind + ":" + id.value() + "]";
         }
+    }
+
+    /**
+     * CONTROL-minted, physical-actor-only delivery capability. Once the owning
+     * ActorCell has been claimed, ordinary ActorRef.send/sendAsync and Mailman
+     * deliveries to the physical ref are denied permanently, including after
+     * route retirement. Only an exact coordinator PhysicalCompletion can
+     * authorize one physical transport attempt. Not a guest/source capability.
+     *
+     * This is NOT the stable logical ActorRef and never grants actor state or
+     * physical reclamation authority.
+     */
+    final class HotRoutePhysical<M>
+            implements ActorRouteCoordinatorV1.PhysicalRouteWitness {
+        private final ActorRef<M> ref;
+        private ActorPhysicalHotRouteIngressFence.Permit permit;
+        private final AtomicReference<Object> logicalOwner = new AtomicReference<>();
+        /** Captures every already-accepted raw physical message at route claim. */
+        private volatile OresFuture<Void> preclaimDirectDrain;
+
+        private HotRoutePhysical(ActorRef<M> ref) {
+            this.ref = Objects.requireNonNull(ref, "physical ActorRef");
+        }
+
+        private void bind(ActorPhysicalHotRouteIngressFence.Permit minted) {
+            if (permit != null) throw new IllegalStateException("physical route already bound");
+            permit = Objects.requireNonNull(minted, "runtime-minted permit");
+        }
+
+        void sendTracked(
+                M message,
+                ActorRouteCoordinatorV1<HotRoutePhysical<M>>.PhysicalCompletion receipt) {
+            requireSupervisorContext("dispatch a managed physical actor route");
+            // A missing receipt is an attempt to mint physical admission without
+            // the coordinator: deny it as an authority failure, not a bug.
+            if (receipt == null) {
+                throw new SecurityException(
+                        "managed physical route dispatch requires the exact coordinator completion receipt");
+            }
+            receipt.claimPhysicalAdmission(this);
+            sendWithHotRoutePermit(ref, message, permit);
+        }
+
+        OresFuture<Void> processedDrain() {
+            return ref.drain();
+        }
+
+        @Override
+        public boolean preclaimDirectMailDrained() {
+            OresFuture<Void> drain = preclaimDirectDrain;
+            return drain != null && drain.isDone()
+                    && !drain.isCompletedExceptionally();
+        }
+
+        @Override
+        public boolean readyForPublication() {
+            ActorCell<?> cell = actors.get(ref.id());
+            if (cell == null || cell.ref != ref) return false;
+            synchronized (cell.lifecycleLock) {
+                return cell.ref == ref && cell.hotRouteIngress.claimed()
+                        && !permit.retired() && !cell.stopped.get()
+                        && !cell.finalized && !cell.forceKillFenced
+                        && ref.readyFuture.isDone()
+                        && !ref.readyFuture.isCompletedExceptionally()
+                        && preclaimDirectMailDrained();
+            }
+        }
+
+        @Override
+        public boolean sameAuthorityDomain(
+                ActorRouteCoordinatorV1.PhysicalRouteWitness candidate) {
+            return candidate instanceof ActorRuntime.HotRoutePhysical<?> other
+                    && ActorRuntime.this == other.owningRuntime();
+        }
+
+        private ActorRuntime owningRuntime() { return ActorRuntime.this; }
+
+        @Override
+        public void bindToCoordinator(Object coordinator) {
+            Objects.requireNonNull(coordinator, "logical coordinator identity");
+            if (!logicalOwner.compareAndSet(null, coordinator)) {
+                throw new SecurityException(
+                        "physical actor route was already bound to a different logical ActorRef");
+            }
+        }
+
+        @Override
+        public void retireFromLogicalRoute() {
+            permit.retire(); // monotonic and non-blocking; no physical teardown
+        }
+
+        ActorRef<M> physicalRefForHostOnly() { return ref; }
+    }
+
+    /**
+     * One-way physical ingress claim. This method is package-private and
+     * requires host/CONTROL context. The minted endpoint cannot be recreated
+     * by a second coordinator or a stale actor. The caller MUST use it only
+     * after the physical actor is ready and MUST account for pre-claim mail
+     * through an independent physical processing/quiescence receipt.
+     */
+    <M> HotRoutePhysical<M> claimPhysicalForHotRoute(ActorRef<M> ref) {
+        requireSupervisorContext("claim physical actor for hot route");
+        requireCallerRuntimeAffinity("claim physical actor for hot route");
+        Objects.requireNonNull(ref, "physical ActorRef");
+        if (!ref.ownedBy(this)) {
+            throw new SecurityException("cannot claim another runtime's physical ActorRef");
+        }
+        if (ref.kind() != ActorKind.SHARED) {
+            throw new SecurityException("v1 physical hot routes require SHARED actors");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref) {
+            throw terminated(ref);
+        }
+        // Allocate the endpoint BEFORE making the one-way claim, so an
+        // allocation failure does not strand a sealed ActorCell.
+        HotRoutePhysical<M> endpoint = new HotRoutePhysical<>(ref);
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.finalized
+                    || cell.sealing || cell.forceKillFenced) throw terminated(ref);
+            if (!ref.readyFuture.isDone() || ref.readyFuture.isCompletedExceptionally()) {
+                throw new IllegalStateException("physical actor must be successfully ready before route claim");
+            }
+            endpoint.bind(cell.hotRouteIngress.claim());
+        }
+        // The ingress seal linearized under the actor cell monitor above;
+        // no new raw send can enter. Capture the already-admitted physical
+        // mailbox watermark AFTER claim, outside that monitor to avoid
+        // guest/user Future callbacks under a lifecycle lock. A failed
+        // barrier leaves the actor permanently sealed, never falsely safe.
+        endpoint.preclaimDirectDrain = ref.drain();
+        return endpoint;
     }
 
     /**
@@ -7886,6 +8044,13 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        sendWithHotRoutePermit(ref, message, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendWithHotRoutePermit(
+            ActorRef<M> ref, M message,
+            ActorPhysicalHotRouteIngressFence.Permit routePermit) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -7897,8 +8062,9 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell == null || cell.ref != ref || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
+            cell.hotRouteIngress.require(routePermit);
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
@@ -7976,6 +8142,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorId sender = currentActorId().orElse(null);
+        // Mail metadata is outside the transported user object, never frozen,
+        // serialized as a guest capability, or given to the actor handler.
+        TraceParent mailTrace = tracePropagationEnabled && cell.kind != ActorKind.UNTRUSTED
+                ? TaskContext.traceParent() : null;
         MessageEnvelope envelope = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
@@ -7986,6 +8156,10 @@ public final class ActorRuntime implements AutoCloseable {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
                 synchronized (cell.lifecycleLock) {
+                    // Revalidate under the publication lock. A host may have
+                    // claimed the actor while message transport was freezing
+                    // its graph. Such a racing raw send must not publish.
+                    cell.hotRouteIngress.require(routePermit);
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
@@ -8007,7 +8181,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
+                            prepared, release, sender, sequence, mailTrace);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException(
                                 "actor mailbox credit/capacity invariant violated for " + ref.id());
@@ -8075,7 +8249,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) return OresFuture.failed(terminated(ref));
+        if (cell == null || cell.ref != ref || cell.stopped.get())
+            return OresFuture.failed(terminated(ref));
+        // Fast-fail before expensive transport graph snapshot; async waiters
+        // which predated route claim are checked again at final publication.
+        synchronized (cell.lifecycleLock) {
+            cell.hotRouteIngress.require(null);
+        }
         if (currentActor.get() == cell) {
             return OresFuture.failed(new ActorSendWouldDeadlockException(ref.id()));
         }
@@ -8168,6 +8348,11 @@ public final class ActorRuntime implements AutoCloseable {
             if (payloadReleased.compareAndSet(false, true)) rawRelease.run();
         };
         ActorId sender = currentActorId().orElse(null);
+        // Capture before the asynchronous mailbox credit waiter. A callback
+        // may run on another thread long after the sender's context changes.
+        final TraceParent mailTrace =
+                tracePropagationEnabled && cell.kind != ActorKind.UNTRUSTED
+                        ? TaskContext.traceParent() : null;
 
         final OresFuture<Boolean> slot;
         try {
@@ -8248,6 +8433,9 @@ public final class ActorRuntime implements AutoCloseable {
                         sharedMutexReservations = reserveSharedMutexBindings(prepared);
                     }
                     synchronized (cell.lifecycleLock) {
+                        // Async producers may have waited before the physical
+                        // actor was enrolled; never bypass the new route.
+                        cell.hotRouteIngress.require(null);
                         if (cell.stopped.get() || cell.finalized) throw terminated(ref);
                         if (cell.sealing) throw new ActorSealedException(ref.id());
                         if (cell.forceKillFenced) {
@@ -8266,7 +8454,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     exhausted);
                         }
                         envelope = MessageEnvelope.message(
-                                prepared, releaseOnce, sender, sequence);
+                                prepared, releaseOnce, sender, sequence, mailTrace);
                         if (!cell.mailbox.tryWrite(envelope)) {
                             throw new IllegalStateException(
                                     "transferred actor mailbox slot was not physically writable for "
@@ -10122,6 +10310,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /** One-way physical DATA seal; normal ActorRefs remain unaffected. */
+        private final ActorPhysicalHotRouteIngressFence hotRouteIngress =
+                new ActorPhysicalHotRouteIngressFence();
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
@@ -11897,6 +12088,35 @@ public final class ActorRuntime implements AutoCloseable {
                             // (spec ch. 25): its quota does not depend on the carrier, and
                             // its exhaustion fails this actor, not the carrier or process.
                             LogicalStackQuota.Segment receiveStack = LogicalStackQuota.enter(ref.id());
+                            // Every USER dispatch has its own logical context.
+                            // Never borrow a carrier's stale context or mutate
+                            // a sender-owned Span; only immutable W3C metadata
+                            // admitted with this exact mailbox envelope may
+                            // be installed. SourceTask snapshots it on await.
+                            boolean installMailTrace = tracePropagationEnabled;
+                            TaskContext previousMailTask = null;
+                            SemanticTraceBuffer.Scope actorTurnSpan = null;
+                            if (installMailTrace) {
+                                previousMailTask = TaskContext.install(null);
+                                TraceParent admittedParent = activeEnvelope.traceParent();
+                                if (admittedParent != null) {
+                                    TraceParent currentParent = admittedParent;
+                                    SemanticTraceBuffer observer = traceSpanBuffer;
+                                    if (observer != null && admittedParent.sampled()) {
+                                        // A child span represents this actor
+                                        // *dispatch turn*, not the total
+                                        // lifetime of a suspended source Task.
+                                        TraceParent child = admittedParent.newChild();
+                                        actorTurnSpan = observer.begin(child,
+                                                admittedParent.spanId(),
+                                                SemanticTraceBuffer.ACTOR_RECEIVE,
+                                                SemanticTraceBuffer.Kind.INTERNAL);
+                                        currentParent = child;
+                                    }
+                                    TaskContext.pushTraceParent(currentParent);
+                                }
+                            }
+                            boolean actorTurnFailed = false;
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -11918,7 +12138,12 @@ public final class ActorRuntime implements AutoCloseable {
                                 } else if (!rejectedByUpgrade(mail)) {
                                     behavior.onMessage(mail.value(), context);
                                 }
+                            } catch (RuntimeException | Error failure) {
+                                actorTurnFailed = true;
+                                throw failure;
                             } finally {
+                                SemanticTraceBuffer.finish(actorTurnSpan, 0, actorTurnFailed);
+                                if (installMailTrace) TaskContext.install(previousMailTask);
                                 synchronized (lifecycleLock) {
                                     if (!sourceReceiveSuspended) {
                                         // A completed DATA receive still owns its logical

@@ -53,6 +53,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
@@ -184,6 +185,96 @@ public final class OresEvalRootNode extends RootNode {
         return arguments.length == 1 && command.equals(arguments[0]);
     }
 
+    /**
+     * VM-owned sequence storage remembers the source collection constructor.
+     * Array/List/Vector currently share an ArrayList representation, but the
+     * native .atto method dispatcher must not silently turn Vector or List
+     * calls into the Array implementation. This tag carries no guest authority.
+     */
+    private static final class NativeAttoSequence extends ArrayList<Object> {
+        private final String kind;
+        // Positive values are active read-loan counts; -1 is an active writer.
+        // This is nonparking metadata admission, not a host-language lock.
+        private final AtomicInteger accessState = new AtomicInteger();
+
+        private NativeAttoSequence(String kind) {
+            if (!Set.of("Array", "Vector", "List").contains(kind)) {
+                throw new IllegalArgumentException("unsupported Atto sequence kind " + kind);
+            }
+            this.kind = kind;
+        }
+
+        private String kind() { return kind; }
+
+        private void acquireRead() {
+            for (;;) {
+                int state = accessState.get();
+                if (state < 0 || state == Integer.MAX_VALUE) {
+                    throw new IllegalStateException(
+                            "collection cannot acquire read loan while mutating or exhausted");
+                }
+                if (accessState.compareAndSet(state, state + 1)) return;
+            }
+        }
+
+        private void releaseRead() {
+            for (;;) {
+                int state = accessState.get();
+                if (state <= 0) throw new IllegalStateException("unbalanced collection read loan");
+                if (accessState.compareAndSet(state, state - 1)) return;
+            }
+        }
+
+        private void acquireWrite() {
+            if (!accessState.compareAndSet(0, -1)) {
+                throw new IllegalStateException(
+                        "collection mutation during map/filter/reduce read loan is forbidden");
+            }
+        }
+
+        private void releaseWrite() {
+            if (!accessState.compareAndSet(-1, 0)) {
+                throw new IllegalStateException("unbalanced collection write loan");
+            }
+        }
+
+        @Override public boolean add(Object item) {
+            acquireWrite();
+            try { return super.add(item); }
+            finally { releaseWrite(); }
+        }
+
+        @Override public void add(int index, Object item) {
+            acquireWrite();
+            try { super.add(index, item); }
+            finally { releaseWrite(); }
+        }
+
+        @Override public Object set(int index, Object item) {
+            acquireWrite();
+            try { return super.set(index, item); }
+            finally { releaseWrite(); }
+        }
+
+        @Override public Object remove(int index) {
+            acquireWrite();
+            try { return super.remove(index); }
+            finally { releaseWrite(); }
+        }
+
+        @Override public boolean remove(Object item) {
+            acquireWrite();
+            try { return super.remove(item); }
+            finally { releaseWrite(); }
+        }
+
+        @Override public void clear() {
+            acquireWrite();
+            try { super.clear(); }
+            finally { releaseWrite(); }
+        }
+    }
+
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
@@ -263,6 +354,15 @@ public final class OresEvalRootNode extends RootNode {
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
+        // Per-carrier synchronous call chains. A routine remains logically active
+        // after tail-transfer to a fnc, until that entire invocation returns.
+        // Never retain this across unrelated actor turns or carrier reuse.
+        private static final class RoutineFrameState {
+            private final IdentityHashMap<Ast.FunctionDecl, Boolean> active =
+                    new IdentityHashMap<>();
+            private int nestedInvocations;
+        }
+        private static final ThreadLocal<RoutineFrameState> ACTIVE_ROUTINES = new ThreadLocal<>();
         private static final Object UNINITIALIZED_FIELD = new Object();
 
         private enum InvocationKind {
@@ -971,10 +1071,30 @@ public final class OresEvalRootNode extends RootNode {
             // stack (receive invocation or Task). Tail hops stay inside this
             // frame, so proper tail calls never grow the logical stack.
             dev.oreslang.runtime.LogicalStackQuota.pushFrame();
+            RoutineFrameState routineState = ACTIVE_ROUTINES.get();
+            if (routineState == null) {
+                routineState = new RoutineFrameState();
+                ACTIVE_ROUTINES.set(routineState);
+            }
+            routineState.nestedInvocations++;
+            // Preserve routine ancestry across trampoline hops. A nested invoke
+            // sees that ancestry, but releases only its own entries in finally.
+            // Ordinary fnc/method recursion never adds entries to this map.
+            ArrayDeque<Ast.FunctionDecl> entered = new ArrayDeque<>();
             try {
                 Invocation current = initial;
                 int tailHops = 0;
                 while (true) {
+                    if ((current.kind() == InvocationKind.FUNCTION
+                            || current.kind() == InvocationKind.FUNCTION_BODY)
+                            && current.target() instanceof Ast.FunctionDecl fn
+                            && fn.kind() == Ast.CallableKind.ROUTINE) {
+                        if (routineState.active.containsKey(fn)) {
+                            throw new dev.oreslang.runtime.RoutineReentryException(fn.name());
+                        }
+                        routineState.active.put(fn, Boolean.TRUE);
+                        entered.push(fn);
+                    }
                     Object result = current.owner().executeRaw(current);
                     if (!(result instanceof TailCall tail)) return result;
                     current = tail.invocation();
@@ -984,30 +1104,59 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
             } finally {
+                while (!entered.isEmpty()) routineState.active.remove(entered.pop());
+                if (--routineState.nestedInvocations == 0) ACTIVE_ROUTINES.remove();
                 dev.oreslang.runtime.LogicalStackQuota.popFrame();
             }
         }
 
         private Object executeRaw(Invocation invocation) {
-            return switch (invocation.kind()) {
-                case FUNCTION -> callFunctionRaw(
-                        (Ast.FunctionDecl) invocation.target(),
-                        invocation.arguments());
-                case FUNCTION_BODY -> callFunctionBodyRaw(
-                        (Ast.FunctionDecl) invocation.target(),
-                        invocation.arguments());
-                case METHOD -> callMethodRaw(
-                        (OresObject) invocation.receiver(),
-                        (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
-                case STATIC_FUNCTION -> callStaticFunctionRaw(
-                        (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
-                case STATIC_FUNCTION_BODY -> callStaticFunctionBodyRaw(
-                        (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
-                case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
-            };
+            // One internal entry probe for an already-checked source call.
+            // No userland telemetry import, string, clock, allocation or
+            // callback executes while the per-isolate policy remains OFF.
+            // This first slice records synchronous dispatch/admission only:
+            // async task completion must be instrumented in SourceTask.
+            dev.oreslang.runtime.AutoTraceRecorder trace = context.autoTrace();
+            long started = trace.enterCall();
+            boolean failed = false;
+            try {
+                return switch (invocation.kind()) {
+                    case FUNCTION -> callFunctionRaw(
+                            (Ast.FunctionDecl) invocation.target(),
+                            invocation.arguments());
+                    case FUNCTION_BODY -> callFunctionBodyRaw(
+                            (Ast.FunctionDecl) invocation.target(),
+                            invocation.arguments());
+                    case METHOD -> callMethodRaw(
+                            (OresObject) invocation.receiver(),
+                            (Ast.MethodDecl) invocation.target(),
+                            invocation.arguments());
+                    case STATIC_FUNCTION -> callStaticFunctionRaw(
+                            (Ast.MethodDecl) invocation.target(),
+                            invocation.arguments());
+                    case STATIC_FUNCTION_BODY -> callStaticFunctionBodyRaw(
+                            (Ast.MethodDecl) invocation.target(),
+                            invocation.arguments());
+                    case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
+                };
+            } catch (RuntimeException | Error failure) {
+                failed = true;
+                throw failure;
+            } finally {
+                if (started != 0L) {
+                    // Site IDs are numeric and derived from compiler-owned
+                    // declarations, not strings or objects supplied by guests.
+                    Object target = invocation.target();
+                    String name = target instanceof Ast.FunctionDecl function
+                            ? function.name()
+                            : target instanceof Ast.MethodDecl method ? method.name() : null;
+                    if (name != null) {
+                        int site = dev.oreslang.runtime.AutoTraceRecorder.internalSiteId(
+                                codeUnitId.hashCode(), name, invocation.kind().ordinal() + 1);
+                        trace.exitCall(started, site, failed);
+                    }
+                }
+            }
         }
 
         private Invocation functionInvocation(Ast.FunctionDecl fn, List<?> args) {
@@ -5143,7 +5292,7 @@ public final class OresEvalRootNode extends RootNode {
                                             failure == null
                                                     // Async guest List literals must remain mutable
                                                     // like the synchronous eval(ListExpr) path.
-                                                    ? new ArrayList<>(values)
+                                                    ? nativeAttoListLiteral(values)
                                                     : null,
                                             failure));
                     return;
@@ -6815,13 +6964,15 @@ public final class OresEvalRootNode extends RootNode {
                         : HttpResponseDraft.text(requireString(args.getFirst(), "HttpResponse body"));
             }
             if (created.type().name().equals("Array")
-                    || created.type().name().equals("List")) {
+                    || created.type().name().equals("List")
+                    || (created.type().name().equals("Vector")
+                    && findClass("Vector") == null)) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
                             created.type().name()
                                     + "<T> constructor takes no positional arguments");
                 }
-                return new ArrayList<>();
+                return new NativeAttoSequence(created.type().name());
             }
             if (created.type().name().equals("Vector") && findClass("Vector") == null) {
                 if (!args.isEmpty()) {
@@ -9413,13 +9564,15 @@ public final class OresEvalRootNode extends RootNode {
                     return instantiateEvaluated(created, args, env);
                 }
                 if (created.type().name().equals("Array")
-                        || created.type().name().equals("List")) {
+                        || created.type().name().equals("List")
+                        || (created.type().name().equals("Vector")
+                    && findClass("Vector") == null)) {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException(
                                 created.type().name()
                                         + "<T> constructor takes no positional arguments");
                     }
-                    return new ArrayList<>();
+                    return new NativeAttoSequence(created.type().name());
                 }
                 if (created.type().name().equals("Vector") && findClass("Vector") == null) {
                     if (!created.arguments().isEmpty()) {
@@ -9509,7 +9662,7 @@ public final class OresEvalRootNode extends RootNode {
                                 "dynamic select"));
             }
             if (expr instanceof Ast.ListExpr list) {
-                ArrayList<Object> result = new ArrayList<>(list.elements().size());
+                NativeAttoSequence result = new NativeAttoSequence("Array");
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
@@ -9640,6 +9793,105 @@ public final class OresEvalRootNode extends RootNode {
                 });
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
+        }
+
+        /**
+         * No Java implementation of map/filter/reduce lives here: invoke the
+         * original compiler-owned .atto function AST in the guest evaluator.
+         * Member dispatch is just a checked adapter for the receiver argument.
+         */
+        private static NativeAttoSequence nativeAttoListLiteral(List<Object> items) {
+            NativeAttoSequence result = new NativeAttoSequence("Array");
+            for (Object item : items) result.add(item);
+            return result;
+        }
+
+        private Object invokeNativeAttoCollectionMethod(
+                String operation, List<?> receiver, List<Object> arguments) {
+            int count = operation.equals("reduce") ? 2 : 1;
+            if (arguments.size() != count) {
+                throw new IllegalArgumentException(
+                        "collection." + operation + " expects " + count + " argument(s)");
+            }
+            Object callback = arguments.get(count - 1);
+            if (!(callback instanceof Invokable)) {
+                throw new IllegalArgumentException(
+                        "collection." + operation + " requires an Atto callback");
+            }
+            if (!(receiver instanceof NativeAttoSequence typed)) {
+                throw new IllegalArgumentException(
+                        "collection." + operation
+                                + " requires compiler-owned Atto sequence storage");
+            }
+            // Reads can nest; an exclusive writer (including a callback
+            // mutating the input through another alias) is denied immediately.
+            // The finally arm also covers throw/panic/callback failures.
+            typed.acquireRead();
+            try {
+                String kind = typed.kind().toLowerCase(java.util.Locale.ROOT);
+                if (kind.equals("vector") && findClass("Vector") != null) {
+                    throw new IllegalArgumentException(
+                            "core Vector combinator is ambiguous with a source-defined Vector class");
+                }
+                Ast.FunctionDecl nativeFunction =
+                        NativeAttoCollectionModule.function(operation + "_" + kind);
+                ArrayList<Object> inputs = new ArrayList<>(1 + count);
+                inputs.add(receiver);
+                inputs.addAll(arguments);
+                return callFunction(nativeFunction, inputs);
+            } finally {
+                typed.releaseRead();
+            }
+        }
+
+        private static final class NativeAttoCollectionModule {
+            private static final Map<String, Ast.FunctionDecl> FUNCTIONS = load();
+
+            private static Map<String, Ast.FunctionDecl> load() {
+                final String code;
+                try {
+                    code = dev.oreslang.stdlib.CoreLibrarySources.oresCoreSource(
+                            "ores.core/collections");
+                } catch (java.io.IOException failure) {
+                    throw new IllegalStateException(
+                            "trusted native Atto collection source cannot be loaded", failure);
+                }
+                Ast.Program parsed = Parser.parse(code);
+                // The same parser/type checker must admit the actual native
+                // source before its functions become evaluator targets.
+                dev.oreslang.types.TypeChecker.check(parsed);
+                Map<String, Ast.FunctionDecl> result = new LinkedHashMap<>();
+                for (Ast.ModuleDecl module : parsed.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.FunctionDecl fn
+                                && (fn.name().endsWith("_array")
+                                    || fn.name().endsWith("_vector")
+                                    || fn.name().endsWith("_list"))) {
+                            if (result.putIfAbsent(fn.name(), fn) != null) {
+                                throw new IllegalStateException(
+                                        "duplicate native Atto collection function: " + fn.name());
+                            }
+                        }
+                    }
+                }
+                if (!result.keySet().containsAll(Set.of(
+                        "map_array", "filter_array", "reduce_array",
+                        "map_vector", "filter_vector", "reduce_vector",
+                        "map_list", "filter_list", "reduce_list"))) {
+                    throw new IllegalStateException(
+                            "trusted Atto collections module is missing required functions");
+                }
+                return Map.copyOf(result);
+            }
+
+            private static Ast.FunctionDecl function(String name) {
+                Ast.FunctionDecl fn = FUNCTIONS.get(name);
+                if (fn == null) {
+                    throw new IllegalArgumentException(
+                            "unknown native Atto collection operation " + name);
+                }
+                return fn;
+            }
         }
 
         // Checked scalar conversion only. Do not expose Java host toString(),
@@ -10128,6 +10380,11 @@ public final class OresEvalRootNode extends RootNode {
                         String payload = requireString(args.get(1), "RESP reply payload");
                         return socket.writeResp2HexAsync(status, payload);
                     };
+                    case "write_resp2_reply_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_resp2_reply_async");
+                        return socket.writeResp2ReplyAsync(
+                                requireString(args.getFirst(), "RESP actor reply"));
+                    };
                     case "read_owned_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "socket.read_owned_bytes_async");
                         if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
@@ -10433,15 +10690,18 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
                     case "request" -> (Invokable) args -> {
-                        if (args.size() != 3 || !(args.get(2) instanceof List<?> headers)) {
+                        if ((args.size() != 3 && args.size() != 4)
+                                || !(args.get(2) instanceof List<?> headers)) {
                             throw new IllegalArgumentException(
-                                    "http.request requires method, URL and List<(String,String)> headers");
+                                    "http.request requires method, URL, List<(String,String)> headers"
+                                    + " and optional bounded UTF-8 String/Bytes body");
                         }
                         return OutboundHttpRequest.request(
                                 context,
                                 requireString(args.get(0), "HTTP method"),
                                 requireString(args.get(1), "HTTP URL"),
-                                headers);
+                                headers,
+                                args.size() == 4 ? args.get(3) : null);
                     };
                     case "get_text", "get_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
@@ -10978,6 +11238,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
+                    // Run the matching, checked guest .atto function body.
+                    case "map", "filter", "reduce" -> (Invokable) args ->
+                            invokeNativeAttoCollectionMethod(name, rawList, args);
                     // TypeChecker admits length as a read-only scalar property.
                     // Keep its runtime value identical to the canonical size.
                     case "size", "length" -> (long) rawList.size();

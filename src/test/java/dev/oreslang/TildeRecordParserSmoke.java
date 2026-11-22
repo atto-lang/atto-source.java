@@ -142,7 +142,34 @@ public final class TildeRecordParserSmoke {
                     end
                 }
                 """);
+        // An unguarded legacy wildcard is the sole terminal fallback.
+        // It must not swallow a second wildcard, default, or later pattern.
+        for (String wrong : List.of(
+                "on _ -> 7; default -> 8;",
+                "on _ -> 7; on 1 -> 8;",
+                "on _ -> 7; on _ -> 8;")) {
+            rejectsProgram("fnc f(int x): int { return match<int> x over "
+                    + wrong + " end; }");
+        }
+        for (String wrong : List.of(
+                "on _ -> { return 7; } default -> { return 8; }",
+                "on _ -> { return 7; } on 1 -> { return 8; }",
+                "on _ -> { return 7; } on _ -> { return 8; }")) {
+            rejectsProgram("fnc f(int x): int { match x over " + wrong + " end }");
+        }
+        var guardedWildcard = function("""
+                fnc f(int x): int {
+                    return match<int> x over
+                        on _ when false -> 1;
+                        default -> 2;
+                    end;
+                }
+                """);
+        check(((Ast.MatchExpr) ((Ast.ReturnStmt) guardedWildcard.body()
+                .getFirst()).value()).arms().getFirst().guard() != null,
+                "guarded wildcard can leave a later fallback reachable");
 
+        // Existing wildcard fallbacks remain valid during syntax migration.
         var legacyWildcard = function("""
                 fnc f(int x): int {
                     return match<int> x over

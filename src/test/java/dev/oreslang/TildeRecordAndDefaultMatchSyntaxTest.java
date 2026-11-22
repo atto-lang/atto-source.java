@@ -176,6 +176,42 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     }
 
     @Test
+    void unguardedWildcardCannotPrecedeAnotherArmOrDefault() {
+        for (String arms : List.of(
+                "on _ -> 7; default -> 8;",
+                "on _ -> 7; on 1 -> 8;",
+                "on _ -> 7; on _ -> 8;")) {
+            String source = "fnc f(int x): int { return match<int> x over "
+                    + arms + " end; }";
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertTrue(failure.getMessage().contains("unguarded wildcard match arm must be last"),
+                    failure.getMessage());
+        }
+        for (String arms : List.of(
+                "on _ -> { return 7; } default -> { return 8; }",
+                "on _ -> { return 7; } on 1 -> { return 8; }",
+                "on _ -> { return 7; } on _ -> { return 8; }")) {
+            String source = "fnc f(int x): int { match x over " + arms + " end }";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+
+        // Guarded wildcard may fail its guard, so a final fallback remains reachable.
+        Ast.FunctionDecl guarded = function("""
+                fnc f(int x): int {
+                    return match<int> x over
+                        on _ when false -> 1;
+                        default -> 2;
+                    end;
+                }
+                """);
+        Ast.MatchExpr expression = assertInstanceOf(Ast.MatchExpr.class,
+                ((Ast.ReturnStmt) guarded.body().getFirst()).value());
+        assertNotNull(expression.arms().getFirst().guard());
+        assertInstanceOf(Ast.WildcardPattern.class, expression.arms().getLast().pattern());
+    }
+
+    @Test
     void legacyOnDefaultRemainsAnInputAliasOfWildcardFallback() {
         Ast.FunctionDecl value = function("""
                 fnc f(int x): int {
