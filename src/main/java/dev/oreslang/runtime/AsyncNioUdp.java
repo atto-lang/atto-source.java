@@ -12,6 +12,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * Capability-gated, numeric IPv4-loopback UDP on the Atto VM's existing NIO
  * readiness reactor. This is the first restricted guest network.bind_udp
  * lowering, NOT a completed std.net.udp import/IPv6 or actor-sendable handle.
+ * The source checker must still enforce single-owner socket aliasing before
+ * this can be used across actor/task boundaries.
  */
 public final class AsyncNioUdp {
     private AsyncNioUdp() { }
