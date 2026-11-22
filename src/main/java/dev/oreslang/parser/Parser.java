@@ -3826,14 +3826,36 @@ public final class Parser {
         consume(ELSE, "maybe v1 requires exhaustive 'else' failure arms");
 
         List<Ast.MatchArm> handlers = new ArrayList<>();
+        boolean seenErr = false;
+        boolean seenNone = false;
+        boolean seenWildcard = false;
         while (!check(END) && !check(EOF)) {
-            // Backward-compatible contextual spelling "on Err(e) -> ...".
-            // An identifier named "on" elsewhere remains legal.
-            if (isContextualIdentifier("on")) advance();
+            // Legacy match-arm examples may prefix variants with contextual
+            // 'on'. Never allow a previous wildcard to swallow later arms.
+            if (seenWildcard) {
+                throw error(peek(), "maybe else wildcard '_' must be the final arm");
+            }
+            matchContextualIdentifier("on");
             Ast.Pattern pattern = parsePattern();
-            if (!maybeFailureVariant(pattern, "Err")
-                    && !maybeFailureVariant(pattern, "None")
-                    && !(pattern instanceof Ast.WildcardPattern)) {
+            if (pattern instanceof Ast.ConstructorPattern constructor) {
+                if (constructor.constructor().equals("Err")) {
+                    if (constructor.arguments().size() != 1) {
+                        throw error(previous(), "maybe Err handler requires exactly one payload pattern");
+                    }
+                    if (seenErr) throw error(previous(), "duplicate maybe Err failure arm");
+                    seenErr = true;
+                } else if (constructor.constructor().equals("None")) {
+                    if (!constructor.arguments().isEmpty()) {
+                        throw error(previous(), "maybe None handler must not bind a payload");
+                    }
+                    if (seenNone) throw error(previous(), "duplicate maybe None failure arm");
+                    seenNone = true;
+                } else {
+                    throw error(previous(), "maybe else requires Err(...), None, or _ failure pattern");
+                }
+            } else if (pattern instanceof Ast.WildcardPattern) {
+                seenWildcard = true;
+            } else {
                 throw error(previous(), "maybe else requires Err(...), None, or _ failure pattern");
             }
             consume(ARROW, "maybe failure arms require '->'");
@@ -3920,6 +3942,14 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // Contextual fallible-value scope: this is not an exception catch.
+        // Keep local identifiers named maybe legal outside the two admitted forms.
+        if (check(DO) && checkNext(IDENT)
+                && tokens.get(current + 1).lexeme().equals("maybe")) {
+            advance(); // do
+            advance(); // maybe
+            return parseMaybe(false);
+        }
         if (attoCallableVersion != null && match(CARET)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
                     ? null : parseExpression();
@@ -5533,7 +5563,13 @@ public final class Parser {
 
         List<Ast.MatchArm> arms = new ArrayList<>();
         boolean seenDefault = false;
+        boolean seenUnconditionalWildcard = false;
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
+            // 'on _' is a compatibility spelling for an unguarded fallback.
+            // It must not make later arms (including 'default') unreachable.
+            if (canonicalOver && seenUnconditionalWildcard) {
+                throw error(peek(), "unguarded wildcard match arm must be last");
+            }
             boolean defaultArm = false;
             if (canonicalOver) {
                 defaultArm = match(DEFAULT);
@@ -5569,6 +5605,9 @@ public final class Parser {
                 } finally {
                     matchGuardStartToken = previousGuardStart;
                 }
+            }
+            if (canonicalOver && pattern instanceof Ast.WildcardPattern && guard == null) {
+                seenUnconditionalWildcard = true;
             }
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
@@ -5641,8 +5680,12 @@ public final class Parser {
         boolean braced = match(LBRACE);
         List<Ast.MatchValueArm> valueArms = new ArrayList<>();
         boolean seenDefault = false;
+        boolean seenUnconditionalWildcard = false;
 
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
+            if (seenUnconditionalWildcard) {
+                throw error(peek(), "unguarded wildcard match arm must be last");
+            }
             boolean defaultArm = match(DEFAULT);
             if (!defaultArm) {
                 if (seenDefault) throw error(peek(), "default match arm must be last");
@@ -5669,6 +5712,10 @@ public final class Parser {
                 } finally {
                     matchGuardStartToken = previousGuardStart;
                 }
+            }
+
+            if (pattern instanceof Ast.WildcardPattern && guard == null) {
+                seenUnconditionalWildcard = true;
             }
 
             if (check(FAT_ARROW)) {

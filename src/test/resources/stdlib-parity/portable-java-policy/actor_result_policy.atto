@@ -1,0 +1,21 @@
+import module actor_result_policy from "std/actor_result_policy.atto";
+pub routine main(): void {
+  stdio.println(actor_result_policy.valid_fan_in(65536));
+  stdio.println(actor_result_policy.valid_fan_in(65537));
+  let ids = new Array<int>();
+  ids.add(5);
+  ids.add(9);
+  ids.add(13);
+  stdio.println(actor_result_policy.distinct_local_ids(rt borrow ids));
+  ids.add(5);
+  stdio.println(actor_result_policy.distinct_local_ids(rt borrow ids));
+  let invalid = new Array<int>();
+  invalid.add(0);
+  stdio.println(actor_result_policy.distinct_local_ids(rt borrow invalid));
+  let oversized = new Array<int>();
+  for (let int i = 1; i <= 257; i = i + 1) {
+    oversized.add(i);
+  }
+  stdio.println(actor_result_policy.distinct_local_ids(rt borrow oversized));
+  return;
+}

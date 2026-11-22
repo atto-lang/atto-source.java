@@ -1,0 +1,90 @@
+// Optional high-throughput Atto actor route over true callback-driven NIO2.
+// JDK AsyncNioResp2 frames bytes/hex and NIO2 performs TCP; Atto alone owns KV.
+// This route deliberately trades an Atto-written RESP parser for a bounded host
+// codec. It NEVER uses stdio, blocking sockets, synchronous file IO or host KV.
+// Single client, ephemeral, no WAL/TTL/replication or production durability.
+// Optimized reply ABI: one actor output per command. VALUE:<lowercase hex>
+// is only a transport envelope; bounded NIO2 codec validates and emits RESP.
+define actor FramedNioKvActor as
+  let Map<string,string> values;
+
+  on_start(): void {
+    self.values = ~map<string,string>();
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, string, string]> mail): void {
+    const tuple = mail.value;
+    const int kind = tuple[0];
+    const string key = tuple[1];
+    const string value = tuple[2];
+    if kind == 5; do self.end(); return; fi
+    if kind == 3; do
+      self.values.set(key, value);
+      self.send("OK");
+      return;
+    fi
+    if kind == 2; do
+      val found = self.values.get_optional(key);
+      if found.is_none(); do
+        self.send("NIL");
+      else
+        self.send("VALUE:" + found.unwrap());
+      fi
+      return;
+    fi
+    if kind == 4; do
+      if self.values.delete(key); do
+        self.send("ONE");
+      else
+        self.send("ZERO");
+      fi
+      return;
+    fi
+    self.send("ERR");
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn FramedNioKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  val socket = await listener.accept_async();
+
+  loop {
+    val frame = await socket.read_resp2_hex_async();
+    if frame.size == 0; do
+      await socket.close_async();
+      await listener.close_async();
+      worker.send((5, "", ""));
+      await worker.get_done();
+      return;
+    fi
+
+    val string op = frame[0];
+    if op == "QUIT" && frame.size == 1; do
+      await socket.write_resp2_reply_async("OK");
+      await socket.close_async();
+      await listener.close_async();
+      worker.send((5, "", ""));
+      await worker.get_done();
+      return;
+    fi
+    if op == "PING" && frame.size == 1; do
+      await socket.write_resp2_reply_async("PONG");
+    else
+      let int kind = 0;
+      if op == "GET" && frame.size == 2 then kind = 2; fi
+      if op == "SET" && frame.size == 3 then kind = 3; fi
+      if op == "DEL" && frame.size == 2 then kind = 4; fi
+      let string key = "";
+      let string value = "";
+      if frame.size >= 2 then key = frame[1]; fi
+      if frame.size >= 3 then value = frame[2]; fi
+      worker.send((kind, key, value));
+      val output = (await worker.outputs.next()).value.unwrap();
+      await socket.write_resp2_reply_async(output.value);
+    fi
+  }
+}
