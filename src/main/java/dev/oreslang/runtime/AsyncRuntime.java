@@ -14,6 +14,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -49,11 +50,18 @@ public final class AsyncRuntime implements AutoCloseable {
     private final ExecutorService executor;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final ConcurrentHashMap<OresFuture<?>, TaskExit> taskExits = new ConcurrentHashMap<>();
+    private final AtomicLong nextDevtoolsTaskId = new AtomicLong();
 
     private static final class TaskExit {
+        private final long devtoolsId;
+        TaskExit(long devtoolsId) { this.devtoolsId = devtoolsId; }
         // 0: not entered, 1: running, 2: guest turn exited/cancelled before entry.
         private final AtomicInteger state = new AtomicInteger();
         private final CountDownLatch exited = new CountDownLatch(1);
+        // Uncancellable receipt for the physical end of this runtime-owned
+        // guest turn. Logical Future settlement may happen earlier.
+        private final OresFuture<Void> physicalExit =
+                new OresFuture<>(() -> false, () -> { });
         private volatile Thread thread;
         private volatile OresFuture<?> completion;
     }
@@ -76,9 +84,49 @@ public final class AsyncRuntime implements AutoCloseable {
         return Boolean.TRUE.equals(ASYNC_CARRIER.get());
     }
 
+    /**
+     * Cooperatively return the current runtime-owned async/generator virtual
+     * thread to its scheduler without changing the source-level return type.
+     *
+     * <p>Ordinary source tasks lower `rt cooperate` to OresScheduler.Cooperate.
+     * Generator activations use this bridge because their compatibility
+     * lowering is currently a runtime-owned virtual-thread producer.</p>
+     */
+    public static void cooperateCurrentCarrier() {
+        if (!isAsyncCarrierThread()) {
+            throw new IllegalStateException(
+                    "rt cooperate requires a runtime-owned async/generator carrier");
+        }
+        Thread.yield();
+    }
+
     public boolean isClosed() {
         return closed.get();
     }
+
+    /** Host-only, detached Task metadata; no TaskLocal, Future or OS carrier leaks. */
+    public record DevtoolsTaskInfo(long taskId, String lifecycle) { }
+
+    public java.util.List<DevtoolsTaskInfo> devtoolsListTasks(int limit) {
+        if (ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()
+                || isAsyncCarrierThread() || OresScheduler.current() != null) {
+            throw new SecurityException("Task discovery requires a trusted host thread");
+        }
+        if (limit < 1 || limit > 64) {
+            throw new IllegalArgumentException("Task inspection limit must be 1..64");
+        }
+        var result = new java.util.ArrayList<DevtoolsTaskInfo>(limit);
+        for (TaskExit exit : taskExits.values()) {
+            int state = exit.state.get();
+            if (state == 2) continue;
+            result.add(new DevtoolsTaskInfo(exit.devtoolsId,
+                    state == 0 ? "QUEUED" : "ACTIVE"));
+            if (result.size() >= limit) break;
+        }
+        return java.util.List.copyOf(result);
+    }
+
 
     /**
      * Schedule one async callable and return immediately with a composable
@@ -90,13 +138,14 @@ public final class AsyncRuntime implements AutoCloseable {
         if (closed.get()) throw new RejectedExecutionException("async runtime is closed");
 
         AtomicReference<Future<?>> backing = new AtomicReference<>();
-        TaskExit exit = new TaskExit();
+        TaskExit exit = new TaskExit(nextDevtoolsTaskId.incrementAndGet());
         OresFuture<T> completion = new OresFuture<>(() -> {
             Future<?> carrier = backing.getAndSet(null);
             if (carrier != null) carrier.cancel(true);
             if (exit.state.compareAndSet(0, 2)) {
-                taskExits.remove(exit.completion, exit);
                 exit.exited.countDown();
+                exit.physicalExit.completeFromRuntime(null);
+                taskExits.remove(exit.completion, exit);
             }
         });
         exit.completion = completion;
@@ -113,20 +162,25 @@ public final class AsyncRuntime implements AutoCloseable {
                 finally {
                     // TurnExecutor has returned, including its context leave.
                     exit.state.set(2);
-                    taskExits.remove(completion, exit);
                     exit.exited.countDown();
+                    exit.physicalExit.completeFromRuntime(null);
+                    taskExits.remove(completion, exit);
                 }
             });
         } catch (RejectedExecutionException rejected) {
-            taskExits.remove(completion, exit);
             exit.state.set(2);
             exit.exited.countDown();
+            exit.physicalExit.completeFromRuntime(null);
+            taskExits.remove(completion, exit);
             throw new RejectedExecutionException("async runtime is closed", rejected);
         }
         backing.set(scheduled);
         if (completion.isCancelled()) {
             scheduled.cancel(true);
-            if (exit.state.compareAndSet(0, 2)) exit.exited.countDown();
+            if (exit.state.compareAndSet(0, 2)) {
+                exit.exited.countDown();
+                exit.physicalExit.completeFromRuntime(null);
+            }
             if (exit.state.get() == 2) taskExits.remove(completion, exit);
         }
         completion.whenCompleteRuntime((value, failure) -> {
@@ -150,6 +204,17 @@ public final class AsyncRuntime implements AutoCloseable {
             catch (InterruptedException ignored) { interrupted = true; }
         }
         if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    /**
+     * Runtime-only, uncancellable receipt for physical guest-turn retirement.
+     * A task may already be logically completed/cancelled while this remains
+     * pending. If tracking is absent, the turn is already retired (or never
+     * entered), so an immediate receipt is correct.
+     */
+    OresFuture<Void> taskExitReceipt(OresFuture<?> task) {
+        TaskExit exit = taskExits.get(Objects.requireNonNull(task, "task"));
+        return exit == null ? OresFuture.completed(null) : exit.physicalExit;
     }
 
     private <T> void runTask(Task<T> task, OresFuture<T> completion) {

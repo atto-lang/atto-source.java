@@ -20,6 +20,17 @@ final class MixedSourceInteropTest {
     @TempDir Path temp;
 
     @Test
+    void canonicalAttoIsAdmittedAsAnOresPrimarySourceUnit() {
+        for (String extension : new String[] {".atto", ".ores"}) {
+            String name = "main" + extension;
+            MixedSourceUnit unit = MixedSourceUnit.parse("/tmp/" + name, name,
+                    "pub routine main(): void { return; }");
+            assertEquals(MixedSourceUnit.PrimaryLanguage.ORES, unit.primaryLanguage());
+            assertDoesNotThrow(() -> Parser.parse(unit.oresSource()));
+        }
+    }
+
+    @Test
     void splitsOresJavaIslandsWithoutInventingAnOresModule() {
         MixedSourceUnit unit = MixedSourceUnit.parse("/tmp/demo.ores", "demo.ores", """
                 pub fnc main(): void {
@@ -106,6 +117,47 @@ final class MixedSourceInteropTest {
                 new ByteArrayOutputStream());
 
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("hello:java"));
+    }
+
+    @Test
+    void javaInteropCannotGrowClosedStructShape() throws Exception {
+        Path source = temp.resolve("closed-struct-interop.ores");
+        Files.writeString(source, """
+                java {
+                  final class StructProbe {
+                    @SuppressWarnings({"rawtypes", "unchecked"})
+                    public static boolean shapeIsProtected(java.util.Map value) {
+                      if (value.size() != 1 || !java.util.Objects.equals(value.get("foo"), 7L)) {
+                        return false;
+                      }
+                      try {
+                        value.put("injected", 99);
+                        return false;
+                      } catch (UnsupportedOperationException expected) {
+                        return value.size() == 1 && !value.containsKey("injected");
+                      }
+                    }
+                  }
+                }
+
+                pub fnc main(): void {
+                  val value = struct{foo: int}{foo: 7};
+                  stdio.println(StructProbe.shapeIsProtected(value));
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                source,
+                trustedMixedPolicy(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        String output = out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertTrue(output.contains("true\n"), output);
     }
 
     @Test
@@ -441,6 +493,36 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void javaInteropRejectsMalformedUtf16BeforeItBecomesGuestString() throws Exception {
+        Path source = temp.resolve("bad-java-string.ores");
+        Files.writeString(source, """
+                pub fnc main(): void {
+                  stdio.println(BadStrings.unpaired());
+                  return;
+                }
+
+                java {
+                  final class BadStrings {
+                    public static String unpaired() {
+                      return String.valueOf((char) 0xd800);
+                    }
+                  }
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                LinkedProgramRunner.run(
+                        source,
+                        trustedMixedPolicy(),
+                        ExecutionProfile.serverJit(),
+                        Set.of(),
+                        new ByteArrayOutputStream(),
+                        new ByteArrayOutputStream()));
+
+        assertTrue(failure.getMessage().contains("unpaired Unicode surrogate"), failure.getMessage());
+    }
+
+    @Test
     void adversarialPolicyCannotAcquireJavaSourceInterop() {
         assertThrows(IllegalArgumentException.class, () ->
                 IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP));
@@ -451,4 +533,31 @@ final class MixedSourceInteropTest {
                 IsolatePolicy.Capability.JAVA_INTEROP,
                 IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
     }
+
+    @Test
+    void attoExtensionPreservesNativeGuestExecutionAndLegacyOres() throws Exception {
+        String guest = """
+                pub fnc main(): void {
+                  stdio.println("atto-ok");
+                  return;
+                }
+                """;
+        Path atto = temp.resolve("native.atto");
+        Files.writeString(atto, guest);
+        assertEquals(MixedSourceUnit.PrimaryLanguage.ORES,
+                MixedSourceUnit.parse(atto, guest).primaryLanguage());
+        assertEquals(MixedSourceUnit.PrimaryLanguage.ORES,
+                MixedSourceUnit.parse("/tmp/legacy.ores", "legacy.ores", guest).primaryLanguage());
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                atto,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                out,
+                new ByteArrayOutputStream());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("atto-ok"));
+    }
+
 }

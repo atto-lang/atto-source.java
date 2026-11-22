@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -377,4 +378,175 @@ final class ProjectManifestImportTest {
         assertEquals(2, build.units().size());
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("oreslang-path"));
     }
+
+    @Test
+    void actorClassMayExecuteExplicitCrossFileImportedFunction() throws Exception {
+        Path app = temp.resolve("actor-explicit-import");
+        Files.createDirectories(app);
+        Path helper = app.resolve("helper.ores");
+        Path main = app.resolve("main.ores");
+
+        Files.writeString(helper, """
+                pub fnc imported_marker(): void {
+                  stdio.stdout.write("imported");
+                  return;
+                }
+                """);
+
+        Files.writeString(main, """
+                import fnc imported_marker from "./helper.ores";
+
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    imported_marker();
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("go");
+                  await worker.get_done();
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("imported", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void resolvedSelfImportByFilenameCannotBypassActorLexicalBoundary() throws Exception {
+        Path app = temp.resolve("actor-self-import");
+        Files.createDirectories(app);
+        Path main = app.resolve("main.ores");
+
+        Files.writeString(main, """
+                import fnc helper from "./main.ores";
+
+                pub fnc helper(): int {
+                  return 7;
+                }
+
+                define actor Worker as
+                  pub run(): int {
+                    return helper();
+                  }
+                end
+
+                pub routine main(): void { return; }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(failure.getMessage().contains("cannot import itself"),
+                failure.getMessage());
+    }
+
+
+    @Test
+    void nativeAttoExtensionResolvesRelativeAndExtensionlessImports() throws Exception {
+        Path app = temp.resolve("atto-import-app");
+        Files.createDirectories(app);
+        Path helper = app.resolve("helper.atto");
+        Path main = app.resolve("main.atto");
+        Files.writeString(helper, """
+                pub fnc atto_marker(): string {
+                  return "native-atto-import";
+                }
+                """);
+        Files.writeString(main, """
+                import fnc atto_marker from "./helper";
+
+                pub fnc main(): void {
+                  stdio.println(atto_marker());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var build = LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                out,
+                new ByteArrayOutputStream());
+        assertEquals(2, build.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("native-atto-import"));
+    }
+
+    @Test
+    void explicitAttoSuffixIsNotRewrittenToLegacyOres() throws Exception {
+        Path app = temp.resolve("explicit-atto-import");
+        Files.createDirectories(app);
+        Path helperAtto = app.resolve("helper.atto");
+        Path helperOres = app.resolve("helper.ores");
+        Path main = app.resolve("main.atto");
+        Files.writeString(helperAtto, """
+                pub fnc marker(): string { return "atto"; }
+                """);
+        Files.writeString(helperOres, """
+                pub fnc marker(): string { return "ores"; }
+                """);
+        Files.writeString(main, """
+                import fnc marker from "./helper.atto";
+                pub fnc main(): void {
+                  stdio.println(marker());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), out, new ByteArrayOutputStream());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("atto"));
+        assertFalse(out.toString(StandardCharsets.UTF_8).contains("ores"));
+    }
+
+    @Test
+    void attoManifestBareImportsLinkAndExecuteAsGuest() throws Exception {
+        Path project = temp.resolve("atto-manifest-execution");
+        Path src = project.resolve("src");
+        Path tests = project.resolve("tests");
+        Files.createDirectories(src.resolve("pkg"));
+        Files.createDirectories(tests);
+        Path entry = tests.resolve("main.atto");
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "atto-test"
+                root = "."
+                [source]
+                roots = ["src"]
+                [entrypoints]
+                main = "tests/main.atto"
+                """);
+        Files.writeString(src.resolve("pkg/value.atto"), """
+                pub fnc answer(): int { return 42; }
+                """);
+        Files.writeString(entry, """
+                import fnc answer from "pkg/value";
+                pub routine main(): int { return answer(); }
+                """);
+        assertEquals(2, LinkedProgramRunner.validate(entry, Map.of()).units().size());
+        var result = LinkedProgramRunner.runWithExitStatus(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(2, result.build().units().size());
+        assertEquals(42, result.exitStatus());
+    }
+
 }

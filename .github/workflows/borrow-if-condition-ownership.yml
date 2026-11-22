@@ -1,0 +1,54 @@
+name: Borrow checker if/for predicate ownership
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
+      - "src/test/java/dev/oreslang/IfConditionOwnershipFlowTest.java"
+      - ".github/workflows/borrow-if-condition-ownership.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-head-borrow-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Pin commit and source tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mkdir -p target/borrow-flow-evidence
+          printf 'head=%s\ntree=%s\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" > target/borrow-flow-evidence/identity.txt
+          git hash-object src/main/java/dev/oreslang/types/OwnershipChecker.java >> target/borrow-flow-evidence/identity.txt
+          git hash-object src/test/java/dev/oreslang/IfConditionOwnershipFlowTest.java >> target/borrow-flow-evidence/identity.txt
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Run seven actual Java compiler ownership regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version 2>&1 | tee target/borrow-flow-evidence/java-version.txt
+          mvn -B -ntp -Dtest=IfConditionOwnershipFlowTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test | tee target/borrow-flow-evidence/maven.log
+          test -s target/surefire-reports/TEST-dev.oreslang.IfConditionOwnershipFlowTest.xml
+          sha256sum target/surefire-reports/TEST-dev.oreslang.IfConditionOwnershipFlowTest.xml > target/borrow-flow-evidence/report.sha256
+          cp target/surefire-reports/TEST-dev.oreslang.IfConditionOwnershipFlowTest.xml target/borrow-flow-evidence/
+      - name: Retain exact-head nonzero-step artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: borrow-if-condition-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/borrow-flow-evidence/
+          retention-days: 7
+          if-no-files-found: error

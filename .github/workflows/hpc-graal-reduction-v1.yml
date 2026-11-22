@@ -1,0 +1,53 @@
+name: Atto HPC Graal guest numerical parity slice
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/AttoHpcTileGuestTest.java'
+      - 'src/test/resources/atto/hpc-reduction-v1/**'
+      - '.github/workflows/hpc-graal-reduction-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  graal-hpc-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify reviewed source identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "HPC_JAVA_SOURCE_SHA=$EXPECTED_HEAD"
+          echo "HPC_JAVA_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          test "$(git rev-parse HEAD:src/test/resources/atto/hpc-reduction-v1/i64-fixed-tiles.atto)" = "9deb9935b4f65b4d53de92f200291a28cdb02a79"
+      - name: Install GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute genuine linked numerical guest tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AttoHpcTileGuestTest -DfailIfNoTests=true test
+          test -f target/surefire-reports/TEST-dev.oreslang.AttoHpcTileGuestTest.xml
+          echo "JAVA_HPC_GRAAL_JUNIT_EXECUTED head=$(git rev-parse HEAD)"
+      - name: Preserve JUnit execution output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: atto-hpc-graal-junit
+          path: target/surefire-reports/*AttoHpcTileGuestTest*
+          if-no-files-found: warn

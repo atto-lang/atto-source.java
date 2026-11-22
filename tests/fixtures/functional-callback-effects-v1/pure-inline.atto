@@ -1,0 +1,9 @@
+// Real AttoLang guest: pure lambda can be specialized without I/O.
+fnc increment(Option<int> value): Option<int> {
+  return value.map((int x) -> x + 1);
+}
+
+pub fnc main(): void {
+  stdio.println(increment(Some(41)).unwrap());
+  return;
+}

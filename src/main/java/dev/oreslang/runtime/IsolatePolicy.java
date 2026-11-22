@@ -33,6 +33,7 @@ public record IsolatePolicy(
         STDIN,
         STDOUT,
         PROCESS_INFO,
+        PROCESS_EXIT,
         GC_CONTROL,
         ACTOR_SHARE_READONLY,
         ACTOR_SPAWN,
@@ -48,6 +49,8 @@ public record IsolatePolicy(
         JAVA_SOURCE_INTEROP,
         FFI,
         NATIVE,
+        // Explicit guest-to-host workflow service grant; never implied by FFI.
+        WORKFLOW_STORAGE,
         REFLECTION,
         CHILD_PROCESS,
         THREAD_CREATE,
@@ -67,14 +70,32 @@ public record IsolatePolicy(
                 && !capabilities.contains(Capability.JAVA_INTEROP)) {
             throw new IllegalArgumentException("JAVA_SOURCE_INTEROP requires JAVA_INTEROP");
         }
-        if (adversarial && capabilities.contains(Capability.THREAD_CREATE)) {
-            throw new IllegalArgumentException("adversarial isolates cannot grant THREAD_CREATE");
-        }
-        if (adversarial && capabilities.contains(Capability.JAVA_INTEROP)) {
-            throw new IllegalArgumentException("adversarial isolates cannot grant JAVA_INTEROP");
-        }
-        if (adversarial && capabilities.contains(Capability.JAVA_SOURCE_INTEROP)) {
-            throw new IllegalArgumentException("adversarial isolates cannot grant JAVA_SOURCE_INTEROP");
+        // An untrusted/hostile VM isolate must never acquire an authority
+        // that can escape Oreslang's scoped permission checks. In particular,
+        // FFI and subprocess capabilities are not sandboxed by a guest-level
+        // allow-read/allow-net policy and cannot be delegated to this tier.
+        if (adversarial) {
+            for (Capability forbidden : new Capability[] {
+                    Capability.THREAD_CREATE,
+                    Capability.JAVA_INTEROP,
+                    Capability.JAVA_SOURCE_INTEROP,
+                    Capability.FFI,
+                    Capability.NATIVE,
+                    Capability.REFLECTION,
+                    Capability.POLYGLOT,
+                    Capability.CHILD_PROCESS,
+                    Capability.PROCESS_EXIT,
+                    Capability.GC_CONTROL,
+                    Capability.SHARED_MEMORY,
+                    Capability.ACTOR_SHARE_READONLY,
+                    Capability.GPU,
+                    Capability.HOT_CODE_LOAD
+            }) {
+                if (capabilities.contains(forbidden)) {
+                    throw new IllegalArgumentException(
+                            "adversarial isolates cannot grant " + forbidden);
+                }
+            }
         }
     }
 
@@ -102,7 +123,7 @@ public record IsolatePolicy(
     /** Restricted local/test baseline. Java interop/FFI/native/reflection/process spawning remain denied. */
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
-                Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO, Capability.GC_CONTROL,
+                Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO, Capability.PROCESS_EXIT, Capability.GC_CONTROL,
                         Capability.ACTOR_SHARE_READONLY, Capability.ACTOR_SPAWN,
                         Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
@@ -137,7 +158,7 @@ public record IsolatePolicy(
      * available and enforces guest/isolate resource limits.
      */
     public Context.Builder restrictedContextBuilder() {
-        return restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of());
+        return restrictedContextBuilder(ExecutionProfile.parse(NativeBuildMode.defaultExecutionMode(), "server"), Set.of());
     }
 
     public Context.Builder restrictedContextBuilder(ExecutionProfile profile) {
@@ -163,13 +184,28 @@ public record IsolatePolicy(
             Set<String> allowedHostClasses,
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode) {
+        NativeBuildMode.requireCompatible(profile);
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
+        // Host-class lookup and accessible members are separate authorities.
+        // A narrow method selector permits class lookup but exposes only the
+        // exact manifest-approved overload to Graal HostAccess.
+        Set<String> lookupClasses = hostClasses.stream()
+                .map(grant -> SafeHostMemberManifest.isMemberSelector(grant)
+                        ? SafeHostMemberManifest.className(grant) : grant)
+                .collect(Collectors.toUnmodifiableSet());
         if (!hostClasses.isEmpty()) {
             require(Capability.JAVA_INTEROP, "Java host imports");
             if (adversarial) {
                 throw new SecurityException("Java host imports are disabled for adversarial isolates");
             }
-            for (String className : hostClasses) validateHostClassAuthority(className);
+            for (String className : lookupClasses) validateHostClassAuthority(className);
+            for (String grant : hostClasses) {
+                if (SafeHostMemberManifest.isMemberSelector(grant) &&
+                        hostClasses.contains(SafeHostMemberManifest.className(grant))) {
+                    throw new IllegalArgumentException(
+                            "class-wide and method-scoped Java grants cannot be mixed for the same class");
+                }
+            }
         }
 
         HostAccess hostAccess;
@@ -183,7 +219,7 @@ public record IsolatePolicy(
 
         Context.Builder builder = Context.newBuilder(OresLanguage.ID)
                 .allowHostAccess(hostAccess)
-                .allowHostClassLookup(hostClasses.isEmpty() ? ignored -> false : hostClasses::contains)
+                .allowHostClassLookup(lookupClasses.isEmpty() ? ignored -> false : lookupClasses::contains)
                 .allowHostClassLoading(false)
                 .allowPolyglotAccess(PolyglotAccess.NONE)
                 .allowEnvironmentAccess(EnvironmentAccess.NONE)
@@ -203,6 +239,14 @@ public record IsolatePolicy(
          */
         if (System.getProperty("polyglot.engine.IsolateLibrary") != null) {
             builder.allowExperimentalOptions(true);
+        }
+
+        if (!profile.guestJitAllowed() && NativeBuildMode.kind() != NativeBuildMode.Kind.AOT) {
+            try (org.graalvm.polyglot.Engine probe = org.graalvm.polyglot.Engine.create()) {
+                if (probe.getOptions().get("engine.Compilation") != null) {
+                    builder.allowExperimentalOptions(true).option("engine.Compilation", "false");
+                }
+            }
         }
 
         if (adversarial) {
@@ -284,15 +328,38 @@ public record IsolatePolicy(
                 .allowAccessInheritance(false);
         ClassLoader loader = Thread.currentThread().getContextClassLoader();
 
-        for (String className : hostClasses) {
+        for (String grant : hostClasses) {
+            final Method approved = SafeHostMemberManifest.isMemberSelector(grant)
+                    ? SafeHostMemberManifest.resolve(grant) : null;
+            String className = approved == null
+                    ? grant : approved.getDeclaringClass().getName();
             final Class<?> type;
-            try {
-                type = Class.forName(className, false, loader);
-            } catch (ClassNotFoundException failure) {
-                throw new IllegalArgumentException("allowlisted Java host class is unavailable: " + className, failure);
+            if (approved != null) {
+                // Statically rooted manifest methods never run a dynamic
+                // Class.forName lookup or scan arbitrary JAR/classpath entries.
+                type = approved.getDeclaringClass();
+            } else {
+                try {
+                    type = Class.forName(className, false, loader);
+                } catch (ClassNotFoundException failure) {
+                    throw new IllegalArgumentException(
+                            "allowlisted Java host class is unavailable: " + className, failure);
+                }
             }
             if (!Modifier.isPublic(type.getModifiers())) {
                 throw new IllegalArgumentException("allowlisted Java host class must be public: " + className);
+            }
+            if (approved != null) {
+                // This branch never exposes constructors, mutable fields or
+                // non-manifested methods on the same otherwise look-upable class.
+                if (approved.getDeclaringClass() != type ||
+                        !Modifier.isPublic(approved.getModifiers()) ||
+                        !Modifier.isStatic(approved.getModifiers())) {
+                    throw new IllegalArgumentException(
+                            "Java host method grant must resolve to an exact public static method");
+                }
+                access.allowAccess(approved);
+                continue;
             }
 
             for (Constructor<?> constructor : type.getDeclaredConstructors()) {
@@ -365,13 +432,15 @@ public record IsolatePolicy(
     }
 
     public static ExecutionProfile executionProfileFromApplicationArguments(String[] args) {
-        String mode = "JIT";
+        String mode = NativeBuildMode.defaultExecutionMode();
         String platform = "SERVER";
         for (String arg : args) {
             if (arg.startsWith("--ores-execution-mode=")) mode = arg.substring("--ores-execution-mode=".length());
             else if (arg.startsWith("--ores-platform=")) platform = arg.substring("--ores-platform=".length());
         }
-        return ExecutionProfile.parse(mode, platform);
+        ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
+        NativeBuildMode.requireCompatible(profile);
+        return profile;
     }
 
     private static String bytes(long value) {

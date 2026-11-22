@@ -166,6 +166,7 @@ final class GenericsAndOperatorsHardeningTest {
     @Test
     void qualifiedGenericCallsInferButUnspecializedGenericValuesAreRejected() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+
                 define module util
                   pub fnc identity<T>(T value): T {
                     return value;
@@ -360,6 +361,7 @@ final class GenericsAndOperatorsHardeningTest {
     @Test
     void staticFunctionsOwnTheirGenericParametersAndCannotCaptureClassGenerics() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+
                 define module model
                   define class Box<T> as
                     pub static fnc identity<U>(U value): U {
@@ -495,11 +497,11 @@ final class GenericsAndOperatorsHardeningTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc bits(int a, int b): int {
-                    return ((~a & b) | (a ^ b)) << 1 >> 1 >>> 1;
+                    return ((~a & b) | Integer.bitXor(a, b)) <<< 1 >>> 1 >>> 1;
                   }
 
                   fnc logic(bool a, bool b): bool {
-                    return a && b || a ^^ b;
+                    return a && b || Xor(a, b);
                   }
                 end
                 """)));
@@ -532,8 +534,8 @@ final class GenericsAndOperatorsHardeningTest {
                   }
 
                   pub fnc main(): void {
-                    stdio.println((5 & 3) | (8 >> 2));
-                    stdio.println(true ^^ false);
+                    stdio.println((5 & 3) | (8 >>> 2));
+                    stdio.println(Xor(true, false));
                     stdio.println(false && [true][99]);
                     stdio.println(true || [false][99]);
                     stdio.println(~0);

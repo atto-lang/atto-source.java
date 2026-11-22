@@ -1,0 +1,1253 @@
+package dev.oreslang.runtime;
+
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
+
+/** HTTP/1.1 transport. Guest code sees revocable exchange capabilities, never sockets. */
+public final class NativeHttp implements AutoCloseable {
+    private final OresContext context;
+    private final ActorRuntime actorRuntime;
+    private final Object hostOwner;
+    private final Set<Server> servers = ConcurrentHashMap.newKeySet();
+    private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
+    private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
+    private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
+        Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
+    });
+    private volatile boolean closed;
+    private final Set<Handler> pools = ConcurrentHashMap.newKeySet();
+
+    public NativeHttp(OresContext context) {
+        // OresContext constructs NativeHttp as a field initializer, before its
+        // ActorRuntime is assigned. Resolve that runtime lazily on use.
+        this(Objects.requireNonNull(context), null);
+    }
+
+    /**
+     * Trusted package-private loopback-only fixture. Never expose this entry
+     * to Oreslang guest code or general network binding.
+     */
+    NativeHttp(ActorRuntime testRuntime) {
+        this(null, Objects.requireNonNull(testRuntime));
+    }
+
+    private NativeHttp(OresContext context, ActorRuntime actorRuntime) {
+        this.context = context;
+        this.actorRuntime = context == null ? Objects.requireNonNull(actorRuntime) : null;
+        this.hostOwner = context == null ? new Object() : context;
+        timers.setRemoveOnCancelPolicy(true);
+        timers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+    }
+
+    /** Lazily resolve production ActorRuntime after OresContext initialization. */
+    private ActorRuntime actors() {
+        return Objects.requireNonNull(context == null ? actorRuntime : context.actors(),
+                "NativeHttp actor runtime not initialized");
+    }
+
+    public synchronized Server listen(String host, int port, int capacity, int bodyLimit, int deadlineMillis) {
+        long perf = CorePerf.start();
+        if (closed) throw new IllegalStateException("HTTP runtime closed");
+        if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP listeners belong to the supervisor");
+        if (host == null || host.isBlank() || port < 0 || port > 65535
+                || capacity < 1 || capacity > 65536 || bodyLimit < 1 || bodyLimit > 64 * 1024 * 1024
+                || deadlineMillis < 1) throw new IllegalArgumentException("invalid HTTP listener limits");
+        if (context == null) {
+            if (!host.equals("127.0.0.1") && !host.equals("::1"))
+                throw new SecurityException("test-only NativeHttp must bind loopback literal");
+        } else {
+            context.requirePermission(RuntimePermissions.Permission.NET,
+                    host.toLowerCase(Locale.ROOT) + ":" + port, "http.listen");
+        }
+        configureTransportDefaults();
+        try {
+            Server server = new Server(HttpServer.create(new InetSocketAddress(host, port), capacity),
+                    capacity, bodyLimit, deadlineMillis);
+            servers.add(server);
+            server.transport.start();
+            CorePerf.end(CorePerf.HTTP_LISTEN, perf);
+            if (CoreDebug.enabled()) {
+                CoreDebug.event(CoreDebug.HTTP_LISTENER_READY, server.transport.getAddress().getPort());
+            }
+            return server;
+        } catch (IOException e) { throw new IllegalStateException("HTTP listen failed", e); }
+    }
+
+    // JDK HTTP server limits are JVM-wide and read on its first initialization.
+    // Embedders that initialize it earlier must configure these themselves.
+    /** Validate the decoded HTTP header collection before a guest sees the request.
+     * JDK parser byte limits apply separately before this method is reached.
+     * This additional per-field limit rejects oversized-but-otherwise-valid
+     * requests that the JDK's aggregate 32 KiB maximum would permit.
+     */
+    static void validateHeadersForAdmission(
+            com.sun.net.httpserver.Headers headers, String protocol, int bodyLimit) {
+        List<String> hosts = headers.get("Host");
+        if (("HTTP/1.1".equalsIgnoreCase(protocol) && hosts == null)
+                || (hosts != null && (hosts.size() != 1 || !validHostValue(hosts.get(0))))) {
+            // Host is required for HTTP/1.1 and, whenever present, must not
+            // permit duplicate or ambiguous routing targets.
+            throw new IllegalArgumentException("invalid Host header");
+        }
+        List<String> lengths = headers.get("Content-Length");
+        List<String> transfers = headers.get("Transfer-Encoding");
+        if (lengths != null && (lengths.size() != 1 || lengths.get(0) == null
+                || !lengths.get(0).matches("[0-9]+"))) {
+            throw new IllegalArgumentException("ambiguous Content-Length");
+        }
+        if (transfers != null && (lengths != null || transfers.size() != 1
+                || transfers.get(0) == null
+                || !"chunked".equalsIgnoreCase(transfers.get(0).trim())
+                || !"HTTP/1.1".equalsIgnoreCase(protocol))) {
+            // Do not let different HTTP parsers disagree on body framing.
+            throw new IllegalArgumentException("ambiguous Transfer-Encoding");
+        }
+        int size = 0;
+        for (var entry : headers.entrySet()) {
+            String name = entry.getKey();
+            size += name.length();
+            for (String value : entry.getValue()) {
+                if (value == null || name.length() + value.length() > 8192) {
+                    throw new IllegalArgumentException("HTTP header field too large");
+                }
+                size += value.length();
+            }
+        }
+        if (size > 32768 || headers.size() > 100) {
+            throw new IllegalArgumentException("headers too large");
+        }
+        if (lengths != null) {
+            long parsed = Long.parseLong(lengths.get(0));
+            if (parsed > bodyLimit) throw new RequestBodyTooLargeException();
+        }
+    }
+
+    /**
+     * A Host value is a single authority, not merely an ASCII string.
+     * Do not resolve DNS names or silently accept malformed ports, multiple
+     * colons, zones or request-target delimiters before guest dispatch.
+     */
+    private static boolean validHostValue(String host) {
+        if (host == null || host.isEmpty() || host.length() > 255) return false;
+        for (int i = 0; i < host.length(); i++) {
+            char c = host.charAt(i);
+            if (c <= 0x20 || c >= 0x7f || c == '/' || c == '\\'
+                    || c == '?' || c == '#' || c == '@' || c == ','
+                    || c == '%') return false;
+        }
+        String port = null;
+        if (host.charAt(0) == '[') {
+            int close = host.indexOf(']');
+            if (close < 2 || host.indexOf('[', 1) >= 0
+                    || host.indexOf(']', close + 1) >= 0
+                    || !validIpv6Literal(host.substring(1, close))) return false;
+            if (close + 1 < host.length()) {
+                if (host.charAt(close + 1) != ':') return false;
+                port = host.substring(close + 2);
+            }
+        } else {
+            if (host.indexOf('[') >= 0 || host.indexOf(']') >= 0) return false;
+            int colon = host.indexOf(':');
+            String name = host;
+            if (colon >= 0) {
+                if (host.indexOf(':', colon + 1) >= 0) return false;
+                name = host.substring(0, colon);
+                port = host.substring(colon + 1);
+            }
+            if (name.isEmpty() || name.startsWith(".") || name.contains("..")) return false;
+            // Conservative ASCII reg-name policy. Avoid ambiguity between
+            // downstream URI, proxy and JDK host parsers.
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                        || (c >= '0' && c <= '9') || c == '.' || c == '-'
+                        || c == '_' || c == '~')) return false;
+            }
+            // Numeric-only reg-names are ambiguous: some host resolvers
+            // interpret short, integer or octal IPv4 forms differently.
+            // Only a canonical four-octet decimal IPv4 literal is admitted.
+            boolean numericAddress = true;
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (c != '.' && (c < '0' || c > '9')) {
+                    numericAddress = false;
+                    break;
+                }
+            }
+            if (numericAddress && !validIpv4Tail(name)) return false;
+        }
+        if (port == null) return true;
+        if (port.isEmpty() || port.length() > 5) return false;
+        int number = 0;
+        for (int i = 0; i < port.length(); i++) {
+            char c = port.charAt(i);
+            if (c < '0' || c > '9') return false;
+            number = number * 10 + (c - '0');
+        }
+        return number <= 65535;
+    }
+
+    /** Validate an IPv6 address literal without DNS, I/O or zone identifiers. */
+    private static boolean validIpv6Literal(String value) {
+        if (value.isEmpty() || value.length() > 45 || !value.contains(":")
+                || value.contains(":::")) return false;
+        int compression = value.indexOf("::");
+        if (compression >= 0 && value.indexOf("::", compression + 2) >= 0) return false;
+        if (compression < 0 && (value.startsWith(":") || value.endsWith(":")))
+            return false;
+        String left = compression < 0 ? value : value.substring(0, compression);
+        String right = compression < 0 ? "" : value.substring(compression + 2);
+        if (compression >= 0 && (left.endsWith(":") || right.startsWith(":")))
+            return false;
+        String segments = compression < 0 ? value :
+                left.isEmpty() ? right : right.isEmpty() ? left : left + ":" + right;
+        String[] groups = segments.isEmpty() ? new String[0] : segments.split(":", -1);
+        int count = 0;
+        for (int i = 0; i < groups.length; i++) {
+            String group = groups[i];
+            if (group.indexOf('.') >= 0) {
+                if (i != groups.length - 1 || !validIpv4Tail(group)) return false;
+                count += 2;
+            } else {
+                if (group.isEmpty() || group.length() > 4) return false;
+                for (int j = 0; j < group.length(); j++) {
+                    char c = group.charAt(j);
+                    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+                            || (c >= 'A' && c <= 'F'))) return false;
+                }
+                count++;
+            }
+        }
+        return compression < 0 ? count == 8 : count < 8;
+    }
+
+    private static boolean validIpv4Tail(String value) {
+        String[] parts = value.split("\\.", -1);
+        if (parts.length != 4) return false;
+        for (String part : parts) {
+            if (part.isEmpty() || part.length() > 3
+                    || (part.length() > 1 && part.charAt(0) == '0')) return false;
+            int octet = 0;
+            for (int i = 0; i < part.length(); i++) {
+                char c = part.charAt(i);
+                if (c < '0' || c > '9') return false;
+                octet = octet * 10 + c - '0';
+            }
+            if (octet > 255) return false;
+        }
+        return true;
+    }
+
+    /** Dedicated transport-owned quota marker: never classify by message text. */
+    static final class RequestBodyTooLargeException extends IllegalArgumentException {
+        RequestBodyTooLargeException() { super("body too large"); }
+    }
+
+    /** An invalid request-body framing stream is a client error, not HTTP 500.
+     * Keep response-side I/O failures as server errors, and preserve 413 limits.
+     */
+    static int operationFailureStatus(Throwable failure, boolean requestBodyRead) {
+        if (requestBodyRead && failure instanceof RequestBodyTooLargeException) return 413;
+        if (requestBodyRead && failure instanceof IOException) return 400;
+        // Strict UTF-8 decoding in bodyText() wraps CharacterCodingException.
+        // This is malformed client payload, not an internal server error.
+        // Both the request-body boundary and the decoder's typed cause must
+        // match, so unrelated handler failures cannot masquerade as HTTP 400.
+        if (requestBodyRead && failure instanceof IllegalArgumentException
+                && "invalid UTF-8".equals(failure.getMessage())
+                && failure.getCause() instanceof CharacterCodingException) return 400;
+        return 500;
+    }
+
+    private static void configureTransportDefaults() {
+        Map.of("jdk.httpserver.maxConnections", "1024",
+               "sun.net.httpserver.maxReqHeaders", "100",
+               "sun.net.httpserver.maxReqHeaderSize", "32768",
+               "sun.net.httpserver.maxReqTime", "15",
+               "sun.net.httpserver.maxRspTime", "30",
+               "sun.net.httpserver.drainAmount", "1",
+               "sun.net.httpserver.nodelay", "true").forEach((key, value) -> System.getProperties().putIfAbsent(key, value));
+    }
+
+    public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
+        if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
+        if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
+        return new Handler(code, type, kind);
+    }
+
+    /** Supervisor-owned code registration and optional bounded reusable worker pool. */
+    public final class Handler {
+        private final ActorRuntime.ActorCodeExecutor code;
+        private final String type;
+        private final ActorRuntime.ActorKind kind;
+        private final String binding;
+        private final String authorityClass;
+        private final long scopeGeneration;
+        private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
+            this(code, type, kind, type, "local-default", 0);
+        }
+        private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind,
+                        String binding, String authorityClass, long scopeGeneration) {
+            this.code = code;
+            this.type = type;
+            this.kind = kind;
+            this.binding = receiptLabel(binding, "binding");
+            this.authorityClass = receiptLabel(authorityClass, "authority class");
+            if (scopeGeneration < 0)
+                throw new IllegalArgumentException("HTTP dispatch receipt scope generation cannot be negative");
+            this.scopeGeneration = scopeGeneration;
+        }
+        private Worker[] workers;
+        private volatile boolean poolDiscarded;
+        private boolean poolDrainRequested;
+        NativeHttp ownerHttp() { return NativeHttp.this; }
+        private int cursor;
+        private long created, reused, dispatchSequence;
+        public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
+        private void supervisor() {
+            if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP pools belong to the supervisor");
+        }
+        /**
+         * Bind an application-level service identity and authority class into
+         * every handler dispatch receipt. These labels are authenticated
+         * transport metadata, not permission grants: they cannot widen the
+         * actor's runtime capabilities.
+         */
+        public Handler scoped(String binding, String authorityClass, long scopeGeneration) {
+            supervisor();
+            if (workers != null) throw new IllegalStateException("scope must be configured before pooled");
+            if (scopeGeneration <= 0)
+                throw new IllegalArgumentException("scoped HTTP dispatch requires a positive generation");
+            return new Handler(code, type, kind, binding, authorityClass, scopeGeneration);
+        }
+        public Handler pooled(int size) {
+            supervisor();
+            if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
+            synchronized (NativeHttp.this) {
+                if (closed) throw new IllegalStateException("HTTP runtime closed");
+                Handler pool = new Handler(code, type, kind, binding, authorityClass, scopeGeneration);
+                pool.workers = new Worker[size];
+                pools.add(pool);
+                return pool;
+            }
+        }
+        public synchronized long created() { supervisor(); return created; }
+        public synchronized long reused() { supervisor(); return reused; }
+        /** True only for worker pools which can be warmed before routing publication. */
+        public boolean pooled() { return workers != null; }
+
+        /** Nonblocking health snapshot for the supervisor publication boundary. */
+        boolean readyNow() {
+            supervisor();
+            synchronized (this) {
+                if (workers == null || poolDiscarded || NativeHttp.this.closed) return false;
+                for (Worker instance : workers) {
+                    if (instance == null || !instance.requests.isEmpty()
+                            || !instance.actor.ready().isDone()
+                            || instance.actor.ready().isCompletedExceptionally()
+                            || !actors().isAlive(instance.actor)) return false;
+                }
+                return true;
+            }
+        }
+
+        /**
+         * Prestart each pooled worker and verify its actual actor ready receipt.
+         * A failed startup cannot certify a candidate for routing publication.
+         * The returned Future is host-owned; no carrier thread is parked.
+         */
+        public OresFuture<Void> warmup() {
+            supervisor();
+            if (workers == null) throw new IllegalStateException("rolling handler must be pooled");
+            final java.util.List<Worker> prepared = new java.util.ArrayList<>();
+            synchronized (this) {
+                for (int index = 0; index < workers.length; index++) {
+                    // worker() round-robins through each slot, reusing healthy ones.
+                    prepared.add(worker());
+                }
+            }
+            OresFuture<Void> receipt = new OresFuture<>();
+            java.util.concurrent.atomic.AtomicInteger pending =
+                    new java.util.concurrent.atomic.AtomicInteger(prepared.size());
+            for (Worker instance : prepared) {
+                instance.actor.ready().whenCompleteRuntime((ignored, failure) -> {
+                    if (failure != null || !actors().isAlive(instance.actor)) {
+                        receipt.failFromRuntime(failure == null
+                                ? new IllegalStateException("warmed worker exited")
+                                : OresFuture.unwrap(failure));
+                    } else if (pending.decrementAndGet() == 0) {
+                        receipt.completeFromRuntime(null);
+                    }
+                });
+            }
+            return receipt;
+        }
+
+        /** Stop an unpublished failed/stale pool; never use for active retirement. */
+        void stopUnpublishedPool() {
+            supervisor();
+            if (workers == null) return;
+            synchronized (this) { poolDiscarded = true; }
+            try { stopPool(); }
+            finally { pools.remove(this); }
+        }
+
+        /**
+         * After all accepted exchanges drain, stop workers gracefully without
+         * destroying their actor memory or code image. Repeated calls are
+         * idempotent and never stop another configuration generation.
+         */
+        void requestGracefulPoolStop() {
+            supervisor();
+            final java.util.List<Worker> existing;
+            synchronized (this) {
+                if (workers == null) throw new IllegalStateException("handler is not pooled");
+                // Graceful stop is idempotent in ActorRuntime. Retry every
+                // actor on subsequent calls if one earlier stop signal failed.
+                poolDrainRequested = true;
+                poolDiscarded = true;
+                existing = java.util.Arrays.stream(workers)
+                        .filter(Objects::nonNull).toList();
+            }
+            Throwable firstFailure = null;
+            for (Worker worker : existing) {
+                try { worker.actor.gracefulStop(); }
+                catch (RuntimeException | Error failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+            if (firstFailure instanceof Error fatal) throw fatal;
+            if (firstFailure instanceof RuntimeException runtime) throw runtime;
+        }
+
+        private synchronized long nextDispatchSequence() {
+            if (dispatchSequence == Long.MAX_VALUE)
+                throw new IllegalStateException("HTTP handler dispatch sequence exhausted");
+            return ++dispatchSequence;
+        }
+        private synchronized Worker worker() {
+            if (poolDiscarded || NativeHttp.this.closed)
+                throw new RejectedExecutionException("HTTP worker pool discarded or transport closed");
+            int slot = cursor;
+            cursor = (cursor + 1) % workers.length;
+            Worker worker = workers[slot];
+            if (worker != null && !worker.actor.done().isDone()) {
+                if (!actors().isAlive(worker.actor)) throw new RejectedExecutionException("HTTP worker is stopping");
+                reused++;
+                return worker;
+            }
+            worker = new Worker(actors().spawnCodeActor(kind, code, type));
+            workers[slot] = worker;
+            created++;
+            Worker attached = worker;
+            worker.actor.done().whenCompleteRuntime((ignored, failure) -> {
+                for (State state : List.copyOf(attached.requests)) state.abort(500);
+            });
+            return worker;
+        }
+        private void stopPool() {
+            Worker[] snapshot;
+            synchronized (this) { snapshot = workers.clone(); }
+            for (Worker worker : snapshot) if (worker != null) worker.actor.cancel();
+        }
+        private final class Worker {
+            final ActorRuntime.ActorRef<Object> actor;
+            final Set<State> requests = ConcurrentHashMap.newKeySet();
+            Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
+        }
+        public void dispatch(Exchange exchange) {
+            if (poolDiscarded)
+                throw new RejectedExecutionException("discarded HTTP worker pool");
+            long perf = CorePerf.start();
+            if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
+            synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
+            if (workers != null) {
+                try {
+                    Worker worker = worker();
+                    synchronized (exchange.state) {
+                        exchange.state.poolWorker = worker;
+                        worker.requests.add(exchange.state);
+                        // Reused workers have no per-request startup. Do not retain
+                        // one actor.done callback per completed request.
+                        exchange.state.readyNanos = exchange.state.spawnNanos;
+                    }
+                    worker.actor.send(exchange.moveTo(worker.actor, type, binding,
+                            authorityClass, scopeGeneration, nextDispatchSequence(),
+                            scopeGeneration > 0));
+                } catch (RuntimeException failure) {
+                    exchange.state.abort(500, false);
+                } finally {
+                    CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
+                }
+                return;
+            }
+            ActorRuntime.ActorRef<Object> actor = null;
+            try {
+                long spawnPerf = CorePerf.start();
+                actor = actors().spawnCodeActor(kind, code, type);
+                CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
+                actor.ready().whenCompleteRuntime((ignored, failure) -> {
+                    long spawn;
+                    long ready;
+                    synchronized (exchange.state) {
+                        exchange.state.readyNanos = System.nanoTime();
+                        spawn = exchange.state.spawnNanos;
+                        ready = exchange.state.readyNanos;
+                    }
+                    CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
+                });
+                actor.send(exchange.moveTo(actor, type, binding,
+                        authorityClass, scopeGeneration, nextDispatchSequence(),
+                        scopeGeneration > 0));
+            } catch (RuntimeException failure) {
+                if (actor != null) actor.cancel();
+                exchange.state.abort(500);
+            } finally {
+                CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
+            }
+        }
+    }
+
+    public Exchange claim(String token) {
+        Exchange exchange = transfers.get(token);
+        if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
+        synchronized (exchange.state) {
+            exchange.checkOwner();
+            DispatchReceipt receipt = exchange.state.dispatchReceipt;
+            if (receipt != null && receipt.attested()) {
+                Optional<ActorRuntime.ActorId> currentId = ActorRuntime.currentActorId();
+                OptionalLong currentGeneration = ActorRuntime.currentActorGeneration();
+                ActorRuntime.ActorKind currentKind = ActorRuntime.currentActorKind();
+                if (currentId.isEmpty()
+                        || currentGeneration.isEmpty()
+                        || currentKind == null
+                        || !receipt.actorId().equals(currentId.get())
+                        || receipt.actorGeneration() != currentGeneration.getAsLong()
+                        || receipt.actorKind() != currentKind
+                        || receipt.exchangeGeneration() != exchange.generation) {
+                    throw new SecurityException("HTTP dispatch receipt does not match current actor incarnation");
+                }
+            }
+            if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
+            exchange.state.ticket = null;
+            exchange.state.claimedNanos = System.nanoTime();
+            CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
+            return exchange;
+        }
+    }
+
+    private Object owner() {
+        if (ActorRuntime.inActorExecution()) {
+            if (ActorRuntime.currentActorRuntime() != actors()) throw new SecurityException("foreign actor runtime");
+            return ActorRuntime.currentActorId().orElseThrow();
+        }
+        return hostOwner;
+    }
+
+    public final class Server implements AutoCloseable {
+        NativeHttp ownerHttp() { return NativeHttp.this; }
+        private final HttpServer transport;
+        private final Semaphore admission;
+        private final HttpResponseBodyOpenGate bodyOpenGate;
+        private final int bodyLimit, deadlineMillis;
+        private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
+        private final Set<State> active = ConcurrentHashMap.newKeySet();
+        private OresFuture<Object> waiter;
+        private NativeHttpRollingDispatcher rollingOwner;
+        private boolean stopped, transportStopped;
+        private OresFuture<Object> drained;
+        private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
+
+        private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
+            this.transport = transport; this.admission = new Semaphore(capacity);
+            this.bodyLimit = bodyLimit; this.deadlineMillis = deadlineMillis;
+            // A timed-out host Supplier can ignore interrupts. Retain its
+            // opener slot until it *actually returns*, even after HTTP admission
+            // is released, so hostile suppliers cannot create unbounded tasks.
+            this.bodyOpenGate = new HttpResponseBodyOpenGate(Math.min(32, capacity), io);
+            // Preserve the original executor when diagnostics are off. In
+            // diagnostic mode, measure the JDK-to-virtual-thread handoff.
+            if (CorePerf.enabled() || CoreDebug.enabled()) {
+                transport.setExecutor(task -> {
+                    long queued = CorePerf.start();
+                    io.execute(() -> {
+                        CorePerf.end(CorePerf.HTTP_EXECUTOR_QUEUE, queued);
+                        if (CoreDebug.enabled()) {
+                            CoreDebug.event(CoreDebug.HTTP_EXECUTOR_TASK_STARTED, 0L);
+                        }
+                        task.run();
+                    });
+                });
+            } else {
+                transport.setExecutor(io);
+            }
+            transport.createContext("/", this::receive);
+        }
+        private void supervisor() {
+            if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP server is supervisor-owned");
+        }
+        public int port() { supervisor(); return transport.getAddress().getPort(); }
+        public long accepted() { supervisor(); return accepted.get(); }
+        public long rejected() { supervisor(); return rejected.get(); }
+        public long completed() { supervisor(); return completed.get(); }
+        public int active() { supervisor(); return active.size(); }
+
+        /** A rolling dispatcher exclusively owns this listener's accept lane. */
+        synchronized void claimRollingDispatcher(NativeHttpRollingDispatcher owner) {
+            supervisor();
+            Objects.requireNonNull(owner);
+            if (stopped || rollingOwner != null || waiter != null || !pending.isEmpty() || !active.isEmpty())
+                throw new IllegalStateException("HTTP accept lane already owned or closed");
+            rollingOwner = owner;
+        }
+        synchronized void releaseRollingDispatcher(NativeHttpRollingDispatcher owner) {
+            if (rollingOwner == owner) rollingOwner = null;
+        }
+        synchronized OresFuture<Object> acceptForRolling(NativeHttpRollingDispatcher owner) {
+            if (rollingOwner != owner)
+                throw new SecurityException("unowned HTTP rolling accept");
+            return acceptOwned();
+        }
+        public synchronized OresFuture<Object> accept() {
+            supervisor();
+            if (rollingOwner != null)
+                throw new IllegalStateException("HTTP accept lane reserved by rolling dispatcher");
+            return acceptOwned();
+        }
+        private OresFuture<Object> acceptOwned() {
+            if (stopped) return OresFuture.failed(new IllegalStateException("HTTP server closed"));
+            if (waiter != null) throw new IllegalStateException("only one pending HTTP accept is permitted");
+            Exchange exchange = pending.poll();
+            while (exchange != null && exchange.state.terminal) exchange = pending.poll();
+            if (exchange != null) return OresFuture.completed(exchange);
+            waiter = new OresFuture<>(() -> false, () -> { });
+            return waiter;
+        }
+        private void receive(HttpExchange raw) {
+            long perf = CorePerf.start();
+            try {
+            if (!admission.tryAcquire()) { rejected.incrementAndGet(); reject(raw, 503); return; }
+            State state = null;
+            try {
+                validateRequest(raw);
+                state = new State(this, raw);
+                synchronized (this) {
+                    if (stopped) { admission.release(); reject(raw, 503); return; }
+                    active.add(state); accepted.incrementAndGet();
+                    State timed = state;
+                    long schedulePerf = CorePerf.start();
+                    state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
+                    CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
+                    Exchange exchange = new Exchange(state, hostOwner, 0);
+                    if (waiter == null) pending.add(exchange);
+                    else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
+                }
+            } catch (IllegalArgumentException invalid) {
+                admission.release(); reject(raw, invalid instanceof RequestBodyTooLargeException ? 413 : 400);
+            } catch (RuntimeException failure) {
+                if (state != null && active.contains(state)) state.abort(500);
+                else { admission.release(); raw.close(); }
+            }
+            } finally {
+                CorePerf.end(CorePerf.HTTP_RECEIVE, perf);
+            }
+        }
+        private void validateRequest(HttpExchange raw) {
+            if (raw.getRequestURI().isAbsolute() || raw.getRequestURI().getRawAuthority() != null || raw.getRequestURI().getRawFragment() != null)
+                throw new IllegalArgumentException("only origin-form request targets are supported");
+            String target = raw.getRequestURI().toASCIIString();
+            if (target.length() > 8192) throw new IllegalArgumentException("request target too long");
+            segments(raw.getRequestURI().getRawPath());
+            validateHeadersForAdmission(raw.getRequestHeaders(), raw.getProtocol(), bodyLimit);
+        }
+        public synchronized OresFuture<Object> shutdown(int graceMillis) {
+            supervisor();
+            if (graceMillis < 0) throw new IllegalArgumentException("negative drain deadline");
+            if (drained != null) return drained;
+            drained = new OresFuture<>(() -> false, () -> { });
+            stopAccepting();
+            // Drain must still be driven if the I/O pool was concurrently shut
+            // down. A rejected task must not strand the drained Future.
+            HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
+                finally {
+                    synchronized (this) { transportStopped = true; }
+                    for (State state : active) state.abort(503);
+                    servers.remove(this);
+                    completeDrain();
+                }
+            });
+            return drained;
+        }
+        private synchronized void completeDrain() {
+            if (transportStopped && active.isEmpty() && drained != null) drained.completeFromRuntime(null);
+        }
+        private synchronized void stopAccepting() {
+            stopped = true;
+            if (waiter != null) { waiter.failFromRuntime(new IllegalStateException("HTTP server closed")); waiter = null; }
+            pending.clear();
+        }
+        @Override public void close() {
+            stopAccepting(); transport.stop(0);
+            synchronized (this) { transportStopped = true; }
+            for (State state : active) state.abort(503);
+            servers.remove(this); completeDrain();
+        }
+    }
+
+    /**
+     * Runtime-minted, actor-bound dispatch provenance. The receipt is kept
+     * inside the affine Exchange capability; guest mail contains only the
+     * opaque transfer token and cannot forge or mutate these fields.
+     */
+    private record DispatchReceipt(
+            String handlerType,
+            String binding,
+            String authorityClass,
+            long scopeGeneration,
+            ActorRuntime.ActorId actorId,
+            long actorGeneration,
+            ActorRuntime.ActorKind actorKind,
+            long exchangeGeneration,
+            long sequence,
+            String requestId,
+            boolean attested) { }
+
+    private static String receiptLabel(String value, String label) {
+        if (value == null || !value.matches("[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")) {
+            throw new IllegalArgumentException("invalid HTTP dispatch receipt " + label);
+        }
+        return value;
+    }
+
+    private final class State {
+        final Server server;
+        final HttpExchange raw;
+        final List<String> path;
+        long generation;
+        long spawnNanos, readyNanos, movedNanos, claimedNanos;
+        Object owner;
+        // Response ownership and terminal cancellation share the State lock
+        // with the first, irreversible HTTP header attempt.
+        final HttpResponseWirePhase wirePhase = new HttpResponseWirePhase();
+        boolean busy, committed, bodyRead, streamingBody, suppressBody;
+        int bodyBytes;
+        volatile boolean terminal;
+        volatile InputStream activeResponseInput;
+        boolean transportClosed;
+        String ticket;
+        DispatchReceipt dispatchReceipt;
+        final String requestId = UUID.randomUUID().toString();
+        final long admittedNanos = System.nanoTime();
+        final OresFuture<Object> completion = new OresFuture<>(() -> false, () -> { });
+        int responseStatus;
+        String operationId = "";
+        int pipelineId = -1, contractId = -1;
+        final Map<String, List<String>> params = new LinkedHashMap<>();
+        ScheduledFuture<?> deadline;
+        ActorRuntime.ActorRef<?> actor;
+        Handler.Worker poolWorker;
+        State(Server server, HttpExchange raw) {
+            this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = hostOwner;
+        }
+        // Linearize cancellation against success header emission. Never
+        // hold this monitor while performing blocking socket I/O.
+        boolean beginHeaders() {
+            synchronized (this) {
+                return wirePhase.begin(committed, terminal);
+            }
+        }
+        void noteHeadersSent() {
+            synchronized (this) { wirePhase.markSent(); }
+        }
+        void abort(int status) { abort(status, true); }
+        void abort(int status, boolean cancelOwner) {
+            boolean send, alreadyClosed;
+            synchronized (this) {
+                alreadyClosed = terminal;
+                // A reserved response that never reached the wire may still
+                // fail precommit. Once an emission attempt starts, never
+                // synthesize a second HTTP status.
+                send = wirePhase.maySendError(terminal, busy);
+                if (!terminal) responseStatus = send ? status : 0;
+                terminal = true;
+            }
+            // Never perform socket I/O or actor cancellation while holding the ownership monitor.
+            if (alreadyClosed && poolWorker != null) { release(); return; }
+            if (actor != null && cancelOwner) actor.cancel();
+            if (alreadyClosed) { release(); return; }
+            InputStream responseInput = activeResponseInput;
+            // A hostile InputStream.close() can block. Never wait for producer
+            // cleanup before closing the network exchange or releasing admission.
+            if (responseInput != null) {
+                HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                    try { responseInput.close(); }
+                    catch (IOException ignored) { }
+                });
+            }
+            HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                try {
+                    if (send) reject(raw, status); else raw.close();
+                } finally {
+                    synchronized (this) { transportClosed = true; }
+                    release();
+                }
+            });
+        }
+        void finish() throws IOException {
+            synchronized (this) {
+                // An abort/deadline may win after the wire writer finishes.
+                // Do not resolve the actor's respond()/finish() Future as
+                // successful when the request has already been terminated.
+                HttpResponseWirePhase.requireLiveFinish(terminal);
+                terminal = true;
+            }
+            try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
+        }
+        void release() {
+            // Fresh handlers hold admission through actor finalization. Explicit
+            // pools bound worker count separately and release closed exchanges;
+            // subsequent mail still waits for the current receive to finish.
+            synchronized (this) {
+                if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
+                if (ticket != null) { transfers.remove(ticket); ticket = null; }
+                dispatchReceipt = null;
+                if (deadline != null) deadline.cancel(false);
+            }
+            if (server.active.remove(this)) {
+                if (poolWorker != null) poolWorker.requests.remove(this);
+                if (CorePerf.enabled()) {
+                    CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
+                }
+                synchronized (server) { server.pending.removeIf(exchange -> exchange.state == this); }
+                server.admission.release(); server.completed.incrementAndGet(); server.completeDrain();
+                completion.completeFromRuntime((long) responseStatus);
+            }
+        }
+    }
+
+    /** A generation-bound capability; moving invalidates every alias of the sender wrapper. */
+    public final class Exchange {
+        private final State state;
+        private final Object owner;
+        private final long generation;
+        private Exchange(State state, Object owner, long generation) {
+            this.state = state; this.owner = owner; this.generation = generation;
+        }
+        private void checkOwner() {
+            if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
+            if (generation != state.generation || !owner.equals(state.owner)) throw new IllegalStateException("HTTP exchange has moved");
+            if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
+        }
+        public String moveTo(ActorRuntime.ActorRef<?> destination) {
+            return moveTo(destination, "manual", "manual", "unscoped", 0, 0, false);
+        }
+
+        private String moveTo(ActorRuntime.ActorRef<?> destination, String handlerType,
+                              String binding, String authorityClass, long scopeGeneration,
+                              long sequence, boolean attested) {
+            synchronized (state) {
+                checkOwner();
+                if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
+                if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
+                if (!actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
+                if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
+                if (attested && (scopeGeneration <= 0 || sequence <= 0))
+                    throw new IllegalArgumentException("attested HTTP dispatch generation and sequence must be positive");
+                state.movedNanos = System.nanoTime();
+                state.generation++;
+                state.owner = destination.id();
+                state.actor = destination;
+                state.dispatchReceipt = new DispatchReceipt(
+                        receiptLabel(handlerType, "handler"),
+                        receiptLabel(binding, "binding"),
+                        receiptLabel(authorityClass, "authority class"),
+                        scopeGeneration,
+                        destination.id(),
+                        destination.generation(),
+                        destination.kind(),
+                        state.generation,
+                        sequence,
+                        state.requestId,
+                        attested);
+                String token = UUID.randomUUID().toString(); state.ticket = token;
+                Exchange moved = new Exchange(state, destination.id(), state.generation);
+                transfers.put(token, moved);
+                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                return token;
+            }
+        }
+        private void supervisorMetadata() {
+            checkOwner();
+            if (ActorRuntime.inActorExecution() || state.committed || state.busy)
+                throw new SecurityException("route metadata is set by supervisor before dispatch");
+        }
+        public void route(String operation, int pipeline, int contract) {
+            synchronized (state) { supervisorMetadata(); state.operationId = operation; state.pipelineId = pipeline; state.contractId = contract; }
+        }
+        public void addParam(String name, String value) {
+            synchronized (state) { supervisorMetadata(); state.params.computeIfAbsent(name, key -> new ArrayList<>()).add(value); }
+        }
+        public String param(String name) { synchronized (state) { checkOwner(); return state.params.getOrDefault(name, List.of("")).getFirst(); } }
+        public int paramSize(String name) { synchronized (state) { checkOwner(); return state.params.getOrDefault(name, List.of()).size(); } }
+        public String paramAt(String name, int index) { synchronized (state) { checkOwner(); return state.params.getOrDefault(name, List.of()).get(index); } }
+        public boolean canRespond() {
+            synchronized (state) {
+                return owner.equals(NativeHttp.this.owner()) && generation == state.generation
+                    && !state.terminal && !state.busy && !state.committed;
+            }
+        }
+        public String serverTiming() { return "actor-startup;dur=" + startupNanos() / 1_000_000.0 + ", move-to-claim;dur=" + transferNanos() / 1_000_000.0; }
+        public long startupNanos() { synchronized (state) { checkOwner(); return state.spawnNanos == 0 ? 0 : Math.max(0, state.readyNanos - state.spawnNanos); } }
+        public long transferNanos() { synchronized (state) { checkOwner(); return state.claimedNanos == 0 ? 0 : Math.max(0, state.claimedNanos - state.movedNanos); } }
+        public long admittedNanos() { synchronized (state) { checkOwner(); return state.admittedNanos; } }
+        public OresFuture<Object> completion() { synchronized (state) { checkOwner(); return state.completion; } }
+        public String requestId() { synchronized (state) { checkOwner(); return state.requestId; } }
+
+        private DispatchReceipt claimedDispatchReceipt() {
+            checkOwner();
+            DispatchReceipt receipt = state.dispatchReceipt;
+            if (receipt == null || !receipt.attested() || state.ticket != null
+                    || receipt.exchangeGeneration() != generation
+                    || !receipt.requestId().equals(state.requestId)) {
+                throw new SecurityException("no claimed attested HTTP dispatch receipt");
+            }
+            return receipt;
+        }
+
+        public boolean dispatchReceiptValid(String expectedHandler, String expectedBinding,
+                                            String expectedAuthorityClass,
+                                            long expectedScopeGeneration) {
+            synchronized (state) {
+                DispatchReceipt receipt = claimedDispatchReceipt();
+                Optional<ActorRuntime.ActorId> currentId = ActorRuntime.currentActorId();
+                OptionalLong currentGeneration = ActorRuntime.currentActorGeneration();
+                ActorRuntime.ActorKind currentKind = ActorRuntime.currentActorKind();
+                return currentId.isPresent()
+                        && currentGeneration.isPresent()
+                        && currentKind != null
+                        && receipt.actorId().equals(currentId.get())
+                        && receipt.actorGeneration() == currentGeneration.getAsLong()
+                        && receipt.actorKind() == currentKind
+                        && receipt.handlerType().equals(expectedHandler)
+                        && receipt.binding().equals(expectedBinding)
+                        && receipt.authorityClass().equals(expectedAuthorityClass)
+                        && receipt.scopeGeneration() == expectedScopeGeneration;
+            }
+        }
+
+        public String dispatchHandler() {
+            synchronized (state) { return claimedDispatchReceipt().handlerType(); }
+        }
+        public String dispatchBinding() {
+            synchronized (state) { return claimedDispatchReceipt().binding(); }
+        }
+        public String dispatchAuthorityClass() {
+            synchronized (state) { return claimedDispatchReceipt().authorityClass(); }
+        }
+        public long dispatchScopeGeneration() {
+            synchronized (state) { return claimedDispatchReceipt().scopeGeneration(); }
+        }
+        public long dispatchActorGeneration() {
+            synchronized (state) { return claimedDispatchReceipt().actorGeneration(); }
+        }
+        public long dispatchExchangeGeneration() {
+            synchronized (state) { return claimedDispatchReceipt().exchangeGeneration(); }
+        }
+        public long dispatchSequence() {
+            synchronized (state) { return claimedDispatchReceipt().sequence(); }
+        }
+        public String operationId() { synchronized (state) { checkOwner(); return state.operationId; } }
+        public int pipelineId() { synchronized (state) { checkOwner(); return state.pipelineId; } }
+        public int contractId() { synchronized (state) { checkOwner(); return state.contractId; } }
+        public String cookie(String name) {
+            for (String item : header("Cookie").split(";")) {
+                String[] pair = item.trim().split("=", 2);
+                if (pair.length == 2 && pair[0].equals(name)) return pair[1];
+            }
+            return "";
+        }
+        public String method() { synchronized (state) { checkOwner(); return state.raw.getRequestMethod(); } }
+        public String target() { synchronized (state) { checkOwner(); return state.raw.getRequestURI().toASCIIString(); } }
+        public int pathSize() { synchronized (state) { checkOwner(); return state.path.size(); } }
+        public String pathAt(int index) { synchronized (state) { checkOwner(); return state.path.get(index); } }
+        public String header(String name) { synchronized (state) { checkOwner(); return Objects.toString(state.raw.getRequestHeaders().getFirst(name), ""); } }
+        public String query(String name) {
+            synchronized (state) {
+                checkOwner();
+                String query = state.raw.getRequestURI().getRawQuery();
+                if (query == null) return "";
+                for (String pair : query.split("&")) {
+                    String[] parts = pair.split("=", 2);
+                    if (decode(parts[0], true).equals(name)) return parts.length == 1 ? "" : decode(parts[1], true);
+                }
+                return "";
+            }
+        }
+        public void setHeader(String name, String value) {
+            synchronized (state) {
+                checkOwner();
+                if (state.committed || state.busy) throw new IllegalStateException("response already started");
+                if (name == null || value == null
+                        || !name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+                        || value.chars().anyMatch(c -> c < 32 || c == 127 || c > 255))
+                    throw new IllegalArgumentException("invalid HTTP header");
+                if (Set.of("content-length", "transfer-encoding", "connection", "trailer", "upgrade",
+                        "te", "host", "keep-alive", "proxy-connection", "http2-settings",
+                        "proxy-authenticate", "proxy-authorization").contains(name.toLowerCase(Locale.ROOT)))
+                    throw new IllegalArgumentException("transport-owned response header");
+                int fields = 1, bytes = name.length() + value.length() + 4;
+                for (Map.Entry<String, List<String>> existing : state.raw.getResponseHeaders().entrySet()) {
+                    if (existing.getKey().equalsIgnoreCase(name)) continue;
+                    for (String item : existing.getValue()) {
+                        fields++;
+                        bytes += existing.getKey().length() + item.length() + 4;
+                    }
+                }
+                if (fields > 100 || bytes > 32768)
+                    throw new IllegalArgumentException("response headers exceed configured bounds");
+                state.raw.getResponseHeaders().set(name, value);
+            }
+        }
+        public OresFuture<Object> bodyText() {
+            synchronized (state) {
+                checkOwner();
+                if (state.busy) throw new IllegalStateException("await the pending HTTP operation first");
+                if (state.bodyRead) throw new IllegalStateException("request body already consumed");
+                state.bodyRead = true;
+            }
+            return bodyOperation(() -> {
+                byte[] bytes = state.raw.getRequestBody().readNBytes(state.server.bodyLimit + 1);
+                if (bytes.length > state.server.bodyLimit) throw new RequestBodyTooLargeException();
+                return utf8(bytes);
+            });
+        }
+        public OresFuture<Object> readChunk(int maximum) {
+            if (maximum < 1 || maximum > 65536) throw new IllegalArgumentException("chunk size must be 1..65536");
+            synchronized (state) {
+                checkOwner();
+                if (state.busy) throw new IllegalStateException("await the pending HTTP operation first");
+                if (state.bodyRead && !state.streamingBody) throw new IllegalStateException("request body already consumed");
+                state.streamingBody = true; state.bodyRead = true;
+            }
+            return bodyOperation(() -> {
+                byte[] bytes = state.raw.getRequestBody().readNBytes(Math.min(maximum, state.server.bodyLimit - state.bodyBytes + 1));
+                state.bodyBytes += bytes.length;
+                if (state.bodyBytes > state.server.bodyLimit) throw new RequestBodyTooLargeException();
+                List<Object> owned = new ArrayList<>(bytes.length);
+                for (byte value : bytes) owned.add((long) (value & 255));
+                return owned;
+            });
+        }
+        /**
+         * Trusted host transport adapter for the planned unary HttpResponse result.
+         * Caller ownership is still enforced by operation(...). The response is
+         * consumed once and the stream runs on a virtual I/O worker. This does
+         * not expose HttpResponseDraft to Oreslang guest code.
+         */
+        public OresFuture<Object> respond(HttpResponseDraft draft) {
+            Objects.requireNonNull(draft, "response");
+            if (!draft.streaming() && draft.bufferedLength() > state.server.bodyLimit)
+                throw new IllegalArgumentException("buffered response exceeds configured limit");
+            return operation(() -> {
+                synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP request was cancelled before response commitment");
+                    if (state.committed) throw new IllegalStateException("response already started");
+                    // Preflight must be non-I/O, non-consuming, and serialized
+                    // with setHeader, cancellation and exchange ownership.
+                    draft.preflight(state.raw);
+                    draft.claim();
+                    state.committed = true;
+                    state.responseStatus = draft.status();
+                }
+                draft.writeClaimedTo(state.raw, () -> state.terminal,
+                        input -> state.activeResponseInput = input,
+                        () -> draft.streaming()
+                                ? state.server.bodyOpenGate.open(draft, () -> state.terminal,
+                                TimeUnit.MILLISECONDS.toNanos(state.server.deadlineMillis)
+                                        - (System.nanoTime() - state.admittedNanos))
+                                : draft.openBody(),
+                        state::beginHeaders, state::noteHeadersSent);
+                state.finish();
+                return null;
+            });
+        }
+
+        public OresFuture<Object> respond(int status, String contentType, String body) {
+            return respondBuffer(status, contentType, body.getBytes(StandardCharsets.UTF_8));
+        }
+        public OresFuture<Object> respondBytes(int status, String contentType, List<?> values) {
+            return respondBuffer(status, contentType, byteBuffer(values, state.server.bodyLimit));
+        }
+        private OresFuture<Object> respondBuffer(int status, String contentType, byte[] bytes) {
+            validateStatus(status); setHeader("Content-Type", contentType);
+            if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("response too large");
+            return operation(() -> {
+                synchronized (state) {
+                    if (state.committed) throw new IllegalStateException("response already started");
+                    state.committed = true;
+                    state.responseStatus = status;
+                }
+                boolean noBody = noBody(status);
+                if (state.raw.getRequestMethod().equals("HEAD") && status != 204 && status != 205)
+                    state.raw.getResponseHeaders().set("Content-Length", Integer.toString(bytes.length));
+                if (!state.beginHeaders()) throw new IOException("HTTP request cancelled before response headers");
+                state.raw.sendResponseHeaders(status, noBody || bytes.length == 0 ? -1 : bytes.length);
+                state.noteHeadersSent();
+                if (!noBody && bytes.length != 0) state.raw.getResponseBody().write(bytes);
+                state.finish(); return null;
+            });
+        }
+        public OresFuture<Object> start(int status, String contentType) {
+            validateStatus(status); setHeader("Content-Type", contentType);
+            return operation(() -> {
+                synchronized (state) {
+                    if (state.committed) throw new IllegalStateException("response already started");
+                    state.committed = true;
+                    state.responseStatus = status;
+                }
+                state.suppressBody = noBody(status);
+                if (!state.beginHeaders()) throw new IOException("HTTP request cancelled before response headers");
+                state.raw.sendResponseHeaders(status, state.suppressBody ? -1 : 0);
+                state.noteHeadersSent();
+                return null;
+            });
+        }
+        public OresFuture<Object> write(String text) { return writeBuffer(text.getBytes(StandardCharsets.UTF_8)); }
+        public OresFuture<Object> writeBytes(List<?> values) { return writeBuffer(byteBuffer(values, Math.min(65536, state.server.bodyLimit))); }
+        private OresFuture<Object> writeBuffer(byte[] bytes) {
+            if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("response chunk too large");
+            return operation(() -> {
+                if (!state.committed) throw new IllegalStateException("response not started");
+                if (!state.suppressBody) { state.raw.getResponseBody().write(bytes); state.raw.getResponseBody().flush(); }
+                return null;
+            });
+        }
+        public OresFuture<Object> finish() { return operation(() -> { if (!state.committed) throw new IllegalStateException("response not started"); state.finish(); return null; }); }
+        public void abort() { synchronized (state) { checkOwner(); } state.abort(500); }
+
+        /**
+         * Host CONTROL cancellation of a request whose capability may already
+         * have moved into an actor. Not a guest-visible exchange operation.
+         * Owner validation uses the listener's exclusive rolling lane instead
+         * of mutable exchange ownership, and actual abort is outside its lock.
+         */
+        void abortFromRollingDispatcher(NativeHttpRollingDispatcher dispatcher) {
+            if (ActorRuntime.inActorExecution())
+                throw new SecurityException("rolling cancellation belongs to CONTROL");
+            synchronized (state.server) {
+                if (dispatcher == null || state.server.rollingOwner != dispatcher)
+                    throw new SecurityException("foreign HTTP rolling cancellation");
+            }
+            state.abort(500);
+        }
+        private boolean noBody(int status) { return state.raw.getRequestMethod().equals("HEAD") || status == 204 || status == 205 || status == 304; }
+        private OresFuture<Object> bodyOperation(Callable<Object> operation) {
+            return operation(operation, true);
+        }
+        private OresFuture<Object> operation(Callable<Object> operation) {
+            return operation(operation, false);
+        }
+        private OresFuture<Object> operation(Callable<Object> operation, boolean requestBodyRead) {
+            synchronized (state) {
+                checkOwner();
+                if (state.busy) throw new IllegalStateException("await the pending HTTP operation first");
+                state.busy = true;
+            }
+            OresFuture<Object> result = new OresFuture<>(() -> false, () -> { });
+            long queued = CorePerf.start();
+            try {
+                io.execute(() -> {
+                    CorePerf.end(CorePerf.HTTP_IO_QUEUE, queued);
+                    long workPerf = CorePerf.start();
+                    try {
+                        Object value = operation.call();
+                        synchronized (state) { state.busy = false; }
+                        result.completeFromRuntime(value);
+                    } catch (Throwable failure) {
+                        synchronized (state) { state.busy = false; }
+                        state.abort(operationFailureStatus(failure, requestBodyRead));
+                        SourceBoundaryTrace.record(failure, "native:http", state.requestId, "I/O");
+                        result.failFromRuntime(failure);
+                        if (failure instanceof VirtualMachineError fatal) throw fatal;
+                        if (failure instanceof ThreadDeath fatal) throw fatal;
+                        if (failure instanceof LinkageError fatal) throw fatal;
+                    } finally {
+                        CorePerf.end(CorePerf.HTTP_IO_WORK, workPerf);
+                    }
+                });
+            } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
+            return result;
+        }
+    }
+
+    private static byte[] byteBuffer(List<?> values, int maximum) {
+        if (values.size() > maximum) throw new IllegalArgumentException("byte buffer too large");
+        byte[] bytes = new byte[values.size()];
+        for (int i = 0; i < values.size(); i++) {
+            Object value = values.get(i);
+            if (!(value instanceof Long number) || number < 0 || number > 255) throw new IllegalArgumentException("HTTP bytes must be integers in 0..255");
+            bytes[i] = (byte) number.longValue();
+        }
+        return bytes;
+    }
+
+    private static void validateStatus(int status) { if (status < 200 || status > 599) throw new IllegalArgumentException("status must be 200..599"); }
+    static List<String> segments(String path) {
+        if (path == null || !path.startsWith("/")) throw new IllegalArgumentException("expected origin-form path");
+        if (path.equals("/")) return List.of();
+        String[] parts = path.substring(1).split("/", -1);
+        if (parts.length > 128) throw new IllegalArgumentException("too many path segments");
+        return Arrays.stream(parts).map(s -> decode(s, false)).toList();
+    }
+    static String decode(String text, boolean form) {
+        // URLDecoder preserves invalid UTF-8 by replacement; round-trip through a strict decoder instead.
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        for (int i = 0; i < text.length();) {
+            char c = text.charAt(i++);
+            if (c == '%') {
+                if (i + 1 >= text.length()) throw new IllegalArgumentException("malformed percent escape");
+                int hi = Character.digit(text.charAt(i++), 16), lo = Character.digit(text.charAt(i++), 16);
+                if (hi < 0 || lo < 0) throw new IllegalArgumentException("malformed percent escape");
+                bytes.write((hi << 4) | lo);
+            } else {
+                String literal;
+                if (Character.isHighSurrogate(c) && i < text.length() && Character.isLowSurrogate(text.charAt(i))) {
+                    literal = new String(new char[] {c, text.charAt(i++)});
+                } else {
+                    if (Character.isSurrogate(c)) throw new IllegalArgumentException("invalid Unicode surrogate");
+                    literal = form && c == '+' ? " " : String.valueOf(c);
+                }
+                bytes.writeBytes(literal.getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        String result = utf8(bytes.toByteArray());
+        if (result.chars().anyMatch(c -> c < 32 || c == 127 || c == '\\')) throw new IllegalArgumentException("invalid request character");
+        return result;
+    }
+    private static String utf8(byte[] bytes) {
+        try { return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString(); }
+        catch (CharacterCodingException invalid) { throw new IllegalArgumentException("invalid UTF-8", invalid); }
+    }
+    private static void reject(HttpExchange raw, int status) {
+        try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
+    }
+    @Override public synchronized void close() {
+        closed = true;
+        for (Server server : List.copyOf(servers)) server.close();
+        for (Handler pool : pools) pool.stopPool();
+        pools.clear();
+        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+    }
+}

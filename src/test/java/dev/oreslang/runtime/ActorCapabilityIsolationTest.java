@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
-import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -16,8 +15,60 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorCapabilityIsolationTest {
 
     @Test
+    void processExitAuthorityIsDeniedForEveryActorKindEvenWhenParentIsPrivileged() {
+        for (String declaration : new String[] {
+                "define actor Worker as",
+                "define isoactor Worker as",
+                "define untrusted actor Worker as"
+        }) {
+            Ast.Program program = Parser.parse(declaration + """
+                      receive(ActorMail<String> mail): void {
+                        std.process.exit(0);
+                        self.end();
+                        return;
+                      }
+                    end
+                    """);
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> CapabilityChecker.check(program, IsolatePolicy.developer()),
+                    declaration + " must never inherit root process-exit authority");
+            assertTrue(denied.getMessage().contains("PROCESS_EXIT"), denied.getMessage());
+        }
+    }
+
+    @Test
+    void sharedActorCannotLaunderProcessExitThroughAnOrdinaryHelper() {
+        Ast.Program program = Parser.parse("""
+                fnc attemptExit(): void {
+                    std.process.exit(0);
+                    return;
+                }
+                define actor Worker as
+                    receive(ActorMail<String> mail): void {
+                        attemptExit();
+                        self.end();
+                        return;
+                    }
+                end
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("PROCESS_EXIT"), denied.getMessage());
+    }
+
+    @Test
+    void standaloneRootRetainsExplicitProcessExitCapability() {
+        Ast.Program program = Parser.parse("""
+                pub routine main(): void {
+                    std.process.exit(7);
+                }
+                """);
+        assertDoesNotThrow(() -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+    }
+
+    @Test
     void privateActorStaticallyDeniesReadonlySharingEvenUnderDeveloperPolicy() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
                 isoactor PrivateWorker {
                   pub fnc attempt_share(): void {
                     val shared = process.share_readonly(arr[1, 2, 3]);
@@ -25,7 +76,7 @@ final class ActorCapabilityIsolationTest {
                     return;
                   }
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -36,13 +87,13 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void privateActorCannotHideSharedMutexBehindTypeAlias() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
                 type SharedInt = SharedMutex<int>;
 
                 isoactor PrivateWorker {
                   let SharedInt hidden;
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -53,7 +104,7 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void privateActorCannotHideSharedMutexInsideOrdinaryStoredClass() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
                 define class SharedBox as
                   let SharedMutex<int> value;
                 end
@@ -61,7 +112,7 @@ final class ActorCapabilityIsolationTest {
                 isoactor PrivateWorker {
                   let SharedBox hidden;
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -72,7 +123,8 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void privateActorCannotLaunderSharedMemoryThroughOrdinaryHelperFunction() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
+
                 fnc build_shared(): void {
                   val shared = SharedMutex.new(1);
                   stdio.println(shared);
@@ -85,7 +137,7 @@ final class ActorCapabilityIsolationTest {
                     return;
                   }
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -96,7 +148,8 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void privateActorCannotLaunderSharedMemoryThroughStaticClassHelper() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
+
                 define class Helpers as
                   pub static fnc build_shared(): void {
                     val shared = SharedMutex.new(1);
@@ -111,7 +164,7 @@ final class ActorCapabilityIsolationTest {
                     return;
                   }
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -122,7 +175,7 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void privateActorCannotCarryObjectWhoseInstanceMethodUsesSharedAuthority() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
                 define class Helper as
                   pub use_shared(): void {
                     val shared = process.share_readonly(arr[1, 2, 3]);
@@ -134,7 +187,7 @@ final class ActorCapabilityIsolationTest {
                 isoactor PrivateWorker {
                   let Helper helper;
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -145,7 +198,7 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void sharedActorMayUseTransitiveSharedStateWhenParentPolicyAllowsIt() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
                 type SharedInt = SharedMutex<int>;
 
                 define class SharedBox as
@@ -155,7 +208,7 @@ final class ActorCapabilityIsolationTest {
                 shared actor SharedWorker {
                   let SharedBox state;
                 }
-                """));
+                """);
 
         assertDoesNotThrow(() ->
                 CapabilityChecker.check(program, IsolatePolicy.developer()));
@@ -163,7 +216,7 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void transitiveCapabilityScanHandlesSelfReferentialStoredTypes() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
                 define class Node as
                   let Node next;
 
@@ -175,7 +228,7 @@ final class ActorCapabilityIsolationTest {
                 isoactor PrivateWorker {
                   let Node root;
                 }
-                """));
+                """);
 
         assertDoesNotThrow(() ->
                 CapabilityChecker.check(program, IsolatePolicy.developer()));
@@ -227,7 +280,8 @@ final class ActorCapabilityIsolationTest {
     }
     @Test
     void privateActorCannotLaunderSharedMemoryThroughFunctionValue() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
+
                 fnc build_shared(): void {
                   val shared = SharedMutex.new(1);
                   stdio.println(shared);
@@ -241,7 +295,7 @@ final class ActorCapabilityIsolationTest {
                     return;
                   }
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -252,7 +306,8 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void privateActorCannotLaunderReadonlyShareThroughQualifiedFunctionValue() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
+
                 define module helpers
                   pub fnc expose(): void {
                     val shared = process.share_readonly(arr[1, 2, 3]);
@@ -268,7 +323,7 @@ final class ActorCapabilityIsolationTest {
                     return;
                   }
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -280,7 +335,8 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void privateActorCannotLaunderSharedMemoryThroughStaticMethodValue() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
+        Ast.Program program = Parser.parse("""
+
                 define class Helpers as
                   pub static fnc build_shared(): void {
                     val shared = SharedMutex.new(1);
@@ -296,7 +352,7 @@ final class ActorCapabilityIsolationTest {
                     return;
                   }
                 }
-                """));
+                """);
 
         SecurityException error = assertThrows(
                 SecurityException.class,
@@ -309,7 +365,7 @@ final class ActorCapabilityIsolationTest {
     @Test
     void invalidOreslangPrivateActorSharingFixtureIsRejected() throws Exception {
         String source = Files.readString(Path.of("examples/private-actor-sharing-invalid.ores"));
-        Ast.Program program = TypeChecker.check(Parser.parse(source));
+        Ast.Program program = Parser.parse(source);
 
         SecurityException error = assertThrows(
                 SecurityException.class,

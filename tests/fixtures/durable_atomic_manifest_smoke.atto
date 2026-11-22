@@ -1,0 +1,7 @@
+// Actual linked Atto guest fixture. The Java test substitutes the absolute
+// private manifest path before compiler type checking and guest execution.
+pub async routine main(): void {
+  await fs.write_text_durable_atomic_async("__MANIFEST__", "generation=1");
+  stdio.println(await fs.read_text_bounded_async("__MANIFEST__", 1024));
+  return;
+}

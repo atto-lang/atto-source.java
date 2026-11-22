@@ -113,6 +113,13 @@ val Channel<int> input = Channel.new<int>(64);
 
 Capacity zero is a rendezvous/unbuffered channel.
 
+Channel payloads are data, not executable capabilities. `Fnc<...>` / function
+values cannot be channel element types, including when nested inside Options,
+tuples, records, collections, or nominal objects with callable state. A closure
+may capture execution-domain-local authority, so moving it through a channel
+would make the transport boundary depend on hidden capture state. Keep callbacks
+local and send explicit data describing the requested operation instead.
+
 ### Blocking/suspending forms
 
 ```ores
@@ -172,33 +179,100 @@ read can rendezvous with a pending select-write.
 
 ## Static select
 
-Canonical static syntax:
+**Control-flow contract (2026-10-13 correction):** Blocking `do select { ... }`
+is procedural, like `do switch` and `do match`. A `return` in the
+winning arm returns from the **containing function/method**, never just the
+select arm; its value is type-checked against that callable's return type.
+Lexically valid `break` and `continue` can target enclosing loops.
+An arm that falls through continues after the select statement. A blocked
+selection suspends the actor source task and must preserve this same control
+flow after resumption; defers/finally execute exactly once.
+
+The long-term result-mode surface is:
+
+- `select { ... }` — **expression**, suspends until an arm wins, yields
+  that arm's result `T`. Arm-local `return T;` provides the expression result.
+- `do select { ... }` — **statement**, suspends until an arm wins, yields
+  no result. `return T;` (or `return;`) exits the surrounding callable.
+- `nb select { ... }` — **expression** returning `Future<T>` immediately,
+  completed only after the winning arm itself completes on the actor lane;
+  its arm returns never escape into the already-continued outer callable.
+- `do nb select { ... }` — not a canonical new form. Detached
+  no-result arms obscure completion/failure/cancellation; callers should
+  keep a returned `Future<void>` when they want side effects.
+
+**Implementation gap:** Java/Graal main still models static `select` and
+`nb select` as legacy statements; static `select<T>` expression and
+`Future<T>` result tracking are not implemented by the do-select control-flow
+correction. Legacy `do nb select` remains temporarily parseable and
+arm-local/discarding for compatibility only; it is *not* evidence for the
+canonical `Future<void>` semantics. LLVM must fail closed for unsupported
+source forms. See `contracts/v1/static-select-result-and-return.md`.
+
+`cb select` and `nb cb select` are **not** aliases: the parser rejects
+both with a hint to use `do select` or `do nb select`. The existing
+`nb cb writech ... || -> { ... }` is different: it actually supplies a
+callback function and remains supported.
+
+Canonical blocking procedural syntax:
 
 ```ores
-select {
-  case readch incoming: let msg {
+do select {
+  when readch incoming: let msg {
     stdio.println("Received:", msg);
   }
-  case writech outgoing, payload: {
+  when writech outgoing, payload: {
     stdio.println("Sent payload successfully");
   }
-  case readch shutdown: const signal {
+  when readch shutdown: const signal {
     return;
   }
 }
 ```
 
+The outer braces are interchangeable with `over ... end`; arm bodies remain
+braced and the runtime semantics are identical:
+
+```ores
+do select over
+  when readch incoming: let msg {
+    stdio.println("Received:", msg);
+  }
+  when writech outgoing, payload: {
+    stdio.println("Sent payload successfully");
+  }
+  when readch shutdown: const signal {
+    return;
+  }
+end
+```
+
+The same delimiter equivalence applies to `select`, `nb select`, and the
+legacy-compatible `do nb select` form. Selection policy (`first`, `fair`,
+or `random`) appears before either `{` or `over`.
+
+**One wait mode per selection:** the enclosing `select`, `nb select`, or `try select` controls whether the entire selection suspends, registers an asynchronous selection, or probes immediately. An arm is atomic and must use plain `readch` or `writech`. Arm-level `nb` or `try` modifiers are invalid. Standalone operations in arm bodies remain governed by their own rules.
+
 A read arm may bind with `let`, `val`, or `const`. `const` means the
 selected runtime value is bound immutably; it does not imply the message was a
 compile-time constant.
 
-Every `case` and `default` arm requires its own `{ ... }` body, including
+Every `when` (or legacy `case`) and `default` arm requires its own `{ ... }` body, including
 empty arms. Canonical source uses two spaces per indentation level and no tabs
 for indentation: arms sit one level inside `select`, and their statements sit
-one level inside the arm. The same rules apply to `nb select` and `try select`.
+one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`,
+whether the outer selection uses braces or `over ... end`.
 Legacy unbraced arms are rejected by the parser; `oresfmt` migrates them.
 
-A select may include one `default: { ... }` arm.
+A select may include one `default: { ... }` arm, and `default` must be the final arm.
+
+A static select arm is a non-throwing control-flow boundary. An ordinary
+`throw` may be handled by a local `try/catch`, or absorbed by a called
+`trap` callable before control returns to the arm, but an ordinary throw that
+can escape the selected arm is rejected by the compiler. `raise` and `panic`
+are distinct nonlocal control signals and bypass select; runtime
+cancellation/termination likewise retains its runtime control identity rather
+than becoming normal select completion.
 
 ### Deterministic selection policy
 
@@ -219,10 +293,10 @@ Explicit strict priority:
 
 ```ores
 select first {
-  case readch control: const command {
+  when readch control: const command {
     ...
   }
-  case readch data: let value {
+  when readch data: let value {
     ...
   }
 }
@@ -239,17 +313,63 @@ select random {
 Fairness policy governs the probe order among cases observed ready together.
 It cannot reverse a case that has already atomically won a readiness race.
 
+### Ownership at suspension and registration boundaries
+
+A blocking `select { ... }`, `readch`, `writech`, or `select from cases`
+may yield the actor execution lane. Because a different actor message may run
+before the suspended continuation resumes, the ownership checker rejects
+ordinary live lexical borrows across these operations, just as it does across
+`await`. Actor-confined `self` is the narrow mailbox-managed exception.
+`try select` and immediate channel probes do not suspend and may retain
+ordinary lexical borrows.
+
+A nonblocking operation returns without yielding the current activation.
+`nb readch` and `nb select from cases` register an operation and return
+a Future, so an otherwise unrelated borrow in the caller need not end.
+A static `nb select { ... }` additionally detaches *arm bodies*: every
+captured non-Copy owned value transfers to the selection at registration;
+captured ordinary borrows and MutexGuard-bearing values are rejected; and
+Copy values can be captured without moving the caller's binding. Actor
+`self` is only captured for re-entry on its own serialized lane. A read-arm
+binding shadows an outer binding of the same name and is not an outer capture.
+
+This distinction protects logical overlapping lifetimes even when the runtime
+never executes two actor turns on separate native threads.
+
+### Deferred channel write callbacks
+
+`nb cb writech channel, value || -> { ... }` evaluates and transfers its
+write payload when it registers the write. Its callback executes on a later
+serialized actor mailbox turn, so callback captures obey the same ownership
+lifetime rules as static `nb select` arms:
+
+- owned non-Copy captures move into the callback at registration; the
+  continuing caller cannot read, mutate, or transfer them;
+- ordinary borrowed captures (including aliases of actor `self`) and
+  guard-bearing captures are rejected;
+- Copy captures remain usable by the caller; a mutable capture transfers
+  exclusively, even when its underlying type is Copy;
+- only the canonical actor `self` mailbox capability has the special
+  actor-turn lifetime;
+- nested channel callbacks are included in outer deferred-capture scanning,
+  so callback nesting cannot revive a moved owner or conceal an alias.
+
+A nonblocking write with **no callback** does not detach a source-language arm;
+it transfers its outbound payload but does not capture unrelated locals.
+The runtime callback is only dispatched by the owning actor mailbox lane,
+not a producer or I/O thread.
+
 ## Nonblocking static select
 
 ```ores
-nb select {
-  case readch incoming: let msg {
+do nb select {
+  when readch incoming: let msg {
     stdio.println("Received:", msg);
   }
-  case readch payload: const body {
+  when readch payload: const body {
     stdio.println("Received payload:", body);
   }
-  case readch shutdown: const signal {
+  when readch shutdown: const signal {
     return;
   }
 }
@@ -292,6 +412,12 @@ wins or the selection is cancelled.
 If the owning actor terminates before the select wins, actor teardown cancels
 the pending select Future and detaches all channel registrations.
 
+`do nb select` is not a request for unreliable fire-and-forget execution:
+the operation must register atomically, execute exactly one winning branch
+under its actor's serialized continuation when it wins, or be explicitly
+cancelled through actor teardown. Its no-result contract does not weaken
+cancellation, ownership, or fairness guarantees.
+
 ## Dynamic select
 
 Static and dynamic select lower to the same runtime `SelectSet` primitive.
@@ -307,16 +433,22 @@ val Array<SelectCase> cases = [
   SelectCase.write(b, 42)
 ];
 
-val SelectResult result = select from cases;
-val Future<SelectResult> pending = nb select from cases;
+val Option<SelectResult> result = select from cases;
+val Future<Option<SelectResult>> pending = nb select from cases;
 val Option<SelectResult> ready = try select from cases;
 ```
+
+Dynamic selection has **no arm bodies** to handle a consumed channel value;
+`do select from cases` and `do nb select from cases` are deliberately
+rejected rather than register a read and silently discard its outcome.
+Handle the returned `Option<SelectResult>` or `Future<Option<SelectResult>>`
+explicitly, or use braced static `do select` dispatch.
 
 A reusable set can retain its fairness cursor:
 
 ```ores
 val set = SelectSet.new(cases);
-val result = select from set;
+val Option<SelectResult> result = select from set;
 ```
 
 Runtime list/array and map values are accepted. For maps, value iteration order
@@ -333,11 +465,100 @@ nb select first from cases
 try select from cases
 ```
 
+`select from` is a blocking source expression, but "blocking" means the
+current Ores continuation yields to its scheduler/actor pool while the select is
+pending; it does not park a carrier thread. Once a case commits, the continuation
+resumes and the expression returns `Some(SelectResult)`.
+
+`nb select from` registers the same arbitration and returns immediately with
+the native Ores `Future<Option<SelectResult>>`. Awaiting that Future follows the
+same scheduler resumption path. `try select from` is an immediate probe: it
+returns `None` when no case is ready and leaves no registration behind.
+
 `SelectResult` exposes:
 
 - `index`
 - `operation` (`read`, `write`, or `default`)
 - `value` for a read result
+
+The outer `Option` is intentionally part of the language-facing selection
+contract. It also composes uniformly with `trap` and Future APIs; the runtime
+must not flatten nested `Option` values.
+
+## Select plans: optional optimization layer
+
+A `SelectPlan` is an optional reusable descriptor for hot repeated selects and
+for a dynamically assembled case set that will be selected more than once.
+
+It is deliberately **not** the semantic definition of `select`:
+
+- ordinary static `select`, `nb select`, and `try select` remain valid on
+  the original `SelectSet`/registration path;
+- a plan may cache immutable case metadata and retain the deterministic fairness
+  cursor;
+- every plan invocation creates a fresh selection operation/generation;
+- cancellation, close, winner arbitration, and loser detachment continue through
+  the same existing runtime machinery;
+- the initial implementation does not leave channel waiters registered between
+  iterations.
+
+That last rule is intentional. Reusing descriptors is mechanically safe;
+reusing live registrations is a separate optimization because stale waiters
+must never consume a value for the next iteration.
+
+Conceptually, a compiler may later hoist a plan for a provably stable static
+site:
+
+```text
+loop {
+  select { A; B; }
+}
+
+=> optimization only =>
+
+plan = SelectPlan(A, B)
+loop {
+  select(plan)
+}
+```
+
+This transformation is permitted only when evaluating the case expressions has
+no required per-iteration observable behavior and the referenced channel/value
+bindings are stable. Otherwise the compiler must keep the original lowering.
+
+A fixed `SelectPlan` freezes its input case list. For a changing case set, the
+Java runtime now provides `ChannelRuntime.DynamicSelectPlan<K>`: `put(key, case)`,
+`remove(key)`, `selectSetSnapshot()`, `trySelectKeyed(policy)` and
+`selectKeyedAsync(policy)`. The keyed result contains `{version, key, selection}`
+and is pinned to the exact generation captured when the selection began.
+The source-language `DynamicSelectPlan.new` and implicit lexical-loop hoisting
+remain staged on Java PR #526 and are **not yet merged into main**.
+
+```java
+var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+plan.put("inbox", ChannelRuntime.read(inbox)); // once, outside loop
+while (running) {
+    var result = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+    handle(result.key(), result.selection().value());
+}
+```
+
+The `SelectSet` snapshot is immutable and reused while the plan's structure is
+unchanged. Each selection allocates fresh winner/cancellation state and fresh
+Channel/Future waiter registrations. A mutation publishes a new descriptor
+generation; existing operations keep their old generation, even if its key was
+removed or replaced. Previous-generation completions cannot rotate the new
+generation's FAIR cursor. The current admission limit of
+`ChannelRuntime.MAX_SELECT_CASES` applies to dynamic plans at insertion time.
+Default-only wins do not advance FAIR credit.
+
+A compiler may hoist an inline static select only when it proves every retained
+operand is loop-invariant, immutable, ownership-safe and actor-generation-local.
+Channel writes, dynamic expressions, per-iteration shadowing and mutable
+bindings must still be evaluated every iteration. Compiler lowering must also
+preserve the source-site FAIR ticket and fresh per-invocation cancellation/winner
+state. Native LLVM currently remains fail-closed pending explicit lowering and
+equivalent cancellation/sanitizer tests.
 
 ## Cancellation
 

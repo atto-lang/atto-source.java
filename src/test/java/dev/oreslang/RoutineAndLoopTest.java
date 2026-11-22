@@ -117,6 +117,50 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void ternaryIsLazyBooleanOnlyAndRightAssociative() throws Exception {
+        String output = run("""
+                fnc condition(): bool {
+                  stdio.stdout.write("C");
+                  return true;
+                }
+
+                fnc when_true(): int {
+                  stdio.stdout.write("T");
+                  return 4;
+                }
+
+                fnc when_false(): int {
+                  stdio.stdout.write("F");
+                  return 9;
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(condition() ? when_true() : when_false());
+                  stdio.stdout.write(false ? 1 : true ? 2 : 3);
+                  return;
+                }
+                """);
+        assertEquals("CT42", output);
+
+        IllegalArgumentException nonBoolean = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): int {
+                          return 1 ? 2 : 3;
+                        }
+                        """)));
+        assertTrue(nonBoolean.getMessage().contains("ternary condition"));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc incompatible(bool condition): int {
+                          return condition ? 1 : "wrong";
+                        }
+                        """)));
+    }
+
+    @Test
     void ternaryWorksWithOption() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc find(bool found): Option<int> {
@@ -140,7 +184,7 @@ final class RoutineAndLoopTest {
                 }
 
                 fnc main(): void {
-                  val branded = obj{markerBrand: "marking/branding"};
+                  const branded = struct{markerBrand: 'marking/branding'}{markerBrand: "marking/branding"};
                   stdio.println(structural(branded));
                   return;
                 }
@@ -156,7 +200,7 @@ final class RoutineAndLoopTest {
                 }
 
                 fnc main(): void {
-                  val branded = obj{markerBrand: "marking/branding"};
+                  const branded = struct{markerBrand: 'marking/branding'}{markerBrand: "marking/branding"};
                   stdio.println(nominal(branded));
                   return;
                 }
@@ -225,7 +269,7 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void forOfRequiresExplicitConstOrLetBindings() {
+    void forOfRequiresExplicitBindingDeclarationsAndAllowsVal() {
         IllegalArgumentException bare = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
@@ -251,17 +295,14 @@ final class RoutineAndLoopTest {
                         """));
         assertTrue(destructured.getMessage().contains("variable used before declared"));
 
-        IllegalArgumentException valBinding = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          for val value of arr[1, 2] do
-                            stdio.stdout.write(value);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(valBinding.getMessage().contains("for-of bindings require 'const' or 'let'"));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub routine main(): void {
+                  for val value of arr[1, 2] do
+                    stdio.stdout.write(value);
+                  done
+                  return;
+                }
+                """)));
     }
 
     @Test
@@ -341,7 +382,7 @@ final class RoutineAndLoopTest {
                         }
                         """));
         assertTrue(bareTyped.getMessage().contains("variable used before declared 'item'"));
-        assertTrue(bareTyped.getMessage().contains("require 'const' or 'let'"));
+        assertTrue(bareTyped.getMessage().contains("explicit const/val/let declaration"));
 
         IllegalArgumentException parenthesizedBareTyped = assertThrows(
                 IllegalArgumentException.class,
@@ -395,21 +436,17 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void forOfAstRejectsValEvenWhenParserIsBypassed() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new Ast.ForOfStmt(
-                        Ast.BindingKind.VAL,
-                        "item",
-                        new Ast.NameExpr("items"),
-                        java.util.List.of()));
+    void forOfAstAcceptsValAndStillRejectsMalformedDestructuring() {
+        assertDoesNotThrow(() -> new Ast.ForOfStmt(
+                Ast.BindingKind.VAL,
+                "item",
+                new Ast.NameExpr("items"),
+                java.util.List.of()));
 
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new Ast.ForOfDestructureStmt(
-                        java.util.List.of(new Ast.DestructureBinding(Ast.BindingKind.VAL, "item")),
-                        new Ast.NameExpr("items"),
-                        java.util.List.of()));
+        assertDoesNotThrow(() -> new Ast.ForOfDestructureStmt(
+                java.util.List.of(new Ast.DestructureBinding(Ast.BindingKind.VAL, "item")),
+                new Ast.NameExpr("items"),
+                java.util.List.of()));
 
         IllegalArgumentException duplicate = assertThrows(
                 IllegalArgumentException.class,

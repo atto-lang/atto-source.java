@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Independent compiler admission, diagnostic class and native-result contract runner.
+
+Semantics here belong to the suite, not either compiler implementation.
+Both LLVM native execution and the explicitly configured Graal guest adapter
+require real compilation and execution before a native_exit case can pass.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parent
+CLASSES = {
+    "llvm": {
+        "unknown_name": r"unknown parameter",
+        "call_arity": r"wrong call arity",
+        "duplicate_declaration": r"duplicate function",
+        "integer_overflow": r"overflows signed 64-bit",
+        "unterminated_comment": r"unterminated block comment",
+        "ownership_violation": r"(borrow|ownership|mutat)",
+    },
+    "graal": {
+        "unknown_name": r"unknown name",
+        "call_arity": r"(arity|argument|expects)",
+        "duplicate_declaration": r"(duplicate|already has arity)",
+        "integer_overflow": r"(overflow|out of range)",
+        "unterminated_comment": r"unterminated block comment",
+        "ownership_violation": r"(borrow|ownership|mutat)",
+    }
+}
+
+def validate_suite():
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise ValueError("install jsonschema>=4.20,<5 to validate contracts") from exc
+    schema = json.loads((ROOT / "schema.json").read_text())
+    jsonschema.Draft202012Validator.check_schema(schema)
+    raw = (ROOT / "cases.json").read_bytes()
+    suite = json.loads(raw)
+    jsonschema.validate(suite, schema)
+    ids = set()
+    files = set()
+    for case in suite["cases"]:
+        if case["id"] in ids:
+            raise ValueError("duplicate case: " + case["id"])
+        ids.add(case["id"])
+        if case["source"] in files:
+            raise ValueError("duplicate fixture source: " + case["source"])
+        f = (ROOT / case["source"]).resolve()
+        if not f.is_relative_to((ROOT / "fixtures").resolve()) or not f.is_file():
+            raise ValueError("invalid fixture: " + case["source"])
+        if f.stat().st_size == 0:
+            raise ValueError("empty fixture: " + case["id"])
+        files.add(case["source"])
+        pending = "pending" in case["backends"].values()
+        if pending != bool(case.get("pending_reason")):
+            raise ValueError("pending requires reason and resolved cases cannot retain one: " + case["id"])
+        if all(s == "pending" for s in case["backends"].values()):
+            raise ValueError("a case cannot be pending on both backends: " + case["id"])
+    # The strict inventory includes nested .ores programs. A top-level glob
+    # would let an unregistered fixture escape the suite completeness gate.
+    on_disk = {path.relative_to(ROOT).as_posix()
+               for path in (ROOT / "fixtures").rglob("*.ores")}
+    if files != on_disk:
+        raise ValueError("orphan or missing fixtures: " + str(sorted(files ^ on_disk)))
+    # Bind the suite identity to the actual programs and normative contracts.
+    # A manifest-only digest permits different backends to run different source
+    # bytes while claiming identical test inventories. Use length-delimited
+    # records so filename/content boundaries are unambiguous.
+    h = hashlib.sha256(b"oreslang-conformance-suite-v1.1\0")
+    for name in ["cases.json", "schema.json", "report.schema.json", "main.tsp", *sorted(files)]:
+        data = (ROOT / name).read_bytes()
+        encoded = name.encode("utf-8")
+        h.update(len(encoded).to_bytes(4, "big"))
+        h.update(encoded)
+        h.update(len(data).to_bytes(8, "big"))
+        h.update(data)
+    return suite, h.hexdigest()
+
+def validate_command(command):
+    argv = shlex.split(command)
+    if not argv or sum(p.count("{source}") for p in argv) != 1:
+        raise ValueError("compiler command must contain exactly one {source}")
+    return argv
+
+def verify_checkout_revision(revision):
+    """Refuse a semantic report detached from the actual clean tracked Git tree."""
+    repo = ROOT.parents[2].resolve()
+    def git(*args):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo), *args], capture_output=True,
+                text=True, check=False, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("semantic runner cannot inspect Git checkout") from exc
+        if result.returncode:
+            raise ValueError("semantic runner cannot inspect Git checkout")
+        return result.stdout.strip()
+
+    if Path(git("rev-parse", "--show-toplevel")).resolve() != repo:
+        raise ValueError("semantic runner is not rooted at its Git checkout")
+    if git("rev-parse", "--verify", "HEAD") != revision:
+        raise ValueError("semantic report revision differs from actual Git checkout")
+    if git("status", "--porcelain=v1", "--untracked-files=no"):
+        raise ValueError("semantic runner checkout contains tracked modifications")
+    tree = git("rev-parse", "--verify", "HEAD^{tree}")
+    if not re.fullmatch(r"[a-f0-9]{40}", tree):
+        raise ValueError("semantic runner cannot verify Git tree identity")
+    return tree
+
+def requires_guest_runner(suite, backend):
+    return backend == "graal" and any(
+        case["kind"] == "native_exit" and case["backends"]["graal"] == "required"
+        for case in suite["cases"]
+    )
+
+def check_diagnostic(returncode, stdout, stderr, category, backend):
+    # A crash, missing compiler, signal or setup failure cannot satisfy a rejection.
+    # A valid rejection must also identify the intended semantic error.
+    if returncode != 1 or stdout.strip():
+        return False
+    return bool(re.search(CLASSES[backend][category], stderr, flags=re.IGNORECASE))
+
+def run_case(case, backend, argv, clang, timeout, run_argv=None):
+    source = str((ROOT / case["source"]).resolve())
+    command = [piece.replace("{source}", source) for piece in argv]
+    try:
+        compiled = subprocess.run(command, capture_output=True, text=True,
+                                  check=False, timeout=timeout)
+        if case["kind"] == "diagnostic":
+            cls = case["diagnostic_class"]
+            passed = check_diagnostic(compiled.returncode, compiled.stdout,
+                                      compiled.stderr, cls, backend)
+            return {"id": case["id"], "status": "pass" if passed else "fail",
+                    "diagnostic_class": cls if passed else "unclassified",
+                    "detail": "" if passed else f"code={compiled.returncode}: {compiled.stderr[:450]}"}
+        if compiled.returncode != 0:
+            return {"id": case["id"], "status": "fail",
+                    "detail": f"compiler exit={compiled.returncode}: {compiled.stderr[:450]}"}
+        if backend == "graal":
+            # The Java/Graal launcher runs guest main(): int as the process exit
+            # status, so no LLVM IR or Clang is involved. The compiler check
+            # above is still mandatory: runtime crashes cannot satisfy a
+            # negative diagnostic and a missing executable cannot be a pass.
+            if run_argv is None:
+                return {"id": case["id"], "status": "fail",
+                        "detail": "Graal source-execution command not configured"}
+            guest_command = [part.replace("{source}", source) for part in run_argv]
+            guest = subprocess.run(guest_command, capture_output=True, text=True,
+                                   check=False, timeout=timeout)
+            expected = case["expected_exit"]
+            passed = guest.returncode == expected and not guest.stdout and not guest.stderr
+            return {"id": case["id"], "status": "pass" if passed else "fail",
+                    "observed_exit": guest.returncode,
+                    "detail": "" if passed else
+                        f"expected exit={expected}; actual={guest.returncode}; "
+                        f"stdout={guest.stdout[:160]!r}; stderr={guest.stderr[:160]!r}"}
+        if backend != "llvm" or not compiled.stdout.startswith("; ModuleID"):
+            return {"id": case["id"], "status": "fail",
+                    "detail": "native result adapter unavailable or compiler did not emit LLVM IR"}
+        if not clang:
+            return {"id": case["id"], "status": "fail", "detail": "Clang is required for native-result tests"}
+        with tempfile.TemporaryDirectory(prefix="ores-conformance-") as folder:
+            exe = str(Path(folder) / "main")
+            build = subprocess.run([clang, "-x", "ir", "-", "-o", exe], input=compiled.stdout,
+                                   capture_output=True, text=True, check=False, timeout=timeout)
+            if build.returncode:
+                return {"id": case["id"], "status": "fail",
+                        "detail": f"Clang failed: {build.stderr[:450]}"}
+            guest = subprocess.run([exe], capture_output=True, text=True, check=False,
+                                   timeout=timeout)
+            expected = case["expected_exit"]
+            passed = guest.returncode == expected and not guest.stdout and not guest.stderr
+            return {"id": case["id"], "status": "pass" if passed else "fail",
+                    "observed_exit": guest.returncode,
+                    "detail": "" if passed else f"expected exit={expected}; stdout={guest.stdout[:160]!r}; stderr={guest.stderr[:160]!r}"}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"id": case["id"], "status": "fail", "detail": f"toolchain/runtime failure: {exc}"}
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--validate", action="store_true")
+    p.add_argument("--backend", choices=["llvm", "graal"])
+    p.add_argument("--command", help="shell-free argv with one {source} placeholder")
+    p.add_argument("--clang", default=None)
+    p.add_argument("--run-command", help="Graal OresMain guest process argv with one {source}")
+    p.add_argument("--revision", help="40-character Git commit SHA for the compiled backend")
+    p.add_argument("--timeout", type=int, default=None,
+                   help="compiler/guest timeout in seconds (default: 30; execution only)")
+    p.add_argument("--report", type=Path)
+    args = p.parse_args()
+    suite, checksum = validate_suite()
+    if args.validate:
+        if (args.backend is not None or args.command is not None or
+                args.report is not None or args.run_command is not None or
+                args.revision is not None or args.clang is not None or
+                args.timeout is not None):
+            p.error("--validate cannot be combined with an execution option")
+        print(f"Validated {len(suite['cases'])} semantic cases, SHA256={checksum}")
+        return 0
+    if not args.backend or not args.command or not args.revision:
+        p.error("--backend, --command and --revision are required")
+    if not re.fullmatch("[a-f0-9]{40}", args.revision):
+        p.error("--revision must be a 40-character Git commit SHA")
+    if args.timeout is None:
+        args.timeout = 30
+    if not 1 <= args.timeout <= 300:
+        p.error("--timeout must be 1..300 seconds")
+    argv = validate_command(args.command)
+    if args.run_command and args.backend != "graal":
+        p.error("--run-command is only applicable to the graal backend")
+    run_argv = validate_command(args.run_command) if args.run_command else None
+    if requires_guest_runner(suite, args.backend) and run_argv is None:
+        p.error("--run-command is mandatory for required Graal native_exit cases")
+    initial_tree = verify_checkout_revision(args.revision)
+    print(f"Verified semantic checkout commit={args.revision} tree={initial_tree}")
+    results = []
+    for case in suite["cases"]:
+        if case["backends"][args.backend] == "pending":
+            result = {"id": case["id"], "status": "pending",
+                      "detail": case["pending_reason"]}
+        else:
+            result = run_case(case, args.backend, argv, args.clang, args.timeout, run_argv)
+        results.append(result)
+        print(f"{result['status'].upper()} {case['id']} ({args.backend})"
+              + (f": {result.get('detail','')}" if result["status"] == "fail" else ""))
+    if verify_checkout_revision(args.revision) != initial_tree:
+        raise ValueError("semantic runner checkout tree changed during fixture execution")
+    _, final_checksum = validate_suite()
+    if final_checksum != checksum:
+        raise ValueError("semantic fixture or schema bytes changed during execution")
+    report = {"schema_version":"1.1.0", "backend":args.backend, "suite_sha256":checksum,
+              "source_revision":args.revision, "results":results}
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(report, indent=2) + "\n")
+    passed = sum(x["status"] == "pass" for x in results)
+    pending = sum(x["status"] == "pending" for x in results)
+    failed = sum(x["status"] == "fail" for x in results)
+    print(f"SUMMARY pass={passed} pending={pending} fail={failed}; pending is NOT pass")
+    if passed == 0 and failed == 0:
+        print("INCOMPLETE: zero conformance cases passed; no execution proof", file=sys.stderr)
+        return 1
+    # Diagnostic-only success is not evidence that any compiled guest ran.
+    # A backend with every native_exit feature still pending must fail closed,
+    # even if all of its required rejection/diagnostic checks passed.
+    native_verified = sum(
+        case["kind"] == "native_exit" and
+        case["backends"][args.backend] == "required" and
+        result["status"] == "pass" and
+        result.get("observed_exit") == case["expected_exit"]
+        for case, result in zip(suite["cases"], results)
+    )
+    if native_verified == 0:
+        print("INCOMPLETE: no required native_exit case verified by guest execution",
+              file=sys.stderr)
+        return 1
+    return 1 if failed else 0
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (ValueError, OSError, json.JSONDecodeError) as err:
+        print(f"Conformance infrastructure error: {err}", file=sys.stderr)
+        sys.exit(2)

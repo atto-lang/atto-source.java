@@ -8,13 +8,23 @@ This directory documents the executable formal-methods layer for Oreslang runtim
 
 `FormalSelectModelCheckTest` separately enumerates three-case select readiness, arbitration, loser detachment, and cancellation.
 
+`FormalChannelRendezvousModelCheckTest` models a zero-capacity channel's read/write waiter lifecycle: second-arrival atomic handoff, cancellation withdrawal, and close-time waiter failure.
+
+`FormalBufferedChannelModelCheckTest` exhaustively explores a capacity-two buffer with three distinct messages, proving capacity, FIFO conservation, nonblocking full-buffer rejection, successful retry after a read frees capacity, one-way write fencing on close, and FIFO draining of values buffered before close.
+
 `FormalControlPlaneLivenessModelCheckTest` models the ActorGroup Mailman/CONTROL-carrier boundary in both the known blocking design and the required cooperative design. It keeps the blocking model as an executable counterexample oracle: a callback that waits while retaining its carrier strands already-queued CONTROL work. The cooperative model proves that suspension returns the carrier and queues the Mailman continuation behind work that was already ready.
 
 `FormalOwnershipDomainModelCheckTest` exhaustively checks the ownership/provenance algebra across root, SHARED, PRIVATE, and UNTRUSTED contexts for primitive, struct, and class values. It is a refinement target for the in-flight allocator/ownership work rather than a claim that every lowering is already on `main`.
 
 `FormalGarbageCollectorLifecycleModelCheckTest` models explicit cleanup, ReferenceQueue notification consumption, retry after cleanup failure, actor-domain retirement, and best-effort context shutdown.
 
+`FormalGcSweepQuantaModelCheckTest` models incremental bounded sweeping with a stable cursor and per-slot cleanup ownership. It proves one sweep quantum claims at most one retired slot, repeated quanta visit every retired slot, cleanup success is terminal, and cleanup failure returns the slot to a retryable state.
+
 `FormalStructuredCancellationModelCheckTest` models a three-level structured actor tree and proves downward-only lifecycle authority, cancellation cascade, bottom-up termination, and atomic whole-subtree force kill.
+
+`FormalProxyLockLivenessModelCheckTest` keeps blocking actor-side proxy lock acquisition as an executable starvation counterexample and models the required cooperative acquisition path: waiter registration releases the carrier, unlock reserves the grant before continuation re-entry, and cancellation removes pending waiters without resurrection.
+
+`FormalForceRevocationModelCheckTest` models hard kill as a two-phase protocol: fence, external revocation, then logical termination. It also explores failed/throwing revokers, mailbox rejection while fenced, overlapping hard-kill rejection, and fence clearing after failure.
 
 The checked invariants are:
 
@@ -32,6 +42,18 @@ The checked invariants are:
 12. **GC cleanup succeeds at most once.** Failed cleanup stays retryable while the registry is open, including after a queue notification was consumed; actor-domain retirement remains reclaimable even with a reachable stale owner.
 13. **Context-close cleanup is best effort.** The formal contract explicitly does not mislabel a failed final host cleanup hook as success.
 14. **No structured actor orphans.** Parent teardown fences/cancels descendants before parent termination, and lifecycle authority never propagates upward from child to parent.
+15. **Rendezvous is exactly one handoff.** A zero-capacity channel completes read and write together; the second arrival cannot leave both waiters pending.
+16. **Cancelled channel waiters are withdrawn.** Cancellation cannot consume later traffic, and channel close fails every remaining pending waiter without inventing a delivery.
+17. **Hard kill publishes only after revocation.** Logical cancelled termination is unreachable until external revocation succeeds.
+18. **Force-kill fences fail closed.** While external revocation is in flight, new mailbox admission and overlapping hard-kill attempts are rejected; false/throwing revokers clear the fence and restore actor progress.
+19. **Buffered capacity is invariant.** A capacity-two channel never reaches three buffered values; a full nonblocking write has no state transition.
+20. **Buffered FIFO is conserved.** At every reachable state, admitted order equals the delivered prefix followed by the still-buffered suffix, so modeled messages are neither reordered, duplicated, nor lost.
+21. **Contended proxy acquisition is carrier-releasing.** The cooperative model never lets a waiting actor retain its physical carrier; unlock reserves the grant before scheduling the continuation, and cancellation prevents resurrection.
+
+22. **Promoted storage outlives actor ownership.** Actor stop cannot reclaim storage rooted by a runtime-owned proxy; disposal of the final promoted root makes reclamation legal.
+23. **Proxy locks cannot span suspension or compose implicitly.** Read-to-write upgrades, cross-proxy nested locking, and suspension while locked fail closed in the bounded model; disposed proxies cannot be reacquired.
+
+`FormalActorStorageLifetimeModelCheckTest` explores actor retirement versus promoted-root lifetime. `FormalProxySynchronizationModelCheckTest` explores two proxies, lock modes, suspension and disposal. These are bounded abstract contracts; they do not substitute for concrete runtime refinement tests.
 
 ## Relationship to runtime tests
 
@@ -51,10 +73,94 @@ No additional model-checking dependency is required; the finite-state explorer i
 
 The next models should cover:
 
-- Channel close/rendezvous details beyond select arbitration, including waiter ownership and wakeup ordering.
-- Concrete runtime refinement for the cooperative Mailman/CONTROL suspension model once #290 is redesigned to release carriers while waiting.
+- Keep `BufferedChannelRefinementTest` aligned with the buffered-channel model whenever concrete close/backpressure semantics change.
+- Concrete runtime refinement for cooperative proxy-lock acquisition against `FormalProxyLockLivenessModelCheckTest`.
+- Concrete runtime refinement for the cooperative Mailman/CONTROL suspension model tracked in #358.
 - Concrete trace refinement for allocation-domain/ownership lowering once the #309/#328/#329/#332 stack is reconciled onto current `main`.
-- GC refinement for bounded actor-local sweep quanta and concurrent cleanup-slot ownership.
+- Concrete GC runtime refinement for the now-modeled bounded sweep cursor and cleanup-slot ownership.
 - Structured actor failure propagation/restart policy beyond the already-modeled cancellation tree.
 
 For unbounded properties we should add a second tier using an external prover/model checker once its toolchain is pinned reproducibly; this bounded executable layer remains useful as the fast CI gate.
+
+## InvertedArray handle and field-sensitive loan safety
+
+See [INVERTED_ARRAY_MODEL.md](INVERTED_ARRAY_MODEL.md) for a bounded explicit-state checker with four negative mutation oracles. It does not certify executable guest lowering; tracked by issue #1424.
+
+
+## Static-effect model checking (2026-10-19)
+
+`FormalEffectClosureModelCheckTest` independently enumerates all 512 three-function directed call graphs
+and 64 pairs of direct IO/PANIC effect assignments (32,768 configurations).
+A breadth-first reachability oracle checks the fixed-point effect summaries for
+every possible root, including recursive strongly connected components. It also
+checks rejection of over-budget graph input and proves via tests that the
+current trapping abstraction does not discard PANIC or unknown calls.
+
+**Scope boundary:** this is a finite-state proof of the graph summary library,
+not a proof that compiler-produced call edges, exception handlers, imports,
+or FFI effect labels are complete or authenticated. Source AST-to-effect-IR
+refinement remains an independent obligation.
+
+## Effect-model trust-boundary regression (2026-10-19 follow-up)
+
+`EffectGraphAdmissionBoundaryTest` verifies transitive unresolved-host effects
+through recursive call graphs, that trapping cannot swallow RAISE/PANIC or
+cancellation, and that rejected over-budget symbol/edge graphs do not mutate
+the accepted environment. The existing
+`FormalEffectClosureModelCheckTest` exhausts finite three-node effect graphs.
+
+Run both with `mvn -B -Dtest=FormalEffectClosureModelCheckTest,EffectGraphAdmissionBoundaryTest,TypeclassesAndEffectsFoundationTest test`.
+
+**Important:** all graph nodes and edges are supplied to the Java analysis
+library, not derived from the full Oreslang source frontend. A pass is a model
+property only; complete AST/HIR-to-effect-IR refinement, authenticated imports
+and dynamic dispatch effects are still unproved.
+
+## Standalone JDK effect-closure verification
+
+To check the actual `EffectContracts` implementation without Maven,
+Truffle or third-party libraries, run:
+
+```bash
+bash tools/formal-standalone/verify-effects.sh
+```
+
+This compiles the production effect-graph class with JDK 21, and explores
+**all 98,304 starting roots** across 512 three-node call graphs and 64
+IO/PANIC direct-effect configurations, against an independent BFS oracle.
+A negative control ensures `trap` cannot swallow PANIC or unknown FFI calls.
+The standalone checker is a bounded finite-state library proof, not a proof
+that Java Oreslang lowering constructs complete or authenticated call edges.
+
+`RustScalarGuestParityTest` separately runs `40+2` in a Graal guest and
+checks the observed value `42`; it does not yet emit comparable effect IR.
+
+
+## Static-effect model checking (2026-10-19)
+
+`FormalEffectClosureModelCheckTest` independently enumerates all 512 three-function directed call graphs
+and 64 pairs of direct IO/PANIC effect assignments (32,768 configurations).
+A breadth-first reachability oracle checks the fixed-point effect summaries for
+every possible root, including recursive strongly connected components. It also
+checks rejection of over-budget graph input and proves via tests that the
+current trapping abstraction does not discard PANIC or unknown calls.
+
+**Scope boundary:** this is a finite-state proof of the graph summary library,
+not a proof that compiler-produced call edges, exception handlers, imports,
+or FFI effect labels are complete or authenticated. Source AST-to-effect-IR
+refinement remains an independent obligation.
+
+## Effect-model trust-boundary regression (2026-10-19 follow-up)
+
+`EffectGraphAdmissionBoundaryTest` verifies transitive unresolved-host effects
+through recursive call graphs, that trapping cannot swallow RAISE/PANIC or
+cancellation, and that rejected over-budget symbol/edge graphs do not mutate
+the accepted environment. The existing
+`FormalEffectClosureModelCheckTest` exhausts finite three-node effect graphs.
+
+Run both with `mvn -B -Dtest=FormalEffectClosureModelCheckTest,EffectGraphAdmissionBoundaryTest,TypeclassesAndEffectsFoundationTest test`.
+
+**Important:** all graph nodes and edges are supplied to the Java analysis
+library, not derived from the full Oreslang source frontend. A pass is a model
+property only; complete AST/HIR-to-effect-IR refinement, authenticated imports
+and dynamic dispatch effects are still unproved.

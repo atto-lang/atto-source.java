@@ -11,6 +11,30 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresFutureCallbackTest {
 
     @Test
+    void failedCancellationHookRetainsFailureWithoutSuppressingSubscribers() {
+        IllegalStateException revocationFailure =
+                new IllegalStateException("physical revocation did not complete");
+        java.util.concurrent.atomic.AtomicInteger observed = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = new OresFuture<>(() -> {
+            throw revocationFailure;
+        });
+        future.whenCompleteRuntime((value, failure) -> {
+            assertNull(value);
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            observed.incrementAndGet();
+        });
+        assertTrue(future.cancel(false));
+        assertTrue(future.isCancelled(),
+                "terminal cancellation remains authoritative despite failing hook");
+        assertSame(revocationFailure, future.cancellationHookFailureFromRuntime(),
+                "the actor must be able to quarantine a failed physical revoker");
+        assertEquals(1, observed.get(),
+                "failing revoker must not suppress independent terminal subscribers");
+        assertFalse(future.cancel(false), "revocation hook and failure receipt are single shot");
+        assertSame(revocationFailure, future.cancellationHookFailureFromRuntime());
+    }
+
+    @Test
     void fromCallbackMaySettleSynchronouslyButRemainsSingleShot() throws Exception {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
 
@@ -42,6 +66,75 @@ final class OresFutureCallbackTest {
                 0,
                 future.pendingRuntimeWaiterCount(),
                 "late terminal registrations must not remain retained in the waiter queue");
+    }
+
+    @Test
+    void concurrentTerminalRegistrationAndDetachmentReclaimsClaimedWaiters()
+            throws Exception {
+        for (int round = 0; round < 64; round++) {
+            var producer = new OresFuture<Integer>();
+            var registered = new java.util.ArrayList<OresFuture.RuntimeWaiterRegistration<Integer>>();
+            var gate = new java.util.concurrent.CountDownLatch(1);
+            var workerFailure = new AtomicReference<Throwable>();
+            Thread settler = Thread.startVirtualThread(() -> {
+                try {
+                    if (!gate.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("settlement gate timed out");
+                    }
+                    assertTrue(producer.completeFromRuntime(43));
+                } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                }
+            });
+            gate.countDown();
+            for (int i = 0; i < 128; i++) {
+                registered.add(producer.whenCompleteRuntimeCancellable((value, failure) -> {
+                    assertNull(failure);
+                    assertEquals(43, value);
+                }));
+            }
+            settler.join(5_000);
+            assertFalse(settler.isAlive(), "settlement stalled in round " + round);
+            if (workerFailure.get() != null) {
+                throw new AssertionError("settlement worker failed in round " + round,
+                        workerFailure.get());
+            }
+            for (var waiter : registered) waiter.detach();
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "claimed and unclaimed waiter handles must not retain queue nodes");
+            assertEquals(43, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void settledWaiterCanReenterRegistrationWithoutLockingOrQueueRetention()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        var notifications = new java.util.concurrent.atomic.AtomicInteger();
+        producer.whenCompleteRuntime((value, failure) -> {
+            assertNull(failure);
+            assertEquals(44, value);
+            producer.whenCompleteRuntime((nested, nestedFailure) -> {
+                assertNull(nestedFailure);
+                assertEquals(44, nested);
+                notifications.incrementAndGet();
+            });
+            notifications.incrementAndGet();
+        });
+        assertTrue(producer.completeFromRuntime(44));
+        assertEquals(2, notifications.get());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        // Re-registering after the terminal drain must never add a waiter.
+        for (int i = 0; i < 256; i++) {
+            var handle = producer.whenCompleteRuntimeCancellable((value, failure) -> {
+                assertNull(failure);
+                assertEquals(44, value);
+                notifications.incrementAndGet();
+            });
+            handle.detach();
+        }
+        assertEquals(258, notifications.get());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
     }
 
     @Test

@@ -6,6 +6,7 @@
 #endif
 
 #include <jni.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,6 +34,7 @@ struct ores_carrier_pool {
     JavaVM *jvm;
     jobject executor;
     jmethodID carrier_loop;
+    jmethodID carriers_joined;
     pthread_t *threads;
     ores_carrier_arg *args;
     int max_threads;
@@ -43,6 +45,10 @@ struct ores_carrier_pool {
     int attach_failures;
     pthread_mutex_t mutex;
     pthread_cond_t condition;
+    /* calloc() starts these at zero. Destroy only successfully initialized
+     * synchronization primitives on every pre-pthread error path. */
+    int mutex_initialized;
+    int condition_initialized;
 };
 
 static void throw_illegal_state(JNIEnv *env, const char *message) {
@@ -109,8 +115,8 @@ static void free_pool(JNIEnv *env, ores_carrier_pool *pool) {
     }
     free(pool->args);
     free(pool->threads);
-    pthread_cond_destroy(&pool->condition);
-    pthread_mutex_destroy(&pool->mutex);
+    if (pool->condition_initialized) pthread_cond_destroy(&pool->condition);
+    if (pool->mutex_initialized) pthread_mutex_destroy(&pool->mutex);
     free(pool);
 }
 
@@ -144,8 +150,18 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     }
     pool->max_threads = (int)max_threads;
     pool->desired_threads = (int)desired_threads;
-    pthread_mutex_init(&pool->mutex, NULL);
-    pthread_cond_init(&pool->condition, NULL);
+    if (pthread_mutex_init(&pool->mutex, NULL) != 0) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "failed to initialize native carrier mutex");
+        return 0;
+    }
+    pool->mutex_initialized = 1;
+    if (pthread_cond_init(&pool->condition, NULL) != 0) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "failed to initialize native carrier condition");
+        return 0;
+    }
+    pool->condition_initialized = 1;
 
     if ((*env)->GetJavaVM(env, &pool->jvm) != JNI_OK || pool->jvm == NULL) {
         free_pool(env, pool);
@@ -166,10 +182,18 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         return 0;
     }
     pool->carrier_loop = (*env)->GetMethodID(env, executor_class, "nativeCarrierLoop", "(I)V");
-    (*env)->DeleteLocalRef(env, executor_class);
     if (pool->carrier_loop == NULL) {
+        (*env)->DeleteLocalRef(env, executor_class);
         free_pool(env, pool);
         throw_illegal_state(env, "nativeCarrierLoop(int) JNI callback is missing");
+        return 0;
+    }
+    /* Physical retirement is published only after the pthread reaper joins. */
+    pool->carriers_joined = (*env)->GetMethodID(env, executor_class, "nativeCarriersJoined", "()V");
+    (*env)->DeleteLocalRef(env, executor_class);
+    if (pool->carriers_joined == NULL) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "nativeCarriersJoined() JNI callback is missing");
         return 0;
     }
 
@@ -236,16 +260,42 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
     (void)cls;
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
     if (pool == NULL) return;
+
+    /*
+     * This is the first JNI startup barrier, preceding Java's bounded
+     * carrierLoopsEntered.await(). An unbounded pthread_cond_wait here would
+     * defeat Java's timeout if AttachCurrentThreadAsDaemon stalled. Use an
+     * absolute CLOCK_REALTIME deadline as required by the default pthread
+     * condition variable clock. A failed or timed-out attachment is retired
+     * by Java's ensureStarted() finally via nativeShutdown(), never admitted.
+     */
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        throw_illegal_state(env, "failed to read native carrier startup clock");
+        return;
+    }
+    deadline.tv_sec += 30;
     pthread_mutex_lock(&pool->mutex);
     pool->started = 1;
     pthread_cond_broadcast(&pool->condition);
+    int wait_status = 0;
     while (!pool->shutdown && pool->attach_ready_count < pool->max_threads) {
-        pthread_cond_wait(&pool->condition, &pool->mutex);
+        int rc = pthread_cond_timedwait(&pool->condition, &pool->mutex, &deadline);
+        if (rc != 0) {
+            wait_status = rc;
+            break;
+        }
     }
     int failures = pool->attach_failures;
+    int attached = pool->attach_ready_count;
+    int stopped = pool->shutdown;
     pthread_mutex_unlock(&pool->mutex);
-    if (failures != 0) {
-        throw_illegal_state(env, "one or more native carrier pthreads failed to attach to the JVM");
+    if (wait_status == ETIMEDOUT) {
+        throw_illegal_state(env, "native carrier JNI attachment timed out");
+    } else if (wait_status != 0) {
+        throw_illegal_state(env, "native carrier JNI attachment wait failed");
+    } else if (stopped || attached != pool->max_threads || failures != 0) {
+        throw_illegal_state(env, "native carrier pthread attachment incomplete or failed");
     }
 }
 
@@ -300,6 +350,14 @@ static void *carrier_reaper_main(void *raw) {
     jint status = (*jvm)->AttachCurrentThreadAsDaemon(
             jvm, (void **)&env, &attach);
     if (status == JNI_OK && env != NULL) {
+        /* All actor pthreads have been joined above. The executor may now
+         * report physical retirement, but not before this callback. Keep its
+         * JNI global reference rooted until the notification has returned. */
+        (*env)->CallVoidMethod(env, pool->executor, pool->carriers_joined);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
         free_pool(env, pool);
         (*jvm)->DetachCurrentThread(jvm);
     }
@@ -389,5 +447,32 @@ static uint64_t pthread_cpu_time_nanos(pthread_t pthread) {
 #else
     (void)pthread;
     return 0;
+#endif
+}
+
+/* Validate against the caller's allowed CPUs before creating any actor workers. */
+JNIEXPORT jint JNICALL Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCpuAffinity(
+        JNIEnv *env, jclass cls, jint cpu, jboolean bind) {
+    (void)env; (void)cls;
+#if defined(__linux__)
+    if (cpu < 0 || cpu >= CPU_SETSIZE) return EINVAL;
+    cpu_set_t allowed;
+    if (sched_getaffinity(0, sizeof allowed, &allowed) != 0) return errno;
+    if (!bind) return CPU_ISSET(cpu, &allowed) ? 0 : EINVAL;
+    cpu_set_t selected; CPU_ZERO(&selected); CPU_SET(cpu, &selected);
+    return sched_setaffinity(0, sizeof selected, &selected) == 0 ? 0 : errno;
+#else
+    (void)cpu; (void)bind;
+    return ENOTSUP;
+#endif
+}
+
+JNIEXPORT jint JNICALL Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentCpu(
+        JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+#if defined(__linux__)
+    return sched_getcpu();
+#else
+    return -1;
 #endif
 }
