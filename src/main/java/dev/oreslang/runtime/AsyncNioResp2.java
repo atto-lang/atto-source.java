@@ -88,7 +88,11 @@ final class AsyncNioResp2 {
         if (frame == null) return null;
         ArrayList<String> result = new ArrayList<>(frame.bulk().size() + 1);
         result.add(frame.opcode());
+        // Measure the legacy hex conversion independently of RESP header
+        // scanning. This exposes the cost of the non-Bytes ABI.
+        long hexStarted = CorePerf.start();
         for (byte[] payload : frame.bulk()) result.add(HEX.formatHex(payload));
+        CorePerf.end(CorePerf.REDIS_RESP_HEX, hexStarted);
         return new Parsed(List.copyOf(result), frame.consumed());
     }
 

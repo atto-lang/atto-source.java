@@ -2,6 +2,7 @@
 // JDK AsyncNioResp2 frames bytes/hex and NIO2 performs TCP; Atto alone owns KV.
 // This route deliberately trades an Atto-written RESP parser for a bounded host
 // codec. It NEVER uses stdio, blocking sockets, synchronous file IO or host KV.
+// One reply tuple per command (status, hex-payload); no GET double-mail.
 // Single client, ephemeral, no WAL/TTL/replication or production durability.
 define actor FramedNioKvActor as
   let Map<string,string> values;
@@ -19,28 +20,27 @@ define actor FramedNioKvActor as
     if kind == 5; do self.end(); return; fi
     if kind == 3; do
       self.values.set(key, value);
-      self.send("OK");
+      self.send(("OK", ""));
       return;
     fi
     if kind == 2; do
       val found = self.values.get_optional(key);
       if found.is_none(); do
-        self.send("NIL");
+        self.send(("NIL", ""));
       else
-        self.send("VALUE");
-        self.send(found.unwrap());
+        self.send(("VALUE", found.unwrap()));
       fi
       return;
     fi
     if kind == 4; do
       if self.values.delete(key); do
-        self.send("ONE");
+        self.send(("ONE", ""));
       else
-        self.send("ZERO");
+        self.send(("ZERO", ""));
       fi
       return;
     fi
-    self.send("ERR");
+    self.send(("ERR", ""));
     return;
   }
 end
@@ -82,13 +82,12 @@ pub async routine main(): void {
       if frame.size >= 2 then key = frame[1]; fi
       if frame.size >= 3 then value = frame[2]; fi
       worker.send((kind, key, value));
+      // Exactly one typed reply envelope per actor command, including GET hits.
+      // No second mailbox wait for VALUE; status and payload share one turn.
       val output = (await worker.outputs.next()).value.unwrap();
-      let string payload = "";
-      if output.value == "VALUE"; do
-        val data = (await worker.outputs.next()).value.unwrap();
-        payload = data.value;
-      fi
-      await socket.write_resp2_hex_async(output.value, payload);
+      // Explicitly preserve the typed mailbox payload before tuple indexing.
+      const Tuple[string,string] reply = output.value;
+      await socket.write_resp2_hex_async(reply[0], reply[1]);
     fi
   }
 }
