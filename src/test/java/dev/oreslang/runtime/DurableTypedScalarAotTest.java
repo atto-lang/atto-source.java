@@ -96,6 +96,26 @@ final class DurableTypedScalarAotTest {
     }
 
     @Test
+    void futureCallbackInitiatedCloseIsNonblockingAndDrainsCommittedWork()
+            throws Exception {
+        var path = temp.resolve("callback-close.db");
+        var address = new DurableActorStore.Address("tenant", "wf", "run", "actor");
+        var first = new DurableActorStore.Snapshot(0, 1, "code", 0, new byte[] {0});
+        var provider = AsyncSqliteDurableProviderV1.open(path, 8);
+        var done = provider.ready().thenCompose(ready -> provider.bootstrap(address, first))
+                .thenCompose(inserted -> {
+                    assertTrue(inserted);
+                    return provider.closeAsync();
+                });
+        done.toCompletableFuture().get(10, TimeUnit.SECONDS);
+        assertThrows(ExecutionException.class, () -> provider.activate(address)
+                .toCompletableFuture().get(10, TimeUnit.SECONDS));
+        try (var reopened = SqliteDurableActorStore.open(path)) {
+            assertEquals(0L, reopened.activate(address).snapshot().stateVersion());
+        }
+    }
+
+    @Test
     void providerRejectsUnboundedQueueConfiguration() {
         assertThrows(IllegalArgumentException.class,
                 () -> AsyncSqliteDurableProviderV1.open(temp.resolve("bad.db"), 0));
