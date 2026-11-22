@@ -23,7 +23,13 @@ final class AttoAllocGuestTest {
         for (String name : new String[]{"allocator", "set", "drop", "arc", "pool", "weak"}) {
             String canonical = "atto.alloc/" + name;
             String source = CoreLibrarySources.attoAllocSource(canonical);
-            assertTrue(source.contains("define module "), canonical);
+            assertTrue(source.contains("use namespace atto_alloc_" + name + ";"), canonical);
+            var parsed = Parser.parse(source);
+            assertEquals("atto_alloc_" + name, parsed.namespace(), canonical);
+            assertTrue(parsed.modules().stream().anyMatch(module ->
+                    module.declarations().stream().anyMatch(declaration ->
+                            declaration instanceof dev.oreslang.ast.Ast.FunctionDecl function
+                                    && function.name().equals("self_test"))), canonical);
             assertEquals(source, CoreLibrarySources.attoAllocSource(canonical + ".atto"));
             assertEquals(CoreLibrarySources.attoAllocUnitId(canonical),
                     CoreLibrarySources.attoAllocUnitId(canonical + ".atto"));
@@ -86,6 +92,31 @@ final class AttoAllocGuestTest {
                 () -> LinkedProgramRunner.validate(bad, Map.of()),
                 "only real declarations may be imported from closed alloc units");
     }
+    @Test
+    void namespacesMustRemainFlatAndFileScoped() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc main(): void {
+                  use namespace invalid;
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                use namespace alloc.bad;
+                pub fnc main(): void { return; }
+                """));
+    }
+
+    @Test
+    void reservationLedgerPublicFunctionMustExistInRealGuestSource() throws Exception {
+        var source = CoreLibrarySources.attoAllocSource("atto.alloc/allocator");
+        var parsed = Parser.parse(source);
+        assertEquals("atto_alloc_allocator", parsed.namespace());
+        assertTrue(parsed.modules().stream().anyMatch(module ->
+                module.declarations().stream().anyMatch(declaration ->
+                        declaration instanceof dev.oreslang.ast.Ast.FunctionDecl function
+                                && function.name().equals("reservation_self_test"))));
+    }
+
     @Test
     void unsafeNominalAllocCapabilitiesMustNotBeForgedByImport() throws Exception {
         for (String name : new String[]{
