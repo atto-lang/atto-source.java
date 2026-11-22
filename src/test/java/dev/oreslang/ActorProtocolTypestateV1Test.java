@@ -4,6 +4,7 @@ import dev.oreslang.parser.ActorProtocolTypestateV1;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 import java.util.List;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Source grammar/type-contract tests; no claim of protocol guest execution. */
@@ -75,6 +76,34 @@ final class ActorProtocolTypestateV1Test {
         assertTrue(assertThrows(IllegalArgumentException.class, () ->
                 ActorProtocolTypestateV1.parseSource(SOURCE.replace("terminal state Closed", "terminal state Disconnected")))
                 .getMessage().contains("E_PROTOCOL_DUPLICATE"));
+    }
+
+    @Test void nominalMessageModesMustMatchProtocolTransitions() {
+        var c = ActorProtocolTypestateV1.parseSource(SOURCE);
+        var nominal = Map.of(
+                "Connect", new ActorProtocolTypestateV1.NominalMessage(
+                        ActorProtocolTypestateV1.Mode.UNARY, "ConnectedAck"),
+                "Close", new ActorProtocolTypestateV1.NominalMessage(
+                        ActorProtocolTypestateV1.Mode.UNARY, "ClosedAck"),
+                "Query", new ActorProtocolTypestateV1.NominalMessage(
+                        ActorProtocolTypestateV1.Mode.UNARY, "QueryReply"),
+                "Subscribe", new ActorProtocolTypestateV1.NominalMessage(
+                        ActorProtocolTypestateV1.Mode.STREAM, "DataEvent"));
+        assertDoesNotThrow(() -> c.verifyResolvedMessages(nominal));
+        var missing = new java.util.HashMap<>(nominal);
+        missing.remove("Subscribe");
+        assertTrue(assertThrows(IllegalArgumentException.class, () ->
+                c.verifyResolvedMessages(missing)).getMessage().contains("E_PROTOCOL_UNVERIFIED_MESSAGE"));
+        var wrongMode = new java.util.HashMap<>(nominal);
+        wrongMode.put("Subscribe", new ActorProtocolTypestateV1.NominalMessage(
+                ActorProtocolTypestateV1.Mode.UNARY, "DataEvent"));
+        assertTrue(assertThrows(IllegalArgumentException.class, () ->
+                c.verifyResolvedMessages(wrongMode)).getMessage().contains("E_PROTOCOL_RESPONSE_MODE"));
+        var wrongType = new java.util.HashMap<>(nominal);
+        wrongType.put("Subscribe", new ActorProtocolTypestateV1.NominalMessage(
+                ActorProtocolTypestateV1.Mode.STREAM, "WrongEvent"));
+        assertTrue(assertThrows(IllegalArgumentException.class, () ->
+                c.verifyResolvedMessages(wrongType)).getMessage().contains("E_PROTOCOL_RESPONSE_TYPE"));
     }
 
     @Test void parserRecognizesButDoesNotExecuteProtocolDeclarations() {
