@@ -3185,24 +3185,34 @@ public final class OwnershipChecker {
         int arity;
         Ast.TypeRef returnType;
         switch (member) {
+            case "sha256" -> { arity = 1; returnType = bytes; }
+            case "hmac_sha256", "constant_time_equals" -> {
+                arity = 2;
+                returnType = member.equals("constant_time_equals")
+                        ? Ast.TypeRef.simple("bool") : bytes;
+            }
+            case "pbkdf2_hmac_sha256" -> { arity = 4; returnType = bytes; }
+            case "base64_encode" -> { arity = 1; returnType = Ast.TypeRef.simple("String"); }
+            case "base64_decode", "secure_random_bytes" -> { arity = 1; returnType = bytes; }
             case "aead_new_key" -> { arity = 1; returnType = key; }
             case "aead_seal", "aead_open" -> { arity = 3; returnType = resultType; }
             case "aead_close" -> { arity = 1; returnType = Ast.TypeRef.simple("void"); }
-            default -> throw error("unknown crypto AEAD member '" + member
-                    + "' (hash/KDF functions are a separate integration dependency)");
+            default -> throw error("unknown std.crypto member '" + member + "'");
         }
         if (args.size() != arity) throw error("crypto." + member
                 + " expects " + arity + " argument(s)");
         for (int i = 0; i < args.size(); i++) {
-            // seal/open may read one opaque key without consuming it; close
-            // consumes the key at its explicit owner-retirement boundary.
+            // All guest crypto payload reads are non-consuming. Sealing/opening
+            // uses the same owned key, and aead_close retires it explicitly.
             boolean consuming = member.equals("aead_close") && i == 0;
             ValueInfo value = checkExpr(args.get(i), scope, consuming);
             if (isBorrowValue(value) || containsBorrowType(value.type)
                     || containsMutexGuardType(value.type)) {
                 throw error("crypto." + member + " cannot retain a borrow or guard");
             }
-            if (i == 0 && !member.equals("aead_new_key")
+            if (i == 0 && (member.equals("aead_seal")
+                    || member.equals("aead_open")
+                    || member.equals("aead_close"))
                     && !value.type.name().equals("AeadKey")) {
                 throw error("crypto." + member + " requires an opaque AeadKey");
             }
