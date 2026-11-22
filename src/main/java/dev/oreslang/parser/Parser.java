@@ -799,6 +799,7 @@ public final class Parser {
                 // attaches an ordinary instance method to the nominal class Owner.
                 Token head = advance(); // contextual mtd
                 consume(LPAREN, "expected '(' before out-of-line method receiver");
+                match(MUT); // `mut self`: an exclusive receiver (also inferred for field-mutating bodies)
                 if (!match(SELF)) {
                     throw error(peek(), "out-of-line method receiver must be named 'self'");
                 }
