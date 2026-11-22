@@ -1506,6 +1506,12 @@ public final class Parser {
     private void rejectUnloweredRuntimeEntityDeclaration() {
         if (check(EOF)) return;
         String name = peek().lexeme();
+        if (name.equals("singleton")) {
+            throw error(peek(), "ORES-SINGLETON-UNSUPPORTED: singleton declarations require "
+                    + "exactly-once complete publication, cycle/failure semantics, "
+                    + "runtime-derived actor authority for shared state, and "
+                    + "five-backend guest execution parity; not yet enabled");
+        }
         // Reserve the two-word declaration heads without mislowering them as
         // ordinary actor/class declarations. These are contextual identifiers,
         // so 'state' and 'virtual' remain valid names outside declaration heads.
