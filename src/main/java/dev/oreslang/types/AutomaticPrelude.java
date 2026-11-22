@@ -19,7 +19,7 @@ public final class AutomaticPrelude {
     public enum Profile { CORE, ALLOC, HOSTED }
     public enum Scope { CORE, ALLOC, EXPLICIT }
     public enum Kind { TYPE, CONSTRUCTOR, TRAIT }
-    public enum Ownership { PAYLOAD_DEPENDENT, BORROWED_VIEW, OWNED, TRAIT }
+    public enum Ownership { COPY, PAYLOAD_DEPENDENT, BORROWED_VIEW, OWNED, TRAIT }
 
     public record Binding(String name, String canonical, Scope scope, Kind kind,
                           Ownership ownership) {
@@ -29,7 +29,7 @@ public final class AutomaticPrelude {
             Objects.requireNonNull(scope);
             Objects.requireNonNull(kind);
             Objects.requireNonNull(ownership);
-            if (name.isBlank() || !canonical.endsWith("/" + name)
+            if (name.isBlank() || canonical.isBlank()
                     || canonical.contains("..") || canonical.startsWith("/")) {
                 throw new IllegalArgumentException("invalid prelude canonical identity");
             }
@@ -52,6 +52,7 @@ public final class AutomaticPrelude {
                 case TRAIT -> Kind.TRAIT;
             };
             Ownership ownership = switch (type.ownership()) {
+                case COPY -> Ownership.COPY;
                 case PAYLOAD_DEPENDENT -> Ownership.PAYLOAD_DEPENDENT;
                 case BORROWED_VIEW -> Ownership.BORROWED_VIEW;
                 case OWNED -> Ownership.OWNED;
