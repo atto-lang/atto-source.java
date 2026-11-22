@@ -477,12 +477,12 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                    if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
-                        throw error(previous(), "modules do not accept declaration modifiers");
+                        throw error(previous(), "modules accept only pub/private visibility; other declaration modifiers are forbidden");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
-                    modules.add(parseModule(annotations));
+                    modules.add(parseModule(annotations, modifiers.visibility));
                     continue;
                 }
                 if (match(CONTRACT)) {
@@ -799,7 +799,7 @@ public final class Parser {
         }
     }
 
-    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectModuleCompilerAnnotations(annotations);
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (ROOT_MODULE.equals(name)) {
@@ -827,7 +827,7 @@ public final class Parser {
         } finally {
             moduleForwards = enclosing;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
+        return new Ast.ModuleDecl(name, annotations, contracts, declarations, visibility);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
