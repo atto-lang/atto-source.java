@@ -1,0 +1,71 @@
+{
+  "schema": "atto.incremental-ci-test-plan-proposal.v1",
+  "status": "REVIEW_ONLY_NOT_AUTHORIZED",
+  "candidate_source": {
+    "repo": "atto-lang/atto-source.java",
+    "repo_id": 1448697198,
+    "pr": 1744,
+    "head_sha": "c09cada6e7c22fb545ea22b5d9a7b87e58c6644e",
+    "root_tree_sha": "f25becfe44e789df645ad57c61bda21818ba7bff"
+  },
+  "proposed_target_plan": {
+    "schema": "ores-private-ci-test-plan-v1",
+    "source_repo": "atto-lang/atto-source.java",
+    "allowed_prs": [
+      1744
+    ],
+    "maven_pom_blob_sha": "d8b4af619450ffb112fb900c308c8fcdac6d29d7",
+    "required_source_blobs": {
+      "pom.xml": "d8b4af619450ffb112fb900c308c8fcdac6d29d7",
+      "src/main/java/dev/oreslang/compiler/IncrementalCompiler.java": "dc09abed03cb4f8fc65bc9f67b2842567bac057e",
+      "src/main/java/dev/oreslang/compiler/ImportGraph.java": "d87a141547896337f3b9e9f0fc05d5d38948193b",
+      "src/main/java/dev/oreslang/ast/Ast.java": "46ce80494bdb3861fc70046e37804278102aeff2",
+      "src/main/java/dev/oreslang/ast/AnnotationExpander.java": "bad3e152c186dae6c919d282d1b3c76b67a89440",
+      "src/main/java/dev/oreslang/types/TypeChecker.java": "bc66f2b3ee5c94bd06bb75cdbe6c8d5af23f2251",
+      "src/main/java/dev/oreslang/types/OwnershipChecker.java": "f391c30dd05a132e9817f5668b12bb9d2570a75a",
+      "src/test/java/dev/oreslang/IncrementalFileFallbackV1Test.java": "ac2dee080850a2286f393efd66ab13fdfb348f1a",
+      ".github/workflows/incremental-file-fallback-v1.yml": "c462b091a6d67214379d57016675252087a4a0cb",
+      "contracts/incremental-compilation-rollout-v1.json": "d153164e988c371eea21abf0360195803daa507b"
+    },
+    "commands": [
+      {
+        "argv": [
+          "mvn",
+          "-o",
+          "-C",
+          "-B",
+          "-ntp",
+          "-DfailIfNoTests=true",
+          "-Dsurefire.failIfNoSpecifiedTests=true",
+          "-Dtest=IncrementalFileFallbackV1Test",
+          "clean",
+          "test"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 1800
+      }
+    ],
+    "required_junit_suite": "dev.oreslang.IncrementalFileFallbackV1Test",
+    "required_junit_testcase_count": 15,
+    "require_no_skips": true,
+    "require_no_failures": true,
+    "require_nonzero_runner_steps": true
+  },
+  "inert_until": [
+    "independent Atto-specific V3 origin publisher authority (legacy source repo identity is wrong)",
+    "live source main branch protection meets all V3 requirements",
+    "carrier exact repo ID, source-free main base and workflow blob, test plan SHA, readers/retention and cleanup are independently reviewed",
+    "carrier has fresh stepful source-free capacity proof",
+    "source PR exact head/tree independently approved and all Git blob paths/modes verified",
+    "network-isolated JDK25 Maven dependency prefetch approved separately and test stage operates offline"
+  ],
+  "separate_future_plan_required_for": [
+    "actual clean-vs-incremental Atto compiled guest equivalence",
+    "GraalVM Native Image AOT and cross-backend parity"
+  ],
+  "source_head_drift": {
+    "stale": false,
+    "action_if_changed": "DENY_AUTO_REPIN_AND_REQUEST_NEW_EXACT_HEAD_REVIEW"
+  },
+  "note": "No active carrier workflow or test-plan file was installed by this proposal. Current Oreslang V3 parser rejects this Atto source identity, correctly. An approved new/compatible carrier plan and reviewed code are prerequisites."
+}
