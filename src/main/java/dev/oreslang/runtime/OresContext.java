@@ -39,10 +39,26 @@ public final class OresContext implements AutoCloseable {
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
+    private final SourceActorPubSub actorPubSub;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    // Host-provisioned at context creation; default is DENY with no service.
+    private final WorkflowHostServiceRegistry workflowHostServices;
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    // Guest-visible timers (process.sleep_async). Revoked before actor and
+    // native I/O retirement so no clock callback outlives the context.
+    private final OresTimers guestTimers = new OresTimers();
+    public OresTimers guestTimers() { return guestTimers; }
+    /** Typed intrinsic only; returns guest-owned scalar data, never host handles. */
+    public OresFuture<java.util.List<Object>> submitWorkflowGuest(Object payload) {
+        requireCapability(IsolatePolicy.Capability.WORKFLOW_STORAGE, "rt workflow_request");
+        if (isolatePolicy.adversarial()
+                || ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+            throw new SecurityException("untrusted actor/isolate cannot invoke workflow host services");
+        }
+        return WorkflowGuestPort.submit(workflowHostServices, payload);
+    }
     private final OutboundEgressPolicy.Policy outboundHttpPolicy =
             OutboundEgressPolicy.Policy.loopbackOnly();
     private final PinnedHttpTransport.ConnectionBudget outboundHttpBudget =
@@ -110,6 +126,11 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
         this.asyncStdio = new AsyncStdioLogs(this.output);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
+        // No host workflow service may enter an adversarial VM context.
+        // Consume a one-shot provision even when forbidden so it cannot leak
+        // into a later trusted context on this embedding thread.
+        this.workflowHostServices = WorkflowHostServiceRegistry.forNewContext(
+                !isolatePolicy.adversarial());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
@@ -155,6 +176,7 @@ public final class OresContext implements AutoCloseable {
 
             this.vm = vm;
             this.actors = actors;
+            this.actorPubSub = new SourceActorPubSub(actors);
             this.asyncRuntime = async;
             this.garbageCollector = gc;
         } catch (RuntimeException | Error failure) {
@@ -182,6 +204,7 @@ public final class OresContext implements AutoCloseable {
     public AsyncStdioLogs asyncStdio() { return asyncStdio; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+    public SourceActorPubSub actorPubSub() { return actorPubSub; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -517,6 +540,17 @@ public final class OresContext implements AutoCloseable {
         // Do not seal stdout yet: actor stop hooks and physical native-I/O
         // retirement can still emit final telemetry. The bounded record queue
         // remains live until all producer shutdown phases have completed.
+        guestTimers.close();
+        // Revoke workflow admission and drain callbacks before JNI teardown.
+        // On timeout, retain the context rather than freeing live host state.
+        try {
+            workflowHostServices.close();
+        } catch (RuntimeException incomplete) {
+            output.flush();
+            throw new IllegalStateException(
+                    "workflow host service retirement incomplete; context quarantined",
+                    incomplete);
+        }
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
@@ -571,6 +605,7 @@ public final class OresContext implements AutoCloseable {
             linkedImportResolutions.clear();
             sharedCodeImages.close();
         }
+        actorPubSub.close();
         garbageCollector.close();
         // The final PrintWriter flush was performed on the bounded daemon
         // drain, including when no async record was ever admitted. Never

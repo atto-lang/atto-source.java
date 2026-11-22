@@ -56,7 +56,9 @@ if [[ "$phase" == native-* || "$phase" == all ]]; then
 fi
 cd "$source_dir"
 run_targeted() {
-    local tests='AffineSumProjectionExtractionTest,BorrowedSumExtractionOwnershipTest,CheckedOptionDepthMetadataTest,NestedExtractionCallableEscapeTest,FutureCompositionLanguageTest,NestedExtractionArityDiagnosticsTest,NestedFutureAffineReceiverTest,NestedFutureFlattenArityTest,NestedFutureSchedulerContractTest,NestedFutureCycleInterleavingTest,NestedFutureFlattenCycleRegressionTest,NestedOptionDepthConformanceTest,NestedOptionFutureExtractionLanguageTest,NestedOptionNoneBoundaryTest,NestedOptionResultBoundaryRegressionTest'
+    # Include the full Future chaining/cancellation contract on this source tree.
+    # Do not silently promote this PR on an unrelated nested-only test pass.
+    local tests='OresFuturesTest,NestedWrapperSemanticsContractTest,AffineSumProjectionExtractionTest,BorrowedSumExtractionOwnershipTest,CheckedOptionDepthMetadataTest,NestedExtractionCallableEscapeTest,FutureCompositionLanguageTest,NestedExtractionArityDiagnosticsTest,NestedFutureAffineReceiverTest,NestedFutureFlattenArityTest,NestedFutureSchedulerContractTest,NestedFutureCycleInterleavingTest,NestedFutureFlattenCycleRegressionTest,NestedOptionDepthConformanceTest,NestedOptionFutureExtractionLanguageTest,NestedOptionNoneBoundaryTest,NestedOptionResultBoundaryRegressionTest,FutureChainingV2PinnedGuestTest,FutureSnakeCaseChainingTest,OresFutureHostAdapterIsolationTest,OresFutureCallbackRetentionTest,FutureCombinatorsTest'
     mvn -B -ntp "-Dtest=$tests" -DfailIfNoTests=true test
 }
 run_full() { mvn -B -ntp -Dores.runtime.carriers=native verify; }
