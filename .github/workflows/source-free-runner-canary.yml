@@ -27,8 +27,8 @@ jobs:
       - name: Prove runner admission without repository checkout
         shell: bash
         env:
-          EXPECTED_REPOSITORY: ores-truffle-oreslang/oreslang-source.java
-          EXPECTED_REPOSITORY_ID: '1400792274'
+          EXPECTED_REPOSITORY: atto-lang/atto-source.java
+          EXPECTED_REPOSITORY_ID: '1448697198'
           EXPECTED_RUN_ID: ${{ github.run_id }}
           EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
           EXPECTED_EVENT_SHA: ${{ github.sha }}
@@ -44,6 +44,8 @@ jobs:
           test ! -e "$GITHUB_WORKSPACE/.git"
           test -z "$(find "$GITHUB_WORKSPACE" -mindepth 1 -print -quit)"
           test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          # Migrated AttoLang repository identity; never silently attest legacy objects.
+          test "$GITHUB_REPOSITORY" = "atto-lang/atto-source.java"
           [[ "$EXPECTED_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]
           test "${GITHUB_REPOSITORY_ID:-}" = "$EXPECTED_REPOSITORY_ID"
           [[ "$EXPECTED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
