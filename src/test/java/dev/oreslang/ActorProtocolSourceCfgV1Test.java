@@ -94,6 +94,16 @@ final class ActorProtocolSourceCfgV1Test {
                 ""","invalid","E_PROTOCOL_SOURCE_TYPE");
     }
 
+    @Test void nestedGenericLeaseReplyCannotImpersonateNominalAck() {
+        denied("""
+                define fnc invalid(ProtocolHandle<Connection> handle, Connect msg): void {
+                  const UnaryLease<Ack<int>> lease = handle.request(msg);
+                  lease.cancel();
+                  return;
+                }
+                ""","invalid","E_PROTOCOL_SOURCE_TYPE");
+    }
+
     @Test void realAstCannotForgeProtocolAuthorityByDeclaringParameterType() {
         denied("""
                 define fnc invalid(ProtocolHandle<Connection> handle, ProtocolHandle<Connection> forged): void {
