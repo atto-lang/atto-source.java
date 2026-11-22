@@ -56,6 +56,11 @@ Stack: `atto-source.java#1515` (SQLite), `#1523` (checked i64 scalar),
   user mail is marked processed. Incoming user mail stays FIFO.
   **This is a separate opt-in profile**, not a silent behavior change to
   `PersistentScalarCodeExecutor`, which still executes synchronous JDBC.
+  The I/O provider refuses to execute SQLite open/operation/close from
+  an actor-carrier thread, and its admission counter is never held across
+  database close or completion notifications. Host continuations registered
+  on completion stages must remain nonblocking so they do not monopolize
+  the single database worker.
 - **Preparation/STOP caveats**: the supervisor must quiesce external ingress
   while preparing (otherwise a later unconsumed inbox record correctly
   prevents newer turns from leapfrogging it). Source readiness follows the
@@ -104,7 +109,9 @@ real SQLite JUnit). Tests include:
   integration and cold-process recovery as an existing source test;
 - `AsyncPersistentScalarActorRuntimeTest`: new opt-in prepared async actor
   execution, FIFO mailbox suspension, retries returning original receipts,
-  replayed legacy/versioned inputs and old-epoch revocation.
+  replayed legacy/versioned inputs, old-epoch revocation, and
+  `AsyncPersistentScalarRuntimeProcessMain`'s unclean `Runtime.halt(0)`
+  immediately after a commit/output followed by a fresh JVM process recovery.
 
 **Evidence boundary (2026-11-21):** The exact
 `DurableScalarSchemaV1.java` Git blob
