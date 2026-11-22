@@ -804,7 +804,7 @@ public final class TypeChecker {
             for (String name : ImportRules.exposedBindings(imported)) {
                 // An explicit import alias may not redirect a compiler-owned
                 // ADT constructor/type to a user package or host interop symbol.
-                if (AutomaticPrelude.protectedIdentity(name)) {
+                if (CoreTypeRegistry.protectedIdentity(name)) {
                     throw new IllegalArgumentException("E_PRELUDE_SPOOF: explicit import cannot "
                             + "rebind compiler-owned prelude identity '" + name + "'");
                 }
@@ -859,7 +859,7 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
-        if (AutomaticPrelude.protectedIdentity(name)) {
+        if (CoreTypeRegistry.protectedIdentity(name)) {
             throw new IllegalArgumentException("E_PRELUDE_SPOOF: compiler-owned prelude identity '"
                     + name + "' cannot be declared as " + declarationKind);
         }
@@ -872,7 +872,7 @@ public final class TypeChecker {
     }
 
     private void putFunction(String module, Ast.FunctionDecl fn) {
-        if (AutomaticPrelude.protectedIdentity(fn.name())) {
+        if (CoreTypeRegistry.protectedIdentity(fn.name())) {
             throw new IllegalArgumentException("E_PRELUDE_SPOOF: compiler-owned prelude identity '"
                     + fn.name() + "' cannot be declared as a function");
         }
