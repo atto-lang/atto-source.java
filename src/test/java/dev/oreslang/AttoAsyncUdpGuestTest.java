@@ -42,9 +42,11 @@ final class AttoAsyncUdpGuestTest {
             // Existing interpreter entrypoint executes guest main.
             // Some embeddings expose an empty eval result for a main return:
             // check source execution without assuming a polyglot result type.
-            assertDoesNotThrow(() -> context.eval(Source.newBuilder(
+            org.graalvm.polyglot.Value value = context.eval(Source.newBuilder(
                     OresLanguage.ID, LOOPBACK, "udp-guest-loopback.atto")
-                    .mimeType(OresLanguage.MIME_TYPE).build()));
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            assertTrue(value.fitsInInt(), "async Atto guest must return its status");
+            assertEquals(42, value.asInt(), "real UDP guest must complete every packet assertion");
         }
     }
 
@@ -68,6 +70,18 @@ final class AttoAsyncUdpGuestTest {
                 }
                 """;
         assertThrows(RuntimeException.class, () -> OresCompiler.parseAndTypeCheck(bad));
+    }
+
+    @Test void udpBindWithoutNetworkCapabilityFailsClosed() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(LOOPBACK));
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            assertThrows(org.graalvm.polyglot.PolyglotException.class, () ->
+                context.eval(Source.newBuilder(OresLanguage.ID, LOOPBACK,
+                        "udp-denied-no-network.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).build()));
+        }
     }
 
     @Test void udpRejectsStringReceiveCapacityAtTypecheck() {
