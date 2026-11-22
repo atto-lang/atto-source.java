@@ -28,9 +28,10 @@ final class NumericValueOrderingTest {
                 NumericValueOrdering.compare(9007199254740993L, 9007199254740992.0d));
         assertEquals(Integer.valueOf(-1),
                 NumericValueOrdering.compare(9007199254740992.0d, 9007199254740993L));
+        assertEquals(Integer.valueOf(-1),
+                NumericValueOrdering.compare(Long.MAX_VALUE, 9223372036854775808.0d));
         assertEquals(Integer.valueOf(1),
-                NumericValueOrdering.compare(Long.MAX_VALUE, 9223372036854775808.0d) == 0
-                        ? 0 : NumericValueOrdering.compare(9223372036854775808.0d, Long.MAX_VALUE));
+                NumericValueOrdering.compare(9223372036854775808.0d, Long.MAX_VALUE));
     }
 
     @Test void decimalAndBinaryFloatUseExactValueNotDisplaySpelling() {
