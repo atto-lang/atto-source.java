@@ -144,6 +144,42 @@ final class NativeAttoEnvStdlibTest {
                 deepMessage(error));
     }
 
+    @Test
+    void portableKeyGrammarIsBoundedAndFailClosed() {
+        for (String good : new String[] {"HOME", "_", "ATTO_9", "A".repeat(128)}) {
+            assertDoesNotThrow(() -> NativeIo.validateEnvName(good), good);
+        }
+        for (String bad : new String[] {
+                "", "9BAD", "A-B", "A=B", "A B", "A\\nB",
+                "A".repeat(129), "é", String.valueOf((char) 0xD800)
+        }) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> NativeIo.validateEnvName(bad));
+            assertEquals("environment variable name is invalid", ex.getMessage());
+        }
+    }
+
+    @Test
+    void hostEnvironmentValuesEnforceUtf8ByteQuotaWithoutEchoingSecrets() {
+        assertDoesNotThrow(() -> NativeIo.validateEnvValue(null));
+        assertDoesNotThrow(() -> NativeIo.validateEnvValue(""));
+        assertDoesNotThrow(() -> NativeIo.validateEnvValue("a".repeat(16384)));
+        assertDoesNotThrow(() -> NativeIo.validateEnvValue("é".repeat(8192)));
+        assertDoesNotThrow(() -> NativeIo.validateEnvValue("🎯".repeat(4096)));
+        for (String bad : new String[] {
+                "MY_SECRET_" + "s".repeat(16385),
+                "é".repeat(8193),
+                "🎯".repeat(4097),
+                String.valueOf((char) 0xD800),
+                String.valueOf((char) 0xDC00)
+        }) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> NativeIo.validateEnvValue(bad));
+            assertTrue(ex.getMessage().startsWith("environment variable value"));
+            assertFalse(ex.getMessage().contains("MY_SECRET_"));
+        }
+    }
+
     private static String deepMessage(Throwable failure) {
         StringBuilder message = new StringBuilder();
         for (Throwable current = failure; current != null; current = current.getCause()) {
