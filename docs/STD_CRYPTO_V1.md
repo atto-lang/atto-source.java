@@ -24,10 +24,10 @@ Host-only Java 21 smoke compilation and execution passed for both ciphers,
 round trips, repeated unique nonces, tampering, wrong AAD/key/nonce,
 zero-length messages, defensive output copies and closed handles. The
 retrieved Git blob hash of the tested source was
-`4a7c7e9774c4f3109c876895011ea748bfa331e2`. The repo also has
+`44bbd171b86a22563df4dbdc382aee7542cda758`. The repo also has
 `AeadPrimitivesTest.java` JUnit tests, but the **JUnit project suite and
 actual guest compiler, importer and AOT tests remain NOT_EXECUTED**.
-This host primitive is not yet guest-callable, and its opaque key handle
+This host primitive has a first compiler-owned guest-callable prototype, but full guest execution is unverified; its opaque key handle
 will need actor-lifecycle ownership, no-log, capabilities and memory gates
 when integrated. Avoid claiming it is a released `std.crypto` API.
 
@@ -66,11 +66,13 @@ cross-context or cross-actor handle cannot decrypt. Context shutdown seals
 new key admission before quiescence and scrubs tracked keys **after** actor
 and native-I/O physical joins; on failed quiescence keys remain quarantined
 with the context rather than being freed while a carrier may still run.
+The key registry permits up to 1,024 live keys per context and 32 per
+actor incarnation/root owner. Explicit close releases that quota.
 Actor-specific early retirement remains future work.
 
 The opaque key has no import/export or persistence facility. Per-key
 random four-byte prefixes with synchronized 64-bit monotonic counters
-ensure unique nonce reservations **within one freshly generated key**.
+ensure unique nonce reservations **within one freshly generated key**, with a 2^32-encryption-per-key cap.
 Because the key is lost on process termination, this first prototype
 does not require persisted counter replay protection; persistent keys
 will require crash-safe nonce reservation before any durable API.
@@ -85,7 +87,7 @@ type exists.
 direct runtime smoke passed AES-256-GCM and ChaCha20-Poly1305 round trips,
 nonce uniqueness, wrong key/AAD/nonce/tag and key close on the exact
 `AeadPrimitives.java` blob
-`4a7c7e9774c4f3109c876895011ea748bfa331e2`.
+`44bbd171b86a22563df4dbdc382aee7542cda758`.
 Isolated Java 21 `javac` + direct runtime RFC 5869 test case 1
 and output-limit rejection passed on exact `HkdfSha256.java` blob
 `27dec43d6c60478f36d8e8cb551d424e572bd6f1`.
