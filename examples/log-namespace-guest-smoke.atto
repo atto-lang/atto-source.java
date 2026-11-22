@@ -1,0 +1,31 @@
+// Native Atto guest execution candidate: namespace import + structured logger.
+// This file MUST be compiled and executed by the real Atto frontend/runtime,
+// not interpreted by the source-only JavaScript contract checker.
+namespace log_smoke;
+
+import * as log from "../stdlib/log.atto";
+
+pub routine main(): void {
+  if log.enabled(20, 30); do rt fail("debug incorrectly enabled"); fi
+  if !log.enabled(40, 30); do rt fail("warn incorrectly filtered"); fi
+  if log.enabled(60, 70); do rt fail("OFF allowed an event"); fi
+  if !log.sink_byte_budget_ok(8388607, 1, 65536, 8388608); do
+    rt fail("exact byte boundary rejected");
+  fi
+  if log.sink_byte_budget_ok(8388608, 1, 65536, 8388608); do
+    rt fail("overflowing byte boundary accepted");
+  fi
+
+  let mut logger = log.buffer(2, 30);
+  val record = log.entry(30, "guest", "hello", 0, 12, 34, 56);
+  if logger.offer(record) != 1; do rt fail("offer failed"); fi
+  if logger.pending_count() != 1; do rt fail("pending count failed"); fi
+  if logger.peek().message neq "hello"; do rt fail("peek mismatch"); fi
+  if !logger.ack_one(); do rt fail("ack failed"); fi
+  if !logger.is_drained(); do rt fail("not drained"); fi
+  logger.close();
+  if logger.offer(record) != 3; do rt fail("close admission failed"); fi
+  // Only the test harness writes a result; the std/log module itself has no IO.
+  stdio.stdout.write("ATTO_STD_LOG_GUEST_OK");
+  return;
+}
