@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/parser/ActorProtocolTypestateV1.java'
       - 'src/main/java/dev/oreslang/parser/ActorProtocolAffineCfgV1.java'
+      - 'src/main/java/dev/oreslang/parser/ActorProtocolSourceCfgV1.java'
       - 'src/main/java/dev/oreslang/parser/ActorProtocolNominalResolverV1.java'
       - 'src/main/java/dev/oreslang/ast/Ast.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
@@ -18,6 +19,7 @@ on:
       - 'src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java'
       - 'src/test/java/dev/oreslang/ActorProtocolAffineCfgV1Smoke.java'
       - 'src/test/java/dev/oreslang/ActorProtocolAffineCfgV1Test.java'
+      - 'src/test/java/dev/oreslang/ActorProtocolSourceCfgV1Test.java'
       - '.github/workflows/actor-protocol-typestate-source-v1.yml'
   workflow_dispatch:
 
@@ -57,6 +59,7 @@ jobs:
             src/main/java/dev/oreslang/parser/ActorProtocolTypestateV1.java \
             src/main/java/dev/oreslang/parser/ActorProtocolNominalResolverV1.java \
             src/main/java/dev/oreslang/parser/ActorProtocolAffineCfgV1.java \
+            src/main/java/dev/oreslang/parser/ActorProtocolSourceCfgV1.java \
             src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java \
             src/test/java/dev/oreslang/ActorProtocolAffineCfgV1Smoke.java
           java -cp build/protocol-source-v1 dev.oreslang.ActorProtocolTypestateV1Smoke
@@ -69,6 +72,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorMessageContractV1Test,ActorProtocolTypestateV1Test,ActorProtocolNominalResolverV1Test,ActorProtocolOptimizerContractTest,ActorProtocolIncrementalAbiTest,ActorProtocolAffineCfgV1Test test
+          mvn -B -ntp -Dtest=ActorMessageContractV1Test,ActorProtocolTypestateV1Test,ActorProtocolNominalResolverV1Test,ActorProtocolOptimizerContractTest,ActorProtocolIncrementalAbiTest,ActorProtocolAffineCfgV1Test,ActorProtocolSourceCfgV1Test test
           echo "ATTO_ACTOR_PROTOCOL_REAL_JUNIT=PASS"
           echo "ATTO_ACTOR_PROTOCOL_GUEST_EXECUTION=NOT_EXECUTED"
