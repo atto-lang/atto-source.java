@@ -1,6 +1,6 @@
 # std.net.udp — datagram module, stage 1
 
-**Status:** native `.atto` policy implementation and guest regression fixture; **socket API not linked or claimed executable**. Keep this repository's implementation independently owned. There is no requirement to import the module source from `atto-common-source` or match another compiler byte-for-byte.
+**Status:** native `.atto` admission and queue-budget sources; a backend-specific host socket candidate exists, but **guest `std.net.udp` binding is still unlinked and unverified**. Keep this repository's implementation independently owned. There is no requirement to import the module source from `atto-common-source` or match another compiler byte-for-byte.
 
 ## Public application API target
 
@@ -43,3 +43,9 @@ One actor owns a mutable `UdpSocket` handle. A datagram's `OwnedBytes` may be mo
 2. Execute genuine `.atto` IPv4/IPv6 loopback send/receive, zero-length payload, back-to-back message framing, truncation and timeout; negative tests for permission, invalid endpoints, close/cancel races, buffer/queue exhaustion.
 3. Verify native AOT and target-specific support independently. For browser Wasm, raw UDP is **unsupported** unless an explicit authorized host bridge exists. Node and WASI capabilities must be tested separately; do not simulate UDP with WebSocket/WebRTC.
 4. Capture exact head/tree/compiler artifact and stepful CI evidence before claiming conformance. Do not mirror private source across organizations without independent authorization.
+
+## Stage-2 Java/GraalVM host implementation (2026-11-22)
+
+`UdpDatagramKernel.java` implements real numeric IPv4 loopback bind/send/receive using a nonblocking `DatagramChannel`. It rechecks `RuntimePermissions.Permission.NET` through `OresContext` at bind and subsequent send/receive/readiness operations, preserves source-port identity, makes defensive packet snapshots and rejects detected truncation. `AsyncNioUdp.java` owns/registers the socket in the existing `AsyncNativeIo` context and exposes readiness futures backed by VM-owned `NioReadinessGroup`, including watch cancellation/rearm. Separate `UdpDatagramKernelTest` exercises physical sockets and readiness (source only until actual JUnit execution on exact head).
+
+**Not implemented:** compiler exposure of these host methods as a genuine `import * as udp from "std.net.udp"` API, typed guest `UdpSocket` and `OwnedBytes` mapping, real guest await/resume, actor loan retirement and full IPv6. Existing Java socket-API migration PR #495 remains an integration dependency. Do not infer Native Image AOT or whole-guest parity from these new host sources.
