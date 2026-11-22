@@ -213,17 +213,22 @@ public final class NativeChildProcesses implements AutoCloseable {
                     builder.environment().clear(); // Never inherit secrets.
                     builder.directory(workingDir.toFile());
                     builder.redirectErrorStream(false);
+                    if (closed) throw new RejectedExecutionException("process context closed");
+                    // Never hold the manager's lifecycle lock across the OS
+                    // spawn syscall: context shutdown must not wait behind an
+                    // unbounded native process creation.
+                    Process process = builder.start();
+                    Child child;
+                    try {
+                        child = new Child(process);
+                    } catch (RuntimeException | Error failed) {
+                        process.destroyForcibly();
+                        throw failed;
+                    }
                     synchronized (guard) {
-                        if (closed) throw new RejectedExecutionException("process context closed");
-                        // Serialize launch against context close. Cannot guarantee
-                        // no same-UID executable replacement without an OS broker.
-                        Process process = builder.start();
-                        Child child;
-                        try {
-                            child = new Child(process);
-                        } catch (RuntimeException | Error failed) {
-                            process.destroyForcibly();
-                            throw failed;
+                        if (closed) {
+                            child.close();
+                            throw new RejectedExecutionException("process context closed");
                         }
                         live.add(child);
                         registered = true;
@@ -231,8 +236,8 @@ public final class NativeChildProcesses implements AutoCloseable {
                             live.remove(child);
                             reserved.decrementAndGet();
                         });
-                        if (!published.complete(child)) child.close();
                     }
+                    if (!published.complete(child)) child.close();
                 } catch (IOException | RuntimeException failed) {
                     if (!registered) reserved.decrementAndGet();
                     published.completeExceptionally(failed);
