@@ -161,7 +161,12 @@ final class ImportGraph {
         int matches = 0;
         for (Ast.ModuleDecl module : program.modules()) {
             if (kind == Ast.ImportKind.MODULE) {
-                if (!module.name().equals(Parser.ROOT_MODULE) && module.name().equals(name)) matches++;
+                // Imported modules are public nominal exports, not just any
+                // source-level namespace. Private/default modules cannot be
+                // selected through a cross-file `import module` declaration.
+                if (!module.name().equals(Parser.ROOT_MODULE)
+                        && module.name().equals(name)
+                        && module.visibility() == Ast.Visibility.PUBLIC) matches++;
                 continue;
             }
 
