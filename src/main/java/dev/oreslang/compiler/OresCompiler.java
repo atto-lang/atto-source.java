@@ -27,6 +27,20 @@ public final class OresCompiler {
     }
 
     /**
+     * Opt-in, conservative transitive effect admission on the actual
+     * parser/typechecker/ownership-checked AST. This narrow version checks
+     * only closed-world scalar callables; unsupported host APIs, imported
+     * libraries, classes and actor lifecycles fail closed.
+     *
+     * Successful static analysis is NOT a runtime permission, AOT guest
+     * build, deterministic scheduler proof or hard-real-time certification.
+     */
+    public static CompilerTypedEffectV1.Report analyzeEffectProfileV1(
+            String source, CompilerTypedEffectV1.Profile profile) {
+        return CompilerTypedEffectV1.analyzeChecked(parseAndTypeCheck(source), profile);
+    }
+
+    /**
      * Check real AttoLang source (syntax, types and ownership) before
      * inspecting call-site-specialized Option/Result callback effects.
      *
