@@ -193,6 +193,16 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (imported.kind() == Ast.ImportKind.CONST) {
+                // ImportGraph can prove the provider's declared kind and
+                // visibility, but a typed immutable *value* linker is not yet
+                // attached to this Java interpreter/compiler. Never treat a
+                // constant selection as a dynamic host global or re-evaluate
+                // an initializer in the importing module.
+                throw new IllegalArgumentException(
+                        "E_UNSUPPORTED: import const requires typed source-unit value linkage"
+                        + " and startup initialization; no runtime fallback");
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
