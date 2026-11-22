@@ -1,0 +1,9 @@
+// Java/Graal compiler-owned core macro library. Build time only; no runtime API.
+// Every output is an ordinary typed expression before AOT code generation.
+define pub macro const_int(Const<int> value) -> Syntax<Expr> {
+  return quote(value);
+}
+
+define pub macro splice_expr(Syntax<Expr> value) -> Syntax<Expr> {
+  return value;
+}
