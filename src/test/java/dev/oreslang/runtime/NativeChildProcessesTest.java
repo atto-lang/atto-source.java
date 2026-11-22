@@ -206,6 +206,55 @@ final class NativeChildProcessesTest {
             manager.close();
         }
     }
+    @Test void deadlineKillsSilentChildAndReportsTimeoutRatherThanExitCode() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            var child = manager.spawn(javaExe(), probe("sleep"), cwd(),
+                    (exe, dir) -> { }, java.time.Duration.ofMillis(150))
+                    .get(8, TimeUnit.SECONDS);
+            var expired = assertThrows(ExecutionException.class,
+                    () -> child.waitForExit().get(8, TimeUnit.SECONDS));
+            assertTrue(expired.getCause() instanceof java.util.concurrent.TimeoutException,
+                    "deadline must not masquerade as a normal exit status");
+            var outputError = assertThrows(ExecutionException.class,
+                    () -> child.collectOutput().get(8, TimeUnit.SECONDS));
+            assertTrue(outputError.getCause() instanceof java.util.concurrent.TimeoutException);
+            assertEquals("timeout",
+                    NativeChildProcesses.ProcessError.from(expired).kind());
+            assertFalse(child.alive());
+            assertNull(child.tryWait(), "timed-out child has no successful status");
+        }
+    }
+
+    @Test void invalidLifetimeIsRejectedBeforeAuthorityAndReservation() {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            java.util.concurrent.atomic.AtomicInteger auth =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            NativeChildProcesses.Authorizer gate = (exe, dir) -> auth.incrementAndGet();
+            for (java.time.Duration invalid : java.util.List.of(
+                    java.time.Duration.ZERO,
+                    java.time.Duration.ofMillis(49),
+                    java.time.Duration.ofMinutes(6))) {
+                assertThrows(IllegalArgumentException.class, () ->
+                        manager.spawn(javaExe(), probe("exit42"), cwd(), gate, invalid));
+            }
+            assertThrows(IllegalArgumentException.class, () ->
+                    manager.spawn(javaExe(), probe("exit42"), cwd(), gate, null));
+            assertEquals(0, auth.get(), "bad time budget must not reach host authority");
+            assertEquals(0, manager.reservedCount());
+        }
+    }
+
+    @Test void normalChildCompletesBeforeLifetimeAndKeepsExitStatus() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            var child = manager.spawn(javaExe(), probe("exit42"), cwd(),
+                    (exe, dir) -> { }, java.time.Duration.ofSeconds(8))
+                    .get(8, TimeUnit.SECONDS);
+            assertEquals(42, child.waitForExit().get(8, TimeUnit.SECONDS).code());
+            assertTrue(child.collectOutput().get(8, TimeUnit.SECONDS)
+                    .stdout().contains("stdout-ok"));
+        }
+    }
+
     @Test void rejectsArgumentsWithEmbeddedNulWithoutLaunch() {
         try (NativeChildProcesses manager = new NativeChildProcesses()) {
             assertThrows(IllegalArgumentException.class,
