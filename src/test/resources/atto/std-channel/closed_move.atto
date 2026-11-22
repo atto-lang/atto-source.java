@@ -1,0 +1,21 @@
+// expect-stdout: closed:56
+// Rejected noncopy move must be returned in Closed(value), not discarded.
+import module channel from "std/channel";
+
+pub routine main(): void {
+  val Channel<Array<int>> ch = channel.bounded<Array<int>>(1);
+  channel.close<Array<int>>(ch);
+  val Array<int> original = [5, 6];
+  val TryWriteResult<Array<int>> outcome =
+      channel.try_send<Array<int>>(ch, rt take original);
+  do match outcome over
+    on Accepted -> { stdio.stdout.write("unexpected-accepted"); }
+    on Full(rejected) -> { stdio.stdout.write("unexpected-full"); }
+    on Closed(rejected) -> {
+      stdio.stdout.write("closed:");
+      stdio.stdout.write(rejected[0]);
+      stdio.stdout.write(rejected[1]);
+    }
+  end
+  return;
+}
