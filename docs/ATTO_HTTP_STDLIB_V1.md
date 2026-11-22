@@ -124,3 +124,35 @@ JVM/AOT guest evidence. The expanded Java JUnit fixture contains **105**
 `stdio.println` guest assertions plus a dedicated Java parser regression
 test for namespace desugaring. **NOT_EXECUTED** pending real CI admission.
 Do not report parity or merge until verified.
+
+
+## Preferred canonical built-in imports (2026-11-22)
+
+The public AttoLang spelling is:
+
+```atto
+import * as http from "std.http";
+// Later, after std.time and std.json are independently implemented/registered:
+// import * as time from "std.time";
+// import * as json from "std.json";
+```
+
+`std.http` is an **explicit closed built-in alias** for this Java
+compiler's `stdlib/http.atto`. `std.time` and `std.json` are NOT
+implicitly registered here and must fail closed until actually implemented.
+The former `import http from "std/http.atto";` remains optional compatibility
+sugar equivalent to an explicit wildcard namespace import, but it is not the
+canonical stdlib style. The `use namespace http;` file header identifies
+the source namespace and is not itself an exported module declaration.
+
+`import module http, http3 from "std.http";` is a distinct *selective*
+import: it may only name **public declared modules** with those identities
+inside the resolved `std.http` unit. The current `std.http` implementation
+exports public file-root functions and classes, not two nested modules called
+`http` and `http3`. The parser can parse the selection; the linker must
+reject its missing modules. The existing `http3` network policy lives
+independently at `stdlib/net/http3_frames.atto`; no synthetic nested module
+is invented.
+
+This is a source and test update, not proof of linked guest execution. Tests
+remain NOT_EXECUTED until a current-head stepful runner receipt is available.
