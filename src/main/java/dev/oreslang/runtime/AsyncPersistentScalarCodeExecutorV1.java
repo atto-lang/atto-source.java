@@ -6,7 +6,6 @@ import dev.oreslang.parser.Parser;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
@@ -70,8 +69,10 @@ public final class AsyncPersistentScalarCodeExecutorV1
         if (ActorRuntime.isActorCarrierThread())
             throw new SecurityException("durable preparation is host-only, not an actor turn");
 
+        // Go through the string entry point first: it enforces the source
+        // byte budget BEFORE parsing, unlike lower(Ast.Program).
+        PersistentScalarMirV1.Plan plan = PersistentScalarMirV1.lower(source);
         Ast.Program program = Parser.parse(source);
-        PersistentScalarMirV1.Plan plan = PersistentScalarMirV1.lower(program);
         String key = "persistent-scalar:" + plan.codeGeneration();
         SharedCodeImageStore.CodeImage image = images.get(key);
         if (image == null) image = images.publish(key, program);
