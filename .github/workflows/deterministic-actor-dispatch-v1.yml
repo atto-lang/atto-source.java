@@ -46,7 +46,7 @@ jobs:
           timeout --signal=TERM --kill-after=10s 900s mvn -B -ntp \
             -Dtest=DeterministicActorDispatchTest \
             -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
-      - name: Require three executed JVM host-runtime tests
+      - name: Require four executed JVM host-runtime tests
         shell: bash
         run: |
           set -euo pipefail
@@ -59,9 +59,9 @@ jobs:
               raise SystemExit('MISSING_JVM_TEST_RECEIPT')
           root=ET.parse(report).getroot()
           counts={k:int(root.get(k,'0')) for k in ('tests','failures','errors','skipped')}
-          if counts != {'tests':3, 'failures':0, 'errors':0, 'skipped':0}:
+          if counts != {'tests':4, 'failures':0, 'errors':0, 'skipped':0}:
               raise SystemExit('INCOMPLETE_JVM_TEST_RECEIPT '+repr(counts))
-          print('THREE_REAL_ACTOR_RUNTIME_JVM_TESTS_PASSED (HOST ONLY)')
+          print('FOUR_REAL_ACTOR_RUNTIME_JVM_TESTS_PASSED (HOST ONLY)')
           print('COMPILED_ATTO_GUEST_NOT_EXECUTED')
           print('GRAALVM_NATIVE_IMAGE_NOT_EXECUTED')
           PY
