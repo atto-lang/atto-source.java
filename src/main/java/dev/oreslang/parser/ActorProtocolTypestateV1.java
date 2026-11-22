@@ -162,6 +162,48 @@ public final class ActorProtocolTypestateV1 {
         return new Catalog(protocols, bindings);
     }
 
+    /**
+     * Remove only a contiguous top-level protocol prelude from the token stream
+     * before asking the real Parser to construct class/interface AST nodes.
+     * Nested declarations, trailing protocols, and re-entrant syntax MUST NOT
+     * be silently stripped from a callable or actor body.
+     */
+    public static List<Token> withoutProtocolPrelude(List<Token> tokens) {
+        if (tokens == null || tokens.isEmpty())
+            throw error("E_PROTOCOL_SYNTAX", "missing token stream");
+        int prefix = 0;
+        if (tokens.get(0).type() == Token.Type.NAMESPACE
+                || tokens.size() > 1 && word(tokens.get(0), "use")
+                    && tokens.get(1).type() == Token.Type.NAMESPACE) {
+            prefix = tokens.get(0).type() == Token.Type.NAMESPACE ? 1 : 2;
+            if (prefix + 2 >= tokens.size() || tokens.get(prefix).type() != Token.Type.IDENT
+                    || tokens.get(prefix + 1).type() != Token.Type.SEMICOLON)
+                throw error("E_PROTOCOL_SCOPE", "invalid namespace header before protocols");
+            prefix += 2;
+        }
+        int i = prefix;
+        boolean removed = false;
+        while (i + 1 < tokens.size() && tokens.get(i).type() == Token.Type.DEFINE
+                && word(tokens.get(i + 1), "protocol")) {
+            Cursor cursor = new Cursor(tokens, i + 2);
+            parseProtocol(cursor);
+            removed = true;
+            i = cursor.index;
+        }
+        if (!removed)
+            throw error("E_PROTOCOL_SCOPE", "protocol declarations must start at file root");
+        for (int j = i; j + 1 < tokens.size(); j++) {
+            if (tokens.get(j).type() == Token.Type.DEFINE
+                    && word(tokens.get(j + 1), "protocol"))
+                throw error("E_PROTOCOL_SCOPE",
+                        "protocol declarations must precede executable declarations");
+        }
+        List<Token> clean = new ArrayList<>(tokens.size() - (i - prefix));
+        clean.addAll(tokens.subList(0, prefix));
+        clean.addAll(tokens.subList(i, tokens.size()));
+        return List.copyOf(clean);
+    }
+
     private static final class Cursor {
         final List<Token> tokens;
         int index;
