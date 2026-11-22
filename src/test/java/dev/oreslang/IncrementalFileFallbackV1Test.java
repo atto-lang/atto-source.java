@@ -261,6 +261,96 @@ final class IncrementalFileFallbackV1Test {
     }
 
     @Test
+    void failedTypeCheckCannotPoisonPreviouslyCommittedParseAndCheckedUnit() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put("lib.atto", "pub fnc answer(): int { return 42; }");
+        files.put("caller.atto", """
+                import fnc {answer} from './lib.atto';
+                pub fnc main(): void { return; }
+                """);
+        var first = compiler.compile(files);
+        Map<String, String> broken = new LinkedHashMap<>(files);
+        broken.put("lib.atto", "pub fnc answer(): int { return \"not an integer\"; }");
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(broken));
+        var restored = compiler.compile(files);
+        assertTrue(restored.reparsedUnits().isEmpty());
+        assertTrue(restored.rebuiltUnits().isEmpty());
+        assertSame(first.units().get("lib.atto"), restored.units().get("lib.atto"));
+    }
+
+    @Test
+    void removingThenRestoringAnUnnamespacedFileNeverReusesItsStaleUnit() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> files = isolated();
+        compiler.compile(files);
+        Map<String, String> reduced = new LinkedHashMap<>(files);
+        reduced.remove("src/two.atto");
+        var removed = compiler.compile(reduced);
+        assertTrue(removed.reparsedUnits().isEmpty());
+        assertFalse(removed.units().containsKey("src/two.atto"));
+        var addedBack = compiler.compile(files);
+        assertEquals(Set.of("src/two.atto"), addedBack.reparsedUnits());
+        assertEquals(Set.of("src/two.atto"), addedBack.rebuiltUnits());
+        assertTrue(addedBack.reused("src/one.atto"));
+    }
+
+    @Test
+    void annotationDerivedWireAbiInvalidatesImportedClassClients() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> files = Map.of(
+                "model.atto", """
+                        define module exported
+                          pub define class Payload as
+                            @FromJson("external_key")
+                            foo: String;
+                          end
+                        end
+                        """,
+                "client.atto", """
+                        import class Payload from "./model.atto";
+                        pub fnc consume(Payload payload): void { return; }
+                        """);
+        compiler.compile(files);
+        Map<String, String> changed = new LinkedHashMap<>(files);
+        changed.put("model.atto", files.get("model.atto")
+                .replace("external_key", "another_key"));
+        var result = compiler.compile(changed);
+        assertEquals(Set.of("model.atto"), result.reparsedUnits());
+        assertTrue(result.rebuilt("model.atto"));
+        assertTrue(result.rebuilt("client.atto"),
+                "wire annotations must be included in checked public ABI");
+    }
+
+    @Test
+    void unversionedExternalDependencyIsNeverAcceptedAsCheckedCacheHit() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> source = Map.of("consumer.atto", """
+                import * as ext from "external/package";
+                pub fnc main(): void { return; }
+                """);
+        var first = compiler.compile(source);
+        assertTrue(first.rebuilt("consumer.atto"));
+        var next = compiler.compile(source);
+        assertTrue(next.reparsedUnits().isEmpty(),
+                "unchanged source syntax should remain a parse-cache hit");
+        assertTrue(next.rebuilt("consumer.atto"),
+                "no versioned external ABI means checked source must be revalidated");
+    }
+
+    @Test
+    void clearAndReparseTelemetryCannotBeModifiedByCaller() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> files = isolated();
+        var cold = compiler.compile(files);
+        assertThrows(UnsupportedOperationException.class, cold.reparsedUnits()::clear);
+        compiler.clear();
+        var again = compiler.compile(files);
+        assertEquals(Set.copyOf(files.keySet()), again.reparsedUnits());
+        assertEquals(Set.copyOf(files.keySet()), again.rebuiltUnits());
+    }
+
+    @Test
     void addingOrRemovingNamespaceHeaderChangesOnlyOwningFile() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> files = Map.of(
