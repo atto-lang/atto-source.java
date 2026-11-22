@@ -228,3 +228,25 @@ nonzero executed steps, process exit, and guest-generated output.
 The existing Java source-owned harness remains the independent receipt
 gate. Backend parity, AOT/hybrid status, and Rust CLI source-head execution
 are not verified by adding this manifest.
+
+## Integer comparison parity with LLVM/JS/Rust scalar test modules
+
+The Java/GraalVM compiler-local `stdlib/testing.atto` exports
+`expect_greater_than_int(actual, lower_bound, message)`,
+`expect_less_than_int(actual, upper_bound, message)`, and
+`expect_in_range_int(actual, lower, upper, message)`.
+Strict greater/less comparisons reject equality; inclusive range accepts
+both endpoints but rejects inverted bounds. All three avoid arithmetic
+on comparison endpoints and preserve the caller's failure message.
+
+Java returns `TestOutcome` with `passed` and `message`; the smaller
+LLVM, JS, and Rust/Wasm compiler-local `testing_scalar.atto` subsets
+return an integer `0` for a pass and `1` for failure. These are
+**semantic** parity targets, not byte-identical source or a claim that
+all compilers implement Java's `TestCase`/`TestSuite` runtime.
+
+`examples/native-testing-summary-range.atto` now includes six strict
+comparison guest assertions and emits the expanded
+`ATTO_TEST_SUMMARY_RANGE_OK|checks=19` sentinel. This is separate
+from the pinned 40-case machine receipt inventory and requires real
+JVM guest execution before passing status can be claimed.
