@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
@@ -33,6 +34,28 @@ final class CoreOptionResultSourceTest {
             assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source),
                     () -> "source module was not admitted: " + file);
         }
+    }
+
+    @Test
+    void coreNamespaceIsSourceIdentityNotImplicitImportAuthority() throws Exception {
+        for (Path file : new Path[]{OPTION, RESULT}) {
+            var source = Files.readString(file, StandardCharsets.UTF_8);
+            var unit = Parser.parseStrictAtto(source);
+            assertEquals("core", unit.namespace(), file.toString());
+            assertTrue(unit.imports().isEmpty(),
+                    "a namespace header must not implicitly import dependencies");
+            assertTrue(source.contains("define pub module "),
+                    "cross-file library APIs must be explicitly exported");
+        }
+        // A namespace is not a runtime module: standalone imports retain their
+        // own explicit, independently checked module ownership and visibility.
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parseStrictAtto("""
+                        use namespace core;
+                        import module option from "./option.atto";
+                        use namespace forged;
+                        pub fnc main(): int { return 42; }
+                        """));
     }
 
     @Test
