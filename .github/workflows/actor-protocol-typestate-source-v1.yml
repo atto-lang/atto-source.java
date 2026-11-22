@@ -3,8 +3,17 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/parser/ActorProtocolTypestateV1.java'
+      - 'src/main/java/dev/oreslang/parser/ActorProtocolNominalResolverV1.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
+      - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/test/java/dev/oreslang/ActorProtocolTypestateV1Test.java'
+      - 'src/test/java/dev/oreslang/ActorProtocolNominalResolverV1Test.java'
+      - 'src/test/java/dev/oreslang/ActorProtocolOptimizerContractTest.java'
+      - 'src/test/java/dev/oreslang/ActorProtocolIncrementalAbiTest.java'
+      - 'src/test/java/dev/oreslang/ActorMessageContractV1Test.java'
       - 'src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java'
       - '.github/workflows/actor-protocol-typestate-source-v1.yml'
   workflow_dispatch:
@@ -24,7 +33,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - name: Verify exact checked-out PR head
         shell: bash
         env:
@@ -45,5 +54,12 @@ jobs:
             src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java
           java -cp build/protocol-source-v1 dev.oreslang.ActorProtocolTypestateV1Smoke
           echo "ATTO_ACTOR_PROTOCOL_JAVA_SOURCE_ONLY=PASS"
-          echo "ATTO_ACTOR_PROTOCOL_FULL_MAVEN_JUNIT=NOT_EXECUTED"
+          echo "ATTO_ACTOR_PROTOCOL_SOURCE_LEXER=PASS"
+          echo "ATTO_ACTOR_PROTOCOL_GUEST_EXECUTION=NOT_EXECUTED"
+      - name: Compile production Java compiler and execute real focused JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ActorMessageContractV1Test,ActorProtocolTypestateV1Test,ActorProtocolNominalResolverV1Test,ActorProtocolOptimizerContractTest,ActorProtocolIncrementalAbiTest test
+          echo "ATTO_ACTOR_PROTOCOL_REAL_JUNIT=PASS"
           echo "ATTO_ACTOR_PROTOCOL_GUEST_EXECUTION=NOT_EXECUTED"
