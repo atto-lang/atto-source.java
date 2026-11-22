@@ -53,5 +53,10 @@ pub routine main(): void {
   stdio.println(sync.mutex_release_receipt_admissible(true, 8, 8, 3, 3, true));
   stdio.println(sync.rw_upgrade_admissible(1, false, 0, true));
   stdio.println(sync.rw_upgrade_admissible(2, false, 0, true));
+   stdio.println(path.normalized_depth("ñ/café", false));
+  stdio.println(path.normalized_depth("ñ/café", true));
+  stdio.println(path.is_portable_relative("ñ"));
+  stdio.println(path.normalized_component_scalar("ñ/café", false, 1, 3));
+  stdio.println(path.normalized_component_length("ñ/café", false, 1));
   return;
 }
