@@ -1,0 +1,81 @@
+name: Native Atto std/time guest and monotonic runtime
+
+on:
+  push:
+    branches:
+      - 'feat/atto-std-time-*'
+  pull_request:
+    paths:
+      - 'stdlib/time.atto'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/main/java/dev/oreslang/runtime/OresTimers.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeTimeStdlibTest.java'
+      - 'src/test/java/dev/oreslang/runtime/StdTimeMonotonicRuntimeTest.java'
+      - '.github/workflows/atto-std-time-guest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-atto-time-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Immutable exact PR head checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Source SHA and Git tree receipt
+        shell: bash
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain)"
+          echo "SOURCE_SHA=$(git rev-parse HEAD)"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+
+      - name: GraalVM Java 25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+
+      - name: Execute source-linked Atto guest plus native timer suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=NativeTimeStdlibTest,StdTimeMonotonicRuntimeTest,OresTimersTest,ExecutionAffineSleepRuntimeTest test
+
+      - name: Fail closed on missing, skipped or empty JUnit suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+          names = (
+              'NativeTimeStdlibTest',
+              'StdTimeMonotonicRuntimeTest',
+              'OresTimersTest',
+              'ExecutionAffineSleepRuntimeTest',
+          )
+          for name in names:
+              path = pathlib.Path('target/surefire-reports/TEST-dev.oreslang.runtime.' + name + '.xml')
+              if not path.is_file():
+                  raise AssertionError('missing executed JUnit report: ' + name)
+              root = ET.parse(path).getroot()
+              attrs = root.attrib
+              if int(attrs.get('tests', '0')) < (3 if name.startswith(('NativeTime', 'StdTime')) else 1):
+                  raise AssertionError((name, 'empty or incomplete method cohort', attrs))
+              if any(int(attrs.get(k, '0')) != 0 for k in ('failures', 'errors', 'skipped')):
+                  raise AssertionError((name, 'nonpassing suite', attrs))
+              print('PASS EXECUTED_TIME_SUITE', name, attrs['tests'])
+          print('EXECUTED_TIME_SUITES=4')
+          PY
