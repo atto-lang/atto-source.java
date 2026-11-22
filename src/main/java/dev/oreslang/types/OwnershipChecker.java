@@ -284,7 +284,7 @@ public final class OwnershipChecker {
         }
     }
 
-    private static void rejectPreludeForge(String name, String declarationKind) {
+    private void rejectPreludeForge(String name, String declarationKind) {
         if (AutomaticPrelude.protectedIdentity(name)) {
             throw error("E_PRELUDE_SPOOF: cannot forge compiler-owned core identity "
                     + name + " with " + declarationKind);
