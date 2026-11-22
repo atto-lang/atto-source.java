@@ -25,6 +25,7 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
     private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
     private final List<StaticProxySynthesis.InterceptorRequest> staticProxyInterceptors =
@@ -56,14 +57,20 @@ public final class Parser {
     private final List<ForwardType> rootForwards = new ArrayList<>();
     private List<ForwardType> moduleForwards;
     public Parser(List<Token> tokens) {
-        this(tokens, null, false);
+        this(tokens, null, false, false);
     }
 
     private Parser(List<Token> tokens, AttoCallableVersion version) {
-        this(tokens, version, true);
+        this(tokens, version, true, false);
     }
 
-    private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource) {
+    private Parser(List<Token> tokens, boolean singletonCheckOnly) {
+        this(tokens, null, false, singletonCheckOnly);
+    }
+
+    private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource,
+                   boolean singletonCheckOnly) {
+        this.singletonCheckOnly = singletonCheckOnly;
         this.attoCallableVersion = version;
         this.canonicalAttoSource = canonicalAttoSource;
         this.tokens = List.copyOf(tokens);
@@ -132,6 +139,26 @@ public final class Parser {
     }
 
     /**
+     * TEST/CHECK ONLY: parse singleton ASTs without making them executable.
+     * The normal parser and runtime entry points continue to fail closed.
+     */
+    public static Ast.Program parseSingletonsCheckOnly(String source) {
+        // The normal parser interns Symbol process literals while building the
+        // AST. A subsequently rejected check-only singleton must not consume
+        // permanent domain Symbol capacity. Scan all tokens before parsing.
+        List<Token> scanned = new Lexer(source).scan();
+        for (Token token : scanned) {
+            if (token.type() == SYMBOL_LITERAL) {
+                throw new IllegalArgumentException(
+                        "ORES-SINGLETON-CHECKONLY: Symbol literals cannot be "
+                                + "interned during singleton check-only admission at "
+                                + token.line() + ":" + token.column());
+            }
+        }
+        return new Parser(scanned, true).parseProgram();
+    }
+
+    /**
      * Explicit opt-in strict AttoLang v1 syntax admission. This is not inferred
      * from the filename: existing .ores and .atto legacy callers remain intact.
      * Fail before AST lowering on C-style equality or opaque template payloads,
@@ -160,7 +187,7 @@ public final class Parser {
                         + ": template interpolation requires profile-preserving typed lowering");
             }
         }
-        return new Parser(scanned, null, true).parseProgram();
+        return new Parser(scanned, null, true, false).parseProgram();
     }
 
 
@@ -323,6 +350,12 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (isContextualIdentifier("singleton")) {
+                    Token keyword = advance();
+                    if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
+                    rootDeclarations.add(parseSingleton(modifiers, annotations, keyword));
+                    continue;
+                }
                 if (isExternalActorMethodHead()) {
                     rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
                     continue;
@@ -683,6 +716,44 @@ public final class Parser {
         }
     }
 
+    private IllegalArgumentException unsupportedSingleton(Token keyword) {
+        return error(keyword, "ORES-SINGLETON-UNSUPPORTED: define singleton requires "
+                + "compiler ownership, initialization and guest execution parity; "
+                + "the check-only AST does not authorize runtime lowering");
+    }
+
+    private Ast.SingletonDecl parseSingleton(
+            Modifiers modifiers, List<Ast.Annotation> annotations, Token keyword) {
+        validateOnlyVisibilityModifiers(modifiers, "singletons");
+        rejectDiscardedDeclarationAnnotations(annotations, "singleton declarations");
+        Token declaredName = consume(IDENT, "expected singleton name");
+        if (check(DOT)) throw error(peek(), "singleton names must be flat");
+        consume(AS, "singleton declaration requires 'as' before fields");
+        List<Ast.SingletonField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        while (!check(END) && !check(EOF)) {
+            Token position = peek();
+            List<Ast.Annotation> fieldAnnotations = parseAnnotations();
+            Modifiers fieldModifiers = parseModifiers();
+            validateOnlyVisibilityModifiers(fieldModifiers, "singleton fields");
+            if (!isBindingKind(peek().type())) {
+                throw error(peek(), "ORES-SINGLETON-CHECKONLY: only explicit const/val/let "
+                        + "field bindings are parsed; methods and runtime behavior are not enabled");
+            }
+            Ast.FieldDecl field = parseModuleBinding(fieldAnnotations, fieldModifiers.visibility);
+            if (!names.add(field.name())) {
+                throw error(position, "duplicate singleton field '" + field.name() + "'");
+            }
+            fields.add(new Ast.SingletonField(field, position.line(), position.column()));
+            if (fields.size() > 64) {
+                throw error(position, "ORES-SINGLETON-CHECKONLY: field budget exceeded");
+            }
+        }
+        consume(END, "expected 'end' to close singleton " + declaredName.lexeme());
+        return new Ast.SingletonDecl(declaredName.lexeme(), modifiers.visibility,
+                fields, keyword.line(), keyword.column());
+    }
+
     private Ast.Decl parseModuleMember() {
         rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
@@ -729,6 +800,11 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isContextualIdentifier("singleton")) {
+                Token keyword = advance();
+                if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
+                return parseSingleton(modifiers, annotations, keyword);
+            }
             if (isExternalActorMethodHead()) {
                 return parseExternalActorMethod(annotations, modifiers);
             }

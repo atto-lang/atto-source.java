@@ -305,6 +305,10 @@ public final class OwnershipChecker {
     private void validate(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.SingletonDecl) {
+                    throw error("ORES-SINGLETON-UNSUPPORTED: singleton check-only AST "
+                            + "cannot acquire ownership or executable Task admission");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
             }

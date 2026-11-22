@@ -37,6 +37,26 @@ public final class OresCompiler {
     }
 
     /**
+     * Opt-in AST and conservative ownership/effect check ONLY. This returns
+     * declaration metadata, never executable bytecode or runtime authority.
+     * parseAndTypeCheck continues rejecting singleton source.
+     */
+    public static java.util.List<Ast.SingletonDecl> checkSingletonDeclarationsOnly(String source) {
+        return SingletonCheckOnly.check(Parser.parseSingletonsCheckOnly(source));
+    }
+
+    /**
+     * Opt-in source compiler bridge for deeply immutable singleton literals.
+     * The checked code-unit identity must come from trusted module resolution.
+     * This does NOT enable ordinary guest singleton execution, mutable state,
+     * or implicit cross-isolate sharing. Normal parseAndTypeCheck stays closed.
+     */
+    public static SingletonSnapshotCompilerV1.Compiled compileSingletonSnapshotOnly(
+            String source, String checkedCodeUnitId) {
+        return SingletonSnapshotCompilerV1.compile(source, checkedCodeUnitId);
+    }
+
+    /**
      * Inspect member-selection syntax only after normal type/ownership admission.
      * No physical layout or performance conclusion is implied.
      */

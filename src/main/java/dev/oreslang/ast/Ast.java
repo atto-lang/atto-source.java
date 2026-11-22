@@ -77,7 +77,32 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl { }
+            ExternalActorMethodDecl, SingletonDecl { }
+
+    /**
+     * Parsed singleton for the opt-in semantic check-only path. No runtime or
+     * backend may lower it until separate identity/publication proof exists.
+     * Field positions are retained for stable safety diagnostics.
+     */
+    public record SingletonField(FieldDecl declaration, int line, int column) {
+        public SingletonField {
+            java.util.Objects.requireNonNull(declaration, "singleton field");
+            if (line < 1 || column < 1) throw new IllegalArgumentException("invalid singleton field source location");
+        }
+    }
+
+    public record SingletonDecl(String name, Visibility visibility,
+                                List<SingletonField> fields, int line, int column)
+            implements Decl {
+        public SingletonDecl {
+            java.util.Objects.requireNonNull(name, "singleton name");
+            java.util.Objects.requireNonNull(visibility, "singleton visibility");
+            fields = List.copyOf(fields);
+            if (name.isBlank() || line < 1 || column < 1) {
+                throw new IllegalArgumentException("invalid singleton declaration");
+            }
+        }
+    }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
