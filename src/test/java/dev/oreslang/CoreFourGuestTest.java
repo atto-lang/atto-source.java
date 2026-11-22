@@ -5,6 +5,7 @@ import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -51,7 +52,11 @@ final class CoreFourGuestTest {
             assertTrue(Files.isRegularFile(path), path.toString());
             String source = Files.readString(path);
             assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)),
-                    "guest compiler must accept " + path);
+                    "guest type checker must accept " + path);
+            // Core is not exempt from the real compiler ownership pass.
+            // Source-only policy predicates never replace the borrow checker.
+            assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(source)),
+                    "guest borrow checker must accept compiler-owned Core source " + path);
         }
     }
 
