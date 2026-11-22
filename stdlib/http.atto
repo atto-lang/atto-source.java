@@ -1,0 +1,143 @@
+// AttoLang hosted std/http — Java/GraalVM implementation (v1).
+// Source-owned HTTP/1.1 message policy only; NEVER grants network authority.
+// Transport owns permissions, DNS/TLS, byte-bounded reads, cancel, ownership,
+// redirects, decompression, body streams, timeout and header normalization.
+define module http as
+  pub define class RequestLine as
+    pub val String method;
+    pub val String target;
+  end
+
+  fnc is_alpha(int c): bool {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+  }
+
+  fnc is_digit(int c): bool {
+    return c >= 48 && c <= 57;
+  }
+
+  // RFC 9110 tchar; no whitespace, separators, controls, or Unicode.
+  fnc is_token_char(int c): bool {
+    if is_alpha(c) || is_digit(c) then return true; fi
+    return c == 33 || c == 35 || c == 36 || c == 37 ||
+           c == 38 || c == 39 || c == 42 || c == 43 ||
+           c == 45 || c == 46 || c == 94 || c == 95 ||
+           c == 96 || c == 124 || c == 126;
+  }
+
+  pub fnc method_valid(String method): bool {
+    val points = method.codepoints();
+    if points.size == 0 then return false; fi
+    for (let int i = 0; i < points.size; i = i + 1) {
+      if !is_token_char(points.get(i)) then return false; fi
+    }
+    return true;
+  }
+
+  pub fnc method_is_safe(String method): bool {
+    return method == "GET" || method == "HEAD" ||
+           method == "OPTIONS" || method == "TRACE";
+  }
+
+  pub fnc method_is_idempotent(String method): bool {
+    return method_is_safe(method) || method == "PUT" || method == "DELETE";
+  }
+
+  pub fnc header_name_valid(String name): bool {
+    return method_valid(name);
+  }
+
+  // Deliberately narrower than all RFC-valid field values: US-ASCII SP,
+  // HTAB or visible ASCII only. This is a strict safe subset, not an
+  // internationalized header codec. CR, LF, NUL and DEL fail closed.
+  pub fnc header_value_valid(String value): bool {
+    val points = value.codepoints();
+    for (let int i = 0; i < points.size; i = i + 1) {
+      val int c = points.get(i);
+      if c != 9 && (c < 32 || c > 126) then return false; fi
+    }
+    return true;
+  }
+
+  // Limits apply to the exact ASCII field wire line "name: value".
+  // A transport must independently enforce aggregate byte and field budgets.
+  pub fnc header_line_valid(String name, String value, int max_bytes): bool {
+    if max_bytes < 2 then return false; fi
+    if !header_name_valid(name) || !header_value_valid(value) then return false; fi
+    val int name_bytes = name.codepoints().size;
+    val int value_bytes = value.codepoints().size;
+    if name_bytes > max_bytes - 2 then return false; fi
+    return value_bytes <= max_bytes - name_bytes - 2;
+  }
+
+  // Origin-form only: disallow absolute/authority-form, fragments and ASCII
+  // whitespace. Raw %-escape decoding, URL normalization and host admission
+  // remain transport responsibilities, never implicit network authorization.
+  pub fnc origin_target_valid(String target): bool {
+    if !target.starts_with("/") || target.starts_with("//") then return false; fi
+    val points = target.codepoints();
+    if points.size == 0 then return false; fi
+    for (let int i = 0; i < points.size; i = i + 1) {
+      val int c = points.get(i);
+      if c < 33 || c > 126 || c == 35 then return false; fi
+    }
+    return true;
+  }
+
+  // Single already-separated request line only, never a wire read/parser.
+  pub fnc parse_request_line(String line): Result<RequestLine, String> {
+    val points = line.codepoints();
+    if points.size == 0 || points.size > 8192 then
+      return Err("request line size out of bounds");
+    fi
+    val parts = line.split_literal(" ");
+    if parts.size != 3 then return Err("invalid request line"); fi
+    val String method = parts.get(0);
+    val String target = parts.get(1);
+    if !method_valid(method) then return Err("invalid method token"); fi
+    if !origin_target_valid(target) then return Err("invalid origin target"); fi
+    if parts.get(2) != "HTTP/1.1" then return Err("unsupported HTTP version"); fi
+    return Ok(new RequestLine(method, target));
+  }
+
+  pub fnc status_valid(int status): bool {
+    return status >= 100 && status <= 599;
+  }
+
+  pub fnc status_is_success(int status): bool {
+    return status >= 200 && status <= 299;
+  }
+
+  // HEAD and successful CONNECT never deliver an HTTP message body; CONNECT
+  // bytes thereafter belong to the tunnel, NOT the HTTP response body.
+  // 205 is a no-content status, like 204, regardless of Content-Length.
+  pub fnc response_body_allowed(int status, bool is_head, bool is_connect): bool {
+    if !status_valid(status) || is_head then return false; fi
+    if status < 200 || status == 204 || status == 205 || status == 304 then return false; fi
+    if is_connect && status_is_success(status) then return false; fi
+    return true;
+  }
+
+  // HTTP/1.1 conservative framing policy. Reject TE+CL smuggling and reject
+  // non-final chunked encodings. Caller parses exact field names and values,
+  // duplicate Content-Length, trailer fields, and connection retirement.
+  pub fnc request_framing_allowed(bool has_transfer_encoding, bool has_content_length,
+                                  bool final_transfer_is_chunked): bool {
+    if has_transfer_encoding && has_content_length then return false; fi
+    if has_transfer_encoding then return final_transfer_is_chunked; fi
+    return true;
+  }
+
+  // Subtraction-free length admission: no untrusted offset+length addition.
+  pub fnc body_bytes_allowed(int bytes, int max_body_bytes): bool {
+    if bytes < 0 || max_body_bytes < 0 then return false; fi
+    return bytes <= max_body_bytes;
+  }
+
+  pub fnc header_budget_allowed(int head_bytes, int fields,
+                                int max_head_bytes, int max_fields): bool {
+    if head_bytes < 0 || fields < 0 then return false; fi
+    if max_head_bytes < 0 || max_fields < 0 then return false; fi
+    return head_bytes <= max_head_bytes && fields <= max_fields;
+  }
+end

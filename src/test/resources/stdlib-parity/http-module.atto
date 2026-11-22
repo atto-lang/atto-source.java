@@ -1,0 +1,23 @@
+// Compiler-backed hosted std/http module; every printed line must be true.
+import module http from "std/http.atto";
+pub routine main(): void {
+  stdio.println(http.status_valid(200) && !http.status_valid(99));
+  stdio.println(http.status_is_success(299) && !http.status_is_success(300));
+  stdio.println(http.method_valid("PATCH") && !http.method_valid("BAD METHOD"));
+  stdio.println(http.method_is_safe("HEAD") && !http.method_is_safe("POST"));
+  stdio.println(http.method_is_idempotent("DELETE") && !http.method_is_idempotent("PATCH"));
+  stdio.println(http.header_name_valid("x-correlation-id") && !http.header_name_valid("bad:name"));
+  stdio.println(http.header_value_valid("a b\t3") && !http.header_value_valid("ok\r\nInjected: yes"));
+  stdio.println(http.header_line_valid("x-req", "abc", 10) && !http.header_line_valid("x-req", "abc", 9));
+  stdio.println(http.origin_target_valid("/hello?a=1") && !http.origin_target_valid("https://evil.invalid/"));
+  stdio.println(http.parse_request_line("GET /hello?a=1 HTTP/1.1").unwrap().target == "/hello?a=1");
+  stdio.println(http.parse_request_line("GET /a HTTP/2").is_err() && http.parse_request_line("GET /#frag HTTP/1.1").is_err());
+  stdio.println(!http.response_body_allowed(204, false, false) && !http.response_body_allowed(205, false, false));
+  stdio.println(!http.response_body_allowed(200, true, false) && !http.response_body_allowed(200, false, true));
+  stdio.println(http.response_body_allowed(404, false, false) && !http.response_body_allowed(304, false, false));
+  stdio.println(!http.request_framing_allowed(true, true, true) && !http.request_framing_allowed(true, false, false));
+  stdio.println(http.request_framing_allowed(true, false, true) && http.request_framing_allowed(false, true, false));
+  stdio.println(http.body_bytes_allowed(1024, 1024) && !http.body_bytes_allowed(-1, 1024));
+  stdio.println(http.header_budget_allowed(8192, 64, 8192, 64) && !http.header_budget_allowed(8193, 64, 8192, 64));
+  return;
+}
