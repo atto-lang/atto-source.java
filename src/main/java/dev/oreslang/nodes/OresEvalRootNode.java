@@ -1318,7 +1318,7 @@ public final class OresEvalRootNode extends RootNode {
                     // or resumed continuation wraps the original exception.
                     if (!cancellationUnwinding && function != null
                             && function.trapped() && isTrappableFailure(failure)) {
-                        return OresScheduler.done(new OptionValue(false, null));
+                        return OresScheduler.done(trappedFailure(failure));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
@@ -1655,7 +1655,7 @@ public final class OresEvalRootNode extends RootNode {
                                 : "method " + method.name();
                 Object shaped = shapeReturnedValue(returnType, value, label);
                 return function != null && function.trapped()
-                        ? new OptionValue(true, shaped) : shaped;
+                        ? trappedSuccess(shaped) : shaped;
             }
         }
 
@@ -4102,10 +4102,10 @@ public final class OresEvalRootNode extends RootNode {
                     evalSuspendableExpr(task, trapped.expression(), env,
                             (t, value, failure) -> {
                                 if (failure == null) {
-                                    continuation.accept(t, new OptionValue(true, value), null);
+                                    continuation.accept(t, trappedSuccess(value), null);
                                 } else if (failure instanceof RuntimeException ordinary
                                         && isTrappableFailure(ordinary)) {
-                                    continuation.accept(t, new OptionValue(false, null), null);
+                                    continuation.accept(t, trappedFailure(ordinary), null);
                                 } else {
                                     continuation.accept(t, null, failure);
                                 }
@@ -6048,13 +6048,31 @@ public final class OresEvalRootNode extends RootNode {
                 return callFunctionBodyUnchecked(fn, args);
             }
             try {
-                return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
+                return trappedSuccess(callFunctionBodyUnchecked(fn, args));
             } catch (RuntimeException failure) {
-                if (!isTrappableFailure(failure)) throw failure;
-                // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Control and authority failures always escape.
-                return new OptionValue(false, null);
+                return trappedFailure(failure);
             }
+        }
+
+        private Object trappedSuccess(Object value) {
+            // Result-returning expressions/callables are never double-wrapped.
+            return value instanceof ResultValue ? value : new ResultValue(true, value);
+        }
+
+        private Object trappedFailure(RuntimeException failure) {
+            if (!isTrappableFailure(failure)) throw failure;
+            // Never carry host exception instances/causes/stacks as Result data.
+            // The numeric guest errors have stable nominal identity and code.
+            if (failure instanceof OresGuestError guest) {
+                return new ResultValue(false, new TrapErrorValue(
+                        guest.guestTypeName(), guest.abiCode(),
+                        guest.getMessage()));
+            }
+            // Legacy runtime failures permitted by TrapFailurePolicy are
+            // intentionally opaque; do not expose Java class/message details.
+            // Narrow the policy to proven ordinary throws in an effect-gated PR.
+            return new ResultValue(false, new TrapErrorValue(
+                    "Error", 0, "ordinary guest failure"));
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
@@ -7567,10 +7585,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 try {
-                    return new OptionValue(true, eval(trapped.expression(), env));
+                    return trappedSuccess(eval(trapped.expression(), env));
                 } catch (RuntimeException failure) {
-                    if (!isTrappableFailure(failure)) throw failure;
-                    return new OptionValue(false, null);
+                    return trappedFailure(failure);
                 }
             }
             if (expr instanceof Ast.UnaryExpr unary) {
@@ -9965,6 +9982,9 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresGuestError error && findClass(name) == null) {
                 return name.equals("Error") || name.equals(error.guestTypeName());
             }
+            if (value instanceof TrapErrorValue error && findClass(name) == null) {
+                return name.equals("Error") || name.equals(error.guestTypeName());
+            }
             if (name.equals("float") || name.equals("f64")) return value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
@@ -10006,6 +10026,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private String oresRuntimeTypeName(Object value) {
             if (value instanceof OresGuestError error) return error.guestTypeName();
+            if (value instanceof TrapErrorValue error) return error.guestTypeName();
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -11582,6 +11603,19 @@ public final class OresEvalRootNode extends RootNode {
         private String guestTypeName() { return guestTypeName; }
         @SuppressWarnings("unused")
         private int abiCode() { return abiCode; }
+    }
+
+    /** Error value carried by Err, not a live throwable or host exception. */
+    private record TrapErrorValue(String guestTypeName, int abiCode, String message) {
+        private TrapErrorValue {
+            Objects.requireNonNull(guestTypeName, "guest Error identity");
+            Objects.requireNonNull(message, "sanitized guest error message");
+            if (message.length() > 256) message = message.substring(0, 256);
+        }
+
+        @Override public String toString() {
+            return guestTypeName + ": " + message;
+        }
     }
 
     private static final class ArithmeticOverflowError extends OresGuestError {
