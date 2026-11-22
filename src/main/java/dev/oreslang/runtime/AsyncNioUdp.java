@@ -71,39 +71,49 @@ public final class AsyncNioUdp {
             }
         }
 
+        /**
+         * Pure host admission boundary, independently testable without a VM.
+         * The trusted permission gate runs BEFORE size(), get(), or any
+         * allocation proportional to guest-controlled packet content.
+         */
+        static byte[] snapshotAuthorizedOctets(int peerPort, List<?> octets,
+                UdpDatagramKernel.PermissionGate authorize) {
+            Objects.requireNonNull(authorize, "trusted NETWORK authorization");
+            if (peerPort < 1 || peerPort > 65535) {
+                throw new IllegalArgumentException("invalid UDP destination port");
+            }
+            authorize.require("127.0.0.1:" + peerPort, "udp.send_to");
+            Objects.requireNonNull(octets, "UDP bytes");
+            int size = octets.size();
+            if (size < 0 || size > UdpDatagramKernel.MAX_PAYLOAD) {
+                throw new IllegalArgumentException("UDP payload size out of range");
+            }
+            byte[] data = new byte[size];
+            for (int i = 0; i < data.length; i++) {
+                Object value = octets.get(i);
+                if (!(value instanceof Number n)
+                        || (n instanceof Double d && !Double.isFinite(d))
+                        || n.longValue() < 0 || n.longValue() > 255
+                        || n.doubleValue() != n.longValue()) {
+                    throw new IllegalArgumentException("UDP bytes must be integers 0..255");
+                }
+                data[i] = (byte) n.intValue();
+            }
+            return data;
+        }
+
         public OresFuture<Integer> sendTo(int peerPort, List<?> octets) {
-            // Validate authority *before* observing even the length of guest
-            // storage. A malicious List implementation can make size()/get()
-            // observable, and must not be probed for a denied destination.
             final byte[] data;
             try {
                 checkLive("udp.send_to");
-                if (peerPort < 1 || peerPort > 65535) {
-                    throw new IllegalArgumentException("invalid UDP destination port");
-                }
-                context.requirePermission(RuntimePermissions.Permission.NET,
-                        "127.0.0.1:" + peerPort, "udp.send_to");
-                Objects.requireNonNull(octets, "UDP bytes");
-                int size = octets.size();
-                if (size < 0 || size > UdpDatagramKernel.MAX_PAYLOAD) {
-                    throw new IllegalArgumentException("UDP payload size out of range");
-                }
-                data = new byte[size];
-                // Copy inside the checked authority boundary. The kernel
-                // reauthorizes the destination at actual physical send.
-                for (int i = 0; i < data.length; i++) {
-                    Object value = octets.get(i);
-                    if (!(value instanceof Number n)
-                            || (n instanceof Double d && !Double.isFinite(d))
-                            || n.longValue() < 0 || n.longValue() > 255
-                            || n.doubleValue() != n.longValue()) {
-                        throw new IllegalArgumentException("UDP bytes must be integers 0..255");
-                    }
-                    data[i] = (byte) n.intValue();
-                }
+                data = snapshotAuthorizedOctets(peerPort, octets,
+                        (endpoint, operation) -> context.requirePermission(
+                                RuntimePermissions.Permission.NET, endpoint, operation));
             } catch (RuntimeException failure) {
                 return OresFuture.failed(failure);
             }
+            // This owned byte[] cannot be mutated by the guest while pending.
+            // The kernel re-checks the destination permission at send time.
             return operate(SelectionKey.OP_WRITE, () -> {
                 UdpDatagramKernel.SendOutcome result = kernel.trySendTo(peerPort, data);
                 return result == UdpDatagramKernel.SendOutcome.SENT ? data.length : null;
