@@ -734,7 +734,7 @@ public final class TypeChecker {
         Set<String> rootFunctions = new HashSet<>();
         Set<String> nonFunctionDeclarations = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env", "crypto",
                 "print", "Some", "None", "Ok", "Err", "task_context", "task_cancel_requested", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Atomic", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
@@ -3697,7 +3697,8 @@ public final class TypeChecker {
                     || name.name().equals("network")
                     || name.name().equals("net")
                     || name.name().equals("http")
-                    || name.name().equals("env")) {
+                    || name.name().equals("env")
+                    || name.name().equals("crypto")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
@@ -6121,7 +6122,8 @@ public final class TypeChecker {
                         || name.name().equals("network")
                         || name.name().equals("net")
                         || name.name().equals("http")
-                        || name.name().equals("env"))) return Unknown.INSTANCE;
+                        || name.name().equals("env")
+                        || name.name().equals("crypto"))) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
@@ -8228,6 +8230,20 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        // Opaque key is compiler-created only. It has no user constructor or
+        // byte-array extraction and never receives a Copy/Send proof.
+        if (named.name().equals("crypto")) {
+            Type key = new Named("AeadKey", List.of());
+            Type bytes = new ListType(Primitive.INT);
+            Type result = new Named("Result", List.of(bytes, Primitive.STRING));
+            return switch (name) {
+                case "aead_new_key" -> new Function(List.of(Primitive.INT), key);
+                case "aead_seal", "aead_open" ->
+                        new Function(List.of(key, bytes, bytes), result);
+                case "aead_close" -> new Function(List.of(key), Primitive.VOID);
+                default -> null;
+            };
+        }
         // Bytes methods are synchronous: never mis-type them as Future<T>.
         if (named.name().equals("Bytes")) {
             return switch (name) {
