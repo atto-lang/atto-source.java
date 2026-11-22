@@ -2712,7 +2712,7 @@ public final class Parser {
             parseTypeRef();
             if (!check(IDENT)) return false;
             advance();
-            return check(COLON) || check(EQUAL);
+            return check(COLON) || check(EQUAL) || check(SEMICOLON);
         } catch (IllegalArgumentException ex) {
             return false;
         } finally {
@@ -2728,6 +2728,11 @@ public final class Parser {
         boolean mutableReferent = match(MUT);
         Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
         String name = consume(IDENT, "expected class field name after type").lexeme();
+        if (match(SEMICOLON)) {
+            // `T name;` is assigned by a constructor (definite assignment is checked there).
+            return new Ast.FieldDecl(name, visibility, isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET,
+                    type, annotations, null, mutableReferent);
+        }
         if (!match(COLON, EQUAL)) {
             throw error(peek(), "class field initializer requires ':' or '='");
         }
@@ -3758,6 +3763,11 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeAtom() {
+        if (check(FNC) && checkNext(LPAREN)) {
+            // Canonical callable type `fnc(A, B) => R` (same as `(A, B) => R`).
+            advance();
+            return parseFunctionTypeSignature();
+        }
         if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
         if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
         if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
@@ -7726,6 +7736,17 @@ public final class Parser {
             consume(RPAREN, "expected ')' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
+        if (check(IDENT) && peek().lexeme().equals("_") && checkNext(COLON)) {
+            // Standalone `_ : T -> e`: a lambda that discards any bounded arity.
+            advance();
+            consume(COLON, "expected ':' after discard lambda");
+            Ast.TypeRef declared = parseTypeRef();
+            consume(ARROW, "lambdas use the slim arrow '->'");
+            List<Ast.Stmt> body = check(LBRACE) ? parseBlock()
+                    : List.of(new Ast.ReturnStmt(parseExpression()));
+            return new Ast.LambdaExpr(List.of(new Ast.Param(
+                    Ast.TypeRef.simple(Ast.LambdaExpr.DISCARD_REST), "$rest")), null, body, false, declared);
+        }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());
         }
@@ -8036,6 +8057,7 @@ public final class Parser {
                             Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), true), name, false, false));
                 } else if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
+                    if (name.equals("_")) name = "_$" + params.size(); // each `_` discards one argument
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
                 } else if (check(IDENT) && checkNext(COLON)) {
                     String name = advance().lexeme();
@@ -8060,6 +8082,7 @@ public final class Parser {
             if (check(LBRACE)) {
                 return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, declared);
             }
+            match(RETURN); // `|n| : bool -> return n > 0;` is the same braceless return body
             Ast.Expr value = inlinePipelineStage ? parseConditional() : parseExpression();
             return new Ast.LambdaExpr(params, null,
                     List.of(new Ast.ReturnStmt(value)), nonLexical, declared);

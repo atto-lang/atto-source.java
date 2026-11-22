@@ -8,6 +8,7 @@ import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
+import dev.oreslang.types.Types.DiscardFunction;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
@@ -5400,6 +5401,15 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
+            if (callee instanceof DiscardFunction discard) {
+                for (Ast.Expr argument : call.arguments()) {
+                    if (argument instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException("a discard lambda needs a statically resolved arity; spread is not allowed");
+                    }
+                    typeOf(argument, env, generics, self);
+                }
+                return discard.result();
+            }
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
@@ -6463,6 +6473,11 @@ public final class TypeChecker {
             if (object.inferredStruct()) return Record.struct(members);
             throw new IllegalArgumentException("unknown anonymous aggregate kind " + object.kind());
         }
+        if (expr instanceof Ast.LambdaExpr discard && discard.discardsRest()) {
+            Type body = typeOf(new Ast.LambdaExpr(List.of(), discard.expressionBody(), discard.blockBody(),
+                    discard.nonLexical(), discard.declaredReturnType()), env, generics, self);
+            return new DiscardFunction(body instanceof Function fn ? fn.result() : Unknown.INSTANCE);
+        }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
@@ -6493,6 +6508,11 @@ public final class TypeChecker {
                 if (type == Unknown.INSTANCE && scalarParamDefault != null
                         && param.type().name().equals("$infer$")) {
                     type = scalarParamDefault;
+                }
+                if (type == Unknown.INSTANCE && param.type().name().equals("$infer$")) {
+                    Type peer = literalPeerType(lambda.expressionBody() != null
+                            ? lambda.expressionBody() : lambda.blockBody(), param.name());
+                    if (peer != null) type = peer;
                 }
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -10689,6 +10709,45 @@ public final class TypeChecker {
 
     private void requireInteger(Type type, String where) {
         if (type != Primitive.INT) throw new IllegalArgumentException(where + " must be an integer type");
+    }
+
+    /**
+     * An untyped lambda parameter combined or compared directly with numeric
+     * literals of one kind (`n > 0`, `n * 2.5`) takes that scalar type. Mixed or
+     * absent evidence infers nothing; the body and call sites are still checked.
+     */
+    private static Type literalPeerType(Object node, String name) {
+        java.util.Set<Type> found = new java.util.HashSet<>();
+        collectLiteralPeers(node, name, found);
+        return found.size() == 1 ? found.iterator().next() : null;
+    }
+
+    private static void collectLiteralPeers(Object node, String name, java.util.Set<Type> found) {
+        if (node instanceof Ast.LambdaExpr inner
+                && inner.parameters().stream().anyMatch(p -> p.name().equals(name))) return; // shadowed
+        if (node instanceof Ast.BinaryExpr binary
+                && Set.of("+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "eq", "neq").contains(binary.operator())) {
+            Object other = binary.left() instanceof Ast.NameExpr l && l.name().equals(name) ? binary.right()
+                    : binary.right() instanceof Ast.NameExpr r && r.name().equals(name) ? binary.left() : null;
+            if (other instanceof Ast.LiteralExpr literal) {
+                if (literal.value() instanceof Long || literal.value() instanceof Integer) found.add(Primitive.INT);
+                else if (literal.value() instanceof Double) found.add(Primitive.FLOAT);
+                else found.add(Unknown.INSTANCE);
+            }
+        }
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) collectLiteralPeers(item, name, found);
+        } else if (node instanceof java.lang.Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> kind = component.getType();
+                if (kind.isPrimitive() || kind == String.class || kind.isEnum()) continue;
+                try {
+                    collectLiteralPeers(component.getAccessor().invoke(record), name, found);
+                } catch (ReflectiveOperationException ignored) {
+                    found.add(Unknown.INSTANCE);
+                }
+            }
+        }
     }
 
     private Type numericJoin(Type left, Type right, String op) {

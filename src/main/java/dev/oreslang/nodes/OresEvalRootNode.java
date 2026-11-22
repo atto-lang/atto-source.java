@@ -9071,10 +9071,12 @@ public final class OresEvalRootNode extends RootNode {
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
                 Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
-                return tailCallable(args -> {
-                    if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
+                return tailCallable(given -> {
+                    List<Object> args = lambda.discardsRest() ? List.of() : given;
+                    List<Ast.Param> formals = lambda.discardsRest() ? List.of() : lambda.parameters();
+                    if (args.size() != formals.size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
-                    bindCallableArguments(local, lambda.parameters(), args, "lambda");
+                    bindCallableArguments(local, formals, args, "lambda");
                     try {
                         if (lambda.expressionBody() != null) {
                             // An expression-bodied lambda's sole expression is

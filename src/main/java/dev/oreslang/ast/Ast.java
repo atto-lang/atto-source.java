@@ -2649,6 +2649,12 @@ public final class Ast {
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
                              boolean nonLexical, TypeRef declaredReturnType) implements Expr {
+        /** Standalone `_ : T -> e`: accepts and discards any statically resolved arity. */
+        public static final String DISCARD_REST = "$discard_rest";
+        public boolean discardsRest() {
+            return parameters.size() == 1 && parameters.getFirst().name().equals("$rest")
+                    && parameters.getFirst().type().name().equals(DISCARD_REST);
+        }
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
