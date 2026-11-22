@@ -89,6 +89,22 @@ pub fnc expect_not_equal_int(int actual, int unexpected, String message): TestOu
   fi
 }
 
+pub fnc expect_greater_than_int(int actual, int lower_bound, String message): TestOutcome {
+  if actual > lower_bound; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
+pub fnc expect_less_than_int(int actual, int upper_bound, String message): TestOutcome {
+  if actual < upper_bound; do
+    return pass();
+  else
+    return fail(message);
+  fi
+}
+
 // Inclusive integer range check. Never adds/subtracts the bounds, so
 // even the minimum and maximum signed i64 endpoints are safe.
 pub fnc expect_in_range_int(
