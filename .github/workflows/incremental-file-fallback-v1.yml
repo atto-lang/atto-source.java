@@ -1,0 +1,82 @@
+name: Java file-fallback incremental compiler JUnit (no guest codegen claim)
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
+      - 'src/test/java/dev/oreslang/IncrementalFileFallbackV1Test.java'
+      - '.github/workflows/incremental-file-fallback-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  incremental-java:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable PR source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source commit and root tree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          printf 'RECEIPT source_sha=%s\n' "$(git rev-parse HEAD)"
+          printf 'RECEIPT source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
+      - name: GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          version: '25.3'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile real Java compiler and execute incremental regression JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=IncrementalFileFallbackV1Test \
+            clean test
+      - name: Prove executed non-skipped JUnit cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=target/surefire-reports/TEST-dev.oreslang.IncrementalFileFallbackV1Test.xml
+          test -s "$report"
+          grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+          if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then
+            echo "::error::Required suite contained failures/errors/skips"
+            exit 1
+          fi
+          test "$(grep -c '<testcase' "$report")" -ge 7
+          for case_name in \
+            twoFilesWithNoNamespaceReparseAndRecheckIndependently \
+            publicApiChangesRecheckImportersButNotUnrelatedFiles \
+            sameDependencySetWithChangedImportBindingsMustInvalidate \
+            failedParseAndImportValidationCannotPoisonWarmCaches \
+            emptySnapshotEvictsCheckedAndParsedSources \
+            strictAndLegacyProfilesNeverShareTypedOrParsedEntries \
+            addingOrRemovingNamespaceHeaderChangesOnlyOwningFile; do
+            grep -Fq "name=\"$case_name\"" "$report"
+          done
+          echo 'RECEIPT java_incremental_file_fallback_suite=EXECUTED cases=7'
+          echo 'RECEIPT native_image_guest=NOT_EXECUTED'
+          echo 'RECEIPT namespace_package_codegen=NOT_IMPLEMENTED'
+      - name: Preserve focused JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: incremental-file-fallback-v1-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
