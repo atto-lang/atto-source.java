@@ -104,6 +104,20 @@ final class ActorProtocolSourceCfgV1Test {
                 ""","invalid","E_PROTOCOL_SOURCE_TYPE");
     }
 
+    @Test void multipleUnprovenEntryRootsAreDeniedWithoutAliasIdentityProof() {
+        String source = PRELUDE + "\n" + """
+                define fnc invalid(ProtocolHandle<Connection> first,
+                                   ProtocolHandle<Connection> second): void {
+                  return;
+                }
+                """;
+        var fail = assertThrows(IllegalArgumentException.class,
+                () -> ActorProtocolSourceCfgV1.verifySource(source, "invalid",
+                        Map.of("first", "Connection", "second", "Connection")));
+        assertTrue(fail.getMessage().contains("E_PROTOCOL_SOURCE_ALIAS_PROVENANCE"),
+                fail::getMessage);
+    }
+
     @Test void realAstCannotForgeProtocolAuthorityByDeclaringParameterType() {
         denied("""
                 define fnc invalid(ProtocolHandle<Connection> handle, ProtocolHandle<Connection> forged): void {
