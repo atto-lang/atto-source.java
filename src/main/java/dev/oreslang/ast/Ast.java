@@ -616,6 +616,18 @@ public final class Ast {
         }
     }
 
+    /**
+     * Explicit actor application-message contracts. Null means the clause was
+     * omitted, NOT that it permits arbitrary messages. Supervisor CONTROL
+     * messages are outside both contracts.
+     */
+    public record ActorMessageContract(TypeRef receives, TypeRef sends) {
+        public static ActorMessageContract unspecified() {
+            return new ActorMessageContract(null, null);
+        }
+        public boolean declared() { return receives != null || sends != null; }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -629,10 +641,14 @@ public final class Ast {
             List<MethodDecl> methods,
             ActorConcurrency actorConcurrency,
             List<ProtectedStateField> sealedStateFields,
-            List<Annotation> annotations) implements Decl {
+            List<Annotation> annotations,
+            ActorMessageContract actorMessageContract) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             annotations = List.copyOf(annotations);
+            actorMessageContract = java.util.Objects.requireNonNull(actorMessageContract);
+            if (actorKind == ActorKind.NONE && actorMessageContract.declared())
+                throw new IllegalArgumentException("ordinary classes cannot declare receives/sends");
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
@@ -647,6 +663,32 @@ public final class Ast {
                 if (!fields.isEmpty())
                     throw new IllegalArgumentException("sealed actor state cannot mix ordinary actor fields");
             }
+        }
+
+        /** Annotated call sites (main) default to no receives/sends contract. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields,
+                         List<Annotation> annotations) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, annotations, ActorMessageContract.unspecified());
+        }
+
+        /** Actor headers with receives/sends but no class annotations. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields,
+                         ActorMessageContract actorMessageContract) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, List.of(), actorMessageContract);
         }
 
         /** Existing actor concurrency call sites default to no sealed state or annotations. */

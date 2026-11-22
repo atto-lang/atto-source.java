@@ -1814,6 +1814,34 @@ public final class TypeChecker {
                     "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
                     + klass.name() + "' requires compiler-sealed state ownership "
                     + "and handle_state lowering; not yet enabled");
+        Ast.ActorMessageContract protocol = klass.actorMessageContract();
+        if (protocol.sends() != null) {
+            // Direct calls are already checked against the receiver's
+            // ActorRef<ActorClass>, but a complete sends effect must also
+            // account for helper calls, callbacks, inherited methods and
+            // dynamic dispatch. Do not claim an enforced outbound bound until
+            // transitive effect summaries and CONTROL separation are proven.
+            throw new IllegalArgumentException(
+                    "ACTOR_SENDS_EFFECT_UNSUPPORTED: actor '" + klass.name()
+                    + "' requires transitive outbound message effect checking");
+        }
+        if (protocol.receives() != null) {
+            if (protocol.receives().name().equals("never"))
+                throw new IllegalArgumentException(
+                        "ACTOR_RECEIVES_NEVER_UNSUPPORTED: actor '" + klass.name()
+                        + "' requires a verified CONTROL-only mailbox path");
+            Type declared = resolve(protocol.receives(),
+                    Set.copyOf(klass.genericParameters()), nominalClassType(klass));
+            Type handler = actorMailboxPayloadType(
+                    new Named("ActorRef", List.of(nominalClassType(klass))));
+            // The existing typed ActorMail<T> handler and outbound ActorRef
+            // checks already enforce the receiving boundary. Require exact
+            // equivalence, not a widening that could hide another payload.
+            requireAssignable(handler, declared,
+                    "receives contract of actor '" + klass.name() + "'");
+            requireAssignable(declared, handler,
+                    "receive(ActorMail<T>) of actor '" + klass.name() + "'");
+        }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
