@@ -50,6 +50,19 @@ final class AttoAsyncUdpGuestTest {
         }
     }
 
+    @Test void udpHandleCannotEscapeAnIndependentAsyncTask() {
+        String forbidden = """
+                pub async fnc make_socket(): UdpSocket {
+                  return await network.bind_udp("127.0.0.1", 0);
+                }
+                pub routine main(): void {
+                  return;
+                }
+                """;
+        assertThrows(RuntimeException.class, () -> OresCompiler.parseAndTypeCheck(forbidden),
+                "privileged UdpSocket must not become an implicitly Sendable task result");
+    }
+
     @Test void udpRejectsLegacyBlockingAndUnrelatedSocketMethods() {
         String bad = """
                 pub async routine main(): void {
