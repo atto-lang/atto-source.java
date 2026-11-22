@@ -256,6 +256,65 @@ public final class Parser {
     private final java.util.LinkedHashMap<String, Token> outOfLineHeads = new java.util.LinkedHashMap<>();
     private final java.util.Set<String> attachedOutOfLineOwners = new java.util.HashSet<>();
 
+    private final java.util.Set<Ast.Param> omittableParams =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    /**
+     * `fnc f(A a, T? b?)` keeps its body as a private `f$omit(A a, T? b)` and gains
+     * one overload per accepted arity: `f(A a)` forwards `None`, and `f(A a, T b)`
+     * forwards `Some(b)`. A provided argument is the payload type T, never an Option.
+     */
+    private Ast.ModuleDecl expandOmittableParameters(Ast.ModuleDecl module) {
+        List<Ast.Decl> declarations = new ArrayList<>();
+        for (Ast.Decl declaration : module.declarations()) {
+            if (!(declaration instanceof Ast.FunctionDecl fn)
+                    || fn.parameters().stream().noneMatch(omittableParams::contains)) {
+                declarations.add(declaration);
+                continue;
+            }
+            if (fn.async() || fn.suspends() || fn.generator()) {
+                throw new IllegalArgumentException("omittable parameters are not supported on async, susp or generator callable '"
+                        + fn.name() + "'");
+            }
+            int required = 0;
+            while (!omittableParams.contains(fn.parameters().get(required))) required++;
+            fn.parameters().forEach(omittableParams::remove);
+            String hidden = fn.name() + "$omit";
+            declarations.add(new Ast.FunctionDecl(hidden, fn.kind(), Ast.Visibility.PRIVATE, false, false, false,
+                    fn.structural(), fn.nonLexical(), fn.trapped(), fn.actorKind(), fn.genericParameters(),
+                    fn.parameters(), fn.returnType(), fn.annotations(), fn.body(), fn.genericSpecs(), fn.effects()));
+            int total = fn.parameters().size();
+            for (int provided = required; provided <= total; provided++) {
+                List<Ast.Param> params = new ArrayList<>();
+                List<Ast.Expr> forwarded = new ArrayList<>();
+                for (int i = 0; i < total; i++) {
+                    Ast.Param formal = fn.parameters().get(i);
+                    if (i < required) {
+                        params.add(formal);
+                        forwarded.add(new Ast.NameExpr(formal.name()));
+                    } else if (i < provided) {
+                        params.add(new Ast.Param(formal.type().arguments().getFirst(), formal.name(),
+                                false, formal.mutable(), formal.consuming()));
+                        forwarded.add(new Ast.CallExpr(new Ast.NameExpr("Some"),
+                                List.of(new Ast.NameExpr(formal.name()))));
+                    } else {
+                        forwarded.add(new Ast.NameExpr("None"));
+                    }
+                }
+                boolean typeArgs = !fn.genericParameters().isEmpty();
+                Ast.Expr call = new Ast.CallExpr(new Ast.NameExpr(hidden),
+                        typeArgs ? fn.genericParameters().stream().map(Ast.TypeRef::simple).toList() : List.of(),
+                        typeArgs, forwarded);
+                Ast.Stmt forward = fn.returnType().name().equals("void") && fn.returnType().arguments().isEmpty()
+                        ? new Ast.ExprStmt(call) : new Ast.ReturnStmt(call);
+                declarations.add(new Ast.FunctionDecl(fn.name(), fn.kind(), fn.visibility(), false, false, false,
+                        fn.structural(), fn.nonLexical(), fn.trapped(), fn.actorKind(), fn.genericParameters(),
+                        params, fn.returnType(), List.of(), List.of(forward), fn.genericSpecs(), fn.effects()));
+            }
+        }
+        return new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations);
+    }
+
     private Ast.ModuleDecl applyTraitDefaults(Ast.ModuleDecl module) {
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
         boolean changed = false;
@@ -773,6 +832,14 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
+        if (!omittableParams.isEmpty()) {
+            List<Ast.ModuleDecl> expanded = new ArrayList<>(modules.size());
+            for (Ast.ModuleDecl module : modules) expanded.add(expandOmittableParameters(module));
+            modules = expanded;
+            if (!omittableParams.isEmpty()) {
+                throw error(peek(), "omittable parameters are supported only on top-level functions");
+            }
+        }
         if (!traitDefaults.isEmpty() || !outOfLineMethods.isEmpty()) {
             List<Ast.ModuleDecl> withDefaults = new ArrayList<>(modules.size());
             for (Ast.ModuleDecl module : modules) withDefaults.add(applyTraitDefaults(module));
@@ -3574,7 +3641,18 @@ public final class Parser {
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            Ast.Param param = new Ast.Param(type, name, structural, mutable);
+            if (check(QUESTION) && adjacent(previous(), peek())) {
+                // `T? name?`: an omittable formal (callers may leave it out).
+                Token marker = advance();
+                if (structural || !type.name().equals("Option") || type.arguments().size() != 1) {
+                    throw error(marker, "omittable parameter '" + name + "?' must have an Option type T?");
+                }
+                omittableParams.add(param);
+            } else if (!params.isEmpty() && omittableParams.contains(params.getLast())) {
+                throw error(previous(), "required parameter '" + name + "' cannot follow an omittable parameter");
+            }
+            params.add(param);
         } while (match(COMMA));
         requireDistinctParameterNames(params);
         return params;
