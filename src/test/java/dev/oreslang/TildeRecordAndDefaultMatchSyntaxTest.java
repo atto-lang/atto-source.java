@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -9,11 +10,9 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Frontend stage-1 tests for PR #254 syntax.
- *
- * Map literals and tilde record-field patterns deliberately fail closed until
- * their typed AST, borrow admission and runtime codegen are implemented.
- * Parser/AST tests are not backend AOT or guest-execution evidence.
+ * Migration of old PR #254 tilde construction syntax to canonical Type.of.
+ * Structural field patterns remain an independent parser/type-checker feature.
+ * Parser/AST tests do not establish backend AOT or guest execution.
  */
 final class TildeRecordAndDefaultMatchSyntaxTest {
     private static Ast.FunctionDecl function(String source) {
@@ -30,62 +29,44 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     }
 
     @Test
-    void shortAndExplicitTildeRecordsReuseReadonlyRecordType() {
+    void formerShortAndExplicitTildeRecordConstructorsFailClosed() {
         for (String source : List.of(
                 "~(foo: 42, ready: true)",
                 "~record(foo: 42, ready: true)",
                 "~record(foo: 42, ready: true, )",
-                "~(\"first name\": 42)")) {
-            Ast.ObjectExpr value = assertInstanceOf(Ast.ObjectExpr.class, initializer(source), source);
-            assertEquals(Ast.ObjectKind.RECORD, value.kind(), source);
-            assertTrue(value.structuralRecord());
-            assertFalse(value.inferredStruct());
+                "~(\"first name\": 42)",
+                "~record()",
+                "~record(foo: 42)[\"foo\"]",
+                "~record(...base, bar: 42)")) {
+            assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
         }
-        Ast.FunctionDecl typed = function(
-                "fnc f(): void { const Map<string,int> value = ~map(); return; }");
-        Ast.TypedEmptyAggregateExpr map = assertInstanceOf(Ast.TypedEmptyAggregateExpr.class,
-                ((Ast.BindingStmt) typed.body().getFirst()).initializer(),
-                "typed binding must resolve contextual ~map() to a compiler-owned Map type");
-        assertEquals("Map", map.aggregateType().name());
-        assertEquals(2, map.aggregateType().arguments().size());
-        assertThrows(IllegalArgumentException.class, () -> initializer("~map()"),
-                "untyped map() must fail at the parser boundary");
-        Ast.ObjectExpr empty = assertInstanceOf(Ast.ObjectExpr.class, initializer("~record()"));
-        assertTrue(empty.fields().isEmpty());
-        assertEquals(Ast.ObjectKind.RECORD, empty.kind());
+        // Construction has one canonical owner; parsing is not runtime proof.
+        assertDoesNotThrow(() -> initializer("Record.of()"));
     }
 
     @Test
-    void sourceOrderedRecordSpreadDoesNotBecomeDynamicMap() {
-        Ast.FunctionDecl f = function("""
+    void formerlyAcceptedTildeRecordSpreadsCannotEvadeSyntaxGate() {
+        assertThrows(IllegalArgumentException.class, () -> function("""
                 fnc f(): void {
                     const base = record{foo: 1};
                     const row = ~record(...base, bar: 42);
                     return;
                 }
-                """);
-        Ast.ObjectExpr row = assertInstanceOf(
-                Ast.ObjectExpr.class, ((Ast.BindingStmt) f.body().get(1)).initializer());
-        assertEquals(Ast.ObjectKind.RECORD, row.kind());
-        assertEquals(2, row.fields().size());
-        assertTrue(row.fields().getFirst().spread());
-        assertFalse(row.fields().get(1).spread());
-        assertEquals("bar", row.fields().get(1).name());
+                """));
+        // Legacy record{...} is an independent literal, not ~record(...).
+        Ast.ObjectExpr record = assertInstanceOf(Ast.ObjectExpr.class,
+                initializer("record{foo: 42}"));
+        assertEquals(Ast.ObjectKind.RECORD, record.kind());
     }
 
     @Test
-    void tildeRecordsKeepPostfixMemberAndIndexedAccess() {
-        Ast.FunctionDecl f = function("""
-                fnc f(): int {
-                    const x = ~(foo: 42).foo;
-                    const y = ~record(foo: 42)["foo"];
-                    return x + y;
-                }
-                """);
-        assertInstanceOf(Ast.MemberExpr.class,
-                ((Ast.BindingStmt) f.body().getFirst()).initializer());
-        assertInstanceOf(Ast.IndexExpr.class,
-                ((Ast.BindingStmt) f.body().get(1)).initializer());
+    void recordPostfixDoesNotResurrectRemovedTildeConstructors() {
+        for (String source : List.of(
+                "~(foo: 42).foo",
+                "~record(foo: 42)[\"foo\"]",
+                "~record().size")) {
+            assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
+        }
     }
 
     @Test
@@ -96,17 +77,50 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     }
 
     @Test
-    void mapLiteralsAndAmbiguousSyntaxFailClosed() {
+    void formerTypedAndShorthandMapConstructorsFailClosed() {
         for (String source : List.of(
-                "~()", "~map(\"ready\" => true)",
                 "~map<String,bool>(\"ready\" => true)",
+                "~map(\"ready\" => true)",
+                "~map()",
+                "~<Map<string,int>>()",
                 "~(\"ready\" => true)",
                 "~(ready => true)",
+                "~()",
                 "~record(\"ready\" => true)",
                 "~(foo: 1, foo: 2)",
                 "~record(...)",
                 "~record(foo: 1, \"x\" => true)")) {
             assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
+        }
+        assertDoesNotThrow(() -> initializer("Map.of()"));
+    }
+
+    @Test
+    void readonlyStructuralFieldPatternsAreCheckedBeforeRuntime() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub fnc main(): int {
+                    const p = infer struct{status: 200, value: 42};
+                    return match p over
+                        on structural ~(status: 200, value: v) -> v
+                        default -> 0
+                    end;
+                }
+                """));
+
+        for (String source : List.of(
+                "on ~(status: 200, value: v) -> v",
+                "on structural ~(secret: 42) -> 42",
+                "on structural ~(status: 200, status: 201) -> 42")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck("""
+                            pub fnc main(): int {
+                                const p = infer struct{status: 200, value: 42};
+                                return match p over
+                            """ + source + """
+                                    default -> 0
+                                end;
+                            }
+                            """), source);
         }
     }
 
@@ -144,7 +158,7 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
                 "default when true -> 42;",
                 "default -> 42; default -> 0;",
                 "default -> 42; on 1 -> 0;",
-                "on default -> 42;",
+                "on default when true -> 42;",
                 "else -> 42;")) {
             String source = "fnc f(int x): int { return match<int> x over "
                     + body + " end; }";
@@ -194,6 +208,22 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
         Ast.MatchExpr expression = assertInstanceOf(Ast.MatchExpr.class,
                 ((Ast.ReturnStmt) guarded.body().getFirst()).value());
         assertNotNull(expression.arms().getFirst().guard());
+        assertInstanceOf(Ast.WildcardPattern.class, expression.arms().getLast().pattern());
+    }
+
+    @Test
+    void legacyOnDefaultRemainsAnInputAliasOfWildcardFallback() {
+        Ast.FunctionDecl value = function("""
+                fnc f(int x): int {
+                    return match<int> x over
+                        on 1 -> 42
+                        on default -> 0
+                    end;
+                }
+                """);
+        Ast.MatchExpr expression = assertInstanceOf(Ast.MatchExpr.class,
+                ((Ast.ReturnStmt) value.body().getFirst()).value());
+        assertEquals(2, expression.arms().size());
         assertInstanceOf(Ast.WildcardPattern.class, expression.arms().getLast().pattern());
     }
 

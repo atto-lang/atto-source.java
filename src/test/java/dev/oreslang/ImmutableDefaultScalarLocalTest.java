@@ -69,15 +69,29 @@ final class ImmutableDefaultScalarLocalTest {
         }) rejected(body);
     }
 
-    @Test void runtimeHelperInitializerKeepsReadonlyBindingSeparateFromConstValueProof()
+    @Test void runtimeHelperInitializerNeedsValOrUntypedConst()
             throws Exception {
-        // Normative common-source #203: local const is a readonly binding,
-        // not a requirement that its initializer be compile-time evaluable.
-        // All three forms must actually execute the real helper in Graal.
+        // Spec #49 / decision 2026-11-16: a type-first or typed scalar const
+        // must be compile-time evaluable, so a runtime helper result needs a
+        // runtime binding. Untyped const stays a readonly binding (stage one).
         for (String declaration : new String[] {
                 "int computed = increment(41);",
-                "const computed = increment(41);",
-                "const int computed = increment(41);"
+                "const int computed = increment(41);",
+                "const computed: int = increment(41);"
+        }) {
+            String source = "fnc increment(int p): int { return p + 1; } "
+                    + "pub fnc main(): void { " + declaration
+                    + " stdio.println(computed); return; }";
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), declaration);
+            assertTrue(error.getMessage().contains("E_NON_CONST_INITIALIZER"),
+                    declaration + ": " + error.getMessage());
+        }
+        // All runtime forms must actually execute the real helper in Graal.
+        for (String declaration : new String[] {
+                "val int computed = increment(41);",
+                "val computed = increment(41);",
+                "const computed = increment(41);"
         }) {
             String source = "fnc increment(int p): int { return p + 1; } "
                     + "pub fnc main(): void { " + declaration

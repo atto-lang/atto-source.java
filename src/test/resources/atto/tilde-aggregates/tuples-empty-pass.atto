@@ -1,4 +1,4 @@
 fnc read(): void {
-    const empty = ~tuple();
+    const empty = Tuple.of();
     return;
 }

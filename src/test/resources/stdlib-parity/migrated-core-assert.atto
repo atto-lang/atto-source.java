@@ -1,0 +1,13 @@
+// AttoLang-native compiler-owned modules: execute through the real guest.
+import module core from "std/core.atto";
+import module Assert from "std/assert.atto";
+import module numeric from "ores.core/numeric.atto";
+
+pub routine main(): void {
+  stdio.println(core.min_int(8, 3));
+  stdio.println(core.clamp_int(29, 0, 10));
+  stdio.println(Assert.equal(5, 5));
+  stdio.println(Assert.false(false));
+  stdio.println(numeric.max_int(7, 12));
+  return;
+}
