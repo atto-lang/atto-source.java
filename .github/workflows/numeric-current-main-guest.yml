@@ -41,5 +41,5 @@ jobs:
       - name: Execute checked scalar and IEEE ordering unit + real guest JUnit
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=NumericValueOrderingTest,NumericGuestOrderingV1Test,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest \
+            -Dtest=NumericValueOrderingTest,NumericValueEqualityExactTest,NumericGuestOrderingV1Test,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest \
             test
