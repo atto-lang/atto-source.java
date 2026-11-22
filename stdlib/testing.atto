@@ -89,6 +89,26 @@ pub fnc expect_not_equal_int(int actual, int unexpected, String message): TestOu
   fi
 }
 
+// Inclusive integer range check. Never adds/subtracts the bounds, so
+// even the minimum and maximum signed i64 endpoints are safe.
+pub fnc expect_in_range_int(
+  int actual,
+  int lower,
+  int upper,
+  String message
+): TestOutcome {
+  if lower > upper; do
+    return fail(message);
+  fi
+  if actual < lower; do
+    return fail(message);
+  fi
+  if actual > upper; do
+    return fail(message);
+  fi
+  return pass();
+}
+
 pub fnc expect_equal_float(float actual, float expected, String message): TestOutcome {
   if actual == expected; do
     return pass();
@@ -273,9 +293,28 @@ pub fnc run_suite(borrow TestSuite suite, borrow TestOptions options): RunSummar
   return summary;
 }
 
+// A forged or corrupted summary must not certify passing test execution.
+// Validate nonnegativity before subtracting; never add untrusted counters
+// (checked signed arithmetic could otherwise overflow before rejection).
+pub fnc summary_is_valid(borrow RunSummary summary): bool {
+  if summary.total < 0; do return false; fi
+  if summary.passed < 0; do return false; fi
+  if summary.failed < 0; do return false; fi
+  if summary.skipped < 0; do return false; fi
+  if summary.filtered < 0; do return false; fi
+  if summary.passed > summary.total; do return false; fi
+  if summary.failed > summary.total - summary.passed; do return false; fi
+  return summary.skipped == summary.total - summary.passed - summary.failed;
+}
+
 pub fnc require_success(borrow RunSummary summary): void {
+  if !summary_is_valid(rt borrow summary); do
+    val Result<bool, String> inconsistent = Err("invalid native AttoLang test summary");
+    inconsistent.expect("native AttoLang test suite has inconsistent counts");
+  fi
   // An empty/all-skipped/all-filtered suite must never be a green test receipt.
   // Keep this aligned with oreslang-test.cli's native receipt admission rule.
+  // Summation is safe after summary_is_valid bounded the operands by total.
   let int executed_count = summary.passed + summary.failed;
   if executed_count == 0; do
     val Result<bool, String> empty = Err("no AttoLang test cases executed");
