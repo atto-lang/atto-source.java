@@ -68,6 +68,13 @@
     <resources>
       <resource><directory>src/main/resources</directory></resource>
       <resource>
+        <!-- The canonical .atto sources remain backend-owned under core/.
+             No generated or hand-copied second authoritative library tree. -->
+        <directory>core</directory>
+        <targetPath>dev/oreslang/core</targetPath>
+        <includes><include>**/*.atto</include></includes>
+      </resource>
+      <resource>
         <directory>stdlib</directory>
         <targetPath>dev/oreslang/std</targetPath>
         <includes>
