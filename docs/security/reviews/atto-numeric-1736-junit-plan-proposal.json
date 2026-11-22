@@ -1,0 +1,57 @@
+{
+  "schema": "atto.numeric-ci-test-plan-proposal.v1",
+  "status": "REVIEW_ONLY_NOT_AUTHORIZED",
+  "candidate_source": {
+    "repo": "atto-lang/atto-source.java",
+    "pr": 1736,
+    "head_sha": "c16a0313b166f4b426e5c4aa2b3f487475e107b6",
+    "root_tree_sha": "c8fe1626629782a171e6950ba3d7080e489160cd"
+  },
+  "target_plan": {
+    "schema": "ores-private-ci-test-plan-v1",
+    "source_repo": "atto-lang/atto-source.java",
+    "allowed_prs": [
+      1736
+    ],
+    "maven_pom_blob_sha": "7ace0b647b2f07e1ed7b771421cc7bd60c2585a3",
+    "required_source_blobs": {
+      "pom.xml": "7ace0b647b2f07e1ed7b771421cc7bd60c2585a3",
+      "src/main/java/dev/oreslang/types/NumericValueEquality.java": "65b91d2bf82afaff39d7cc8c1685bab5005c26b3",
+      "src/main/java/dev/oreslang/types/NumericValueOrdering.java": "92e5dc1831839619a3f87054dddb80aa8a63fb56",
+      "src/main/java/dev/oreslang/types/TypeChecker.java": "acdf1bb28696c313b34cba95630bd402868e11d1",
+      "src/main/java/dev/oreslang/compiler/TreeShaker.java": "bf7e7f5858d0b7c878503fca2d3c3808f25d708a",
+      "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java": "a3c2c32bd0e7af07a4d86f6fd7816847677b0ca5",
+      "src/test/java/dev/oreslang/NumericCheckedI64CurrentMainTest.java": "66a1152d96800af63614f7b65832ba6aa2d63d75",
+      "src/test/java/dev/oreslang/NumericGuestOrderingV1Test.java": "470b2862452cb3491d06fbc353422d92d7a245b5",
+      "src/test/java/dev/oreslang/TreeShakerNumericEqualityTest.java": "b97aa9fcc8905cc41b2d7c305241def0dad3055e",
+      "src/test/java/dev/oreslang/NumericValueEqualityExactTest.java": "333d94a33eb15da1469d24571ab822b53feb35ae",
+      "src/test/java/dev/oreslang/NumericIntegerDivisionV1Test.java": "e9d517c7f25703d9103dae189d4ae4157aacaa07",
+      "src/test/java/dev/oreslang/NumericTrapResultV1Test.java": "093bb1346939102b2625b86dff13da4a7895834d",
+      "src/test/java/dev/oreslang/NumericErrorAbiTest.java": "00fe4003cb0818c7c71bd91d7f6627ed24282feb"
+    },
+    "commands": [
+      {
+        "argv": [
+          "mvn",
+          "-o",
+          "-C",
+          "-B",
+          "-ntp",
+          "-Dores.runtime.carriers=native",
+          "-Dtest=NumericValueOrderingTest,NumericValueEqualityExactTest,NumericGuestOrderingV1Test,TreeShakerNumericEqualityTest,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest",
+          "test"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 1800
+      }
+    ]
+  },
+  "inert_until": [
+    "atto_specific_origin_publisher_independently_reviewed",
+    "live_atto_source_main_protected",
+    "exact_carrier_main_workflow_and_plan_approved",
+    "carrier_maven_dependencies_prefetched_in_source_free_phase",
+    "security_owner_approves_exact_pr_head_and_tree"
+  ],
+  "note": "The existing Oreslang V3 validator correctly rejects this Atto source_repo. Never install or reference this proposed test plan in an active carrier contract without independent review. Native guest AOT requires a separate reviewed plan and execution path."
+}
