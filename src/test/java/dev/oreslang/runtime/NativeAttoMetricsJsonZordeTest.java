@@ -61,7 +61,7 @@ final class NativeAttoMetricsJsonZordeTest {
                 "1", "1", "1", "1", "1", "2", "3",
                 "23", "1", "5", "true", "true", "3", "1",
                 "4", "2", "-1", "-1", "3", "true", "-1",
-                "2",);
+                "2");
     }
 
     @Test
