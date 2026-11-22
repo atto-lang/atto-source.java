@@ -49,6 +49,8 @@ a working AOT linker.
 Working implementation targets in this PR:
 
 ```atto
+import * as crypto from "std.crypto";
+
 val key = crypto.aead_new_key(1);   // 1=AES-256-GCM, 2=ChaCha20-Poly1305
 val sealed = crypto.aead_seal(key, [1], [65, 66, 67]);
 val envelope = sealed.unwrap();      // [12-byte nonce | ciphertext | 16-byte tag]
