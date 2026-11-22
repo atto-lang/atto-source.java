@@ -31,6 +31,21 @@ public record CallableSelector(Kind kind, String name, int arity) {
                 method.arity());
     }
 
+    /**
+     * Compiler/standard builtins take priority over implicit receiver lookup.
+     * A user method of the same name must be invoked explicitly via self.
+     *
+     * Keep this shared across type, ownership and runtime call dispatch.
+     */
+    public static boolean reservedImplicitReceiverCallName(String name) {
+        return switch (name) {
+            case "init", "Some", "Ok", "Err", "And", "Or", "Xor",
+                    "print", "task_context", "task_cancel_requested",
+                    "$task_context_enter", "$task_context_exit" -> true;
+            default -> false;
+        };
+    }
+
     public static CallableSelector instance(String name, int arity) {
         return new CallableSelector(Kind.INSTANCE, name, arity);
     }

@@ -1,0 +1,14 @@
+import class Chart from '../stdlib/behavior/statechart';
+import fnc checked from '../stdlib/behavior/statechart';
+
+pub routine main(): void {
+  val Chart chart = checked(
+    arr[#idle, #busy],
+    arr[-1, 0],
+    arr[#idle],
+    arr[#go],
+    arr[#undeclared]
+  );
+  stdio.println("INVALID_TARGET_ACCEPTED");
+  return;
+}

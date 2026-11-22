@@ -1,0 +1,86 @@
+name: Atto canonical implicit-val Java admission
+
+on:
+  push:
+    branches:
+      - fix/atto-canonical-class-implicit-val-20261120
+    paths:
+      - '.github/workflows/atto-canonical-implicit-val.yml'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/**'
+      - 'tests/parity/class-fields-v2/**'
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalImplicitValClassFieldTest.java'
+      - 'src/test/java/dev/oreslang/AttoClassFieldV2ConformanceSourceTest.java'
+      - 'tests/parity/class-fields-v2/**'
+      - 'docs/ATTO_CANONICAL_CLASS_FIELD_VAL_V2.md'
+      - '.github/workflows/atto-canonical-implicit-val.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-field-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable PR commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head and tree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'RECEIPT source_sha=%s source_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify conformance fixture Git blob identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd tests/parity/class-fields-v2
+          printf '%s %s\n' \
+            1cac9591ba7d6c0fcea73e5193d3b56a76a13e61 class-field-visibility-default-val.atto \
+            f8ecc3c49abbe3c7cea0e13b56ac0fff137b2797 class-field-implicit-val-constructor-assign.atto \
+            c3f34523b6dba79ec80979b7bf403f5d4ca9e5e6 class-field-private-outside-class.atto \
+            45fad8ac2f6f93eb0d305178990b8b7a38343f8e class-field-const-runtime-call.atto \
+            | while read -r expected fixture; do
+                actual="$(git hash-object "$fixture")"
+                test "$actual" = "$expected"
+                printf 'RECEIPT fixture=%s blob=%s\n' "$fixture" "$actual"
+              done
+      - name: GraalVM 25 / Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute real parser and typed-checker tests
+        run: >-
+          mvn -B -ntp '-P!native-thread-unix'
+          -Dtest=AttoCanonicalImplicitValClassFieldTest,AttoClassFieldV2ConformanceSourceTest
+          -Dsurefire.failIfNoSpecifiedTests=true clean test
+      - name: Require nonempty passing JUnit receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in AttoCanonicalImplicitValClassFieldTest AttoClassFieldV2ConformanceSourceTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            test -s "$report"
+            minimum=5
+            if [ "$suite" = AttoCanonicalImplicitValClassFieldTest ]; then minimum=7; fi
+            test "$(grep -c '<testcase' "$report")" -ge "$minimum"
+            if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then exit 1; fi
+            printf 'RECEIPT suite=%s scope=java_frontend\n' "$suite"
+          done
+          echo 'RECEIPT guest_runtime=NOT_EXECUTED pkg_visibility=UNSUPPORTED'

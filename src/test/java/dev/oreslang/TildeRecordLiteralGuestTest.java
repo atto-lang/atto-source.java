@@ -16,7 +16,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Fixture-based guest compiler/runtime admission; not a backend parity claim. */
+/** Canonical Record.of/Tuple.of migration fixtures; not a backend parity claim.\n * Positive guest tests require the separately stacked Java #2735 lowering. */
 final class TildeRecordLiteralGuestTest {
     private static String fixture(String file) {
         try (InputStream in = TildeRecordLiteralGuestTest.class.getResourceAsStream(
@@ -29,7 +29,7 @@ final class TildeRecordLiteralGuestTest {
     }
 
     @Test
-    void shortAndExplicitRecordsCompileAndExecuteAsReadonlyStructuralValues() {
+    void canonicalRecordsCompileAndExecuteAsReadonlyStructuralValues() {
         String program = fixture("records-guest-pass.atto");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -54,30 +54,36 @@ final class TildeRecordLiteralGuestTest {
 
     @Test
     void readonlyRecordsCannotRegainMutationAuthority() {
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
-                fixture("records-readonly-reject.atto")));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(fixture("records-readonly-reject.atto")));
+        String diagnostic = error.getMessage().toLowerCase();
+        assertTrue(diagnostic.contains("readonly") || diagnostic.contains("mutat")
+                        || diagnostic.contains("assign"),
+                "must reject mutation, not merely fail to parse Record.of: " + error.getMessage());
     }
 
     @Test
     void duplicateAndMixedEntriesFailBeforeRuntime() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
-                fixture("records-duplicate-reject.atto")));
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(fixture("records-duplicate-reject.atto")));
+        assertTrue(duplicate.getMessage().toLowerCase().contains("duplicate"),
+                "must diagnose duplicate fields, not missing Record.of lowering: " + duplicate.getMessage());
         IllegalArgumentException mixed = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(fixture("records-mixed-reject.atto")));
-        assertTrue(mixed.getMessage().contains("mixed record"), mixed.getMessage());
+        assertTrue(mixed.getMessage().toLowerCase().contains("mixed"),
+                "must diagnose record/map mixing, not missing Record.of lowering: " + mixed.getMessage());
     }
 
     @Test
     void emptyAndDynamicKeyAmbiguitiesFailClosed() {
         IllegalArgumentException empty = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(fixture("records-empty-reject.atto")));
-        assertTrue(empty.getMessage().contains("ambiguous"), empty.getMessage());
+        assertTrue(empty.getMessage().contains("empty") || empty.getMessage().contains("removed"), empty.getMessage());
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
                 fixture("records-explicit-empty-pass.atto")));
 
-        // These forms now have a dedicated map AST. They remain invalid
-        // without an explicit or directly declared Map<K,V> witness and must
-        // fail compilation (not necessarily parsing).
+        // The old tilde spellings are intentionally invalid after removal.
+        // Canonical Map.of semantic checks have separate guest fixtures.
         for (String file : List.of(
                 "maps-short-string-not-enabled.atto",
                 "maps-short-symbol-not-enabled.atto",
@@ -98,7 +104,7 @@ final class TildeRecordLiteralGuestTest {
     }
 
     @Test
-    void explicitTildeTupleConstructorsAdmitZeroAndMultipleElements() {
+    void canonicalTupleFactoriesAdmitZeroAndMultipleElements() {
         assertDoesNotThrow(() -> Parser.parse(fixture("tuples-empty-pass.atto")));
         assertDoesNotThrow(() -> Parser.parse(fixture("tuples-two-pass.atto")));
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
@@ -106,20 +112,16 @@ final class TildeRecordLiteralGuestTest {
     }
 
     @Test
-    void typedEmptyConstructorsKeepFullTypeWitnessInTheAst() {
+    void canonicalTypedEmptyFactoriesParseWithoutOldTildeAstWitness() {
         for (String file : List.of(
                 "typed-empty-map-parser-only.atto",
                 "typed-empty-record-parser-only.atto",
-                "typed-empty-tuple-parser-only.atto",
-                "typed-empty-generic-parser-only.atto")) {
-            Ast.Program source = assertDoesNotThrow(() -> Parser.parse(fixture(file)), file);
-            Ast.FunctionDecl fn = (Ast.FunctionDecl) source.modules().getFirst()
-                    .declarations().getFirst();
-            Ast.BindingStmt binding = (Ast.BindingStmt) fn.body().getFirst();
-            assertInstanceOf(Ast.TypedEmptyAggregateExpr.class, binding.initializer(), file);
-            Ast.TypedEmptyAggregateExpr typed = (Ast.TypedEmptyAggregateExpr) binding.initializer();
-            assertNotNull(typed.aggregateType());
+                "typed-empty-tuple-parser-only.atto")) {
+            assertDoesNotThrow(() -> Parser.parse(fixture(file)), file);
         }
+        // ~<T>() is retired, even for a generic type witness.
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(fixture("typed-empty-generic-parser-only.atto")));
     }
 
     @Test
@@ -149,21 +151,13 @@ final class TildeRecordLiteralGuestTest {
     }
 
     @Test
-    void typedEmptySyntaxRejectsUnprovedOrNonEmptyTypeWitnesses() {
+    void retiredTildeTypedEmptyWitnessesAllFailClosed() {
         for (String file : List.of(
                 "typed-empty-generic-parser-only.atto",
                 "typed-empty-required-record-reject.atto",
                 "typed-empty-required-tuple-reject.atto",
                 "typed-empty-unresolved-reject.atto",
-                "typed-empty-nominal-reject.atto")) {
-            IllegalArgumentException diagnostic = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> OresCompiler.parseAndTypeCheck(fixture(file)), file);
-            assertTrue(diagnostic.getMessage().contains("zero-initialization")
-                            || diagnostic.getMessage().contains("required"),
-                    file + ": " + diagnostic.getMessage());
-        }
-        for (String file : List.of(
+                "typed-empty-nominal-reject.atto",
                 "typed-empty-argument-reject.atto",
                 "typed-empty-missing-type-reject.atto")) {
             assertThrows(IllegalArgumentException.class,
@@ -176,6 +170,7 @@ final class TildeRecordLiteralGuestTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(
                         fixture("records-spread-ownership-reject.atto")));
-        assertTrue(e.getMessage().contains("aggregate spread"), e.getMessage());
+        assertTrue(e.getMessage().toLowerCase().contains("spread"),
+                "must reject unsupported spread semantics, not just Record.of syntax: " + e.getMessage());
     }
 }

@@ -1,0 +1,4 @@
+// Semantic rejection: Option<int>.map produces Option<String>, not Option<int>.
+fnc wrong(Option<int> value): Option<int> {
+  return value.map((int x) -> "wrong");
+}

@@ -1,0 +1,11 @@
+// Directly destructure a failed probe without creating a second owned alias.
+pub routine main(): void {
+  val Channel<Array<int>> channel = Channel.new<Array<int>>(0);
+  val Array<int> payload = [5, 6];
+  do match try writech channel, rt take payload over
+    on Accepted -> { stdio.stdout.write("unexpected-accepted"); }
+    on Full(rejected) -> { stdio.stdout.write(rejected[0]); }
+    on Closed(rejected) -> { stdio.stdout.write("unexpected-closed"); }
+  end
+  return;
+}
