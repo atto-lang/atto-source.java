@@ -106,6 +106,36 @@ public final class TenantIsolateManager implements AutoCloseable {
         this.maxOutputBytes = maxOutputBytes;
     }
 
+    /**
+     * Canonical TenantVM naming for the existing trusted Context host.
+     * This is NOT a verified hostile-tenant VM or a physical Native Image
+     * isolate. Protected/adversarial policies still fail closed.
+     */
+    public TenantHandle open_trusted_tenant_vm(
+            String tenantId, IsolatePolicy requestedPolicy) {
+        return open_trusted_tenant(tenantId, requestedPolicy);
+    }
+
+    /**
+     * Reserved entry point for hardware-attested confidential execution.
+     *
+     * A Graal Context (including one using Graal's sandbox policy) is not a
+     * hardware TEE. No verified attestation provider, measurement binding,
+     * or attestation-scoped key release is wired into this host. Therefore a
+     * confidential request must never fall back to open_trusted_tenant_vm.
+     *
+     * This method does not claim hardware or guest isolation support.
+     */
+    public TenantHandle open_confidential_tenant_vm(
+            String tenantId, IsolatePolicy requestedPolicy) {
+        require_host_turn();
+        validate_tenant_id(tenantId);
+        Objects.requireNonNull(requestedPolicy, "requestedPolicy");
+        throw new SecurityException(
+                "CONFIDENTIAL_COMPUTE_UNAVAILABLE: hardware TEE and "
+                + "attestation-bound admission are not verified");
+    }
+
     /** Register a TRUSTED tenant; never infer tenant identity from guest input. */
     public synchronized TenantHandle open_trusted_tenant(
             String tenantId, IsolatePolicy requestedPolicy) {

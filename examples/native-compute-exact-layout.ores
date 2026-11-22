@@ -13,31 +13,31 @@ pub routine main(): void {
   val BufferLayout negative = new BufferLayout(8, -1, 8, 1);
   val BufferLayout bad_align = new BufferLayout(8, 3, 0, 24);
 
-  if !valid_exact_buffer_layout(&valid); do
+  if !valid_exact_buffer_layout(rt borrow valid); do
     rt fail("valid exact size rejected");
   fi
-  if !valid_buffer_layout(&wrong); do
+  if !valid_buffer_layout(rt borrow wrong); do
     rt fail("legacy structural predicate changed unexpectedly");
   fi
-  if valid_exact_buffer_layout(&wrong); do
+  if valid_exact_buffer_layout(rt borrow wrong); do
     rt fail("inconsistent physical size accepted");
   fi
-  if !valid_exact_buffer_layout(&zero); do
+  if !valid_exact_buffer_layout(rt borrow zero); do
     rt fail("zero length / zero bytes rejected");
   fi
-  if valid_exact_buffer_layout(&bad_zero); do
+  if valid_exact_buffer_layout(rt borrow bad_zero); do
     rt fail("zero length / nonzero bytes accepted");
   fi
-  if valid_exact_buffer_layout(&overflow); do
+  if valid_exact_buffer_layout(rt borrow overflow); do
     rt fail("signed i64 multiplication overflow admitted");
   fi
-  if !valid_exact_buffer_layout(&max_bytes); do
+  if !valid_exact_buffer_layout(rt borrow max_bytes); do
     rt fail("exact i64 max boundary rejected");
   fi
-  if valid_exact_buffer_layout(&negative); do
+  if valid_exact_buffer_layout(rt borrow negative); do
     rt fail("negative length accepted");
   fi
-  if valid_exact_buffer_layout(&bad_align); do
+  if valid_exact_buffer_layout(rt borrow bad_align); do
     rt fail("nonpositive alignment accepted");
   fi
   stdio.stdout.println("COMPUTE-EXACT-LAYOUT-OK");

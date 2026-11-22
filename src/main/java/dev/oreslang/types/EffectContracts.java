@@ -34,14 +34,23 @@ public final class EffectContracts {
                 Effect.ALLOC));
     }
 
-    public record Call(String target) {
+    /**
+     * A callback slot is distinct from a resolved function symbol. In an
+     * unspecialized effect graph it is UNKNOWN_CALL, never silently pure.
+     */
+    public record Call(String target, boolean callbackParameter) {
         public Call {
             Objects.requireNonNull(target, "target");
             if (target.isBlank() || target.length() > 256) {
                 throw new IllegalArgumentException("invalid effect call target");
             }
+            if (callbackParameter && !target.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException("invalid callback parameter name");
+            }
         }
-        public static Call direct(String target) { return new Call(target); }
+        public Call(String target) { this(target, false); }
+        public static Call direct(String target) { return new Call(target, false); }
+        public static Call callback(String parameter) { return new Call(parameter, true); }
     }
 
     public record Callable(String symbol, Set<Effect> direct, List<Call> calls, Set<Effect> allowed, boolean trapsThrow) {
@@ -103,6 +112,10 @@ public final class EffectContracts {
                 for (Callable def : definitions.values()) {
                     EnumSet<Effect> acc = enumCopy(def.direct());
                     for (Call call : def.calls()) {
+                        if (call.callbackParameter()) {
+                            acc.add(Effect.UNKNOWN_CALL); // requires explicit call-site specialization
+                            continue;
+                        }
                         Set<Effect> from = results.get(call.target());
                         if (from == null) {
                             acc.add(Effect.UNKNOWN_CALL); // fail closed across unknown/imported/FFI targets
@@ -123,6 +136,82 @@ public final class EffectContracts {
             Map<String, Set<Effect>> immutable = new LinkedHashMap<>();
             results.forEach((key, value) -> immutable.put(key, Collections.unmodifiableSet(enumCopy(value))));
             return Collections.unmodifiableMap(immutable);
+        }
+
+        /**
+         * Bind the callback slots of a specific higher-order callable to
+         * overload-resolved target symbols. Other callables remain unbound and
+         * fail closed; this does not globally assume a callback is pure.
+         *
+         * The compiler must provide real resolved symbols after type checking.
+         * This API does not infer callback targets from source text.
+         */
+        private Graph specializedForInvocation(String symbol, Map<String, String> callbacks) {
+            Callable root = definitions.get(symbol);
+            if (root == null) {
+                throw new IllegalArgumentException("unknown effect callable: " + symbol);
+            }
+            Objects.requireNonNull(callbacks, "callbacks");
+            // Resolve once: caller-owned mutable maps cannot alter the target
+            // between validation and graph construction (effect laundering).
+            Map<String, String> fixed = Map.copyOf(callbacks);
+            Set<String> slots = new java.util.HashSet<>();
+            for (Call call : root.calls()) {
+                if (call.callbackParameter()) slots.add(call.target());
+            }
+            if (fixed.size() > slots.size()) {
+                throw new IllegalArgumentException("too many callback bindings");
+            }
+            for (Map.Entry<String, String> entry : fixed.entrySet()) {
+                if (!slots.contains(entry.getKey())) {
+                    throw new IllegalArgumentException("undeclared callback slot: " + entry.getKey());
+                }
+                // A missing symbol remains an UNKNOWN_CALL after inference.
+                Call.direct(entry.getValue());
+            }
+
+            Graph specialized = new Graph();
+            for (Callable def : definitions.values()) {
+                if (!def.symbol().equals(symbol)) {
+                    specialized.add(def);
+                    continue;
+                }
+                List<Call> bound = new ArrayList<>(def.calls().size());
+                for (Call call : def.calls()) {
+                    if (call.callbackParameter() && fixed.containsKey(call.target())) {
+                        bound.add(Call.direct(fixed.get(call.target())));
+                    } else {
+                        bound.add(call);
+                    }
+                }
+                specialized.add(new Callable(def.symbol(), def.direct(), bound,
+                        def.allowed(), def.trapsThrow()));
+            }
+            return specialized;
+        }
+
+        /** Effect row of one higher-order invocation; not source-language execution proof. */
+        public Set<Effect> inferInvocation(String symbol, Map<String, String> callbacks) {
+            Graph specialized = specializedForInvocation(symbol, callbacks);
+            return specialized.infer().get(symbol);
+        }
+
+        /** Check the declared upper bound for this particular callback binding. */
+        public Set<Effect> validateInvocation(String symbol, Map<String, String> callbacks) {
+            Graph specialized = specializedForInvocation(symbol, callbacks);
+            Map<String, Set<Effect>> inferred = specialized.infer();
+            Callable root = specialized.definitions.get(symbol);
+            if (root.allowed() != null) {
+                EnumSet<Effect> forbidden = enumCopy(inferred.get(symbol));
+                forbidden.removeAll(root.allowed());
+                if (!forbidden.isEmpty()) {
+                    Effect first = forbidden.iterator().next();
+                    throw new IllegalArgumentException("effect contract violation in "
+                            + symbol + ": " + first
+                            + specialized.explainPath(symbol, first, inferred));
+                }
+            }
+            return inferred.get(symbol);
         }
 
         public Map<String, Set<Effect>> validate() {
@@ -153,6 +242,13 @@ public final class EffectContracts {
                     return " via " + formatPath(symbol, parent);
                 }
                 for (Call call : def.calls()) {
+                    if (call.callbackParameter()) {
+                        if (wanted == Effect.UNKNOWN_CALL) {
+                            return " via " + formatPath(symbol, parent)
+                                    + " -> callback(" + call.target() + ")";
+                        }
+                        continue;
+                    }
                     String target = call.target();
                     if (wanted == Effect.THROW && definitions.containsKey(target)
                             && definitions.get(target).trapsThrow()) continue;

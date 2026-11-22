@@ -192,4 +192,108 @@ final class HotCodeGenerationRetentionV1Test {
         assertEquals(1, budget.status().retained().size());
         assertEquals(1, budget.status().heldBytes());
     }
+
+    @Test void nonHttpCodeLeaseBlocksPhysicalReleaseAfterHttpDrainAndLoaderHint() {
+        var budget = new HotCodeGenerationRetentionV1(1, 64);
+        var image = budget.reserve(1, sha('a'), 32);
+        var frame = budget.pinCode(image);
+        assertEquals(1, frame.generation());
+        budget.activated(image);
+        budget.draining(image);
+        var http = new HttpGenerationDrainV1(1, 1, 1);
+        http.beginDrain();
+        assertTrue(http.readyToRetire());
+        assertThrows(IllegalStateException.class,
+                () -> budget.acknowledgePhysicalCleanup(image, http, true));
+        assertEquals(1, budget.status().retained().get(0).liveCodeLeases());
+        assertEquals(32, budget.status().heldBytes());
+        frame.close();
+        frame.close(); // duplicate cancellation/terminal release cannot underflow
+        assertEquals(0, budget.status().retained().get(0).liveCodeLeases());
+        budget.acknowledgePhysicalCleanup(image, http, true);
+        assertEquals(0, budget.status().heldBytes());
+        assertThrows(IllegalStateException.class, () -> budget.pinCode(image));
+    }
+
+    @Test void stagedAndQuarantinedCodeLeasesRemainChargedUntilPhysicalCompletion() {
+        var budget = new HotCodeGenerationRetentionV1(1, 16);
+        var staged = budget.reserve(1, sha('a'), 16);
+        var lease = budget.pinCode(staged);
+        assertThrows(IllegalStateException.class,
+                () -> budget.acknowledgePhysicalCleanup(staged, null, true));
+        budget.quarantine(staged);
+        assertThrows(IllegalStateException.class, () -> budget.pinCode(staged));
+        assertThrows(IllegalStateException.class, () -> budget.reserve(2, sha('b'), 1));
+        assertEquals(1, budget.status().retained().get(0).liveCodeLeases());
+        lease.close();
+        // Quarantine continues to require the independent physical cleanup witness.
+        assertThrows(IllegalStateException.class,
+                () -> budget.acknowledgePhysicalCleanup(staged, null, false));
+        // A quarantined image requires an HTTP-side drain witness too.
+        var retiredHttp = new HttpGenerationDrainV1(1, 1, 1);
+        retiredHttp.beginDrain();
+        budget.acknowledgePhysicalCleanup(staged, retiredHttp, true);
+        assertEquals(0, budget.status().heldBytes());
+        var next = budget.reserve(2, sha('b'), 16);
+        assertEquals(2, next.generation());
+    }
+
+    @Test void concurrentCodePinVersusCleanupNeverReleasesPinnedGeneration() throws Exception {
+        for (int round = 0; round < 32; round++) {
+            var budget = new HotCodeGenerationRetentionV1(1, 16);
+            var image = budget.reserve(1, sha('a'), 16);
+            budget.activated(image);
+            budget.draining(image);
+            var http = new HttpGenerationDrainV1(1, 1, 1);
+            http.beginDrain();
+            var go = new CountDownLatch(1);
+            var ready = new CountDownLatch(2);
+            var acquired = new java.util.concurrent.atomic.AtomicReference<
+                    HotCodeGenerationRetentionV1.CodeLease>();
+            var cleaned = new java.util.concurrent.atomic.AtomicBoolean();
+            var unexpected = new AtomicInteger();
+            var pinner = new Thread(() -> {
+                ready.countDown();
+                try {
+                    if (!go.await(5, TimeUnit.SECONDS)) throw new AssertionError("pin timeout");
+                    acquired.set(budget.pinCode(image));
+                } catch (IllegalStateException expectedAfterCleanup) {
+                    // The cleanup operation won the single admission monitor.
+                } catch (Throwable failure) {
+                    unexpected.incrementAndGet();
+                }
+            });
+            var cleaner = new Thread(() -> {
+                ready.countDown();
+                try {
+                    if (!go.await(5, TimeUnit.SECONDS)) throw new AssertionError("clean timeout");
+                    budget.acknowledgePhysicalCleanup(image, http, true);
+                    cleaned.set(true);
+                } catch (IllegalStateException expectedPinned) {
+                    // The non-HTTP lease won the single admission monitor.
+                } catch (Throwable failure) {
+                    unexpected.incrementAndGet();
+                }
+            });
+            pinner.start();
+            cleaner.start();
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            go.countDown();
+            pinner.join(5000);
+            cleaner.join(5000);
+            assertFalse(pinner.isAlive());
+            assertFalse(cleaner.isAlive());
+            assertEquals(0, unexpected.get());
+            if (cleaned.get()) {
+                assertNull(acquired.get());
+                assertEquals(0, budget.status().heldBytes());
+            } else {
+                assertNotNull(acquired.get());
+                assertEquals(1, budget.status().retained().get(0).liveCodeLeases());
+                acquired.get().close();
+                budget.acknowledgePhysicalCleanup(image, http, true);
+                assertEquals(0, budget.status().heldBytes());
+            }
+        }
+    }
 }

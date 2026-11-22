@@ -36,9 +36,17 @@ public final class OresKeyedMap<K, V> {
     public static final int MAX_TEXT_KEY_BYTES = SymbolPropertyKeyCodec.MAX_TEXT_KEY_BYTES;
     public static final long MAX_KEY_SET_WIRE_BYTES =
             SymbolPropertyKeyCodec.MAX_KEY_SET_WIRE_BYTES;
+    /**
+     * Bytes-keyed maps are data stores (e.g. a broker key space), not symbol
+     * property objects, so they get their own, still bounded, quotas.
+     */
+    public static final int MAX_BYTES_ENTRIES = 1 << 24;
+    public static final long MAX_BYTES_KEY_SET_BYTES = 1L << 32;
 
     public enum KeyDomain {
-        STRING, SYMBOL, STRING_OR_SYMBOL
+        STRING, SYMBOL, STRING_OR_SYMBOL,
+        /** Immutable owned byte strings compared by content (Bytes v1). */
+        BYTES
     }
 
     /**
@@ -46,7 +54,9 @@ public final class OresKeyedMap<K, V> {
      * protects dynamic/foreign callers. ANY is explicitly dynamic only.
      */
     public enum ValueDomain {
-        ANY, INT, STRING, SYMBOL, BOOL
+        ANY, INT, STRING, SYMBOL, BOOL,
+        /** Immutable owned Bytes; reads return an independent copy. */
+        BYTES
     }
 
     /**
@@ -173,6 +183,28 @@ public final class OresKeyedMap<K, V> {
                 Objects.requireNonNull(validator, "entry validator"));
     }
 
+    public static <V> OresKeyedMap<OresBytes, V> bytesKeys(ValueDomain values) {
+        return new OresKeyedMap<>(KeyDomain.BYTES, values, NO_ENTRY_VALIDATOR);
+    }
+
+    private int maxEntries() {
+        return domain == KeyDomain.BYTES ? MAX_BYTES_ENTRIES : MAX_ENTRIES;
+    }
+
+    private long maxKeySetBytes() {
+        return domain == KeyDomain.BYTES ? MAX_BYTES_KEY_SET_BYTES : MAX_KEY_SET_WIRE_BYTES;
+    }
+
+    /** Bytes values are immutable but move-only: never alias the stored handle. */
+    private static <V> V detachRead(V value) {
+        if (value instanceof OresBytes bytes) {
+            @SuppressWarnings("unchecked")
+            V copy = (V) OresBytes.copyOf(bytes.toArrayCopy());
+            return copy;
+        }
+        return value;
+    }
+
     public KeyDomain keyDomain() {
         return domain;
     }
@@ -232,6 +264,7 @@ public final class OresKeyedMap<K, V> {
             case STRING -> key instanceof String;
             case SYMBOL -> key instanceof OresSymbol;
             case STRING_OR_SYMBOL -> key instanceof String || key instanceof OresSymbol;
+            case BYTES -> key instanceof OresBytes;
         };
         if (!valid) {
             throw new IllegalArgumentException("key is incompatible with Map key domain " + domain);
@@ -246,7 +279,7 @@ public final class OresKeyedMap<K, V> {
 
     public synchronized V get(Object key) {
         checkKey(key);
-        return entries.get(key);
+        return detachRead(entries.get(key));
     }
 
     /**
@@ -258,7 +291,7 @@ public final class OresKeyedMap<K, V> {
     public synchronized Lookup<V> lookup(Object key) {
         checkKey(key);
         V value = entries.get(key);
-        return value == null ? Lookup.missing() : Lookup.present(value);
+        return value == null ? Lookup.missing() : Lookup.present(detachRead(value));
     }
 
     /**
@@ -271,7 +304,7 @@ public final class OresKeyedMap<K, V> {
         if (!entries.containsKey(key)) {
             throw new IllegalArgumentException("unknown typed Map key");
         }
-        return entries.get(key);
+        return detachRead(entries.get(key));
     }
 
     private void checkValueDomain(Object value) {
@@ -284,6 +317,7 @@ public final class OresKeyedMap<K, V> {
             case STRING -> value instanceof String;
             case SYMBOL -> value instanceof OresSymbol;
             case BOOL -> value instanceof Boolean;
+            case BYTES -> value instanceof OresBytes;
         };
         if (!valid) {
             throw new IllegalArgumentException(
@@ -312,6 +346,7 @@ public final class OresKeyedMap<K, V> {
     }
 
     private static int wireKeyBytes(Object key) {
+        if (key instanceof OresBytes bytes) return bytes.size();
         // The canonical tagged-key codec defines the identical logical
         // String/PROCESS/STABLE footprint used by bulk serialization. Use its
         // strict size preflight rather than allocating a throwaway wire frame.
@@ -324,11 +359,11 @@ public final class OresKeyedMap<K, V> {
         checkValueDomain(value);
         long addedBytes = 0L;
         if (!entries.containsKey(key)) {
-            if (entries.size() >= MAX_ENTRIES) {
+            if (entries.size() >= maxEntries()) {
                 throw new IllegalArgumentException("typed Map exceeds maximum key count");
             }
             addedBytes = wireKeyBytes(key);
-            if (addedBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+            if (addedBytes > maxKeySetBytes() - storedKeyWireBytes) {
                 throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
             }
         }
@@ -355,7 +390,7 @@ public final class OresKeyedMap<K, V> {
         // before using it as an allocation hint, then enforce it again while
         // consuming entries (custom Maps may lie about their size).
         int reportedSize = values.size();
-        if (reportedSize < 0 || reportedSize > MAX_ENTRIES) {
+        if (reportedSize < 0 || reportedSize > maxEntries()) {
             throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
         }
         List<Map.Entry<K, V>> prepared = new ArrayList<>(reportedSize);
@@ -364,7 +399,7 @@ public final class OresKeyedMap<K, V> {
         // while iterating; such an input must not trigger validator side
         // effects for a batch that is rejected before semantic admission.
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
-            if (prepared.size() >= MAX_ENTRIES) {
+            if (prepared.size() >= maxEntries()) {
                 throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
             }
             Map.Entry<? extends K, ? extends V> source =
@@ -401,12 +436,12 @@ public final class OresKeyedMap<K, V> {
             K key = entry.getKey();
             if (!entries.containsKey(key) && additions.add(key)) {
                 additionalKeyWireBytes += wireKeyBytes(key);
-                if (additionalKeyWireBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+                if (additionalKeyWireBytes > maxKeySetBytes() - storedKeyWireBytes) {
                     throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
                 }
             }
         }
-        if (additions.size() > MAX_ENTRIES - entries.size()) {
+        if (additions.size() > maxEntries() - entries.size()) {
             throw new IllegalArgumentException("typed Map exceeds maximum key count");
         }
 
