@@ -7,6 +7,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.CharacterCodingException;
+import java.nio.CharBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -224,23 +227,34 @@ final class TrustedChildProcessRunner implements AutoCloseable {
         for (String argument : spec.argv()) {
             if (argument.indexOf('\0') >= 0)
                 throw new IllegalArgumentException("NUL in argv");
-            argvBytes += argument.getBytes(StandardCharsets.UTF_8).length;
+            argvBytes += utf8ByteCount(argument);
             if (argvBytes > MAX_TOTAL_ARG_BYTES)
                 throw new IllegalArgumentException("argv size exceeded");
         }
-        if (spec.argv().get(0).getBytes(StandardCharsets.UTF_8).length > 4096)
+        if (utf8ByteCount(spec.argv().get(0)) > 4096)
             throw new IllegalArgumentException("executable path too long");
         long envBytes = 0;
         for (var item : spec.environment().entrySet()) {
             String key = item.getKey(), value = item.getValue();
             if (!key.matches("[A-Za-z_][A-Za-z0-9_]*") || value.indexOf('\0') >= 0)
                 throw new IllegalArgumentException("invalid environment entry");
-            envBytes += key.getBytes(StandardCharsets.UTF_8).length
-                      + value.getBytes(StandardCharsets.UTF_8).length;
+            envBytes += utf8ByteCount(key)
+                      + utf8ByteCount(value);
             if (envBytes > MAX_ENV_BYTES) throw new IllegalArgumentException("environment size exceeded");
         }
-        if (spec.cwd() != null && spec.cwd().toString().getBytes(StandardCharsets.UTF_8).length > 4096)
+        if (spec.cwd() != null && utf8ByteCount(spec.cwd().toString()) > 4096)
             throw new IllegalArgumentException("cwd path too long");
+    }
+
+    private static int utf8ByteCount(String value) {
+        try {
+            return StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value)).remaining();
+        } catch (CharacterCodingException malformed) {
+            throw new IllegalArgumentException("malformed Unicode in child-process arguments", malformed);
+        }
     }
 
     @Override public void close() {
