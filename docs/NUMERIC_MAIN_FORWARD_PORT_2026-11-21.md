@@ -41,3 +41,18 @@ The current-main evaluator previously applied Java `Double.compare` to mixed or 
 - Older Java [#742](https://github.com/atto-lang/atto-source.java/pull/742) includes overlapping IEEE behavior but carries older evaluator/type-checker changes. Reconcile behavior by independent review; never merge it wholesale over the current-main Result/trap implementation.
 
 **Numerical precision remains deliberately incomplete:** the helper does not establish guest `bigint`, `decimal`, `f32` or sized/unsigned primitive runtime types. Unsupported primitive admission and full-AOT backend evidence are separate unresolved gates.
+
+## Exact numerical equality and AOT branch safety (current candidate)
+
+The ordering helper revealed a separate, observable disagreement: former `NumericValueEquality` and `TreeShaker.constantEquals` could coerce different integer/binary-float values through a rounded `double`, and constant folding could incorrectly use `left == right` for NaN. This draft now delegates equality to the same exact represented-value relation as ordering, and moves numerical equality **before** reference-identity fast-paths in the tree shaker. The following relationships must hold **where their source types are statically comparable**:
+
+- `9007199254740993L != 9007199254740992.0d` (no precision loss);
+- exact decimal 0.1 differs from binary64 0.1 (do not use a display string for float rational equality);
+- `NaN != NaN`; `-0.0 == +0.0`; infinities compare equal only with the same sign;
+- unknown host Number carriers fail closed rather than pretending to be guest numeric types.
+
+Candidate tests: `NumericValueEqualityExactTest` (host), extended `NumericGuestOrderingV1Test` (real language guest), and `TreeShakerNumericEqualityTest` (AOT branch reachability through `OresCompiler.compileForBuild`). The exact-head `numeric-current-main-guest.yml` includes each. [Conformance #563](https://github.com/atto-lang/atto-platform-conformance/pull/563) now has eleven blob-pinned guest candidates, including an equality fixture. **No claimed guest/AOT pass:** Actions jobs currently fail with zero steps.
+
+## CI runner admission state
+
+At the most recent verified check, source `main` reported `protected: false`, source [security issue #65](https://github.com/atto-lang/atto-source.java/issues/65) remained open, and `.github/private-ci-approved-repositories.txt` contained **no active approved private carrier**. The alternate `opto-sync/atto-ci` repository has recent successful Actions runs, but runner capacity is **not** authorization to copy this private source. The current implementation branch must remain draft until the approved protected-origin/source-private-carrier path or stepful source Actions are established. Tests and reviews remain required after admission.
