@@ -12,6 +12,7 @@ on:
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/AttoChildProcessGuestTest.java'
+      - 'src/test/java/dev/oreslang/AttoProcessNamespaceGuestTest.java'
       - 'src/test/java/dev/oreslang/runtime/NativeChildProcessesTest.java'
       - 'tests/host/StdProcessNamespaceSmoke.java'
       - 'tests/host/TrustedChildProcessRunnerSmoke.java'
@@ -85,4 +86,4 @@ jobs:
           java --version
           mvn --version
       - name: Compile and execute real child-process JVM and guest tests
-        run: mvn --batch-mode -Dtest=NativeChildProcessesTest,AttoChildProcessGuestTest test
+        run: mvn --batch-mode -Dtest=NativeChildProcessesTest,AttoChildProcessGuestTest,AttoProcessNamespaceGuestTest test
