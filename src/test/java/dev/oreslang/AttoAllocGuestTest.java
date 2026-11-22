@@ -84,6 +84,23 @@ final class AttoAllocGuestTest {
     }
 
     @Test
+    void importedAllocClassesExecuteRealGuestTransactions() throws Exception {
+        // These are linked guest programs consuming public Atto classes,
+        // not Java-only models or parser-only fixture acceptance.
+        for (String name : new String[]{
+                "allocator-transactions-positive.atto",
+                "set-hash-operations-positive.atto"}) {
+            Path guest = Path.of("tests", "fixtures", "alloc-java-guest", name);
+            assertTrue(Files.isRegularFile(guest), "missing Atto fixture " + name);
+            assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), name);
+            var result = LinkedProgramRunner.runWithExitStatus(
+                    guest, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            assertEquals(42, result.exitStatus(), "real guest must run " + name);
+        }
+    }
+
+    @Test
     void missingOrForgedAllocExportsRejectAtLink() throws Exception {
         Path bad = Path.of("tests", "fixtures", "alloc-java-guest",
                 "missing-export-negative.atto");

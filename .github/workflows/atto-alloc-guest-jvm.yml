@@ -45,6 +45,7 @@ jobs:
           report=target/surefire-reports/TEST-dev.oreslang.AttoAllocGuestTest.xml
           test -s "$report"
           grep -F 'name="importedAttoAllocSelfTestsExecuteAsGuestPrograms"' "$report"
+          grep -F 'name="importedAllocClassesExecuteRealGuestTransactions"' "$report"
           grep -F 'name="rejectTraversalUnlistedSuffixesAndNamespaceShadowing"' "$report"
           grep -F 'name="missingOrForgedAllocExportsRejectAtLink"' "$report"
           grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
