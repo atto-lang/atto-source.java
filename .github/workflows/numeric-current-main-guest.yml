@@ -11,6 +11,8 @@ on:
       - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
       - 'src/main/java/dev/oreslang/types/NumericValueEquality.java'
       - 'contracts/v1/numeric-error-abi.json'
+      - 'scripts/verify_numeric_junit_receipts.py'
+      - 'tests/test_verify_numeric_junit_receipts.py'
       - '.github/workflows/numeric-current-main-guest.yml'
   workflow_dispatch:
 permissions:
