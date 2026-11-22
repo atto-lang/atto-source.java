@@ -82,8 +82,10 @@ use namespace http;
   }
 
   pub fnc method_valid(String method): bool {
+    // Fast preflight prevents unbounded scalar snapshots on invalid input.
+    if method.length == 0 || method.length > 64 then return false; fi
     val points = method.codepoints();
-    if points.size == 0 then return false; fi
+    if points.size == 0 || points.size > 64 then return false; fi
     for (let int i = 0; i < points.size; i = i + 1) {
       if !is_token_char(points.get(i)) then return false; fi
     }
@@ -100,14 +102,22 @@ use namespace http;
   }
 
   pub fnc header_name_valid(String name): bool {
-    return method_valid(name);
+    if name.length == 0 || name.length > 1024 then return false; fi
+    val points = name.codepoints();
+    if points.size == 0 || points.size > 1024 then return false; fi
+    for (let int i = 0; i < points.size; i = i + 1) {
+      if !is_token_char(points.get(i)) then return false; fi
+    }
+    return true;
   }
 
   // Deliberately narrower than all RFC-valid field values: US-ASCII SP,
   // HTAB or visible ASCII only. This is a strict safe subset, not an
   // internationalized header codec. CR, LF, NUL and DEL fail closed.
   pub fnc header_value_valid(String value): bool {
+    if value.length > 65536 then return false; fi
     val points = value.codepoints();
+    if points.size > 65536 then return false; fi
     for (let int i = 0; i < points.size; i = i + 1) {
       val int c = points.get(i);
       if c != 9 && (c < 32 || c > 126) then return false; fi
@@ -119,6 +129,10 @@ use namespace http;
   // A transport must independently enforce aggregate byte and field budgets.
   pub fnc header_line_valid(String name, String value, int max_bytes): bool {
     if max_bytes < 2 || max_bytes > 65536 then return false; fi
+    // Preflight bounded lengths before the codepoint snapshots/character
+    // validation. After ASCII admission these counts equal wire bytes.
+    if name.length == 0 || name.length > max_bytes - 2 then return false; fi
+    if value.length > max_bytes - name.length - 2 then return false; fi
     if !header_name_valid(name) || !header_value_valid(value) then return false; fi
     val int name_bytes = name.codepoints().size;
     val int value_bytes = value.codepoints().size;
@@ -130,6 +144,7 @@ use namespace http;
   // whitespace. Raw %-escape decoding, URL normalization and host admission
   // remain transport responsibilities, never implicit network authorization.
   pub fnc origin_target_valid(String target): bool {
+    if target.length == 0 || target.length > 8192 then return false; fi
     if !target.starts_with("/") || target.starts_with("//") then return false; fi
     val points = target.codepoints();
     if points.size == 0 || points.size > 8192 then return false; fi
@@ -149,6 +164,9 @@ use namespace http;
 
   // Single already-separated request line only, never a wire read/parser.
   pub fnc parse_request_line(String line): Result<RequestLine, String> {
+    if line.length == 0 || line.length > 8192 then
+      return Err("request line size out of bounds");
+    fi
     val points = line.codepoints();
     if points.size == 0 || points.size > 8192 then
       return Err("request line size out of bounds");
@@ -281,6 +299,9 @@ use namespace http;
   // This only validates a complete, pre-bounded ASCII HTTP/1.1 status line;
   // it does not read a socket or accept HTTP/2 pseudo-headers.
   pub fnc parse_status_line(String line): Result<int, String> {
+    if line.length < 12 || line.length > 1024 then
+      return Err("status line size out of bounds");
+    fi
     val points = line.codepoints();
     if points.size < 12 || points.size > 1024 then
       return Err("status line size out of bounds");
@@ -299,6 +320,9 @@ use namespace http;
   pub fnc parse_content_length(String raw, int max_body_bytes): Result<int, String> {
     if max_body_bytes < 0 || max_body_bytes > 1073741824 then
       return Err("invalid Content-Length budget");
+    fi
+    if raw.length == 0 || raw.length > 20 then
+      return Err("invalid Content-Length digit count");
     fi
     val points = raw.codepoints();
     if points.size == 0 || points.size > 20 then
