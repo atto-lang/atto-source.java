@@ -1693,6 +1693,21 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr builtin
+                    && builtin.name().equals("crypto")
+                    && scope.lookup("crypto") == null
+                    && checkedProgram.imports().stream().anyMatch(
+                            StandardCryptoNamespaceImportPredicate.INSTANCE)) {
+                if (Set.of("authentication_failed", "invalid_input",
+                        "key_exhausted").contains(member.member())) {
+                    Ast.TypeRef error = Ast.TypeRef.simple("CryptoError");
+                    return new ValueInfo(error, ValueKind.COPY, null);
+                }
+                // Policy and host functions must be invoked through checked
+                // direct calls; no affine key-bearing callable may escape.
+                throw error("std.crypto member '" + member.member()
+                        + "' is direct-call-only");
+            }
             if (member.receiver() instanceof Ast.NameExpr qualifier
                     && (qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
                             || qualifier.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE))) {
@@ -3174,6 +3189,14 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private enum StandardCryptoNamespaceImportPredicate
+            implements java.util.function.Predicate<Ast.ImportDecl> {
+        INSTANCE;
+        @Override public boolean test(Ast.ImportDecl imported) {
+            return ImportRules.isStandardCryptoImport(imported);
+        }
     }
 
     private ValueInfo checkBuiltinAeadCall(
@@ -6935,7 +6958,7 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void",
-                    "SelectCase","SelectSet","OptionUnwrapError"
+                    "SelectCase","SelectSet","OptionUnwrapError","CryptoError"
                     -> type.arguments().isEmpty();
             case "SharedMutex", "Channel" -> type.arguments().size() == 1;
             case "ActorRef" -> isVerifiedActorReference(type);
