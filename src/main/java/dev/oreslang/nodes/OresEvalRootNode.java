@@ -5962,7 +5962,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Enum<?>
                     || value instanceof java.util.UUID
                     || value instanceof Complex
-                    || value instanceof OptionUnwrapError) {
+                    || value instanceof OptionUnwrapError
+                    || value instanceof TrapErrorValue) {
                 return value;
             }
 
@@ -6063,21 +6064,22 @@ public final class OresEvalRootNode extends RootNode {
             if (!isTrappableFailure(failure)) throw failure;
             // Never carry host exception instances/causes/stacks as Result data.
             // The numeric guest errors have stable nominal identity and code.
-            if (failure instanceof OresGuestError guest) {
-                return new ResultValue(false, new TrapErrorValue(
-                        guest.guestTypeName(), guest.abiCode(),
-                        guest.getMessage()));
-            }
-            // Legacy runtime failures permitted by TrapFailurePolicy are
-            // intentionally opaque; do not expose Java class/message details.
-            // Narrow the policy to proven ordinary throws in an effect-gated PR.
+            OresGuestError guest = (OresGuestError) failure;
+            String message = guest.getMessage();
+            String prefix = guest.guestTypeName() + ": ";
+            if (message.startsWith(prefix)) message = message.substring(prefix.length());
             return new ResultValue(false, new TrapErrorValue(
-                    "Error", 0, "ordinary guest failure"));
+                    guest.guestTypeName(), guest.abiCode(), message));
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
-            return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
-                    failure, OresPanic.class);
+            // Only recognized ordinary guest Error throws enter trap. Raw JVM
+            // ArithmeticException, authority denial, panic, cancellation and
+            // other host failures must never become an apparently successful
+            // Err(Error) admission.
+            return failure instanceof OresGuestError
+                    && dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+                            failure, OresPanic.class);
         }
 
         // Cleanup may add suppressed diagnostics but must not replace a
@@ -11519,7 +11521,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>
+                    || value instanceof TrapErrorValue) {
                 return true;
             }
 
