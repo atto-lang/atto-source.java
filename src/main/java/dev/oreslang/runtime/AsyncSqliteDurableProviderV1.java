@@ -45,6 +45,7 @@ public final class AsyncSqliteDurableProviderV1 {
         pending = 1;
         io.execute(() -> {
             try {
+                requireHostIoWorker();
                 store = SqliteDurableActorStore.open(file);
                 ready.complete(null);
             } catch (Throwable failure) {
@@ -83,6 +84,7 @@ public final class AsyncSqliteDurableProviderV1 {
         try {
             io.execute(() -> {
                 try {
+                    requireHostIoWorker();
                     // Opening is the FIRST task on this same serial worker.
                     if (!ready.isDone() || ready.isCompletedExceptionally())
                         throw new IllegalStateException("SQLite provider failed to open");
@@ -124,6 +126,7 @@ public final class AsyncSqliteDurableProviderV1 {
     /** Executed only on the dedicated I/O thread, never while holding a lock. */
     private void finishCloseOnWorker() {
         try {
+            requireHostIoWorker();
             if (store != null) store.close();
             closedFuture.complete(null);
         } catch (SQLException closeFailure) {
@@ -131,6 +134,12 @@ public final class AsyncSqliteDurableProviderV1 {
         } finally {
             io.shutdown();
         }
+    }
+
+    private static void requireHostIoWorker() {
+        if (ActorRuntime.isActorCarrierThread())
+            throw new IllegalStateException(
+                    "blocking SQLite I/O attempted on an actor carrier");
     }
 
     /** Nonblocking shutdown. Admitted requests settle before the SQLite close. */
