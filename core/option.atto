@@ -3,6 +3,16 @@
 // These helpers consume their Option operand, never clone an affine payload.
 use namespace core;
 define pub module option as
+  // Explicit shared loan: never extracts or transfers an affine payload.
+  // The compiler must reject callers trying to move input during this call.
+  pub fnc is_some_borrowed<T>(borrow Option<T> input): bool {
+    return input.is_some();
+  }
+
+  pub fnc is_none_borrowed<T>(borrow Option<T> input): bool {
+    return input.is_none();
+  }
+
   pub fnc flatten<T>(Option<Option<T>> nested): Option<T> {
     return match nested over
       on Some(inner) -> inner,
