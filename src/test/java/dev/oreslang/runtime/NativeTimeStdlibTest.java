@@ -162,7 +162,7 @@ final class NativeTimeStdlibTest {
     }
 
     @Test
-    void compilerRejectsImmutableReceiversForMutatingTimeMethods() throws Exception {
+    void compilerRejectsConstReceiversForMutatingTimeMethods() throws Exception {
         // These must be rejected by the real compiler/ownership checker, not
         // merely by a source-text linter. Compilation of a positive mutable
         // receiver is tested separately in the 52-case linked guest.
@@ -170,7 +170,7 @@ final class NativeTimeStdlibTest {
                 """
                 import module time from "std/time";
                 pub routine main(): void {
-                  val clock = time.manual_clock(7, 0);
+                  const clock = time.manual_clock(7, 0);
                   clock.advance(time.nanoseconds(1).expect("one"));
                   return;
                 }
@@ -180,7 +180,7 @@ final class NativeTimeStdlibTest {
                 pub routine main(): void {
                   val now = time.instant(7, 0);
                   val due = time.deadline_after(now, time.nanoseconds(1).expect("one")).expect("due");
-                  val timer = time.one_shot(due);
+                  const timer = time.one_shot(due);
                   timer.poll(now);
                   return;
                 }
@@ -189,7 +189,7 @@ final class NativeTimeStdlibTest {
                 import module time from "std/time";
                 pub routine main(): void {
                   val first = time.instant(7, 0);
-                  val repeat = time.interval(first, time.nanoseconds(1).expect("one"));
+                  const repeat = time.interval(first, time.nanoseconds(1).expect("one"));
                   repeat.cancel();
                   return;
                 }
