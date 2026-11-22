@@ -2712,7 +2712,7 @@ public final class OwnershipChecker {
                 requireUsable(handle, spanName.name(), false);
                 Ast.TypeRef result;
                 switch (spanCall.member()) {
-                    case "attribute" -> {
+                    case "attribute", "set_attribute" -> {
                         if (call.arguments().size() != 2) {
                             throw error("telemetry span attribute requires exactly two arguments");
                         }

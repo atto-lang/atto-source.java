@@ -256,6 +256,8 @@ public final class Parser {
     private final java.util.LinkedHashMap<String, Token> outOfLineHeads = new java.util.LinkedHashMap<>();
     private final java.util.Set<String> attachedOutOfLineOwners = new java.util.HashSet<>();
 
+    private final java.util.Set<String> declaredSymbols = new java.util.HashSet<>();
+
     private final java.util.Set<Ast.Param> omittableParams =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
@@ -549,7 +551,7 @@ public final class Parser {
         List<Ast.ExportDecl> exports = new ArrayList<>();
         // File exports can appear before imports as well as after them.
         while (true) {
-            if (match(IMPORT)) imports.add(parseImport());
+            if (match(IMPORT)) { Ast.ImportDecl imported = parseImport(); if (imported != null) imports.add(imported); }
             else if (match(EXPORT)) exports.add(parseExport());
             else break;
         }
@@ -744,6 +746,17 @@ public final class Parser {
                             struct ? Ast.TypeRef.structType(members) : Ast.TypeRef.recordType(members)));
                     continue;
                 }
+                if (matchContextualIdentifier("symbol")) {
+                    // `define symbol #name;` declares a process-interned Symbol; it has no runtime decl.
+                    validateOnlyVisibilityModifiers(modifiers, "symbol declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "symbol declarations");
+                    Token symbol = consume(SYMBOL_LITERAL, "expected #name after 'define symbol'");
+                    if (!declaredSymbols.add(symbol.lexeme())) {
+                        throw error(symbol, "duplicate symbol declaration #" + symbol.lexeme());
+                    }
+                    consume(SEMICOLON, "expected ';' after symbol declaration");
+                    continue;
+                }
                 if (matchContextualIdentifier("enum")) {
                     validateOnlyVisibilityModifiers(modifiers, "enums");
                     rejectCallableStructuralAnnotation(annotations, "enum declarations");
@@ -932,7 +945,32 @@ public final class Parser {
         }
     }
 
+    /** Compiler-owned std packages: `import NAME from pkg "PATH";` binds a fixed intrinsic. */
+    private static final java.util.Map<String, java.util.Set<String>> STD_PACKAGES = java.util.Map.of(
+            "core.telemetry", java.util.Set.of("span"),
+            "std.time", java.util.Set.of("sleep"));
+    private final java.util.Map<String, String> stdImports = new java.util.HashMap<>();
+
+    private boolean isStdImport(String local, String intrinsic) {
+        return intrinsic.equals(stdImports.get(local)) && !declaredRootCallable(local);
+    }
+
     private Ast.ImportDecl parseImport() {
+        if (check(IDENT) && current + 2 < tokens.size() && tokens.get(current + 1).type() == FROM
+                && tokens.get(current + 2).type() == IDENT && tokens.get(current + 2).lexeme().equals("pkg")) {
+            Token member = advance();
+            advance(); advance(); // from pkg
+            Token path = consume(STRING, "expected quoted std package path after 'pkg'");
+            java.util.Set<String> members = STD_PACKAGES.get(path.lexeme());
+            if (members == null) throw error(path, "unknown package '" + path.lexeme() + "'; only compiler-owned std packages resolve");
+            if (!members.contains(member.lexeme())) {
+                throw error(member, "package '" + path.lexeme() + "' has no member '" + member.lexeme() + "'");
+            }
+            String prior = stdImports.put(member.lexeme(), path.lexeme() + "." + member.lexeme());
+            if (prior != null) throw error(member, "duplicate import of '" + member.lexeme() + "'");
+            consume(SEMICOLON, "expected ';' after import");
+            return null;
+        }
         // Backend-qualified sugar for the existing capability-gated class import.
         // Produce the identical AST as: import class Math as M from "java:java.lang.Math".
         // No host class is resolved or initialized by this parser.
@@ -4163,6 +4201,17 @@ public final class Parser {
             consumeExpressionStatementTerminator(value, "caret return requires ';'");
             return new Ast.ReturnStmt(value);
         }
+        if (isContextualIdentifier("with") && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT && tokens.get(current + 1).lexeme().equals("timeout")
+                && tokens.get(current + 2).type() == LPAREN) {
+            // `with timeout(ms) { ... }` is a deadline task scope: on expiry the
+            // scope's child tasks are cancelled; the body runs to its exit, then joins.
+            advance(); advance();
+            consume(LPAREN, "expected '(' after timeout");
+            Ast.Expr deadline = parseExpression();
+            consume(RPAREN, "expected ')' after timeout milliseconds");
+            return new Ast.TaskScopeStmt(parseBlock(), deadline, false);
+        }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
@@ -4180,16 +4229,22 @@ public final class Parser {
             } finally {
                 suppressRefinementOperators = previousRefinementMode;
             }
+            boolean importedSpan = resource instanceof Ast.CallExpr spanCall
+                    && !spanCall.typeArgumentsPresent()
+                    && spanCall.callee() instanceof Ast.NameExpr spanName
+                    && isStdImport(spanName.name(), "core.telemetry.span");
             if (!(resource instanceof Ast.CallExpr call)
-                    || !(call.callee() instanceof Ast.MemberExpr member)
+                    || !(call.callee() instanceof Ast.MemberExpr || importedSpan)
                     || call.typeArgumentsPresent()) {
                 throw error(previous(),
                         "using borrowed scope requires a zero-argument resource.borrow() call");
             }
-            boolean telemetrySpan = member.member().equals("span")
+            Ast.MemberExpr member = call.callee() instanceof Ast.MemberExpr named
+                    ? named : new Ast.MemberExpr(new Ast.NameExpr("telemetry"), "span");
+            boolean telemetrySpan = importedSpan || member.member().equals("span")
                     && member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("telemetry");
-            boolean borrowedView = member.member().equals("borrow")
+            boolean borrowedView = !importedSpan && member.member().equals("borrow")
                     && call.arguments().isEmpty();
             if (!telemetrySpan && !borrowedView) {
                 throw error(previous(),
@@ -7340,8 +7395,8 @@ public final class Parser {
                 expr = parseCanonicalOf(canonicalOfFactory(expr));
             } else if (match(LPAREN)) {
                 rejectUnsupportedActorFactory(expr);
-                if (expr instanceof Ast.NameExpr sleeperName && sleeperName.name().equals("sleeper")
-                        && !declaredRootCallable("sleeper")) {
+                if (expr instanceof Ast.NameExpr sleeperName && (sleeperName.name().equals("sleeper")
+                        && !declaredRootCallable("sleeper") || isStdImport(sleeperName.name(), "std.time.sleep"))) {
                     // `sleeper(d)`: the non-blocking timer process.sleep_async(d)
                     // (a Future<void>; only awaitable from a suspending scope).
                     List<Ast.Expr> delay = parseCallArgumentsUntil(RPAREN);

@@ -9133,7 +9133,7 @@ public final class OresEvalRootNode extends RootNode {
 
             if (receiver instanceof dev.oreslang.runtime.TelemetrySpanScope scope) {
                 return switch (name) {
-                    case "attribute" -> (Invokable) args -> {
+                    case "attribute", "set_attribute" -> (Invokable) args -> {
                         if (args.size() != 2 || !(args.get(0) instanceof String key)) {
                             throw new IllegalArgumentException(
                                     "span.attribute requires (string key, scalar value)");
