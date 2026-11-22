@@ -71,6 +71,15 @@ final class DurableTypedScalarAotTest {
         var turn = new DurableActorStore.Turn(address, activation.epoch(), 0,
                 "op1", next, List.of(intent));
         assertEquals(1L, worker.commitTurn(turn).toCompletableFuture().get(10, TimeUnit.SECONDS));
+        assertFalse(worker.enqueueFenced(address, activation.epoch(), inbound)
+                .toCompletableFuture().get(10, TimeUnit.SECONDS));
+        assertEquals(1L, worker.committedDelivery(address, activation.epoch(), inbound)
+                .toCompletableFuture().get(10, TimeUnit.SECONDS)
+                .orElseThrow().stateVersion());
+        assertThrows(ExecutionException.class, () -> worker.enqueueFenced(
+                        address, activation.epoch(),
+                        new DurableActorStore.Inbound("op1", new byte[] {8}))
+                .toCompletableFuture().get(10, TimeUnit.SECONDS));
         worker.closeAsync().toCompletableFuture().get(10, TimeUnit.SECONDS);
         assertThrows(ExecutionException.class, () -> worker.activate(address)
                 .toCompletableFuture().get(10, TimeUnit.SECONDS));
