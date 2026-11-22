@@ -3,6 +3,39 @@
 // Transport owns permissions, DNS/TLS, byte-bounded reads, cancel, ownership,
 // redirects, decompression, body streams, timeout and header normalization.
 define module http as
+
+  // Typed, validated HTTP metadata only. Raw bytes and privileged I/O are
+  // owned by the transport; these values are not network capabilities.
+  pub define class HeaderField as
+    pub val String name;
+    pub val String value;
+    pub constructor(String name, String value) {
+      self.name = name;
+      self.value = value;
+    }
+  end
+
+  pub define class RequestMeta as
+    pub val String method;
+    pub val String target;
+    // -1 means unspecified, NOT zero and NOT an admitted stream length.
+    pub val int content_length;
+    pub constructor(String method, String target, int content_length) {
+      self.method = method;
+      self.target = target;
+      self.content_length = content_length;
+    }
+  end
+
+  pub define class ResponseMeta as
+    pub val int status;
+    pub val bool can_have_body;
+    pub constructor(int status, bool can_have_body) {
+      self.status = status;
+      self.can_have_body = can_have_body;
+    }
+  end
+
   pub define class RequestLine as
     pub val String method;
     pub val String target;
@@ -139,5 +172,158 @@ define module http as
     if head_bytes < 0 || fields < 0 then return false; fi
     if max_head_bytes < 0 || max_fields < 0 then return false; fi
     return head_bytes <= max_head_bytes && fields <= max_fields;
+  }
+
+  // Header fields are constructed through a checked factory, not by
+  // interpreting unbounded line input or silently normalizing values.
+  pub fnc header_field(String name, String value, int max_line_bytes): Result<HeaderField, String> {
+    if !header_line_valid(name, value, max_line_bytes) then
+      return Err("invalid or oversized header field");
+    fi
+    return Ok(new HeaderField(name, value));
+  }
+
+  pub fnc request_meta(String method, String target,
+                       int content_length): Result<RequestMeta, String> {
+    if !method_valid(method) || !origin_target_valid(target) then
+      return Err("invalid HTTP request metadata");
+    fi
+    if content_length < -1 || content_length > 1073741824 then
+      return Err("request length is out of bounds");
+    fi
+    return Ok(new RequestMeta(method, target, content_length));
+  }
+
+  pub fnc response_meta(int status, bool is_head,
+                        bool is_connect): Result<ResponseMeta, String> {
+    if !status_valid(status) then return Err("invalid response status"); fi
+    return Ok(new ResponseMeta(status, response_body_allowed(status, is_head, is_connect)));
+  }
+
+  // Strictly parse *three* ASCII decimal digits. An HTTP status line's reason
+  // phrase is advisory, so this routine does not interpret it.
+  pub fnc parse_status_code(String digits): Result<int, String> {
+    val points = digits.codepoints();
+    if points.size != 3 then return Err("status must have three digits"); fi
+    let int status = 0;
+    for (let int i = 0; i < 3; i = i + 1) {
+      val int c = points.get(i);
+      if c < 48 || c > 57 then return Err("invalid status digit"); fi
+      status = status * 10 + c - 48;
+    }
+    if !status_valid(status) then return Err("HTTP status out of range"); fi
+    return Ok(status);
+  }
+
+  // This only validates a complete, pre-bounded ASCII HTTP/1.1 status line;
+  // it does not read a socket or accept HTTP/2 pseudo-headers.
+  pub fnc parse_status_line(String line): Result<int, String> {
+    val points = line.codepoints();
+    if points.size < 12 || points.size > 1024 then
+      return Err("status line size out of bounds");
+    fi
+    if !header_value_valid(line) || line.contains_literal("\t") then
+      return Err("invalid status line controls");
+    fi
+    val parts = line.split_literal(" ");
+    if parts.size < 2 then return Err("invalid status line"); fi
+    if parts.get(0) != "HTTP/1.1" then return Err("unsupported HTTP version"); fi
+    return parse_status_code(parts.get(1));
+  }
+
+  // Overflow-safe decimal Content-Length. Callers MUST reject duplicate or
+  // conflicting framing headers, even if individually well-formed.
+  pub fnc parse_content_length(String raw, int max_body_bytes): Result<int, String> {
+    if max_body_bytes < 0 || max_body_bytes > 1073741824 then
+      return Err("invalid Content-Length budget");
+    fi
+    val points = raw.codepoints();
+    if points.size == 0 || points.size > 20 then
+      return Err("invalid Content-Length digit count");
+    fi
+    let int value = 0;
+    for (let int i = 0; i < points.size; i = i + 1) {
+      val int c = points.get(i);
+      if c < 48 || c > 57 then return Err("non-decimal Content-Length"); fi
+      val int digit = c - 48;
+      if digit > max_body_bytes then return Err("Content-Length exceeds budget"); fi
+      if value > (max_body_bytes - digit) / 10 then
+        return Err("Content-Length exceeds budget");
+      fi
+      value = value * 10 + digit;
+    }
+    return Ok(value);
+  }
+
+  pub fnc content_length_valid(String raw, int max_body_bytes): bool {
+    return parse_content_length(raw, max_body_bytes).is_ok();
+  }
+
+  fnc route_parameter_valid(String segment): bool {
+    val points = segment.codepoints();
+    if points.size < 2 || points.get(0) != 58 then return false; fi
+    val int first = points.get(1);
+    if !is_alpha(first) && first != 95 then return false; fi
+    for (let int i = 2; i < points.size; i = i + 1) {
+      if !is_alpha(points.get(i)) && !is_digit(points.get(i)) &&
+         points.get(i) != 95 then return false; fi
+    }
+    return true;
+  }
+
+  // Only literal and :named segments are supported. Wildcards, percent-
+  // escaped paths, dot-segments and repeated separators need the future
+  // canonical URL/router layer, and are deliberately denied here.
+  pub fnc route_pattern_valid(String pattern): bool {
+    if !origin_target_valid(pattern) || pattern.contains_literal("?") ||
+       pattern.contains_literal("%") || pattern.contains_literal("//") then
+      return false;
+    fi
+    val segments = pattern.split_literal("/");
+    if segments.size > 65 then return false; fi
+    for (let int i = 1; i < segments.size; i = i + 1) {
+      val String segment = segments.get(i);
+      if segment == "" || segment == "." || segment == ".." then return false; fi
+      if segment.starts_with(":") && !route_parameter_valid(segment) then
+        return false;
+      fi
+      if segment == "*" then return false; fi
+    }
+    return true;
+  }
+
+  // Query is not part of the route. The returned bool carries NO authority:
+  // host admission, endpoint permissions and body limits still apply.
+  pub fnc route_matches(String pattern, String target): bool {
+    if !route_pattern_valid(pattern) || !origin_target_valid(target) then
+      return false;
+    fi
+    val target_parts = target.split_literal("?");
+    val String path = target_parts.get(0);
+    if path.contains_literal("%") || path.contains_literal("//") then
+      return false;
+    fi
+    val route_parts = pattern.split_literal("/");
+    val path_parts = path.split_literal("/");
+    if route_parts.size != path_parts.size then return false; fi
+    for (let int i = 1; i < route_parts.size; i = i + 1) {
+      val String expected = route_parts.get(i);
+      val String actual = path_parts.get(i);
+      if actual == "" || actual == "." || actual == ".." then return false; fi
+      if expected.starts_with(":") then
+        if !route_parameter_valid(expected) then return false; fi
+      elif expected != actual then
+        return false;
+      fi
+    }
+    return true;
+  }
+
+  pub fnc route_matches_method(String expected_method, String pattern,
+                                String request_method, String target): bool {
+    if !method_valid(expected_method) || !method_valid(request_method) then
+      return false;
+    fi
+    return expected_method == request_method && route_matches(pattern, target);
   }
 end
