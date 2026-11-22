@@ -53,6 +53,50 @@ jobs:
       - name: Verify Java host process and namespace tests
         run: bash tests/host/run-std-process-smoke.sh
 
+  aot-graalvm25:
+    name: aot-graalvm25-host-process-provider
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prove exact source head before Native Image compilation
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "STD_PROCESS_AOT_HEAD=$EXPECTED_HEAD"
+          echo "STD_PROCESS_AOT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: GraalVM JDK 25 with Native Image
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Build and execute exact-source Native Image subprocess smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          trap 'rm -rf "$out"' EXIT
+          javac -d "$out" \
+            src/main/java/dev/oreslang/runtime/NativeChildProcesses.java \
+            tests/host/NativeChildProcessesSmoke.java
+          native-image --version
+          native-image --no-fallback -O0 -cp "$out" \
+            dev.oreslang.runtime.NativeChildProcessesSmoke \
+            "$out/atto-process-aot-smoke"
+          ATTO_TEST_JAVA_EXECUTABLE="$JAVA_HOME/bin/java" \
+            ATTO_TEST_JAVA_CLASSPATH="$out" \
+            "$out/atto-process-aot-smoke"
+
   guest-graalvm25:
     name: guest-graalvm25-process-bridge
     runs-on: ubuntu-24.04
