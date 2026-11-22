@@ -5891,8 +5891,10 @@ public final class TypeChecker {
             Type receiver = typeOf(member.receiver(), env, generics, self);
             if (receiver instanceof Named named && named.name().equals("$TelemetrySpan")) {
                 return switch (member.member()) {
-                    case "attribute" -> new Function(
+                    case "attribute", "set_attribute" -> new Function(
                             List.of(Primitive.STRING, Unknown.INSTANCE), Primitive.VOID);
+                    case "add_event" -> new Function(
+                            List.of(Primitive.STRING), Primitive.VOID);
                     case "trace_id", "span_id" ->
                             new Function(List.of(), Primitive.STRING);
                     case "recording" ->
