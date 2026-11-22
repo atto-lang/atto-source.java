@@ -55,7 +55,7 @@ The implementation **does not** yet aggregate several namespace files into one t
 
 ### Exact-head evidence gate
 
-Focused Java JUnit: `mvn -B -ntp -Dtest=IncrementalFileFallbackV1Test clean test`. The pinned `.github/workflows/incremental-file-fallback-v1.yml` requires a nonempty Surefire XML report with all ten named cases, no failures/skips, and records exact source tree. Source Actions have so far been runner-admission failures with **zero steps**. Thus actual Java compilation and JUnit/guest execution are **NOT_EXECUTED**, not passing.
+Focused Java JUnit: `mvn -B -ntp -Dtest=IncrementalFileFallbackV1Test clean test`. The pinned `.github/workflows/incremental-file-fallback-v1.yml` requires a nonempty Surefire XML report with all fifteen named cases, no failures/skips, and records exact source tree. Source Actions have so far been runner-admission failures with **zero steps**. Thus actual Java compilation and JUnit/guest execution are **NOT_EXECUTED**, not passing.
 
 ### Reconcile overlapping PRs before merge
 
@@ -67,7 +67,7 @@ The type-neutral exported interface SHA is now `ores-abi-v4` in the process-loca
 
 Resolved import bindings include the **full source-derived imported declaration identity** plus pinned source target. Changing `import fnc {left}` to `import fnc {right}` from the **same provider** must invalidate the importer and conservative downstream closure, even though both target set and provider ABI are unchanged. Import target swaps between two providers are also detected. `BuildResult.reparsedUnits()` and `rebuiltUnits()` separately expose parse work and semantic rechecking.
 
-**Evidence:** Ten JUnit cases are written and required by `.github/workflows/incremental-file-fallback-v1.yml`, but **no executed JDK25 compiler/JUnit run has been obtained**. The shared canonical Python model has been locally re-executed with 20/20 tests passing; that does **not** prove Java compilation.
+**Evidence:** Fifteen JUnit cases are written and required by `.github/workflows/incremental-file-fallback-v1.yml`, but **no executed JDK25 compiler/JUnit run has been obtained**. The shared canonical Python model has been locally re-executed with 20/20 tests passing; that does **not** prove Java compilation.
 
 ### Export authorization blocker — source remains private
 
@@ -80,3 +80,9 @@ An `opto-sync-test/go-java-validation` source-free runner canary on November 13 
 1. Obtain independent V3 security review, live source protection and exact carrier allowlist/plan approval; then run a fresh **source-free stepful** capacity probe before any transfer.
 2. On a permitted private carrier, transport only an exact independently approved PR tree; verify all root paths, modes, blob SHA and root tree SHA, scrub credentials and execute the approved JDK25 + offline Maven focused test plan.
 3. Reconcile public ABI coverage against Java [#697](https://github.com/atto-lang/atto-source.java/pull/697) and maintain full manifest/namespace admission from [#1536](https://github.com/atto-lang/atto-source.java/pull/1536) and [#1545](https://github.com/atto-lang/atto-source.java/pull/1545), then compare actual compiled guests against clean builds.
+
+## PR #697 test parity additions (2026-11-22)
+
+This draft now incorporates five additional targeted tests from the overlapping Java [#697](https://github.com/atto-lang/atto-source.java/pull/697) test matrix: failed typecheck must leave prior parsed/checked cache intact, removing and restoring a no-namespace file cannot return a stale compiled unit, `@FromJson` schema changes invalidate imported class clients, unresolved external imports must not reuse checked units, and `clear()` plus telemetry immutability cannot leak previously cached state. Combined with the earlier ten tests, the exact-head workflow requires **15 individually named, non-skipped JUnit cases**. These are **authored**, not yet executed.
+
+The remaining #697 claims (latency benchmarks, complete class physical ABI format and persistent cache safety) remain **not established**; do not label #697 superseded or ready to merge without independent source review and executed evidence.
