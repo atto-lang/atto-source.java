@@ -37,6 +37,14 @@ public final class OresCompiler {
     }
 
     /**
+     * Inspect member-selection syntax only after normal type/ownership admission.
+     * No physical layout or performance conclusion is implied.
+     */
+    public static TypedLayoutAccessEvidence.Report inspectLayoutAccesses(String source) {
+        return TypedLayoutAccessEvidence.inspectSource(source);
+    }
+
+    /**
      * Check real AttoLang source (syntax, types and ownership) before
      * inspecting call-site-specialized Option/Result callback effects.
      *
