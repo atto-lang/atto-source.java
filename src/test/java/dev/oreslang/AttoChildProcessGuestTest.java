@@ -1,7 +1,6 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
-import dev.oreslang.runtime.NativeChildProcessesTest;
 import java.nio.file.Path;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
