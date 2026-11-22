@@ -16,6 +16,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/NativeChildProcessesTest.java'
       - 'tests/host/StdProcessNamespaceSmoke.java'
       - 'tests/host/TrustedChildProcessRunnerSmoke.java'
+      - 'tests/host/NativeChildProcessesSmoke.java'
       - 'tests/host/run-std-process-smoke.sh'
       - 'tests/fixtures/std-process-*/**'
       - '.github/workflows/std-process-host-smoke.yml'
