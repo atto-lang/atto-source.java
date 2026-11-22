@@ -81,6 +81,7 @@ mvn -Dtest=ChannelStdlibAttoSourceTest test
 ```
 
 Expected fixtures: `buffered_fifo`, `rendezvous_pending`,
+`rendezvous_direct_read` (awaited ordinary receive on capacity zero),
 `immediate_probe`, `negative_capacity`, `owned_payload`,
 `close_drain`, `try_read` and `closed_move`. Guest execution, native
 AOT, race/cancellation, and cross-compiler parity must remain marked
@@ -92,8 +93,9 @@ Different backends may own different native Atto implementations, with
 compatible public behavior but not byte-identical files. LLVM's current
 `Channel<int>` production guest gate rejects unsupported native lowering;
 the unmerged native i64 channel ABI PR is not source-level channel support.
-The Rust/Wasm v2 `.atto` prelude (source.rs PR #262) implements its own
-single-guest-memory channels, including a runtime `-1` unbounded sentinel;
+The Rust/Wasm v2 `.atto` prelude (source.rs PR #262, stacked
+channel-source PR #547) implements its own single-guest-memory channels,
+including an explicitly requested runtime `-1` unbounded sentinel;
 this must not be confused with Java support or used as cross-tenant
 transport. The .NET, Wasm-worker, Forge, JS, HDL and Cranelift backends need
 independent capability and execution audits before channel parity claims.
