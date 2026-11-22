@@ -286,7 +286,8 @@ final class NativeAttoEnvStdlibTest {
                 "é".repeat(8193),
                 "🎯".repeat(4097),
                 String.valueOf((char) 0xD800),
-                String.valueOf((char) 0xDC00)
+                String.valueOf((char) 0xDC00),
+                String.valueOf((char) 0)
         }) {
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                     () -> NativeIo.validateEnvValue(bad));
