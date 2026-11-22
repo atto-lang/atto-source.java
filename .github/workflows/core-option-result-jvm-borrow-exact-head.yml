@@ -10,6 +10,9 @@ on:
       - 'src/test/java/dev/oreslang/CoreOptionResultBorrowSafetyTest.java'
       - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/CoreTypeRegistry.java'
+      - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
+      - 'src/test/java/dev/oreslang/AutomaticPreludeTest.java'
       - '.github/workflows/core-option-result-jvm-borrow-exact-head.yml'
   workflow_dispatch:
 permissions:
@@ -35,7 +38,7 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'JAVA_CORE_OPTION_HEAD=%s\n' "$EXPECTED_HEAD"
           printf 'JAVA_CORE_OPTION_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
-          for path in core/option.atto core/result.atto core/README.md tests/core_option_result/scalar_roundtrip.atto tests/core_option_result/lazy_callbacks.atto tests/core_option_result/borrowed_queries.atto src/main/java/dev/oreslang/types/OwnershipChecker.java src/main/java/dev/oreslang/types/TypeChecker.java src/test/java/dev/oreslang/CoreOptionResultSourceTest.java src/test/java/dev/oreslang/CoreOptionResultBorrowSafetyTest.java; do
+          for path in core/option.atto core/result.atto core/README.md tests/core_option_result/scalar_roundtrip.atto tests/core_option_result/lazy_callbacks.atto tests/core_option_result/borrowed_queries.atto src/main/java/dev/oreslang/types/OwnershipChecker.java src/main/java/dev/oreslang/types/TypeChecker.java src/main/java/dev/oreslang/types/CoreTypeRegistry.java src/main/java/dev/oreslang/compiler/OresCompiler.java src/test/java/dev/oreslang/AutomaticPreludeTest.java src/test/java/dev/oreslang/CoreOptionResultSourceTest.java src/test/java/dev/oreslang/CoreOptionResultBorrowSafetyTest.java; do
             test "$(git rev-parse "HEAD:$path")" = "$(git hash-object --no-filters "$path")"
             printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path")"
           done
@@ -51,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           java -version
-          mvn -B -ntp -Dtest=CoreOptionResultSourceTest,CoreOptionResultBorrowSafetyTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -ntp -Dtest=CoreOptionResultSourceTest,CoreOptionResultBorrowSafetyTest,AutomaticPreludeTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
       - name: Preserve exact-head runtime evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -60,6 +63,7 @@ jobs:
           path: |
             target/surefire-reports/TEST-dev.oreslang.CoreOptionResultSourceTest.xml
             target/surefire-reports/TEST-dev.oreslang.CoreOptionResultBorrowSafetyTest.xml
+            target/surefire-reports/TEST-dev.oreslang.AutomaticPreludeTest.xml
             target/classes/
           if-no-files-found: warn
           retention-days: 7
