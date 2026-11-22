@@ -1,0 +1,7 @@
+// Reject discarded recoverable results: Full/Closed might own an unadmitted message.
+pub routine main(): void {
+  val Channel<Array<int>> channel = Channel.new<Array<int>>(1);
+  val Array<int> payload = [3];
+  try writech channel, rt take payload;
+  return;
+}

@@ -1,0 +1,11 @@
+// Async main executes an immediate probe without registering a writer.
+pub async routine main(): void {
+  val Channel<int> channel = Channel.new<int>(0);
+  val TryWriteResult<int> outcome = try writech channel, 29;
+  do match outcome over
+    on Accepted -> { stdio.stdout.write("unexpected-accepted"); }
+    on Full(rejected) -> { stdio.stdout.write(rejected); }
+    on Closed(rejected) -> { stdio.stdout.write("unexpected-closed"); }
+  end
+  return;
+}

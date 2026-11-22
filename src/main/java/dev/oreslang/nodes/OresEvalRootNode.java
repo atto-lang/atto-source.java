@@ -5546,7 +5546,7 @@ public final class OresEvalRootNode extends RootNode {
                                         try {
                                             continuation.accept(
                                                     t2,
-                                                    channel.tryWrite(value),
+                                                    channel.tryWriteResult(value),
                                                     null);
                                         } catch (RuntimeException | Error failure) {
                                             continuation.accept(
@@ -7834,7 +7834,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             return switch (operation.mode()) {
-                case IMMEDIATE -> channel.tryWrite(value);
+                case IMMEDIATE -> channel.tryWriteResult(value);
                 case NONBLOCKING -> context.actors()
                         .ownCurrentActorFuture(channel.writeAsync(value));
                 case BLOCKING -> {
@@ -12229,6 +12229,20 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.equals("Err")) {
                     if (!(value instanceof ResultValue result) || result.ok() || constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), result.value(), bindings);
+                }
+                if (name.equals("Accepted")) {
+                    return value instanceof ChannelRuntime.TryWriteResult.Accepted<?>
+                            && constructor.arguments().isEmpty();
+                }
+                if (name.equals("Full")) {
+                    return value instanceof ChannelRuntime.TryWriteResult.Full<?> full
+                            && constructor.arguments().size() == 1
+                            && patternMatches(constructor.arguments().getFirst(), full.value(), bindings);
+                }
+                if (name.equals("Closed")) {
+                    return value instanceof ChannelRuntime.TryWriteResult.Closed<?> closed
+                            && constructor.arguments().size() == 1
+                            && patternMatches(constructor.arguments().getFirst(), closed.value(), bindings);
                 }
                 return false;
             }

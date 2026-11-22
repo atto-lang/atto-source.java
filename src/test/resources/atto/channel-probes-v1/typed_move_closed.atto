@@ -1,0 +1,13 @@
+// Closed recovers the moved value, which remains accessible only via the variant.
+pub routine main(): void {
+  val Channel<Array<int>> channel = Channel.new<Array<int>>(1);
+  channel.close();
+  val Array<int> payload = [9, 8];
+  val TryWriteResult<Array<int>> result = try writech channel, rt take payload;
+  do match result over
+    on Accepted -> { stdio.stdout.write("unexpected-accepted"); }
+    on Full(value) -> { stdio.stdout.write("unexpected-full"); }
+    on Closed(value) -> { stdio.stdout.write(value[0]); }
+  end
+  return;
+}
