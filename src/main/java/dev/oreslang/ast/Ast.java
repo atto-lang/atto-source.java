@@ -771,17 +771,33 @@ public final class Ast {
         }
     }
 
+    /** Lexical protocol identity survives parsing, linking and ABI hashing. */
+    public enum InterfaceKind { INTERFACE, TRAIT, CONTRACT }
+
     public record InterfaceDecl(
             String name,
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            InterfaceKind declarationKind) implements Decl {
         public InterfaceDecl {
+            java.util.Objects.requireNonNull(declarationKind, "protocol declaration kind");
+            if (moduleContract != (declarationKind == InterfaceKind.CONTRACT)) {
+                throw new IllegalArgumentException(
+                        "protocol declaration kind and module-contract authority mismatch");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
+        }
+        /** Compatibility for older source/interface clients; parser sets TRAIT explicitly. */
+        public InterfaceDecl(String name, Visibility visibility,
+                List<String> genericParameters, List<TypeRef> parents,
+                List<InterfaceMember> members, boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members,
+                    moduleContract, moduleContract ? InterfaceKind.CONTRACT : InterfaceKind.INTERFACE);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
             this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);

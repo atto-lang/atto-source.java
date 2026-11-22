@@ -53,12 +53,6 @@ public final class Parser {
                                List<String> generics) { }
     private final List<ForwardType> rootForwards = new ArrayList<>();
     private List<ForwardType> moduleForwards;
-    // The current AST represents traits using InterfaceDecl. Keep the parsed
-    // source kind during forward validation, rather than permitting trait and
-    // interface declarations to substitute for one another silently.
-    private final java.util.IdentityHashMap<Ast.InterfaceDecl, Token.Type> interfaceKinds =
-            new java.util.IdentityHashMap<>();
-
     public Parser(List<Token> tokens) {
         this(tokens, null);
     }
@@ -1920,21 +1914,40 @@ public final class Parser {
         }
     }
 
+    private void rejectForgedCompilerProtocol(String name) {
+        // Trait, interface and contract declarations all participate in
+        // nominal conformance. No spelling may forge an actor/ownership proof.
+        if (java.util.Set.of("Sendable", "Shareable", "Copy", "Drop",
+                "Receives", "Supervisor", "ActorLifecycle").contains(name)) {
+            throw error(previous(), "protocol '" + name
+                    + "' is compiler/runtime-owned; guest declarations cannot grant safety authority");
+        }
+    }
+
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
         Ast.InterfaceDecl iface = parseInterface(visibility, true);
         return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
+        if (kind != TRAIT && kind != INTERFACE) {
+            throw error(previous(), "expected trait or interface declaration kind");
+        }
         Ast.InterfaceDecl declaration = parseInterface(visibility);
-        interfaceKinds.put(declaration, kind);
-        return declaration;
+        return new Ast.InterfaceDecl(
+                declaration.name(), declaration.visibility(), declaration.genericParameters(),
+                declaration.parents(), declaration.members(), false,
+                kind == TRAIT ? Ast.InterfaceKind.TRAIT : Ast.InterfaceKind.INTERFACE);
     }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
         String name = consumeTypeDeclarationName("expected interface name");
+        // Deny compiler/runtime authority at the shared declaration parser,
+        // before parsing parents or members. Every trait/interface/contract
+        // spelling (including future parser entrypoints) passes this gate.
+        rejectForgedCompilerProtocol(name);
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
@@ -2423,7 +2436,11 @@ public final class Parser {
                 generics = alias.genericParameters();
                 visibility = alias.visibility();
             } else if (definition instanceof Ast.InterfaceDecl iface) {
-                actual = iface.moduleContract() ? CONTRACT : interfaceKinds.getOrDefault(iface, INTERFACE);
+                actual = switch (iface.declarationKind()) {
+                    case CONTRACT -> CONTRACT;
+                    case TRAIT -> TRAIT;
+                    case INTERFACE -> INTERFACE;
+                };
                 generics = iface.genericParameters();
                 visibility = iface.visibility();
             } else {

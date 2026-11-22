@@ -155,7 +155,7 @@ final class ImportGraph {
                             && klass.actorKind() == Ast.ActorKind.NONE
                             && klass.name().equals(name);
                     case INTERFACE -> decl instanceof Ast.InterfaceDecl iface
-                            && !iface.moduleContract()
+                            && iface.declarationKind() == Ast.InterfaceKind.INTERFACE
                             && iface.visibility() == Ast.Visibility.PUBLIC
                             && iface.name().equals(name);
                     case CONTRACT -> decl instanceof Ast.InterfaceDecl iface
@@ -171,7 +171,13 @@ final class ImportGraph {
                             || (decl instanceof Ast.TypeAliasDecl alias
                                     && alias.visibility() == Ast.Visibility.PUBLIC
                                     && alias.name().equals(name));
-                    case TRAIT, STRUCT -> false;
+                    // Traits and interfaces share an AST record but never
+                    // nominal declaration kind or import authority.
+                    case TRAIT -> decl instanceof Ast.InterfaceDecl iface
+                            && iface.declarationKind() == Ast.InterfaceKind.TRAIT
+                            && iface.visibility() == Ast.Visibility.PUBLIC
+                            && iface.name().equals(name);
+                    case STRUCT -> false;
                     case ALL -> (decl instanceof Ast.FunctionDecl fn
                                     && fn.visibility() == Ast.Visibility.PUBLIC
                                     && fn.name().equals(name))

@@ -432,24 +432,38 @@ public final class TypeChecker {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
             if (localName == null || localName.isBlank() || declaration == null
-                    || !declaration.moduleContract()
                     || declaration.visibility() != Ast.Visibility.PUBLIC
-                    || !declaration.parents().isEmpty()) {
-                throw new IllegalArgumentException("invalid linked module contract metadata");
+                    || (declaration.moduleContract() && !declaration.parents().isEmpty())) {
+                throw new IllegalArgumentException("invalid linked contract/trait metadata");
             }
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CONTRACT && !use.wildcard()
+                    !use.wildcard()
+                            && switch (declaration.declarationKind()) {
+                                case CONTRACT -> use.kind() == Ast.ImportKind.CONTRACT;
+                                case TRAIT -> use.kind() == Ast.ImportKind.TRAIT;
+                                case INTERFACE -> use.kind() == Ast.ImportKind.INTERFACE;
+                            }
                             && use.names().contains(declaration.name())
                             && ImportRules.localName(use, declaration.name()).equals(localName));
-            if (!imported || checker.interfaces.containsKey(localName)
+            // Inherited interface metadata may be carried from the same
+            // authenticated source unit by IncrementalCompiler. This does not
+            // grant runtime authority or create a guest-callable exported type.
+            boolean inherited = !declaration.moduleContract()
+                    && localName.equals(declaration.name())
+                    && linkedContracts.values().stream().anyMatch(other ->
+                            other != declaration && !other.moduleContract()
+                                    && other.parents().stream().anyMatch(parent ->
+                                            parent.name().equals(declaration.name())));
+            if ((!imported && !inherited)
+                    || checker.interfaces.containsKey(localName)
                     || checker.ambiguousInterfaces.contains(localName)) {
                 throw new IllegalArgumentException(
-                        "linked contract was not uniquely imported: " + localName);
+                        "linked contract/trait was not uniquely imported or inherited: " + localName);
             }
-            // Alias identity is local type-only metadata, never a runtime export.
             Ast.InterfaceDecl local = new Ast.InterfaceDecl(
                     localName, declaration.visibility(), declaration.genericParameters(),
-                    declaration.parents(), declaration.members(), true);
+                    declaration.parents(), declaration.members(),
+                    declaration.moduleContract(), declaration.declarationKind());
             checker.interfaces.put(localName, local);
         }
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
