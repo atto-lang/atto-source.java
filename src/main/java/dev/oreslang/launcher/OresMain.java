@@ -172,7 +172,19 @@ public final class OresMain {
                     if (raw.isEmpty()) throw new IllegalArgumentException("--entry requires a symbol name");
                     buildEntryPoints.add(raw);
                 } else if (arg.startsWith("--mode=")) mode = arg.substring("--mode=".length());
-                else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
+                else if (arg.startsWith("--platform=")) {
+                    platform = arg.substring("--platform=".length());
+                    // Platform-variant library units (std/path) follow the platform.
+                    if (platform.equals("windows") || platform.equals("macos") || platform.equals("linux"))
+                        System.setProperty("atto.target.os", platform);
+                }
+                else if (arg.startsWith("--target-os=")) {
+                    String os = arg.substring("--target-os=".length());
+                    if (!java.util.Set.of("linux", "macos", "freebsd", "posix", "windows").contains(os))
+                        throw new IllegalArgumentException(
+                                "unknown --target-os (expected linux|macos|freebsd|posix|windows)");
+                    System.setProperty("atto.target.os", os);
+                }
                 else if (arg.startsWith("--allow=")) {
                     String raw = arg.substring("--allow=".length());
                     if (raw.isBlank()) {

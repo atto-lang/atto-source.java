@@ -179,7 +179,10 @@ public final class IncrementalCompiler {
                                 strictAtto
                                         ? Parser.parseStrictAtto(normalized.get(id))
                                         : Parser.parse(normalized.get(id)),
-                                linked.classes(), linked.aliases(), contracts, strictAtto);
+                                linked.classes(), linked.aliases(), contracts,
+                                linkedImportedModules(id, parsed.get(id), parsed,
+                                        normalizedImportResolutions),
+                                strictAtto);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.ownershipClasses(), analysis.shortInferredAliases());
@@ -210,6 +213,32 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    /** Imported source modules by local alias, from their resolved units. */
+    private static Map<String, Ast.ModuleDecl> linkedImportedModules(
+            String id, Ast.Program program, Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.ModuleDecl> result = new LinkedHashMap<>();
+        Map<String, String> resolutions = importResolutions.getOrDefault(id, Map.of());
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) continue;
+            String targetId = resolutions.get(imported.path());
+            Ast.Program target = targetId == null ? null : parsed.get(targetId);
+            if (target == null) continue;
+            for (String name : imported.names()) {
+                for (Ast.ModuleDecl module : target.modules()) {
+                    if (module.name().equals(name)) {
+                        String alias = dev.oreslang.imports.ImportRules.localName(imported, name);
+                        if (result.putIfAbsent(alias, module) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate imported module binding '" + alias + "'");
+                        }
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     private record LinkedClasses(

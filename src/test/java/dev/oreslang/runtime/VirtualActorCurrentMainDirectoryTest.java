@@ -27,7 +27,10 @@ final class VirtualActorCurrentMainDirectoryTest {
                 IsolatePolicy.developer(),
                 factory -> (message, context) -> { });
         ref.getReady().get(5, TimeUnit.SECONDS);
-        return ref;
+        @SuppressWarnings("unchecked") ActorRuntime.ActorRef<String> typed =
+
+                (ActorRuntime.ActorRef<String>) (ActorRuntime.ActorRef<?>) ref;
+        return typed;
     }
 
     @Test

@@ -596,6 +596,25 @@ public final class TypeChecker {
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts,
             boolean strictAttoEquality) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(program, linkedClasses,
+                linkedAliases, linkedContracts, Map.of(), strictAttoEquality);
+    }
+
+    /**
+     * As above, plus checked public signatures of explicitly imported source
+     * modules (`import module m from ...`), keyed by local module alias. Their
+     * public functions type `m.f(...)` calls exactly like same-file modules;
+     * bodies stay in their own unit and private functions stay invisible.
+     */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Ast.ModuleDecl> linkedModules,
+            boolean strictAttoEquality) {
+        if (linkedModules == null) {
+            throw new IllegalArgumentException("linked modules cannot be null");
+        }
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -626,6 +645,34 @@ public final class TypeChecker {
         checker.strictAttoEquality = strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            String alias = entry.getKey();
+            Ast.ModuleDecl module = entry.getValue();
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                            && use.names().stream().anyMatch(name ->
+                                    ImportRules.localName(use, name).equals(alias)));
+            if (!imported || module == null || checker.modules.containsKey(alias)) {
+                throw new IllegalArgumentException(
+                        "linked module was not uniquely imported: " + alias);
+            }
+            // Only concrete, effect-free signatures are linked. Anything else
+            // (Any/generic/async/annotated callables, e.g. std/assert) keeps the
+            // legacy opaque import behavior instead of a nominal mis-typing.
+            boolean allConcrete = module.declarations().stream()
+                    .allMatch(d -> d instanceof Ast.FunctionDecl fn
+                            && (fn.visibility() != Ast.Visibility.PUBLIC
+                                || concreteLinkedSignature(fn)));
+            if (!allConcrete) continue;
+            checker.importedValues.remove(alias);
+            checker.modules.put(alias, module);
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    checker.putFunctionSlot(alias + "." + fn.name(), fn);
+                }
+            }
+        }
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
@@ -1906,6 +1953,38 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
+    private static boolean concreteLinkedSignature(Ast.FunctionDecl fn) {
+        if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
+                || fn.async() || fn.suspends() || fn.generator() || fn.structural()
+                || fn.nonLexical() || fn.trapped() || !fn.genericParameters().isEmpty()
+                || !fn.annotations().isEmpty() || !concreteLinkedType(fn.returnType(), true)) {
+            return false;
+        }
+        for (Ast.Param param : fn.parameters()) {
+            if (param == null || param.structural() || param.mutable()
+                    || !concreteLinkedType(param.type(), false)) return false;
+        }
+        return true;
+    }
+
+    private static boolean concreteLinkedType(Ast.TypeRef ref, boolean allowVoid) {
+        if (ref == null || ref.name() == null || ref.inferArguments()) return false;
+        List<Ast.TypeRef> args = ref.arguments();
+        return switch (ref.name()) {
+            case "int", "float", "bool", "String", "string" -> args.isEmpty();
+            case "void" -> allowVoid && args.isEmpty();
+            case "Option" -> args.size() == 1 && concreteLinkedType(args.get(0), false);
+            case "Result" -> args.size() == 2 && concreteLinkedType(args.get(0), false)
+                    && concreteLinkedType(args.get(1), false);
+            default -> false;
+        };
+    }
+
+    /** `with` changes have no constructor-argument scope. */
+    private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
+        return fieldInitializerMaySuspend(expr, new Env(null));
+    }
+
     private boolean fieldInitializerMaySuspend(Ast.Expr expr, Env scalarInitializerArgs) {
         if (expr instanceof Ast.AwaitExpr
                 || expr instanceof Ast.TaskExpr

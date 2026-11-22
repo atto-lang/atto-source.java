@@ -47,6 +47,7 @@ public final class SealedActorScalarMirV1 {
         public String field() { return field; }
         public long initialValue() { return initialValue; }
         public String actorType() { return actor.name(); }
+        Ast.ClassDecl actor() { return actor; }
 
         public ActorRuntime.ActorKind actorKind() {
             return switch (actor.actorKind()) {
