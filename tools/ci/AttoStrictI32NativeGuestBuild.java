@@ -56,7 +56,7 @@ public final class AttoStrictI32NativeGuestBuild {
                 "pub fnc main(): i32 { stdio.println(42); return 42; }",
                 output.resolve("reject-io"));
         rejectsWithoutArtifacts("legacy-equality",
-                "pub fnc main(i32 x): bool { return x == x; }",
+                "pub fnc main(): bool { return 7 == 7; }",
                 output.resolve("reject-legacy"));
         System.out.println("STATIC_I32_NATIVE_GUEST_NEGATIVE_ADMISSION=2_FAIL_CLOSED");
     }
