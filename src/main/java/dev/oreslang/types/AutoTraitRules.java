@@ -32,6 +32,14 @@ public final class AutoTraitRules {
     }
 
     public record Capabilities(boolean send, boolean sync, boolean share) {
+        public Capabilities {
+            // Sharing an allocation across actor domains must never outlive
+            // the Send + Sync proofs required for cross-lane safe access.
+            // Normalize even independently constructed structural/dyn caps,
+            // not only built-in wrapper inference.
+            share = share && send && sync;
+        }
+
         public boolean has(AutoTrait trait) {
             return switch (trait) {
                 case SEND -> send;
@@ -97,27 +105,53 @@ public final class AutoTraitRules {
         }
     }
 
+    private static final int MAX_TYPE_DEPTH = 128;
+    private static final int MAX_TRAIT_VISITS = 4096;
+    private static final Capabilities NO_PROOF =
+            new Capabilities(false, false, false);
+
+    private static final class ProofBudget {
+        private int visitsLeft = MAX_TRAIT_VISITS;
+    }
+
     public static Capabilities infer(TypeModel type) {
         Objects.requireNonNull(type, "type");
+        return inferBounded(type, 0, new ProofBudget());
+    }
+
+    private static Capabilities inferBounded(
+            TypeModel type, int depth, ProofBudget budget) {
+        // A deep or adversarial nested type must not overflow the Java stack
+        // or reset the budget at each wrapper/nominal field. Deny traits.
+        if (depth >= MAX_TYPE_DEPTH || budget.visitsLeft-- <= 0) {
+            return NO_PROOF;
+        }
         Capabilities base = switch (type.kind()) {
-            case SCALAR -> new Capabilities(true, true, true);
+            case SCALAR -> {
+                // A scalar has no nested storage. Otherwise a fabricated
+                // scalar carrying Rc/borrowed metadata could bypass the
+                // transitive Send/Sync/Share check at a Task/actor boundary.
+                yield type.parameters().isEmpty() && type.dynBounds().isEmpty()
+                        ? new Capabilities(true, true, true)
+                        : new Capabilities(false, false, false);
+            }
             case NOMINAL -> {
-                boolean send = all(type.parameters(), AutoTrait.SEND);
-                boolean sync = all(type.parameters(), AutoTrait.SYNC);
+                boolean send = all(type.parameters(), AutoTrait.SEND, depth + 1, budget);
+                boolean sync = all(type.parameters(), AutoTrait.SYNC, depth + 1, budget);
                 boolean share = type.shareableDomain()
-                        && all(type.parameters(), AutoTrait.SHARE);
+                        && all(type.parameters(), AutoTrait.SHARE, depth + 1, budget);
                 yield new Capabilities(send, sync, share);
             }
             case BOX -> {
                 TypeModel value = exactlyOne(type);
-                Capabilities nested = infer(value);
+                Capabilities nested = inferBounded(value, depth + 1, budget);
                 // Box is unique ownership. It may move between execution lanes
                 // when T is Send, but it is not aliasable actor-shared storage.
                 yield new Capabilities(nested.send(), nested.sync(), false);
             }
             case ARC, WEAK -> {
                 TypeModel value = exactlyOne(type);
-                Capabilities nested = infer(value);
+                Capabilities nested = inferBounded(value, depth + 1, budget);
                 boolean concurrent = type.shareableDomain()
                         && nested.send() && nested.sync();
                 yield new Capabilities(
@@ -131,26 +165,28 @@ public final class AutoTraitRules {
             }
             case REFCELL -> {
                 TypeModel value = exactlyOne(type);
-                Capabilities nested = infer(value);
+                Capabilities nested = inferBounded(value, depth + 1, budget);
                 yield new Capabilities(nested.send(), false, false);
             }
             case MUTEX -> {
                 TypeModel value = exactlyOne(type);
-                Capabilities nested = infer(value);
+                Capabilities nested = inferBounded(value, depth + 1, budget);
                 // Like Rust's synchronization containers, cross-lane shared
                 // access only requires moving T into/out of the protected slot.
                 yield new Capabilities(nested.send(), nested.send(), false);
             }
             case RWLOCK -> {
-                Capabilities nested = infer(exactlyOne(type));
+                Capabilities nested = inferBounded(exactlyOne(type), depth + 1, budget);
                 // Concurrent readers expose shared T, so T must also be Sync.
                 yield new Capabilities(nested.send(), nested.send() && nested.sync(), false);
             }
-            case DYN -> new Capabilities(
-                    type.dynBounds().contains(AutoTrait.SEND),
-                    type.dynBounds().contains(AutoTrait.SYNC),
-                    type.shareableDomain()
-                            && type.dynBounds().contains(AutoTrait.SHARE));
+            case DYN -> type.parameters().isEmpty()
+                    ? new Capabilities(
+                            type.dynBounds().contains(AutoTrait.SEND),
+                            type.dynBounds().contains(AutoTrait.SYNC),
+                            type.shareableDomain()
+                                    && type.dynBounds().contains(AutoTrait.SHARE))
+                    : new Capabilities(false, false, false);
         };
         return base.without(type.negative());
     }
@@ -163,9 +199,11 @@ public final class AutoTraitRules {
         return type.parameters().get(0);
     }
 
-    private static boolean all(List<TypeModel> values, AutoTrait trait) {
+    private static boolean all(
+            List<TypeModel> values, AutoTrait trait,
+            int depth, ProofBudget budget) {
         for (TypeModel value : values) {
-            if (!infer(value).has(trait)) return false;
+            if (!inferBounded(value, depth, budget).has(trait)) return false;
         }
         return true;
     }

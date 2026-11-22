@@ -1,0 +1,1 @@
+pub fnc main(): int { const Map<Symbol,int> m = ~map(#ready => 42); return m[#ready]; }

@@ -1,0 +1,11 @@
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    return;
+  }
+end
+
+pub routine main(): void {
+  val worker = spawn Worker();
+  worker.receive("hello");
+  return;
+}

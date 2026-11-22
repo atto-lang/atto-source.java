@@ -13,11 +13,31 @@ cp "$root/scripts/check-record-inference.sh" "$repo/scripts/"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-record-parser.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-record-frontend.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-soa-snapshot.sh"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/mvn"
+cat > "$tmp/bin/mvn" <<'STUB_MVN'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${RECORD_GATE_MVN_LOG:?}"
+# Synthetic post-admission mutations must be rejected before the gate passes.
+# These test controls never execute a real Maven/compiler build.
+case "${RECORD_GATE_INJECT-}" in
+  tracked) printf '\n# changed during Maven\n' >> scripts/check-record-parser.sh ;;
+  untracked) printf 'late source injection\n' > late-source.txt ;;
+  ignored-source) printf '// hidden source injection\n' > scripts/injected.java ;;
+  ignored-maven-config) mkdir -p .mvn; printf '<extensions/>\n' > .mvn/extensions.xml ;;
+  index-skip)
+    git update-index --skip-worktree scripts/check-record-parser.sh
+    printf '\n# hidden tracked mutation\n' >> scripts/check-record-parser.sh
+    ;;
+  index-assume)
+    git update-index --assume-unchanged scripts/check-record-parser.sh
+    printf '\n# hidden tracked mutation\n' >> scripts/check-record-parser.sh
+    ;;
+esac
+STUB_MVN
 chmod +x "$tmp/bin/mvn"
+export RECORD_GATE_MVN_LOG="$tmp/mvn-invocations"
 # The gate sees this harmless synthetic Maven stub, never a real compiler.
 export PATH="$tmp/bin:$PATH"
-printf '*.java\n' > "$repo/.gitignore"
+printf '*.java\n.mvn/\n' > "$repo/.gitignore"
 
 git -C "$repo" init -q
 git -C "$repo" -c user.name=CI-Gate -c user.email=ci-gate@example.invalid \
@@ -47,6 +67,50 @@ assert_exit 3 bash scripts/check-record-inference.sh --tree 00000000000000000000
 assert_exit 0 bash scripts/check-record-inference.sh "$head"
 assert_exit 0 bash scripts/check-record-inference.sh --commit "$head"
 assert_exit 0 bash scripts/check-record-inference.sh --tree "$tree"
+
+# Verify the real gate explicitly names its new regression suite, rather
+# than allowing a passing synthetic Maven stub to conceal a missing test.
+# These are invocation checks only: no Java/GraalVM tests execute here.
+if ! grep -Fq 'RecordTypeValueContextTest' "$RECORD_GATE_MVN_LOG"; then
+  echo "record type/value regression missing from Maven gate invocation" >&2
+  exit 1
+fi
+if ! grep -Fq -- '-Dores.runtime.carriers=native verify' "$RECORD_GATE_MVN_LOG"; then
+  echo "native carrier verification missing from Maven gate invocation" >&2
+  exit 1
+fi
+
+# A correct initial Git tree is insufficient if an executed stage later
+# changes tracked source or injects files before the next compiler stage.
+assert_exit 6 env RECORD_GATE_INJECT=tracked bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" checkout -q -- scripts/check-record-parser.sh
+assert_exit 6 env RECORD_GATE_INJECT=untracked bash scripts/check-record-inference.sh --tree "$tree"
+rm "$repo/late-source.txt"
+# Ignore patterns can hide compiler inputs. Generated target/ is permitted,
+# but source trees must not gain ignored inputs during testing.
+assert_exit 6 env RECORD_GATE_INJECT=ignored-source bash scripts/check-record-inference.sh --tree "$tree"
+rm "$repo/scripts/injected.java"
+# An ignored Maven extension can alter the next Maven invocation even when
+# no source paths change. Treat ignored .mvn inputs as untrusted too.
+assert_exit 6 env RECORD_GATE_INJECT=ignored-maven-config bash scripts/check-record-inference.sh --tree "$tree"
+rm -rf "$repo/.mvn"
+
+# Neither status nor diff sees a tracked source tampered after setting
+# skip-worktree or assume-unchanged. The gate must check the index flags.
+assert_exit 6 env RECORD_GATE_INJECT=index-skip bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" update-index --no-skip-worktree scripts/check-record-parser.sh
+git -C "$repo" restore --worktree scripts/check-record-parser.sh
+assert_exit 6 env RECORD_GATE_INJECT=index-assume bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" update-index --no-assume-unchanged scripts/check-record-parser.sh
+git -C "$repo" restore --worktree scripts/check-record-parser.sh
+
+# Flagged index entries are never valid even without a visible file change.
+git -C "$repo" update-index --skip-worktree scripts/check-record-parser.sh
+assert_exit 4 bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" update-index --no-skip-worktree scripts/check-record-parser.sh
+git -C "$repo" update-index --assume-unchanged scripts/check-record-parser.sh
+assert_exit 4 bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" update-index --no-assume-unchanged scripts/check-record-parser.sh
 
 # Validate the missing-tool guard without depending on whether CI happens
 # to have a global Maven binary. Give the test only the required early tools.

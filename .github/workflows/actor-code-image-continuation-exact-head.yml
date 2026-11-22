@@ -1,0 +1,85 @@
+name: Actor continuation image lease exact-head
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/actor-code-image-continuation-exact-head.yml'
+      - 'src/main/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorContinuationLedger.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorCodeImageContinuationV1.java'
+      - 'src/main/java/dev/oreslang/runtime/HttpGenerationDrainV1.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorCodeImageContinuationV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorContinuationTerminalResourceFailureTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorContinuationLedgerTest.java'
+      - 'src/test/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1Test.java'
+      - 'pom.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image-pinned-continuations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact PR head without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Print immutable source and compiler-boundary receipts
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          for path in \
+            src/main/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1.java \
+            src/main/java/dev/oreslang/runtime/ActorContinuationLedger.java \
+            src/main/java/dev/oreslang/runtime/ActorCodeImageContinuationV1.java \
+            src/test/java/dev/oreslang/runtime/ActorCodeImageContinuationV1Test.java
+          do git hash-object "$path"; done
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Compile real production image and continuation host primitives
+        run: |
+          set -euo pipefail
+          mkdir -p target/actor-image-lease-host
+          javac --release 21 -Xlint:all -Werror -d target/actor-image-lease-host \
+            src/main/java/dev/oreslang/runtime/HttpGenerationDrainV1.java \
+            src/main/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1.java \
+            src/main/java/dev/oreslang/runtime/ActorContinuationLedger.java \
+            src/main/java/dev/oreslang/runtime/ActorCodeImageContinuationV1.java
+      - name: Run real host JUnit receipts on the full source tree
+        run: |
+          mvn -B -ntp \
+            -Dtest=ActorCodeImageContinuationV1Test,ActorContinuationTerminalResourceFailureTest,ActorContinuationLedgerTest,HotCodeGenerationRetentionV1Test,HttpGenerationDrainV1Test \
+            -DfailIfNoTests=true test
+      - name: Fail on missing, skipped, or red JUnit results
+        run: |
+          set -euo pipefail
+          for name in \
+            ActorCodeImageContinuationV1Test \
+            ActorContinuationTerminalResourceFailureTest \
+            ActorContinuationLedgerTest \
+            HotCodeGenerationRetentionV1Test \
+            HttpGenerationDrainV1Test
+          do
+            report="target/surefire-reports/TEST-dev.oreslang.runtime.${name}.xml"
+            test -s "$report"
+            head -c 1024 "$report" | grep -Eq 'tests="[1-9][0-9]*"'
+            head -c 1024 "$report" | grep -q 'errors="0"'
+            head -c 1024 "$report" | grep -q 'failures="0"'
+            head -c 1024 "$report" | grep -q 'skipped="0"'
+          done
+          echo 'HOST_ONLY: not physical actor unload or compiled .atto AOT proof'
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'

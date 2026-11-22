@@ -22,11 +22,12 @@ import javax.tools.ToolProvider;
 /**
  * A deliberately narrow, closed-world source-to-Java-bytecode proof of concept.
  *
- * This is a SOURCE admission filter and portable backend for a pure primitive
- * subset, NOT an RTSJ NoHeapRealtimeThread verifier or a timing certificate.
- * Only a caller which has already passed TypeChecker and OwnershipChecker may
- * treat the report as a compiler-derived source property. Post-lowering bytecode
- * admission and target-specific runtime qualification are separate mandatory gates.
+ * This is a closed-world admission/lowering backend for a pure primitive
+ * subset, NOT a VM timing certificate. Public callers enter through
+ * {@link OresCompiler#compileRealtimePrimitive}, which performs type and
+ * ownership checking first. Compilation then performs an exact post-lowering
+ * classfile audit and emits a deterministic evidence manifest. Machine-code
+ * AOT, WCET and deployment qualification remain separate mandatory gates.
  */
 public final class RealtimePrimitiveCompiler {
     public static final String CLASS_NAME = "RtPrimitiveModule";
@@ -51,7 +52,12 @@ public final class RealtimePrimitiveCompiler {
     public record SourceReport(String entry, long maxSourceSteps, int maxCallDepth,
                                int reachableFunctions, String assurance) { }
 
-    public record Artifact(Path classFile, String bytecodeSha256, SourceReport sourceReport) { }
+    public record Artifact(
+            Path classFile,
+            Path manifestFile,
+            String bytecodeSha256,
+            SourceReport sourceReport,
+            RealtimeClassfileAudit.Report classfileReport) { }
 
     private record Cost(long steps, int depth) { }
     private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
@@ -105,7 +111,19 @@ public final class RealtimePrimitiveCompiler {
         if (exit != 0) throw invalid("generated Java failed verification by javac");
         Path result = directory.resolve(CLASS_NAME + ".class");
         if (!Files.isRegularFile(result)) throw invalid("javac produced no classfile");
-        return new Artifact(result, sha256(Files.readAllBytes(result)), report);
+        RealtimeClassfileAudit.Report classfileReport = RealtimeClassfileAudit.audit(result);
+        if (classfileReport.verifiedMethods() != report.reachableFunctions()) {
+            throw invalid("post-lowering method set does not match the source call graph");
+        }
+        String bytecodeSha256 = sha256(Files.readAllBytes(result));
+        Path manifest = RealtimeArtifactManifest.write(
+                directory, bytecodeSha256, report, classfileReport);
+        return new Artifact(
+                result,
+                manifest,
+                bytecodeSha256,
+                report,
+                classfileReport);
     }
 
     private SourceReport report(String entry, int arity, Budget budget) {
@@ -237,7 +255,7 @@ public final class RealtimePrimitiveCompiler {
             return new Cost(1, 1);
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            if (!Set.of("+", "-", "*", "==", "!=", "<", "<=", ">", ">=",
+            if (!Set.of("+", "-", "*", "eq", "neq", "==", "!=", "<", "<=", ">", ">=",
                     "&&", "||", "&", "|", "^").contains(binary.operator())) {
                 throw invalid("operator may throw or lacks bounded primitive semantics: " + binary.operator());
             }
@@ -360,7 +378,15 @@ public final class RealtimePrimitiveCompiler {
         if (expr instanceof Ast.LiteralExpr lit) return String.valueOf(lit.value());
         if (expr instanceof Ast.NameExpr name) return name.name();
         if (expr instanceof Ast.BinaryExpr b) {
-            return "(" + emitExpr(b.left()) + " " + b.operator() + " " + emitExpr(b.right()) + ")";
+            // Checked source equality is normalized by Parser to eq/neq.
+            // Java source is only an intermediate build artifact; translate
+            // at emission, never accept an interpreter or dynamic dispatch.
+            String operator = switch (b.operator()) {
+                case "eq", "==" -> "==";
+                case "neq", "!=" -> "!=";
+                default -> b.operator();
+            };
+            return "(" + emitExpr(b.left()) + " " + operator + " " + emitExpr(b.right()) + ")";
         }
         if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
         if (expr instanceof Ast.CallExpr c && c.callee() instanceof Ast.NameExpr name) {

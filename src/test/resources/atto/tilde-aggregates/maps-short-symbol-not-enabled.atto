@@ -1,0 +1,4 @@
+fnc pending(): void {
+    const flags = ~(#ready => true);
+    return;
+}

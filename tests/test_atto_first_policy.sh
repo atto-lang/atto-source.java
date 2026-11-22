@@ -35,6 +35,10 @@ Java host/compiler exception: TBD
 Guest test evidence: NOT EXECUTED: actual guest execution has not happened.
 BODY
 : > "$work/empty"
+cat "$work/valid" > "$work/duplicate_conflict"
+printf '%s\n' 'Guest test evidence: EXECUTED: contradictory second authority record.' >> "$work/duplicate_conflict"
+cat "$work/valid" > "$work/duplicate_identical"
+printf '%s\n' 'Guest test evidence: NOT EXECUTED: the exact-head guest compiler runner has not executed.' >> "$work/duplicate_identical"
 pass=0
 expect_pass() {
   local name="$1"; shift
@@ -59,6 +63,8 @@ expect_fail empty_body "$no_java" "$java_head" "$work/empty" "$now"
 expect_fail partial_body "$no_java" "$java_head" "$work/partial" "$now"
 expect_fail placeholders "$no_java" "$java_head" "$work/placeholders" "$now"
 expect_pass disclosed_java_exception "$no_java" "$java_head" "$work/valid" "$now"
+expect_fail contradictory_guest_evidence "$no_java" "$java_head" "$work/duplicate_conflict" "$now"
+expect_fail duplicate_guest_evidence "$no_java" "$java_head" "$work/duplicate_identical" "$now"
 expect_pass grandfathered_existing_pr "$no_java" "$java_head" "$work/empty" "$old"
 expect_fail invalid_base "0000000000000000000000000000000000000000" "$java_head" "$work/valid" "$now"
 expect_fail invalid_timestamp "$no_java" "$java_head" "$work/valid" 'yesterday'
@@ -80,5 +86,5 @@ printf 'class Shared { int version; }\n' > src/Shared.java
 git commit -qam unrelated_host_change_on_base
 advanced_base="$(git rev-parse HEAD)"
 expect_pass diverged_base_ignores_unrelated_java "$advanced_base" "$isolated_head" "$work/empty" "$now"
-[[ "$pass" -eq 11 ]] || exit 1
-echo "ATTO_FIRST_POLICY_SELFTEST=11/11"
+[[ "$pass" -eq 13 ]] || exit 1
+echo "ATTO_FIRST_POLICY_SELFTEST=13/13"

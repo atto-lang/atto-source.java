@@ -30,8 +30,13 @@ public final class StateContainerAccessGate implements AutoCloseable {
         synchronized (monitor) {
             if (closed || writer != null || readers == maxReaders) return null;
             if (epoch == Long.MAX_VALUE) return null;
+            // Construct the lease before incrementing live-reader accounting.
+            // If allocation fails, do not strand a reader count and prevent
+            // shutdown from ever observing physical lease quiescence.
+            Lease loan = new Lease(Mode.READ, epoch + 1);
+            epoch++;
             readers++;
-            return new Lease(Mode.READ, ++epoch);
+            return loan;
         }
     }
 
@@ -39,7 +44,8 @@ public final class StateContainerAccessGate implements AutoCloseable {
         synchronized (monitor) {
             if (closed || writer != null || readers != 0) return null;
             if (epoch == Long.MAX_VALUE) return null;
-            Lease loan = new Lease(Mode.WRITE, ++epoch);
+            Lease loan = new Lease(Mode.WRITE, epoch + 1);
+            epoch++;
             writer = loan;
             return loan;
         }

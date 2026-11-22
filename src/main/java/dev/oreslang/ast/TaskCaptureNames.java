@@ -28,6 +28,16 @@ public final class TaskCaptureNames {
     private static void visitBody(
             List<Ast.Stmt> body, Set<String> outer, Set<String> references) {
         Set<String> locals = new HashSet<>(outer);
+        visitStatementsInScope(body, locals, references);
+    }
+
+    /**
+     * Visit source-ordered statements in an already-created lexical scope.
+     * MatchValueArm prefixes use this because their terminal ARM_RESULT is in
+     * the same scope as top-level bindings declared by the prefix.
+     */
+    private static void visitStatementsInScope(
+            List<Ast.Stmt> body, Set<String> locals, Set<String> references) {
         for (Ast.Stmt stmt : body) visitStmt(stmt, locals, references);
     }
 
@@ -62,6 +72,11 @@ public final class TaskCaptureNames {
             visitBody(s.body(), locals, names);
         } else if (stmt instanceof Ast.TaskScopeStmt s) {
             visitBody(s.body(), locals, names);
+        } else if (stmt instanceof Ast.UsingTelemetrySpanStmt s) {
+            visitExpr(s.name(), locals, names);
+            Set<String> scoped = new HashSet<>(locals);
+            scoped.add(s.binding());
+            visitBody(s.body(), scoped, names);
         } else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch branch : s.branches()) {
                 visitConditionExpr(branch.condition(), locals, names);
@@ -203,6 +218,7 @@ public final class TaskCaptureNames {
                 Set<String> armLocals = new HashSet<>(locals);
                 bindPattern(arm.pattern(), armLocals);
                 visitConditionExpr(arm.guard(), armLocals, names);
+                visitStatementsInScope(arm.prefixStatements(), armLocals, names);
                 visitExpr(arm.value(), armLocals, names);
             }
         } else if (expr instanceof Ast.TypeTestExpr s) {

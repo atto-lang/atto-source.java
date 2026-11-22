@@ -1,0 +1,173 @@
+name: Java actor memory source-exact ephemeral gate
+# The trusted workflow must be reviewed on main before it can be dispatched.
+# A dedicated single-use source-org runner is provisioned by admins separately.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Source-repository pull request number (including stacked PRs)"
+        required: true
+        type: string
+      source_sha:
+        description: "Exact 40-character PR head commit SHA"
+        required: true
+        type: string
+      run_native_image:
+        description: "Also compile the Java/GraalVM native image"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: java-actor-exact-${{ inputs.pr_number }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  actor-memory-exact-source:
+    if: github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, oreslang-java-ephemeral-v1]
+    timeout-minutes: 90
+    steps:
+      - name: Admit only an existing same-repository immutable PR head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]{0,7}$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$RUNNER_ENVIRONMENT" = "self-hosted"
+          command -v gh
+          protected_main="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.protected')"
+          test "$protected_main" = "true"
+          receipt="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '[.head.sha, .head.repo.full_name, .state, (.head.repo.private|tostring), (.user.id|tostring)] | @tsv')"
+          IFS=$'\t' read -r actual_sha actual_repo state private pr_author_id <<< "$receipt"
+          test "$actual_sha" = "$SOURCE_SHA"
+          test "$actual_repo" = "$GITHUB_REPOSITORY"
+          test "$state" = "open"
+          test "$private" = "true"
+          [[ "$pr_author_id" =~ ^[1-9][0-9]*$ ]]
+          # The latest independently submitted ORESoftware review must approve THIS HEAD.
+          review_record="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+            --jq 'if length >= 100 then "TOO_MANY_REVIEWS" else
+              ([.[] | select(.user.login == "ORESoftware" and .submitted_at != null)]
+               | sort_by(.submitted_at, .id) | last // {}
+               | [(.state // ""), (.commit_id // ""), (.user.id // 0 | tostring)] | @tsv)
+            end')"
+          IFS=$'\t' read -r review_state review_commit reviewer_id <<< "$review_record"
+          test "$review_state" = "APPROVED"
+          test "$review_commit" = "$SOURCE_SHA"
+          test "$reviewer_id" = "11139560"
+          test "$reviewer_id" != "$pr_author_id"
+          echo "PROTECTED_MAIN_AND_INDEPENDENT_EXACT_HEAD_REVIEW=PASS"
+      - name: Checkout exact source commit without persisting credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+
+      - name: Verify immutable tree, clean checkout and JDK 25 toolchain
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          test "$RUNNER_ENVIRONMENT" = 'self-hosted'
+          command -v mvn
+          command -v javac
+          javac -version 2>&1 | grep -Eq '^javac 25([. ]|$)'
+          echo "EXACT_SOURCE_COMMIT=$SOURCE_SHA"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          echo "JAVA_TOOLCHAIN=$(javac -version 2>&1)"
+
+      - name: Run real actor arena and ownership/lifecycle JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=ActorLinearArenaTest,ActorLinearArenaLifecycleTest,ActorHeapAdmissionTest,ActorHeapPlacementGuardTest \
+            -DfailIfNoTests=true test
+
+      - name: Run exact-source checked dispatch and guest execution JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=AotDispatchPlannerV1Test,CheckedDispatchPlanIntegrationV1Test,AotDispatchGuestV1Test,DispatchV1CorpusCompilerTest,MethodOverloadTest,ArityDispatchTableRuntimeTest,ArityOverloadAotTest \
+            test
+          for suite in \
+            dev.oreslang.AotDispatchPlannerV1Test \
+            dev.oreslang.CheckedDispatchPlanIntegrationV1Test \
+            dev.oreslang.AotDispatchGuestV1Test \
+            dev.oreslang.DispatchV1CorpusCompilerTest \
+            dev.oreslang.MethodOverloadTest \
+            dev.oreslang.ArityDispatchTableRuntimeTest \
+            dev.oreslang.ArityOverloadAotTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '<testsuite[^>]*(failures|errors|skipped)="[1-9][0-9]*"' "$report"; then
+              echo "::error::Failed, errored or skipped required dispatch suite $suite"
+              exit 1
+            fi
+            if grep -Eq '<skipped([ >])' "$report"; then
+              echo "::error::Skipped dispatch testcase $suite"
+              exit 1
+            fi
+            echo "DISPATCH_JUNIT_SUITE_EXECUTED=$suite"
+          done
+          guest_report=target/surefire-reports/TEST-dev.oreslang.AotDispatchGuestV1Test.xml
+          grep -Fq 'name="baseTypedReceiverRetainsVirtualOverrideAndStaticCallsStayQualified"' "$guest_report"
+          grep -Fq 'name="sameFixtureRunsWithGuestJitDisabledByProfile"' "$guest_report"
+          grep -Fq 'name="scalarGenericIntReuseRunsWithAndWithoutGuestJit"' "$guest_report"
+          corpus_report=target/surefire-reports/TEST-dev.oreslang.DispatchV1CorpusCompilerTest.xml
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithJitEnabled"' "$corpus_report"
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithGuestJitDisabled"' "$corpus_report"
+          echo 'DISPATCH_GUEST_JVM_JIT_AND_NO_JIT=EXECUTED_EXPECTED_STDOUT_121020'
+          echo 'DISPATCH_CORPUS_DIRECT_INSTANCE_STATIC_JVM_GUEST=EXECUTED_EXPECTED_EXIT_42_BOTH_PROFILES'
+          echo 'DISPATCH_NATIVE_GUEST_AOT=NOT_EXECUTED'
+
+      - name: Optional real GraalVM Native Image build
+        if: inputs.run_native_image
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v native-image
+          native-image --version
+          mvn -B -ntp -Pnative-aot -DskipTests package
+          test -x ./target/ores-aot
+          ./target/ores-aot --build-info
+
+      - name: Scope receipt to exact guest/runtime evidence
+        if: always()
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          NATIVE_IMAGE_REQUESTED: ${{ inputs.run_native_image }}
+        run: |
+          {
+            echo 'Source-org exact-head Java actor JUnit workflow.'
+            echo "PR: $PR_NUMBER; commit: $SOURCE_SHA"
+            echo "Tree: $(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo NOT_CHECKED_OUT)"
+            echo "Native Image requested: $NATIVE_IMAGE_REQUESTED"
+            echo 'Job outcome is authoritative only if both real actor and real dispatch JUnit steps executed.'
+            echo 'The dispatch JUnit suite tests guest semantics under JIT and JIT-disabled JVM profiles, not guest native AOT.'
+            echo 'Runner must be disposable, pre-provisioned by the admin and destroyed after one job.'
+            echo 'This job never approves export, source retention, hard real-time or five-backend parity.'
+          } >> "$GITHUB_STEP_SUMMARY"

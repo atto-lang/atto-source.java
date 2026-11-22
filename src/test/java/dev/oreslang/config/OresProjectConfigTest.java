@@ -50,6 +50,22 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void canonicalAttoImportsWinOverLegacyWhenBothAreAvailable() throws Exception {
+        Path sourceDir = temp.resolve("canonical");
+        Files.createDirectories(sourceDir);
+        Path importer = sourceDir.resolve("main.atto");
+        Files.writeString(importer, "pub routine main(): void { return; }");
+        Files.writeString(sourceDir.resolve("helper.atto"), "pub fnc value() => int { return 1; }");
+        Files.writeString(sourceDir.resolve("helper.ores"), "pub fnc value() => int { return 2; }");
+        Files.writeString(sourceDir.resolve("legacy.ores"), "pub fnc legacy() => int { return 3; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(sourceDir.resolve("helper.atto").toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./helper").orElseThrow());
+        assertEquals(sourceDir.resolve("legacy.ores").toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./legacy").orElseThrow());
+    }
+
+    @Test
     void oreslangPathIsAnOrderedOsNativePathList() throws Exception {
         Path one = temp.resolve("one");
         Path two = temp.resolve("two");
@@ -105,6 +121,25 @@ final class OresProjectConfigTest {
                 Map.of(OresProjectConfig.ENV_ORESLANG_PATH, ambient.toString()));
 
         assertTrue(config.resolveImport(importer, "./missing").isEmpty());
+    }
+
+    @Test
+    void attoImportsArePreferredAndExplicitLegacyPathsDoNotAlias() throws Exception {
+        Path importer = temp.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main(): void { return; }");
+        Path atto = temp.resolve("replay_stream.atto");
+        Path legacy = temp.resolve("replay_stream.ores");
+        Files.writeString(atto, "pub fnc current(): int { return 2; }");
+        Files.writeString(legacy, "pub fnc legacy(): int { return 1; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(atto.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream").orElseThrow());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream.ores").orElseThrow());
+        Files.delete(atto);
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream").orElseThrow());
+        assertTrue(config.resolveImport(importer, "./replay_stream.atto").isEmpty());
     }
 
     @Test
@@ -199,4 +234,93 @@ final class OresProjectConfigTest {
                 () -> OresProjectConfig.load(manifest, Map.of()));
         assertTrue(error.getMessage().contains("schema_version"));
     }
+    @Test
+    void attoPackageManifestDefinesProjectRootImportsAndEntrypoint() throws Exception {
+        Path project = temp.resolve("atto-package");
+        Path src = project.resolve("src");
+        Path tests = project.resolve("tests");
+        Files.createDirectories(src.resolve("pkg"));
+        Files.createDirectories(tests);
+        Path entry = tests.resolve("smoke.atto");
+        Path library = src.resolve("pkg/cache.atto");
+        Files.writeString(entry, "pub routine main() -> int { return 0; }");
+        Files.writeString(library, "pub fnc value(): int { return 42; }");
+        Path manifest = project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME);
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [project]
+                name = "atto-cache"
+                root = "."
+                [source]
+                roots = ["src"]
+                [entrypoints]
+                main = "tests/smoke.atto"
+                [build]
+                library_profile = "std"
+                """);
+        OresProjectConfig config = OresProjectConfig.discover(entry, Map.of());
+        assertEquals(manifest.toAbsolutePath().normalize(), config.manifestPath().orElseThrow());
+        assertEquals(project.toAbsolutePath().normalize(), config.projectRoot());
+        assertEquals(src.toAbsolutePath().normalize(), config.sourceRoots().getFirst());
+        assertEquals(entry.toAbsolutePath().normalize(), config.mainEntrypoint().orElseThrow());
+        assertEquals(library.toAbsolutePath().normalize(),
+                config.resolveImport(entry, "pkg/cache").orElseThrow());
+        assertEquals(OresProjectConfig.LibraryProfile.STD, config.libraryProfile());
+    }
+
+    @Test
+    void ambiguousAttoAndLegacyManifestsAtSameDepthFailClosed() throws Exception {
+        Path atto = temp.resolve(OresProjectConfig.ATTO_MANIFEST_NAME);
+        Path legacy = temp.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.writeString(atto, "schema_version = \"1\"\n");
+        Files.writeString(legacy, "schema_version = \"1\"\n");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(temp.resolve("entry.atto"), Map.of()));
+        assertTrue(failure.getMessage().contains("ambiguous"));
+        assertTrue(failure.getMessage().contains(OresProjectConfig.ATTO_MANIFEST_NAME));
+        assertTrue(failure.getMessage().contains(OresProjectConfig.MANIFEST_NAME));
+    }
+
+    @Test
+    void nearestManifestWinsRegardlessOfLegacySpelling() throws Exception {
+        Path parent = temp.resolve("parent");
+        Path nested = parent.resolve("nested");
+        Files.createDirectories(nested);
+        Files.writeString(parent.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "outer-legacy"
+                """);
+        Files.writeString(nested.resolve(OresProjectConfig.ATTO_MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "inner-atto"
+                """);
+        OresProjectConfig config = OresProjectConfig.discover(nested.resolve("main.atto"), Map.of());
+        assertEquals("inner-atto", config.projectName().orElseThrow());
+        assertEquals(nested.resolve(OresProjectConfig.ATTO_MANIFEST_NAME).toAbsolutePath().normalize(),
+                config.manifestPath().orElseThrow());
+    }
+
+    @Test
+    void malformedOrSymlinkedAttoManifestCannotFallBackToAmbientSourceRoot() throws Exception {
+        Path manifest = temp.resolve(OresProjectConfig.ATTO_MANIFEST_NAME);
+        Files.writeString(manifest, "schema_version = \"999\"\n");
+        IllegalArgumentException malformed = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(temp.resolve("main.atto"), Map.of()));
+        assertTrue(malformed.getMessage().contains("schema_version"));
+        Files.delete(manifest);
+        Path actual = temp.resolve("manifest-real.toml");
+        Files.writeString(actual, "schema_version = \"1\"\n");
+        try {
+            Files.createSymbolicLink(manifest, actual);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not allow symlink fixture: " + unavailable.getClass().getSimpleName());
+        }
+        IllegalArgumentException symlink = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(temp.resolve("main.atto"), Map.of()));
+        assertTrue(symlink.getMessage().contains("symlinked"));
+    }
+
 }

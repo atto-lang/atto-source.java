@@ -1,0 +1,4 @@
+pub fnc main(): void {
+    stdio.stdout.write(`invalid:${42}`);
+    return;
+}

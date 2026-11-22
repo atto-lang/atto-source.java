@@ -7,6 +7,7 @@ visibility throughout a mirror upload or GitHub-side deletion of old objects.
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -86,9 +87,31 @@ def fetch_metadata(name, token, opener=None):
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         # Never include raw HTTP exception text: it can contain request data.
         raise MirrorPreflightError("repository metadata unavailable") from None
+    # GitHub metadata is a security input, not best-effort JSON. Duplicate
+    # fields (including nested fields) can make two clients choose opposing
+    # visibility, repository-ID or policy values; deny ambiguous records.
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise MirrorPreflightError("duplicate repository metadata field")
+            result[key] = value
+        return result
+
+    def reject_constant(_value):
+        raise MirrorPreflightError("nonfinite repository metadata constant")
+
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise MirrorPreflightError("nonfinite repository metadata number")
+        return number
+
     try:
-        return json.loads(data)
-    except (UnicodeError, json.JSONDecodeError):
+        return json.loads(data, object_pairs_hook=unique_fields,
+                          parse_constant=reject_constant, parse_float=finite_float)
+    except (UnicodeError, json.JSONDecodeError, RecursionError,
+            OverflowError, ValueError):
         raise MirrorPreflightError("invalid repository metadata") from None
 
 
