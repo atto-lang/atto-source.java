@@ -698,7 +698,9 @@ final class ActorRuntimeTest {
             ActorRuntime.ActorTerminatedException terminated = assertThrows(
                     ActorRuntime.ActorTerminatedException.class,
                     () -> ref.send("after-failure"));
-            assertSame(ref.failure().orElseThrow(), terminated.getCause());
+            // The raw cause stays on the trusted host path (ActorRef.failure());
+            // an exception thrown into another actor never carries it (#1223).
+            assertNull(terminated.getCause());
         }
     }
 
@@ -1630,15 +1632,25 @@ final class ActorRuntimeTest {
             assertEquals(List.of("factory", "message"), captured);
         }
 
-        IsolatePolicy adversarialShared = IsolatePolicy.strictFaas()
-                .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY);
-        try (ActorRuntime runtime = new ActorRuntime(adversarialShared)) {
+        // The adversarial permission ceiling forbids SHARED_MEMORY outright,
+        // so an adversarial shared-trusted policy cannot even be constructed.
+        IllegalArgumentException ceiling = assertThrows(
+                IllegalArgumentException.class,
+                () -> IsolatePolicy.strictFaas()
+                        .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY));
+        assertTrue(ceiling.getMessage().contains("adversarial"), ceiling.getMessage());
+
+        // An adversarial runtime still refuses the trusted shared factory.
+        IsolatePolicy adversarial = IsolatePolicy.strictFaas();
+        try (ActorRuntime runtime = new ActorRuntime(adversarial)) {
             SecurityException failure = assertThrows(
                     SecurityException.class,
                     () -> runtime.<String>spawnSharedTrusted(
-                            adversarialShared,
+                            adversarial,
                             factoryContext -> (message, context) -> { }));
-            assertTrue(failure.getMessage().contains("adversarial"));
+            assertTrue(failure.getMessage().contains("adversarial")
+                            || failure.getMessage().contains("SHARED_MEMORY"),
+                    failure.getMessage());
         }
     }
 

@@ -1,0 +1,6 @@
+pub define class MatrixPayload as
+  pub int number: 0
+  pub string text: "initial"
+  pub bool active: false
+  int secret_marker: 9
+end

@@ -1,0 +1,4 @@
+define module workers as
+  pub define actor Worker as worker;
+  define mtd receive(Worker w)(ActorMail<borrow int> mail): void { return; }
+end
