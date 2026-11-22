@@ -1,6 +1,9 @@
 // Source-level guest integration fixture: this is NOT an executed result.
 // The host supplies an explicitly authorized absolute executable, argv, cwd.
 // The public async methods deliberately omit "_async".
+// Child processes use a hard root-context lifetime limit until full
+// actor supervision and explicit run options are implemented.
+import module process from "std/process";
 pub async fnc run_child_process(
     String executable, Array<String> argv, String cwd): int {
   let started = await process.spawn(executable, argv, cwd);
