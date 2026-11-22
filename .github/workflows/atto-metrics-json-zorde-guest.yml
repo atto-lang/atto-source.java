@@ -2,10 +2,11 @@ name: Atto std metrics/json/zorde exact-head guest (JDK25)
 on:
   pull_request:
     paths:
+      - 'src/main/resources/dev/oreslang/core/borrow_admission.atto'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'stdlib/metrics.atto'
       - 'stdlib/json.atto'
       - 'stdlib/zorde.atto'
-      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/test/resources/stdlib-parity/metrics-json-zorde/**'
       - 'src/test/java/dev/oreslang/runtime/NativeAttoMetricsJsonZordeTest.java'
       - 'tests/std-metrics-json-zorde-source-contract.test.mjs'
@@ -59,6 +60,7 @@ jobs:
           grep -F 'name="metricsGuestRejectsOverflowAndBucketsSamples"' "$report"
           grep -F 'name="jsonGuestRejectsAmbiguousAndMalformedText"' "$report"
           grep -F 'name="zordeGuestRoundtripsDeterministicFrame"' "$report"
+          grep -F 'name="coreBorrowAdmissionGuestIsFreestandingAndExact"' "$report"
           grep -F 'skipped="0"' "$report"
           grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
           echo 'ATTO_STDLIB_JAVA_GUEST=EXECUTED'
