@@ -68,3 +68,13 @@ The backend now exposes a `define pub class Path` Atto value and `relative_path(
 The new `Path` facade uses the existing `pub define class` syntax, consistent with compiler-owned `Trace.Buffer` and `Telemetry.SpanBatch`. The JUnit guest suite now includes `invalidPathInstancesFailInGuestBeforeReturning`: four noncanonical or reserved paths must throw **after** a real guest entry marker, preventing a mere parser/import rejection from counting as constructor validation. The exact-head JVM workflow demands this method's unskipped Surefire report.
 
 The original 67-output guest oracle is unchanged. Runner-backed JVM/JDK25 and Native Image results remain NOT_EXECUTED on the current head. No privately owned source was exported.
+
+## 134-vector five-backend standard-library ABI convergence (2026-11-22)
+
+The backend-owned `stdlib/path.atto`, `sync.atto` and `telemetry.atto` now expose all **28 public scalar/boolean policy signatures** from [atto-platform-conformance #577](https://github.com/atto-lang/atto-platform-conformance/pull/577), **without removing the backend's existing higher-level path, lock or telemetry APIs**. Existing private path-component array validation was renamed to `checked_component_kind_points` to avoid an ambiguous arity/name collision with the new public scalar `component_kind` API.
+
+The shared *data-only* contract is pinned by exact Git blob `3d9e9d5308a4cd0a99d811570f8c80e77b7219b7` under `contracts/atto-std-pure-policy-parity-v1.json`. The implementation remains locally owned by Java/GraalVM; other compilers can use distinct `.atto` source files. `verification/atto-std-134-source-model.test.mjs` evaluates a deliberately restricted policy subset: current source matched **134/134** vectors and all 28 typed signatures; five source mutation-negative tests reject altered visibility, separators, permit release, sampling and an injected host escape. The script also checks the separate 134-case `.atto` guest candidate is an exact derivation of the pinned contract. **This is not Atto compiler execution.**
+
+`.github/workflows/atto-std-134-source-model.yml` requires the exact checkout SHA, source blob identities, pinned contract hash, source model tests and a negative check that `ATTO_REQUIRE_NATIVE_GUEST=1` must fail. The previously existing backend-specific guest fixture and tests remain unchanged. Java/GraalVM native linking/execution (JDK 25/GraalVM Native Image or .NET CIL/NativeAOT, respectively) remains **NOT_EXECUTED** and is not implied by this source-model alignment.
+
+No private source was copied into another GitHub organization. Source-local CI admission and independently approved private carrier remain release blockers. Keep PR draft.
