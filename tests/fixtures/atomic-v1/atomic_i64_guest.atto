@@ -1,0 +1,20 @@
+// Interpreter-backed AttoLang guest positive fixture; native AOT still unverified.
+pub fnc main(): void {
+  val counter: Atomic<int> = Atomic.new(0);
+  counter.fetch_add(40);
+  counter.fetch_add(2);
+  val failed = counter.compare_exchange(1, 200);
+  val changed = counter.compare_exchange(42, 44);
+  if failed.exchanged then
+    stdio.stdout.write("unexpected-failure-cas");
+  elif changed.exchanged then
+    stdio.stdout.write(failed.observed);
+    stdio.stdout.write(":");
+    stdio.stdout.write(changed.observed);
+    stdio.stdout.write(":");
+    stdio.stdout.write(counter.load());
+  else
+    stdio.stdout.write("unexpected-success-cas");
+  fi
+  return;
+}

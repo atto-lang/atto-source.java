@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'stdlib/core.ores'
+      - 'stdlib/core.atto'
       - 'stdlib/trace.ores'
       - 'stdlib/testing.ores'
       - 'formal/stdlib/**'
@@ -12,7 +12,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'stdlib/core.ores'
+      - 'stdlib/core.atto'
       - 'stdlib/trace.ores'
       - 'stdlib/testing.ores'
       - 'formal/stdlib/**'
@@ -38,7 +38,7 @@ jobs:
       - name: Record exact inputs and tool versions
         run: |
           git rev-parse HEAD
-          git hash-object stdlib/core.ores stdlib/trace.ores stdlib/testing.ores
+          git hash-object stdlib/core.atto stdlib/trace.ores stdlib/testing.ores
           rustc --version
           z3 -version
       - name: Rust gate regression tests

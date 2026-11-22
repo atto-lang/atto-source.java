@@ -1,0 +1,34 @@
+name: Java functional pipeline compiled Atto guest parity
+on:
+  pull_request:
+    paths:
+      - 'src/compiler/pipeline/**'
+      - 'fixtures/pipelines/**'
+      - 'ci/compiler/verify-functional-pipelines.sh'
+      - '.github/workflows/java-functional-pipelines.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  actual-jvm-and-native-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: graalvm
+          java-version: '25'
+      - name: Print exact current PR SHA and tree
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          "$JAVA_HOME/bin/javac" -version
+          "$JAVA_HOME/bin/native-image" --version
+      - name: Compile and execute actual Atto pipeline JVM/Native Image guests
+        env:
+          ATTO_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash ci/compiler/verify-functional-pipelines.sh

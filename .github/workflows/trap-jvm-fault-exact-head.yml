@@ -1,0 +1,55 @@
+name: Fail-closed trap JVM fault admission (exact head)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/TrapFailurePolicy.java'
+      - 'src/test/java/dev/oreslang/runtime/TrapFailurePolicyTest.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/runtime/GuestErrorValue.java'
+      - 'src/main/java/dev/oreslang/runtime/GuestOrdinaryThrow.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/runtime/GuestOrdinaryThrowTest.java'
+      - 'src/test/java/dev/oreslang/AttoStrictTrapSourceAdmissionTest.java'
+      - '.github/workflows/trap-jvm-fault-exact-head.yml'
+permissions:
+  contents: read
+jobs:
+  trap-jvm-faults:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact source tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
+          git diff --quiet HEAD --
+          git diff --cached --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          git hash-object src/main/java/dev/oreslang/runtime/TrapFailurePolicy.java src/test/java/dev/oreslang/runtime/TrapFailurePolicyTest.java src/main/java/dev/oreslang/runtime/GuestErrorValue.java src/main/java/dev/oreslang/runtime/GuestOrdinaryThrow.java src/test/java/dev/oreslang/runtime/GuestOrdinaryThrowTest.java
+      - name: Java 25
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.7.1
+        with:
+          distribution: graalvm
+          java-version: '25'
+      - name: Run real Java guest/runtime regression tests (no skipping)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=TrapFailurePolicyTest,TrapResultSemanticsTest,CanonicalCallerTrapParityV1Test,AttoStrictTrapSourceAdmissionTest,GuestOrdinaryThrowTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+          echo ATTO_TRAP_JAVA_EXACT_HEAD_TESTS=EXECUTED
+      - name: Do not certify source throw or Native Image
+        run: |
+          echo ATTO_SOURCE_THROW_ERROR=NOT_IMPLEMENTED
+          echo ATTO_STRICT_TRAP_SOURCE=FAIL_CLOSED_NOT_IMPLEMENTED
+          echo ATTO_GUEST_ERROR_IDENTITY=RUNTIME_FOUNDATION_ONLY
+          echo ATTO_JAVA_NATIVE_IMAGE_GUEST=NOT_EXECUTED

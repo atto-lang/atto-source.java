@@ -1,0 +1,9 @@
+// Negative: protected exclusive write may never suspend.
+define virtual actor Cart as
+  state { let int quantity: 0; }
+  add(int n) -> void ::
+    handle_state(critical-write |s| -> {
+      await helper(n);
+    });
+  end
+end

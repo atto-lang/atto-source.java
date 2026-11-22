@@ -1,0 +1,57 @@
+name: Copy policy exact-head Java ownership gate
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/**'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/types/**'
+      - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
+      - 'src/test/java/dev/oreslang/CopyPolicyCompilerTest.java'
+      - '.github/workflows/copy-policy-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  copy-policy-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact requested head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prove exact commit and source tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up pinned GraalVM JDK
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Compile and execute copy-policy and ownership regression JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=CopyPolicyCompilerTest,OwnershipAndClosureTest,ProjectedBorrowOwnershipTest,PointerlessFncOwnershipTest,ParserAnnotationRetentionGateTest test
+      - name: Report Surefire receipts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d target/surefire-reports
+          ls target/surefire-reports/TEST-*.xml

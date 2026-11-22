@@ -1,0 +1,93 @@
+name: Atto virtual actor protected MIR v1 exact-head compiler gate
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/VirtualActorProtectedMirV1.java'
+      - 'src/main/java/dev/oreslang/compiler/VirtualActorProtectedOpsMirV1.java'
+      - 'src/main/java/dev/oreslang/compiler/VirtualActorTruffleI64KernelV1.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java'
+      - 'src/test/java/dev/oreslang/VirtualActorProtectedOpsMirV1Test.java'
+      - 'src/test/java/dev/oreslang/VirtualActorTruffleI64KernelV1Test.java'
+      - 'contracts/virtual-actor-mir-v1/**'
+      - '.github/workflows/virtual-actor-protected-mir-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protected-mir-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-protected-mir:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Read back exact PR head, root Git tree, and compiler contract blobs
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "HEAD_SHA=$EXPECTED_HEAD_SHA"
+          echo "TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
+          git hash-object src/main/java/dev/oreslang/compiler/VirtualActorTruffleI64KernelV1.java
+          git hash-object src/main/java/dev/oreslang/compiler/VirtualActorProtectedOpsMirV1.java
+          git hash-object src/main/java/dev/oreslang/compiler/VirtualActorProtectedMirV1.java
+          git hash-object src/main/java/dev/oreslang/types/TypeChecker.java
+          git hash-object src/test/java/dev/oreslang/VirtualActorTruffleI64KernelV1Test.java
+          git hash-object src/test/java/dev/oreslang/VirtualActorProtectedOpsMirV1Test.java
+          git hash-object src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java
+          git hash-object contracts/virtual-actor-mir-v1/cases.json
+          git hash-object contracts/virtual-actor-mir-v1/positive/cart_checked_contract.atto
+          git hash-object contracts/virtual-actor-mir-v1/negative/unfenced_cart.atto
+          git hash-object contracts/virtual-actor-mir-v1/negative/escaped_state_cart.atto
+          git hash-object contracts/virtual-actor-mir-v1/negative/suspending_cart.atto
+
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+
+      - name: Compile and run protected MIR and entire stacked virtual actor suites
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # On pull_request, GITHUB_SHA may identify the synthetic merge
+          # commit, not the actual PR head that checkout pinned.
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          set -euo pipefail
+          mvn -B -ntp \
+            -Dtest=VirtualActorTruffleI64KernelV1Test,VirtualActorProtectedOpsMirV1Test,VirtualActorProtectedMirV1Test,StateContainerVirtualActorAdmissionTest,AttoCartPhysicalActivationGuestTest,VirtualActorGenerationFenceCurrentMainTest,VirtualActorTerminalControlCurrentMainTest,VirtualActorCurrentMainDirectoryTest \
+            -DfailIfNoTests=true test
+          for suite in \
+            dev.oreslang.VirtualActorTruffleI64KernelV1Test \
+            dev.oreslang.VirtualActorProtectedOpsMirV1Test \
+            dev.oreslang.VirtualActorProtectedMirV1Test \
+            dev.oreslang.StateContainerVirtualActorAdmissionTest \
+            dev.oreslang.AttoCartPhysicalActivationGuestTest \
+            dev.oreslang.runtime.VirtualActorGenerationFenceCurrentMainTest \
+            dev.oreslang.runtime.VirtualActorTerminalControlCurrentMainTest \
+            dev.oreslang.runtime.VirtualActorCurrentMainDirectoryTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report"
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' "$report"
+            echo "EXECUTED_JUNIT=$suite"
+          done
+          echo "EXACT_HEAD_CHECKED=$(git rev-parse HEAD)"
+          echo "EXACT_TREE_CHECKED=$(git rev-parse 'HEAD^{tree}')"
+          echo "VIRTUAL_ACTOR_GUEST_LOWERING=STILL_UNSUPPORTED"
