@@ -74,11 +74,15 @@ public final class ActorProtocolNominalResolverV1 {
                             klass.actorKind() != Ast.ActorKind.NONE,
                             !klass.genericParameters().isEmpty());
                 } else if (declaration instanceof Ast.InterfaceDecl iface) {
-                    if (iface.moduleContract())
-                        throw error("E_PROTOCOL_UNVERIFIED_MESSAGE",
-                                "module contracts cannot mint response markers");
-                    insert(nodes, iface.name(), iface.parents(), false, false,
-                            !iface.genericParameters().isEmpty());
+                    if (iface.moduleContract()) {
+                        // Unrelated module contracts are allowed, but cannot
+                        // serve as nominal response inheritance parents.
+                        if (!aliases.add(iface.name()))
+                            throw error("E_PROTOCOL_AMBIGUOUS_TYPE", iface.name());
+                    } else {
+                        insert(nodes, iface.name(), iface.parents(), false, false,
+                                !iface.genericParameters().isEmpty());
+                    }
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     if (MARKERS.contains(alias.name()))
                         throw error("E_PROTOCOL_FORGED_MARKER",
@@ -172,6 +176,9 @@ public final class ActorProtocolNominalResolverV1 {
                                boolean concrete, boolean actor, boolean generic) {
         if (MARKERS.contains(name))
             throw error("E_PROTOCOL_FORGED_MARKER", name);
+        if (SCALARS.contains(name))
+            throw error("E_PROTOCOL_AMBIGUOUS_TYPE",
+                    "compiler scalar name cannot be a nominal response declaration: " + name);
         if (nodes.size() >= MAX_NOMINALS)
             throw error("E_PROTOCOL_LIMIT", "nominal declaration limit exceeded");
         if (parents.size() > MAX_PARENTS)
