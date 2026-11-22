@@ -124,6 +124,8 @@ define module allocator as
     }
 
     pub array_span(int count, int quota): int {
+      if count < 0 || quota < 0; do return -1; fi
+      if count == 0; do return 0; fi
       let int step = self.stride(quota);
       if step < 0; do return -1; fi
       return array_bytes(step, count, quota);
@@ -139,7 +141,8 @@ define module allocator as
     if !valid_alignment(4) || valid_alignment(3) ||
        valid_layout(-1, 8) || word.stride(12) != 4 ||
        word.array_span(3, 12) != 12 ||
-       word.array_span(4, 12) != -1; do
+       word.array_span(4, 12) != -1 ||
+       word.array_span(0, 0) != 0; do
       return false;
     fi
     if aligned_start(3, 4, 4, 8) != 4 ||
