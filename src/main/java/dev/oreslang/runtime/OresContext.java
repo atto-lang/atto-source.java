@@ -579,6 +579,9 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        // Disallow new key allocation as soon as shutdown begins, not only
+        // after actor quiescence. Existing keys remain live until joins finish.
+        synchronized (this) { cryptoAdmissionSealed = true; }
         // Revoke new WAL shard-grant admission before actors/physical I/O
         // begin their shutdown joins. Keep issued grants through quiescence.
         dbWalGrants.seal();
