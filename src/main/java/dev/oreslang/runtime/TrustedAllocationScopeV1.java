@@ -22,6 +22,8 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
     private final ActorLinearArena arena;
     private final Thread ownerThread;
     private final ArrayList<Owner> owners = new ArrayList<>();
+    private final ArrayList<ScopeMark> lexicalMarks = new ArrayList<>();
+    private long lastOwnerSerial;
     private boolean closed;
     // Prevent destructor callbacks from re-entering allocation, borrowing or
     // another destructor while the enclosing owner is in a partial drop state.
@@ -58,8 +60,8 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
     Owner allocate_word(Runnable destructor) {
         requireOpen();
         Objects.requireNonNull(destructor, "trusted destructor hook");
-        if (owners.size() == Integer.MAX_VALUE) {
-            throw new IllegalStateException("allocation owner table exhausted");
+        if (owners.size() == Integer.MAX_VALUE || lastOwnerSerial == Long.MAX_VALUE) {
+            throw new IllegalStateException("allocation owner table or generation exhausted");
         }
         // Preflight Java list growth before the native transaction.
         owners.ensureCapacity(owners.size() + 1);
@@ -68,8 +70,9 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
             throw new IllegalStateException("native arena admission failed");
         }
         try {
-            Owner owner = new Owner(this, handle, destructor);
+            Owner owner = new Owner(this, handle, destructor, lastOwnerSerial + 1L);
             owners.add(owner);
+            lastOwnerSerial++;
             return owner;
         } catch (RuntimeException | Error failure) {
             // If a JVM allocation fails during owner publication, no native
@@ -90,6 +93,65 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
         requireOpen();
         checkOwner(owner);
         dropInternal(owner);
+        // Discard successful early-drop metadata. Retaining the full history
+        // makes a long-lived actor allocate unbounded Java owner descriptors.
+        if (!owners.remove(owner)) {
+            throw new IllegalStateException("native scope owner registry corrupted");
+        }
+    }
+
+    /** Opaque lexical checkpoint for compiler-generated finally/unwind code. */
+    ScopeMark begin_lexical_scope() {
+        requireOpen();
+        if (lexicalMarks.size() == Integer.MAX_VALUE) {
+            throw new IllegalStateException("lexical scope mark budget exhausted");
+        }
+        lexicalMarks.ensureCapacity(lexicalMarks.size() + 1);
+        ScopeMark mark = new ScopeMark(this, lastOwnerSerial);
+        lexicalMarks.add(mark);
+        return mark;
+    }
+
+    /** Retire precisely the owners acquired after this mark, in LIFO order. */
+    void end_lexical_scope(ScopeMark mark) {
+        requireOpen();
+        if (mark == null || mark.scope != this || mark.consumed
+                || lexicalMarks.isEmpty()
+                || lexicalMarks.get(lexicalMarks.size() - 1) != mark) {
+            throw new IllegalStateException("foreign, stale or out-of-order lexical scope mark");
+        }
+        // Abort before any destructor if a guest borrow is still live. A
+        // failed preflight leaves the checkpoint usable for a later retry.
+        for (int i = owners.size() - 1; i >= 0; i--) {
+            Owner owner = owners.get(i);
+            if (owner.serial <= mark.serial) break;
+            if (owner.readers != 0 || owner.writer != null
+                    || owner.state == State.DROPPING) {
+                throw new IllegalStateException("lexical cleanup blocked by live borrow or destructor");
+            }
+        }
+        lexicalMarks.remove(lexicalMarks.size() - 1);
+        mark.consumed = true;
+        Throwable failure = null;
+        for (int i = owners.size() - 1; i >= 0; i--) {
+            Owner owner = owners.get(i);
+            if (owner.serial <= mark.serial) break;
+            try {
+                dropInternal(owner);
+                owners.remove(i);
+            } catch (RuntimeException | Error ex) {
+                if (failure == null) failure = ex;
+                else if (ex != failure) failure.addSuppressed(ex);
+            }
+        }
+        if (failure instanceof RuntimeException ex) throw ex;
+        if (failure instanceof Error err) throw err;
+    }
+
+    /** Only currently live or poisoned owners count toward tracking budget. */
+    int tracked_owner_count() {
+        requireThread();
+        return owners.size();
     }
 
     private void checkOwner(Owner owner) {
@@ -152,25 +214,44 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
                 else if (failure != ex) failure.addSuppressed(ex);
             }
         }
+        if (failure == null) {
+            owners.clear();
+            lexicalMarks.clear();
+        }
         if (failure instanceof RuntimeException ex) throw ex;
         if (failure instanceof Error err) throw err;
     }
 
     private enum State { LIVE, DROPPING, RETIRED, POISONED }
 
+    /** Identity-only checkpoint, never represented by a serializable ticket. */
+    static final class ScopeMark {
+        private final TrustedAllocationScopeV1 scope;
+        private final long serial;
+        private boolean consumed;
+
+        private ScopeMark(TrustedAllocationScopeV1 scope, long serial) {
+            this.scope = scope;
+            this.serial = serial;
+        }
+    }
+
     /** Opaque per-allocation identity; raw arena handles never escape. */
     static final class Owner {
         private final TrustedAllocationScopeV1 scope;
         private final long handle;
         private final Runnable destructor;
+        private final long serial;
         private State state = State.LIVE;
         private int readers;
         private Loan writer;
 
-        private Owner(TrustedAllocationScopeV1 scope, long handle, Runnable destructor) {
+        private Owner(TrustedAllocationScopeV1 scope, long handle, Runnable destructor,
+                long serial) {
             this.scope = scope;
             this.handle = handle;
             this.destructor = destructor;
+            this.serial = serial;
         }
 
         Loan borrow_read() {

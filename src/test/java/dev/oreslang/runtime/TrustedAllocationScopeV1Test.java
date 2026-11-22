@@ -18,7 +18,8 @@ class TrustedAllocationScopeV1Test {
         for (var type : new Class<?>[] {
                 TrustedAllocationScopeV1.class,
                 TrustedAllocationScopeV1.Owner.class,
-                TrustedAllocationScopeV1.Loan.class
+                TrustedAllocationScopeV1.Loan.class,
+                TrustedAllocationScopeV1.ScopeMark.class
         }) {
             assertFalse(java.lang.reflect.Modifier.isPublic(type.getModifiers()),
                     "trusted native owner type must not be public: " + type);

@@ -137,6 +137,59 @@ public final class TrustedAllocationScopeV1HostProbe {
         }
     }
 
+
+    private static void lexicalCleanupAndBoundedOwnerMetadata() {
+        try (ActorLinearArena arena = new ActorLinearArena(128, 8)) {
+            List<Integer> order = new ArrayList<>();
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var outer = scope.allocate_word(() -> order.add(1));
+            var outerMark = scope.begin_lexical_scope();
+            var innerA = scope.allocate_word(() -> order.add(2));
+            var nestedMark = scope.begin_lexical_scope();
+            var innerB = scope.allocate_word(() -> order.add(3));
+            var guard = innerB.borrow_read();
+            rejects(() -> scope.end_lexical_scope(nestedMark),
+                    "cannot finish lexical scope while borrowed");
+            rejects(() -> scope.end_lexical_scope(outerMark),
+                    "out-of-order nested lexical scope");
+            check(order.isEmpty(), "borrow preflight ran a destructor");
+            guard.close();
+            scope.end_lexical_scope(nestedMark);
+            rejects(() -> scope.end_lexical_scope(nestedMark), "checkpoint replay");
+            rejects(innerB::borrow_read, "stale owner after lexical cleanup");
+            check(order.equals(List.of(3)), "inner scope order");
+            scope.drop(innerA);
+            scope.end_lexical_scope(outerMark);
+            check(order.equals(List.of(3, 2)), "early drop was duplicated");
+            check(scope.tracked_owner_count() == 1, "early drop metadata leaked");
+            for (int i = 0; i < 4000; i++) {
+                var next = scope.allocate_word(() -> {});
+                scope.drop(next);
+                check(scope.tracked_owner_count() == 1, "tracking grows across early drops");
+            }
+            check(!outer.is_retired(), "outer owner retired by inner cleanup");
+            scope.close();
+            check(order.equals(List.of(3, 2, 1)), "outer destructor missing");
+            check(arena.liveAllocations() == 0, "native cleanup left live allocations");
+        }
+        try (ActorLinearArena arena = new ActorLinearArena(64, 4)) {
+            List<Integer> order = new ArrayList<>();
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            scope.allocate_word(() -> order.add(1));
+            var mark = scope.begin_lexical_scope();
+            try {
+                scope.allocate_word(() -> order.add(2));
+                scope.allocate_word(() -> order.add(3));
+                throw new IllegalArgumentException("guest early exit");
+            } catch (IllegalArgumentException expected) {
+                scope.end_lexical_scope(mark);
+            }
+            check(order.equals(List.of(3, 2)), "exceptional lexical unwind failed");
+            scope.close();
+            check(order.equals(List.of(3, 2, 1)), "outer frame cleanup after unwind");
+            check(arena.liveAllocations() == 0, "exceptional lexical cleanup leaked");
+        }
+    }
     private static void admissionAndForeignOwner() {
         try (ActorLinearArena arena = new ActorLinearArena(8, 1)) {
             var first = TrustedAllocationScopeV1.trusted_open(arena);
@@ -156,6 +209,7 @@ public final class TrustedAllocationScopeV1HostProbe {
         unwindAndPoison();
         admissionAndForeignOwner();
         destructorReentrancyAndQuarantine();
+        lexicalCleanupAndBoundedOwnerMetadata();
         System.out.println("ATTO_TRUSTED_ALLOC_SCOPE_JDK21_PASS");
     }
 }

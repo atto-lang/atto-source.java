@@ -43,3 +43,21 @@ destructor callback. A failed native arena drop (including an exception) marks
 the owner **POISONED**, rather than leaving a misleading DROPPING state.
 A real-actor-arena host probe checks recursive callback rejection, cleanup
 ordering, rejected poison replay and the absence of an illicit native refund.
+
+## 2026-11-22: lexical cleanup and bounded tracking
+
+Native ownership scopes now issue opaque, one-shot `ScopeMark` checkpoint
+objects. `begin_lexical_scope`/`end_lexical_scope` provide a runtime
+target for future compiler-inserted `finally`/exception/early-return drop
+lowering. Checkpoints are identity-checked, LIFO and replay-resistant.
+Cleanup preflights all inner-owner borrows before running any destructor,
+then drops strictly in reverse acquisition order and aggregates failures.
+A failed destructor remains poisoned and unreclaimable pending arena
+shutdown.
+
+Successful early-drop owner entries are removed immediately instead of
+accumulating per-drop metadata in a long-lived actor. The host probe
+includes 4,000 serial allocate/drop cycles with constant owner tracking,
+nested checkpoints, borrow-blocked cleanup, stale/replayed checkpoints,
+and simulated exceptional unwind. This is still **host runtime machinery**,
+not automatic compiled Atto guest lowering or full GC-freedom.
