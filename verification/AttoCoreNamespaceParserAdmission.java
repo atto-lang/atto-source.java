@@ -39,9 +39,11 @@ public final class AttoCoreNamespaceParserAdmission {
                 "use namespace atto.core." + stem + ";"), stem + ": dotted declaration");
             reject(source.replace("use namespace " + stem + ";",
                 "use namespace " + stem + ";\nuse namespace another;"), stem + ": duplicate declaration");
-            reject(source.replace("use namespace " + stem + ";",
-                "use namespace " + stem + ";\nimport module fs from \"../../../host\";"),
-                stem + ": namespace/import out of declaration order");
+            Ast.Program importProgram = Parser.parse(source.replace(
+                "use namespace " + stem + ";",
+                "use namespace " + stem + ";\nimport module Helper from \"./helper.atto\";"));
+            require(importProgram.imports().size() == 1,
+                stem + ": source import after namespace remains explicit");
         }
         require(Parser.parse("use namespace sample; pub fnc main(): int { return 42; }")
             .namespace().equals("sample"), "single-function namespace");
