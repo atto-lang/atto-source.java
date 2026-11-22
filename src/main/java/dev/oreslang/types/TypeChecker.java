@@ -3,6 +3,7 @@ package dev.oreslang.types;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.imports.StandardCryptoNamespace;
 import dev.oreslang.compiler.LinkedFunctionContract;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
@@ -8271,7 +8272,26 @@ public final class TypeChecker {
                 case "aead_seal", "aead_open" ->
                         new Function(List.of(key, bytes, bytes), result);
                 case "aead_close" -> new Function(List.of(key), Primitive.VOID);
-                default -> null;
+                default -> {
+                    StandardCryptoNamespace.Signature policy =
+                            StandardCryptoNamespace.signature(name);
+                    if (policy == null) yield null;
+                    java.util.List<Type> inputs = new java.util.ArrayList<>();
+                    for (Ast.TypeRef parameter : policy.arguments()) {
+                        if (!"int".equals(parameter.name())) {
+                            throw new IllegalStateException(
+                                    "unverified std.crypto source policy argument");
+                        }
+                        inputs.add(Primitive.INT);
+                    }
+                    Type output = switch (policy.result().name()) {
+                        case "int" -> Primitive.INT;
+                        case "bool" -> Primitive.BOOL;
+                        default -> throw new IllegalStateException(
+                                "unverified std.crypto source policy return type");
+                    };
+                    yield new Function(inputs, output);
+                }
             };
         }
         // Bytes methods are synchronous: never mis-type them as Future<T>.
