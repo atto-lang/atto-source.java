@@ -158,6 +158,15 @@ define module map as
     }
   end
 
+  // Rejects invalid logical capacity without trapping. Physical allocation
+  // failures still require a compiler/runtime Allocator provider contract.
+  pub fnc try_new_map(int capacity): Result<IntMap, String> {
+    if capacity < 1 || capacity > 1048576; do
+      return Err("InvalidCapacity");
+    fi
+    return Ok(new IntMap(capacity));
+  }
+
   pub fnc new_map(int capacity): IntMap {
     return new IntMap(capacity);
   }
