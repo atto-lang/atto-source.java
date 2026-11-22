@@ -8256,8 +8256,10 @@ public final class TypeChecker {
                 default -> throw new IllegalArgumentException("unknown Bytes member " + name);
             };
         }
-        // UDP packet reads are immediate immutable snapshots. The socket is
-        // affine and its asynchronous operations return Future<T>.
+        // UDP packet reads are immediate immutable snapshots. Socket guest
+        // methods return Future<T>; full compiler-proven affine ownership
+        // still needs a separate move/alias audit (the runtime denies
+        // cross-task detachment of the host socket).
         if (named.name().equals("UdpPacket")) {
             return switch (name) {
                 case "bytes" -> new Function(List.of(), new ListType(Primitive.INT));
