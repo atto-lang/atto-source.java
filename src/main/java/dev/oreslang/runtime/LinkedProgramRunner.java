@@ -42,6 +42,54 @@ import java.util.Set;
 public final class LinkedProgramRunner {
     private LinkedProgramRunner() { }
 
+    /**
+     * Build an immutable, capability-filtered Graal environment snapshot.
+     * Keys denied by either coarse isolate policy or scoped permissions are
+     * never read from the supplied host map. Values are bounded before they
+     * cross into a guest context. The caller supplies the map; this method
+     * never calls System.getenv or infers ambient authority.
+     */
+    static Map<String, String> admittedGuestEnvironment(
+            IsolatePolicy policy, RuntimePermissions permissions,
+            Map<String, String> environment) {
+        java.util.Objects.requireNonNull(policy);
+        java.util.Objects.requireNonNull(permissions);
+        java.util.Objects.requireNonNull(environment);
+        if (!policy.capabilities().contains(IsolatePolicy.Capability.ENVIRONMENT)) {
+            return Map.of();
+        }
+
+        LinkedHashMap<String, String> selected = new LinkedHashMap<>();
+        long aggregateBytes = 0;
+        for (String name : environment.keySet()) {
+            // Unsupported spellings never become guest-visible, even if the
+            // embedding host supplied a broad allow wildcard.
+            if (name == null) continue;
+            try {
+                NativeIo.validateEnvName(name);
+            } catch (IllegalArgumentException invalidName) {
+                continue;
+            }
+            if (!permissions.allows(RuntimePermissions.Permission.ENV, name)) continue;
+            // Deliberately after both checks: do not invoke denied-key value
+            // lookups, which could be expensive or backed by host secrets.
+            String value = environment.get(name);
+            if (value == null) {
+                throw new IllegalArgumentException("environment snapshot contains a null authorized value");
+            }
+            NativeIo.validateEnvValue(value);
+            if (selected.size() >= 512) {
+                throw new IllegalArgumentException("environment snapshot key limit exceeded");
+            }
+            aggregateBytes += value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            if (aggregateBytes > 1024L * 1024L) {
+                throw new IllegalArgumentException("environment snapshot byte budget exceeded");
+            }
+            selected.put(name, value);
+        }
+        return Map.copyOf(selected);
+    }
+
     /** Host-owned exit status: embedding callers must never be forcibly terminated. */
     public record RunResult(IncrementalCompiler.BuildResult build, int exitStatus) { }
 
@@ -271,6 +319,10 @@ public final class LinkedProgramRunner {
                         effectiveHostClasses,
                         permissions,
                         permissionCheckMode);
+                // EnvironmentAccess.NONE stays set by the isolate policy.
+                // Bind only a bounded, authorized subset of the explicit host
+                // map, never inherit the JVM's ambient process environment.
+                builder.environment(admittedGuestEnvironment(policy, permissions, environment));
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
                 if (input != null) builder.in(new FilterInputStream(input) {
