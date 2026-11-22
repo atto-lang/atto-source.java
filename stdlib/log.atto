@@ -1,0 +1,188 @@
+// AttoLang std/log. Guest-owned structured records and bounded admission.
+// Import surface: std/log (atto.std/log may disambiguate the package).
+//
+// All code is AttoLang. There is NO host logging, file/network I/O, threads,
+// cross-actor mutation, dynamic code generation, or implicit wall-clock read.
+// One actor/supervisor owns each Buffer; it serializes offer/peek/ack/close.
+// A separately permission-checked asynchronous consumer owns the actual sink.
+//
+// Severities: TRACE=10, DEBUG=20, INFO=30, WARN=40, ERROR=50, FATAL=60.
+// OFF=70 is a filter threshold ONLY, never an emitted event severity.
+define module Log as
+  pub fnc valid_severity(int severity) -> bool {
+    return severity == 10 || severity == 20 || severity == 30
+        || severity == 40 || severity == 50 || severity == 60;
+  }
+
+  pub fnc valid_threshold(int threshold) -> bool {
+    return valid_severity(threshold) || threshold == 70;
+  }
+
+  // Fail closed on malformed severity/threshold; no string formatting.
+  pub fnc enabled(int severity, int threshold) -> bool {
+    if !valid_severity(severity) || !valid_threshold(threshold); do
+      return false;
+    fi
+    if threshold == 70; do
+      return false;
+    fi
+    return severity >= threshold;
+  }
+
+  pub fnc severity_name(int severity) -> String {
+    if severity == 10; do return "TRACE"; fi
+    if severity == 20; do return "DEBUG"; fi
+    if severity == 30; do return "INFO"; fi
+    if severity == 40; do return "WARN"; fi
+    if severity == 50; do return "ERROR"; fi
+    if severity == 60; do return "FATAL"; fi
+    return "UNKNOWN";
+  }
+
+  // Immutable, closed-world record shape: two optional string attributes.
+  // Empty attribute keys mean absent attributes. A fixed shape avoids mutable
+  // Array aliases escaping from a record into other actors or sink callbacks.
+  // timestamp_ns is an explicit caller-supplied Unix epoch nanosecond stamp;
+  // 0 means unspecified. No implicit clock permission is claimed.
+  pub define class LogEntry as
+    pub val int severity;
+    pub val String target;
+    pub val String message;
+    pub val int timestamp_ns;
+    pub val int actor_id;
+    pub val int trace_id;
+    pub val int span_id;
+    pub val String field1_key;
+    pub val String field1_value;
+    pub val String field2_key;
+    pub val String field2_value;
+  end
+
+  pub fnc entry(int severity, String target, String message,
+                int timestamp_ns, int actor_id, int trace_id, int span_id) -> LogEntry {
+    return new LogEntry(severity, target, message, timestamp_ns, actor_id,
+                        trace_id, span_id, "", "", "", "");
+  }
+
+  pub fnc entry_with_fields(int severity, String target, String message,
+                            int timestamp_ns, int actor_id, int trace_id, int span_id,
+                            String field1_key, String field1_value,
+                            String field2_key, String field2_value) -> LogEntry {
+    return new LogEntry(severity, target, message, timestamp_ns, actor_id,
+                        trace_id, span_id, field1_key, field1_value,
+                        field2_key, field2_value);
+  }
+
+  pub fnc valid_entry(LogEntry record) -> bool {
+    if !valid_severity(record.severity); do return false; fi
+    if record.timestamp_ns < 0 || record.actor_id < 0
+        || record.trace_id < 0 || record.span_id < 0; do
+      return false;
+    fi
+    // String payloads are opaque. The privileged sink must enforce UTF-8 byte
+    // limits, escaping, redaction and per-tenant budgets before serialization.
+    return true;
+  }
+
+  // Return from offer:
+  //   0 FILTERED, 1 ACCEPTED, 2 FULL, 3 CLOSED, 4 INVALID.
+  // The queue never blocks and never writes to the outside world.
+  // Under partial acknowledgments, old entries remain allocated until the
+  // entire queue is acknowledged. This bounds memory without a copy/shift.
+  pub define class Buffer as
+    let mut Array<LogEntry> items = new Array<LogEntry>();
+    let int capacity;
+    let mut int threshold;
+    let mut int head = 0;
+    let mut int dropped = 0;
+    let mut bool closed = false;
+
+    pub constructor(int capacity, int threshold) {
+      if capacity < 1 || capacity > 4096; do
+        rt fail("Log.Buffer: capacity must be 1..4096");
+      fi
+      if !valid_threshold(threshold); do
+        rt fail("Log.Buffer: invalid threshold");
+      fi
+      self.capacity = capacity;
+      self.threshold = threshold;
+    }
+
+    pub offer(mut self)(LogEntry record) -> int {
+      if self.closed; do return 3; fi
+      if !valid_entry(record); do return 4; fi
+      if !enabled(record.severity, self.threshold); do return 0; fi
+      if self.items.size >= self.capacity; do
+        if self.dropped < 2147483647; do
+          self.dropped = self.dropped + 1;
+        fi
+        return 2;
+      fi
+      self.items.add(record);
+      return 1;
+    }
+
+    pub set_threshold(mut self)(int threshold) -> bool {
+      if self.closed || !valid_threshold(threshold); do
+        return false;
+      fi
+      self.threshold = threshold;
+      return true;
+    }
+
+    pub current_threshold() -> int {
+      return self.threshold;
+    }
+
+    // One consumer: peek without losing the record; call ack_one ONLY after
+    // the asynchronous sink has positively accepted that exact record.
+    // A sink retry may duplicate output; no exactly-once/durable promise.
+    pub has_next() -> bool {
+      return self.head < self.items.size;
+    }
+
+    pub pending_count() -> int {
+      return self.items.size - self.head;
+    }
+
+    pub peek() -> LogEntry {
+      if self.head >= self.items.size; do
+        rt fail("Log.Buffer: peek of empty queue");
+      fi
+      return self.items.get(self.head);
+    }
+
+    pub ack_one(mut self) -> bool {
+      if self.head >= self.items.size; do return false; fi
+      self.head = self.head + 1;
+      if self.head == self.items.size; do
+        self.items = new Array<LogEntry>();
+        self.head = 0;
+      fi
+      return true;
+    }
+
+    // Close fences producer admission, but lets the consumer drain.
+    // Lifetime/drop of an abandoned buffer is managed by its owning actor.
+    pub close(mut self) -> void {
+      self.closed = true;
+      return;
+    }
+
+    pub is_closed() -> bool {
+      return self.closed;
+    }
+
+    pub is_drained() -> bool {
+      return self.head >= self.items.size;
+    }
+
+    pub dropped_count() -> int {
+      return self.dropped;
+    }
+  end
+
+  pub fnc buffer(int capacity, int threshold) -> Buffer {
+    return new Buffer(capacity, threshold);
+  }
+end
