@@ -1,0 +1,13 @@
+// An over-budget reservation must return an invalid ticket.
+import class ReservationLedger from "atto.alloc/allocator";
+import class Reservation from "atto.alloc/allocator";
+
+pub fnc main(): int {
+  let mut ReservationLedger ledger = new ReservationLedger(2, 6);
+  let Reservation first = ledger.reserve(5);
+  if !first.is_valid() || ledger.reserve(2).is_valid() ||
+     !ledger.record_commit(first) || ledger.reserve(2).is_valid(); do
+    return 1;
+  fi
+  return ledger.used_bytes() == 5 && ledger.pending_bytes() == 0 ? 42 : 2;
+}

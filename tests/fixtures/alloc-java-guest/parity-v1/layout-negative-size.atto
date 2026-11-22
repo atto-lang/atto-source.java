@@ -1,0 +1,6 @@
+// A negative layout size must never become an allocation.
+import fnc valid_layout from "atto.alloc/allocator";
+
+pub fnc main(): int {
+  return !valid_layout(-1, 8) && !valid_layout(-1, 1) ? 42 : 1;
+}
