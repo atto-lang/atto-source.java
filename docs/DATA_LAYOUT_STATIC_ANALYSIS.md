@@ -45,3 +45,30 @@ it must not be advertised as an operational self-hosted analyzer.
 No optional stdlib analysis module is a dependency of freestanding `core`.
 A future self-hosted pass can consume immutable, compiler-verified layout
 IR while retaining Rust and host backends for cross-checking and bootstrap.
+
+
+## SoAoS and cache-line evidence
+
+The advisor now treats **SoAoS** (structure-of-arrays-of-structures) as a
+distinct physical layout rather than an alias for AoSoA. `Hints.groupFields`
+describes the fixed number of consecutive fields in each inner row subrecord;
+it is accepted only for `SOAOS` regions and must divide the field count.
+
+`Hints.cacheLineBytes` is optional trusted/profiled target evidence. It is never
+guessed. It must be a power-of-two width from 16 through 4096 bytes. For a hot,
+dense, sequential, field-selective SoAoS pass, `ORES-LAYOUT136` recommends
+benchmarking narrower groups or pure SoA when a touched inner group exceeds one
+known cache line. This is advisory: it does **not** prove a miss, false sharing,
+or a profitable rewrite.
+
+Random-gather diagnostics now include SoAoS because grouping fields does not
+remove TLB/cache costs of unpredictable row access.
+
+Do not pad every entity to a cache line. Padding is only a candidate for
+measured, independently-written **shared control metadata** where false sharing
+is demonstrated; padding dense entity data can increase footprint, bandwidth,
+TLB pressure, and LLC misses.
+
+The compiler must not rewrite layouts solely from these diagnostics. A physical
+layout change still requires ownership/borrow safety, stable-address checks,
+relocation proof, backend support, and representative benchmark evidence.

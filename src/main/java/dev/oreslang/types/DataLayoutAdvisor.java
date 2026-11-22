@@ -15,12 +15,19 @@ import java.util.Objects;
 public final class DataLayoutAdvisor {
     private DataLayoutAdvisor() { }
 
-    public enum Layout { AOS, SOA, AOSOA, SPARSE_SET, ARCHETYPE }
+    public enum Layout { AOS, SOA, AOSOA, SOAOS, SPARSE_SET, ARCHETYPE }
 
     /** Nullable hints mean unknown, NOT false or zero. */
     public record Hints(Boolean randomGathers, Boolean denseStableMembership,
                         Long structuralChangesPerPass, Integer tileRows,
-                        Integer vectorBytes) {
+                        Integer vectorBytes, Integer groupFields,
+                        Integer cacheLineBytes) {
+        public Hints(Boolean randomGathers, Boolean denseStableMembership,
+                     Long structuralChangesPerPass, Integer tileRows,
+                     Integer vectorBytes) {
+            this(randomGathers, denseStableMembership, structuralChangesPerPass,
+                    tileRows, vectorBytes, null, null);
+        }
         public Hints {
             if (structuralChangesPerPass != null && structuralChangesPerPass < 0) {
                 throw new IllegalArgumentException("negative ECS mutation count");
@@ -29,8 +36,18 @@ public final class DataLayoutAdvisor {
                     (vectorBytes & (vectorBytes - 1)) != 0)) {
                 throw new IllegalArgumentException("unknown or invalid target vector width");
             }
+            if (groupFields != null && groupFields < 1) {
+                throw new IllegalArgumentException("invalid SoAoS group width");
+            }
+            if (cacheLineBytes != null && (cacheLineBytes < 16
+                    || cacheLineBytes > 4096
+                    || (cacheLineBytes & (cacheLineBytes - 1)) != 0)) {
+                throw new IllegalArgumentException("invalid cache-line width");
+            }
         }
-        public static Hints unknown() { return new Hints(null, null, null, null, null); }
+        public static Hints unknown() {
+            return new Hints(null, null, null, null, null, null, null);
+        }
     }
 
     public record Region(String symbol, Layout layout, long rows,
@@ -66,6 +83,12 @@ public final class DataLayoutAdvisor {
                      hints.tileRows() > 4096)) {
                 throw new IllegalArgumentException("invalid AoSoA tile evidence");
             }
+            if (hints.groupFields() != null &&
+                    (layout != Layout.SOAOS
+                     || hints.groupFields() > fieldBytes.size()
+                     || fieldBytes.size() % hints.groupFields() != 0)) {
+                throw new IllegalArgumentException("invalid SoAoS group evidence");
+            }
         }
     }
 
@@ -88,7 +111,8 @@ public final class DataLayoutAdvisor {
             findings.add(new Finding("ORES-LAYOUT131", "Benchmark AoS/AoSoA for hot whole-record SoA traversal."));
         }
         if ((r.layout() == Layout.SOA || r.layout() == Layout.AOSOA ||
-                r.layout() == Layout.ARCHETYPE) && Boolean.TRUE.equals(r.hints().randomGathers())) {
+                r.layout() == Layout.SOAOS || r.layout() == Layout.ARCHETYPE)
+                && Boolean.TRUE.equals(r.hints().randomGathers())) {
             findings.add(new Finding("ORES-LAYOUT132", "Profile random cross-column gathers and TLB locality."));
         }
         if (r.layout() == Layout.AOSOA && r.hints().tileRows() != null &&
@@ -100,6 +124,26 @@ public final class DataLayoutAdvisor {
                 if (actual < Math.max(2, ideal / 2) || (long) actual > 4L * ideal) {
                     findings.add(new Finding("ORES-LAYOUT133", "Benchmark AoSoA tiles and SIMD/tail costs."));
                 }
+            }
+        }
+        if (r.layout() == Layout.SOAOS && stream && !r.wholeRecord()
+                && r.hints().groupFields() != null
+                && r.hints().cacheLineBytes() != null) {
+            int group = r.hints().groupFields();
+            long[] groupBytes = new long[r.fieldBytes().size() / group];
+            for (int field = 0; field < r.fieldBytes().size(); field++) {
+                int groupIndex = field / group;
+                groupBytes[groupIndex] = Math.addExact(
+                        groupBytes[groupIndex], r.fieldBytes().get(field));
+            }
+            long maxTouchedGroupBytes = 0;
+            for (int field : r.accessedFields()) {
+                maxTouchedGroupBytes = Math.max(
+                        maxTouchedGroupBytes, groupBytes[field / group]);
+            }
+            if (maxTouchedGroupBytes > r.hints().cacheLineBytes()) {
+                findings.add(new Finding("ORES-LAYOUT136",
+                        "Benchmark narrower SoAoS groups or SoA; a touched group exceeds one cache line."));
             }
         }
         if ((r.layout() == Layout.SPARSE_SET || r.layout() == Layout.ARCHETYPE) &&
