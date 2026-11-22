@@ -30,9 +30,20 @@ final class AttoChildProcessGuestTest {
                 .toAbsolutePath().normalize().toString();
     }
 
+    private static String testClassPath() {
+        try {
+            Class<?> probe = Class.forName(
+                    "dev.oreslang.runtime.NativeChildProcessesTest$ChildProcessProbe");
+            return Path.of(probe.getProtectionDomain().getCodeSource()
+                    .getLocation().toURI()).toString();
+        } catch (ClassNotFoundException | java.net.URISyntaxException failure) {
+            throw new IllegalStateException("cannot locate compiled child fixture", failure);
+        }
+    }
+
     private static String guest(boolean expectDenied) {
         String command = quote(javaExecutable());
-        String cp = quote(System.getProperty("java.class.path"));
+        String cp = quote(testClassPath());
         String probe = quote("dev.oreslang.runtime.NativeChildProcessesTest$ChildProcessProbe");
         String cwd = quote(workingDirectory());
         return """

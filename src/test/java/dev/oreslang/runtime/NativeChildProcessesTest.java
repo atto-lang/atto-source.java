@@ -18,8 +18,16 @@ final class NativeChildProcessesTest {
         return Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize().toString();
     }
     private static List<String> probe(String operation) {
-        return List.of("-cp", System.getProperty("java.class.path"),
-                ChildProcessProbe.class.getName(), operation);
+        try {
+            // Surefire may set java.class.path to only a bootloader jar.
+            // Locate the actual compiled test class directory instead.
+            String testClasses = Path.of(ChildProcessProbe.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI()).toString();
+            return List.of("-cp", testClasses,
+                    ChildProcessProbe.class.getName(), operation);
+        } catch (java.net.URISyntaxException failure) {
+            throw new IllegalStateException("cannot locate test child class", failure);
+        }
     }
     @Test void childExitAndConcurrentStdoutStderrPumps() throws Exception {
         try (NativeChildProcesses manager = new NativeChildProcesses()) {
