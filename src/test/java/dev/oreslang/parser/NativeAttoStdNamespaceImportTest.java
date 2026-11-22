@@ -47,8 +47,8 @@ final class NativeAttoStdNamespaceImportTest {
     @Test
     void namespaceAliasesMustNotSilentlyCollide() {
         Ast.Program program = Parser.parse(
-                "import http from \"std/http.atto\";\\n"
-                + "import * as http from \"std/http.atto\";\\n" + BODY);
+                "import http from \"std/http.atto\";\n"
+                + "import * as http from \"std/http.atto\";\n" + BODY);
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypesWithDiagnostics(program));
     }
