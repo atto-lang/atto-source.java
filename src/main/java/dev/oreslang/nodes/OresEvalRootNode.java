@@ -842,6 +842,7 @@ public final class OresEvalRootNode extends RootNode {
         private void executeActorLifecycleMethod(
                 OresObject object, Ast.MethodDecl method, String hook) {
             Env env = new Env(null, false, declaringClass(method), object);
+            env.instanceMethodOwner = declaringClass(method);
             env.define("self", object, Ast.BindingKind.VAL);
             bindCallableArguments(env, method.parameters(), List.of(), "actor " + hook);
             try {
@@ -1503,6 +1504,7 @@ public final class OresEvalRootNode extends RootNode {
                                         : declarationModules.get(function));
 
                         if (receiver != null) {
+                            params.instanceMethodOwner = declaringClass(method);
                             params.define(
                                     "self",
                                     receiver,
@@ -5519,6 +5521,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
+            if (implicit != null) {
+                evalSuspendableCall(task, implicit, env, continuation);
+                return;
+            }
             rejectUnloweredNamedArguments(call.arguments(), "suspendable call");
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
@@ -6757,6 +6764,7 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
             if (!method.isStatic()) {
+                env.instanceMethodOwner = declaringClass(method);
                 env.define("self", receiver, Ast.BindingKind.VAL, declaringClass(method));
             }
             bindCallableArguments(env, method.parameters(), args, "method " + method.name());
@@ -7654,6 +7662,23 @@ public final class OresEvalRootNode extends RootNode {
             return new ArrayList<>(tuple);
         }
 
+        /** Resolve only a direct bare call, not an extracted method value. */
+        private Ast.CallExpr implicitSelfMethodCall(Ast.CallExpr call, Env env) {
+            if (call.origin() != Ast.CallOrigin.DIRECT
+                    || !(call.callee() instanceof Ast.NameExpr name)
+                    || CallableSelector.reservedImplicitReceiverCallName(name.name())
+                    || env.lookup(name.name()) != Env.MISSING) return null;
+            Ast.ClassDecl owner = env.instanceMethodOwner();
+            if (owner == null || env.accessClass() != owner) return null;
+            Object self = env.lookup("self");
+            if (!(self instanceof OresObject receiver)
+                    || !receiver.owner.hasInstanceMethodNamed(
+                            owner, name.name(), classVisitSet())) return null;
+            return call.rewrite(
+                    new Ast.MemberExpr(new Ast.NameExpr("self"), name.name()),
+                    call.typeArguments(), call.typeArgumentsPresent(), call.arguments());
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             CheckedDispatchPlansV1.Plan plan = checkedDispatchPlans.get(call);
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
@@ -7679,42 +7704,9 @@ public final class OresEvalRootNode extends RootNode {
                         arguments -> applyIntegerIntrinsic(integerIntrinsic, arguments),
                         values);
             }
-            // Resolve lexical self using the compiler-linked instance slot.
-            // Do not dynamically search arbitrary runtime receiver members:
-            // that could expose subtype-only methods or imported capabilities.
-            if (call.callee() instanceof Ast.NameExpr unqualified
-                    && env.lexicalContainerClass() != null
-                    && env.accessClass() != null // nlex closures lose receiver authority
-                    && env.lookup(unqualified.name()) == Env.MISSING
-                    && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
-                            "print", "task_context", "task_cancel_requested",
-                            "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
-                Object lexicalSelf = env.lookup("self");
-                if (lexicalSelf instanceof OresObject receiver) {
-                    CallableSelector selector =
-                            CallableSelector.instance(unqualified.name(), call.arguments().size());
-                    Ast.MethodDecl declared = findMethod(env.lexicalContainerClass(), selector);
-                    if (declared != null) {
-                        if (findFunction(unqualified.name(), call.arguments().size()) != null
-                                || namedImports.containsKey(unqualified.name())) {
-                            throw new IllegalArgumentException(
-                                    "ambiguous unqualified call '" + unqualified.name()
-                                            + "': both a self method and a free/imported callable match; "
-                                            + "write self." + unqualified.name() + "(...) or qualify the function");
-                        }
-                        Ast.MethodDecl selected = receiver.owner.findMethod(receiver.klass, selector);
-                        if (selected == null) {
-                            throw new IllegalStateException(
-                                    "linked receiver is missing a lexically checked method slot");
-                        }
-                        receiver.owner.requireClassMemberVisible(
-                                selected.visibility(), receiver.owner.declaringClass(selected),
-                                env.accessClass(), "method", selected.name());
-                        List<Object> args = evaluateArguments(call.arguments(), env);
-                        return receiver.owner.methodInvocation(receiver, selected, args);
-                    }
-                }
-            }
+            // A lexical instance family wins before arity and file/import lookup.
+            Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
+            if (implicit != null) return prepareInvocation(implicit, env);
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 // Immutable checked target within this evaluator's code image.
@@ -12273,6 +12265,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Ast.ClassDecl accessClass;
+        // Authenticated lexical method context, not a user-supplied self name.
+        private Ast.ClassDecl instanceMethodOwner;
         // Declaration-origin boundary survives nlex lambdas, which intentionally
         // discard private-member authority but must not acquire file ambient scope.
         private final Ast.ClassDecl lexicalContainerClass;
@@ -12336,6 +12330,9 @@ public final class OresEvalRootNode extends RootNode {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
+            this.instanceMethodOwner =
+                    parent == null || descendantsNonLexical
+                            ? null : parent.instanceMethodOwner;
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
@@ -12352,6 +12349,7 @@ public final class OresEvalRootNode extends RootNode {
         private long scopeEpoch() { return scopeEpoch; }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private Ast.ClassDecl accessClass() { return accessClass; }
+        private Ast.ClassDecl instanceMethodOwner() { return instanceMethodOwner; }
         private Ast.ClassDecl lexicalContainerClass() { return lexicalContainerClass; }
         private String lexicalModule() { return lexicalModule; }
         private boolean isInsideExplicitModule() {

@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
@@ -96,6 +97,8 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    // Only the compiler's actual instance-method frame may bind implicit self.
+    private Ast.ClassDecl currentInstanceMethodOwner;
     private final List<String> copyWarnings = new ArrayList<>();
     /** Opt-in in-pass trace; never permits guest code emission. */
     private BorrowMirAuditV1.Collector borrowMirAudit;
@@ -453,8 +456,14 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            Ast.ClassDecl previousInstanceOwner = currentInstanceMethodOwner;
+            currentInstanceMethodOwner = method.isStatic() ? null : klass;
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentInstanceMethodOwner = previousInstanceOwner;
+                scope.close();
+            }
         }
     }
 
@@ -2154,6 +2163,24 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // Resolve names in the same order as TypeChecker: a lexical local
+        // wins, then the *entire* implicit receiver method family, only then
+        // file/import callables. Do not let wrong arity fall through.
+        if (currentInstanceMethodOwner != null
+                && call.origin() == Ast.CallOrigin.DIRECT
+                && call.callee() instanceof Ast.NameExpr implicit
+                && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
+                && scope.lookup(implicit.name()) == null
+                && scope.lookup("self") != null
+                && hasMethodNamed(
+                        currentInstanceMethodOwner, implicit.name(),
+                        new LinkedHashSet<>())) {
+            return checkCall(
+                    call.rewrite(
+                            new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                            call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                    scope);
+        }
         if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                 && call.callee() instanceof Ast.LambdaExpr lambda) {
             int arity = lambda.parameters().size();
@@ -4364,6 +4391,20 @@ public final class OwnershipChecker {
                 }
             }
         } else if (expr instanceof Ast.CallExpr e) {
+            // Original AST still has a bare name. A closure that invokes it
+            // captures the same borrowed self as an explicit self.method().
+            if (currentInstanceMethodOwner != null
+                    && e.origin() == Ast.CallOrigin.DIRECT
+                    && e.callee() instanceof Ast.NameExpr implicit
+                    && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
+                    && !locals.contains(implicit.name())
+                    && outer.lookup(implicit.name()) == null
+                    && hasMethodNamed(
+                            currentInstanceMethodOwner, implicit.name(),
+                            new LinkedHashSet<>())) {
+                scanExpr(new Ast.NameExpr("self"),
+                        locals, outer, recursiveBinding, captures, false);
+            }
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.SpreadExpr e) {
