@@ -27,7 +27,7 @@ Host-only Java 21 smoke compilation and execution passed for both ciphers,
 round trips, repeated unique nonces, tampering, wrong AAD/key/nonce,
 zero-length messages, defensive output copies and closed handles. The
 retrieved Git blob hash of the tested source was
-`44bbd171b86a22563df4dbdc382aee7542cda758`. The repo also has
+`d4ba4e2212b22b90fdfd4da79b5701304de714cb`. The repo also has
 `AeadPrimitivesTest.java` JUnit tests, but the **JUnit project suite and
 actual guest compiler, importer and AOT tests remain NOT_EXECUTED**.
 This host primitive has a first compiler-owned guest-callable prototype, but full guest execution is unverified; its opaque key handle
@@ -97,15 +97,49 @@ type exists.
 direct runtime smoke passed AES-256-GCM and ChaCha20-Poly1305 round trips,
 nonce uniqueness, wrong key/AAD/nonce/tag and key close on the exact
 `AeadPrimitives.java` blob
-`44bbd171b86a22563df4dbdc382aee7542cda758`.
+`d4ba4e2212b22b90fdfd4da79b5701304de714cb`.
 Isolated Java 21 `javac` + direct runtime RFC 5869 test case 1
 and output-limit rejection passed on exact `HkdfSha256.java` blob
 `27dec43d6c60478f36d8e8cb551d424e572bd6f1`.
 New `CryptoAeadGuestSourceTest`, `HkdfSha256Test` and
 `AeadPrimitivesTest` have **NOT been executed** via repository Maven,
 the real Atto interpreter, GraalVM 25/Native Image, LLVM, .NET or Wasm.
-The separate Java SHA/HMAC/PBKDF2 PR #1367 remains unmerged and requires
-manual integration, not a duplicate implementation.
+Java PR #1367 remains independently open; its existing primitives were
+incorporated then security-hardened in this draft (see integration notes).
+
+## Current hardening and CI-source export gate
+
+The exact-Java-source host smoke has been rerun on Java 21:
+`AeadPrimitives.java` SHA
+`d4ba4e2212b22b90fdfd4da79b5701304de714cb`
+and `CryptoPrimitives.java` SHA
+`f466eb1b2100090ef69d71a1a60b8f9f1e7c70be`.
+AEAD now wipes temporary nonce, AAD, plaintext and unreturned
+ciphertext arrays, including on errors, while provider-internal JCA
+copies remain outside these Java-level guarantees. Multi-block
+PBKDF2 known vectors for 1, 47 and 64 output bytes passed (3/3).
+RFC 5869 HKDF on source blob
+`27dec43d6c60478f36d8e8cb551d424e572bd6f1` also passed.
+
+The token-free, source-owned host smoke runner is
+`sh tests/crypto-host-v1.sh` (Java 21; **not** the Atto guest compiler).
+Equivalent isolated host vectors passed, but this exact newly
+committed shell runner has **not** yet been executed by GitHub Actions.
+Maven/JUnit, strict Atto namespace guest tests, GraalVM AOT, and
+cross-backend live interoperability remain **NOT_EXECUTED**.
+
+A private alternate organization `22-factor-apps/atto-ci`
+(repo ID 1459040433) has confirmed **source-free stepful Actions**
+capacity from run 45050079712 (2026-11-22; six completed steps).
+This does **not** authorize moving private Atto source there.
+`.github/private-ci-approved-repositories.txt` currently has
+no active destination entries, and
+`.github/private-ci-approved-source-snapshots.txt` does not pin
+this crypto PR head/tree. A token-free exact-tree mirror cannot
+proceed without independently authenticated export approval of
+the source SHA/root tree, destination immutable repo ID, readers
+and retention. Do not substitute a PAT, secret, public repo,
+or unapproved private carrier.
 
 ## Portable Atto source envelope helpers
 
@@ -209,18 +243,22 @@ and explicitly budgeted API.
 ## Consolidated SHA/HMAC/PBKDF2 implementation
 
 The existing Java PR #1367 `CryptoPrimitives.java` and
-`CryptoPrimitivesTest.java` were incorporated into this branch as
+`CryptoPrimitivesTest.java` were initially incorporated into this branch as
 **byte-identical Git blobs**, hashes
 `b1243dbe5a1cfa8ac6b0a101a264f64585720015` and
 `8819155e9006a6e4892af24b4cbf1a910ea3626a`. The evaluator
 and type/ownership checkers now expose its SHA-256, HMAC-SHA-256,
 bounded PBKDF2, secure randomness, canonical Base64, and
 constant-time comparison under the same trusted `crypto` namespace.
-No independent duplicate primitive code was written.
+No independent duplicate primitive code was written. Subsequently, the
+integration branch hardened PBKDF2 to avoid the unzeroizable internal
+`ByteArrayOutputStream` buffer; the current Java source is intentionally
+no longer byte-identical to PR #1367. On success and failure, temporary
+PBKDF2 blocks are scrubbed, and the requested result is allocated once.
 
 An isolated Java 21 direct smoke of the exact integrated
-`CryptoPrimitives.java` Git blob
-`b1243dbe5a1cfa8ac6b0a101a264f64585720015` compiled
+`CryptoPrimitives.java` hardened Git blob
+`f466eb1b2100090ef69d71a1a60b8f9f1e7c70be` compiled
 and **passed** SHA-256("abc"), HMAC-SHA-256("key","abc"),
 PBKDF2-HMAC-SHA-256("password","salt",4096,32), canonical
 Base64 decoding, secure-random output sizing, equality checks
