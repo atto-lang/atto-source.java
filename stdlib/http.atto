@@ -2,7 +2,7 @@
 // Source-owned HTTP/1.1 message policy only; NEVER grants network authority.
 // Transport owns permissions, DNS/TLS, byte-bounded reads, cancel, ownership,
 // redirects, decompression, body streams, timeout and header normalization.
-define module http as
+use namespace http;
 
   // Typed, validated HTTP metadata only. Raw bytes and privileged I/O are
   // owned by the transport; these values are not network capabilities.
@@ -344,4 +344,3 @@ define module http as
     fi
     return expected_method == request_method && route_matches(pattern, target);
   }
-end
