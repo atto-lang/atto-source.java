@@ -3840,7 +3840,7 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
-                              "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
+                              "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "flatten", "ok").contains(sumMethod.member())) {
                 Type sumReceiver = deref(typeOf(sumMethod.receiver(), env, generics, self));
                 if (sumReceiver instanceof Named sum
                         && (sum.name().equals("Option") || sum.name().equals("Result"))) {
@@ -5590,7 +5590,8 @@ public final class TypeChecker {
                 // expose Unknown result parameters and bypass direct-call
                 // inference, allowing unsound generic widening.
                 if (Set.of("map", "map_err", "and_then", "or_else",
-                           "filter", "ok_or_else", "unwrap_or_else", "ok_or").contains(member.member())) {
+                           "filter", "ok_or_else", "unwrap_or_else", "ok_or",
+                           "transpose", "flatten").contains(member.member())) {
                     throw new IllegalArgumentException(
                             "Option/Result combinators require a direct call; "
                             + "first-class extraction is not yet type-safe");
@@ -9643,16 +9644,16 @@ public final class TypeChecker {
         final String kind = option ? "Option" : "Result";
         final Type input = sum.arguments().getFirst();
         final Type error = option ? null : sum.arguments().get(1);
-        final boolean noCallback = operation.equals("transpose") || operation.equals("ok");
+        final boolean noCallback = Set.of("transpose", "flatten", "ok").contains(operation);
 
         if (option) {
             if (!Set.of("map", "and_then", "or_else", "filter",
-                        "ok_or_else", "unwrap_or_else", "ok_or", "transpose")
+                        "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "flatten")
                     .contains(operation)) {
                 throw new IllegalArgumentException("unknown Option member '" + operation + "'");
             }
         } else if (!Set.of("map", "map_err", "and_then", "or_else",
-                           "unwrap_or_else", "ok")
+                           "unwrap_or_else", "ok", "transpose", "flatten")
                 .contains(operation)) {
             throw new IllegalArgumentException("unknown Result member '" + operation + "'");
         }
@@ -9663,19 +9664,58 @@ public final class TypeChecker {
         if (call.arguments().size() != (noCallback ? 0 : 1)
                 || (!noCallback && call.arguments().getFirst() instanceof Ast.SpreadExpr)) {
             throw new IllegalArgumentException(kind + "." + operation
-                    + " expects " + (noCallback ? "zero arguments"
+                    + " expects " + (noCallback ? "no arguments"
                             : operation.equals("ok_or") ? "one eager error value" : "one callable"));
         }
         if (noCallback) {
             if (operation.equals("ok")) return new Named("Option", List.of(input));
-            if (input instanceof Named nested
-                    && nested.name().equals("Result") && nested.arguments().size() == 2) {
-                return new Named("Result", List.of(
-                        new Named("Option", List.of(nested.arguments().getFirst())),
-                        nested.arguments().get(1)));
+            // An unbound None/Ok/Err constructor cannot become a published
+            // nested ADT value type through transpose or flatten. Generic
+            // type variables remain admissible; an erased Unknown value slot
+            // does not. An Ok(v) literal's still-open error domain stays
+            // admissible, as main's pipe suite requires for
+            // Some(Ok(42)) |> Option.transpose(); Result.flatten separately
+            // requires a concrete, identical E.
+            Type nestedValue = input instanceof Named nestedInput
+                    && !nestedInput.arguments().isEmpty()
+                    ? nestedInput.arguments().getFirst() : input;
+            if (containsUnknown(nestedValue)) {
+                throw new IllegalArgumentException(kind + "." + operation
+                        + " requires fully resolved nested ADT type arguments");
+            }
+            if (option) {
+                if (operation.equals("flatten")) {
+                    if (input instanceof Named inner && inner.name().equals("Option")
+                            && inner.arguments().size() == 1) return input;
+                    throw new IllegalArgumentException(
+                            "Option.flatten requires Option<Option<T>>");
+                }
+                if (input instanceof Named inner && inner.name().equals("Result")
+                        && inner.arguments().size() == 2) {
+                    return new Named("Result", List.of(
+                            new Named("Option", List.of(inner.arguments().getFirst())),
+                            inner.arguments().get(1)));
+                }
+                throw new IllegalArgumentException(
+                        "Option.transpose requires Option<Result<T,E>>");
+            }
+            if (operation.equals("transpose")) {
+                if (input instanceof Named inner && inner.name().equals("Option")
+                        && inner.arguments().size() == 1) {
+                    return new Named("Option", List.of(new Named("Result",
+                            List.of(inner.arguments().getFirst(), error))));
+                }
+                throw new IllegalArgumentException(
+                        "Result.transpose requires Result<Option<T>,E>");
+            }
+            if (input instanceof Named inner && inner.name().equals("Result")
+                    && inner.arguments().size() == 2
+                    && inner.arguments().get(1).equals(error)
+                    && !containsUnknown(error)) {
+                return input;
             }
             throw new IllegalArgumentException(
-                    "Option.transpose requires Option<Result<T,E>>");
+                    "Result.flatten requires Result<Result<T,E>,E> with identical E");
         }
 
         if (operation.equals("ok_or")) {
@@ -9913,6 +9953,17 @@ public final class TypeChecker {
                                 new Named("Result", List.of(ok, Unknown.INSTANCE)))),
                         new Named("Result", List.of(ok, Unknown.INSTANCE)));
                 case "ok" -> new Function(List.of(), new Named("Option", List.of(ok)));
+                case "transpose" -> ok instanceof Named inner
+                        && inner.name().equals("Option") && inner.arguments().size() == 1
+                        ? new Function(List.of(), new Named("Option", List.of(
+                                new Named("Result", List.of(inner.arguments().getFirst(),
+                                        named.arguments().get(1))))))
+                        : null;
+                case "flatten" -> ok instanceof Named inner
+                        && inner.name().equals("Result") && inner.arguments().size() == 2
+                        && inner.arguments().get(1).equals(named.arguments().get(1))
+                        && !containsUnknown(named.arguments().get(1))
+                        ? new Function(List.of(), ok) : null;
                 default -> null;
             };
         }

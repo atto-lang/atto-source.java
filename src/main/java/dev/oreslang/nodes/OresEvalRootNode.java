@@ -10931,6 +10931,29 @@ public final class OresEvalRootNode extends RootNode {
                     return result.ok()
                             ? new OptionValue(true, result.value()) : new OptionValue(false, null);
                 };
+                case "transpose" -> (Invokable) args -> {
+                    requireZero(args, "Result.transpose");
+                    // Result<Option<T>,E> -> Option<Result<T,E>>.
+                    // An Err remains present in the Option; only Ok(None) is absent.
+                    if (!result.ok()) return new OptionValue(true, result);
+                    if (!(result.value() instanceof OptionValue inner)) {
+                        throw new IllegalStateException(
+                                "Result.transpose requires a statically checked Option payload");
+                    }
+                    return inner.present()
+                            ? new OptionValue(true, new ResultValue(true, inner.value()))
+                            : new OptionValue(false, null);
+                };
+                case "flatten" -> (Invokable) args -> {
+                    requireZero(args, "Result.flatten");
+                    // Result<Result<T,E>,E> -> Result<T,E>; never cross or erase E.
+                    if (!result.ok()) return result;
+                    if (!(result.value() instanceof ResultValue inner)) {
+                        throw new IllegalStateException(
+                                "Result.flatten requires a statically checked Result payload");
+                    }
+                    return inner;
+                };
                 default -> throw new IllegalArgumentException("unknown Result member " + name);
             };
         }

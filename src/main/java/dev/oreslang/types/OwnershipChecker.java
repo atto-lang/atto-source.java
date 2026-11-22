@@ -3269,8 +3269,13 @@ public final class OwnershipChecker {
                 || member.member().equals("unwrap_all") || member.member().equals("flatten")
                 || member.member().equals("expect") || member.member().equals("unwrap_or")
                 || member.member().equals("unwrap_or_else")
-                || member.member().equals("or_else") || member.member().equals("ok_or");
+                || member.member().equals("or_else") || member.member().equals("ok_or")
+                || member.member().equals("transpose");
         if (!query && !extracting) return null;
+        if ((member.member().equals("transpose") || member.member().equals("flatten"))
+                && !arguments.isEmpty()) {
+            throw error(member.member() + " requires zero arguments");
+        }
         // A nested call has no reliably resolved result type in this checker
         // until TypeChecker supplies its typed IR. Do not inspect it here and
         // then again in generic method dispatch: that double-checks affine
@@ -3282,13 +3287,17 @@ public final class OwnershipChecker {
         }
         // New nested-only names must not cause a non-Option member receiver
         // to be ownership-checked twice on the ordinary method-call path.
-        if (member.member().equals("flatten") || member.member().equals("unwrap_all")) {
+        if (member.member().equals("flatten") || member.member().equals("unwrap_all")
+                || member.member().equals("transpose")) {
             Ast.TypeRef hint = receiverType(member.receiver(), scope);
             if (hint != null
                     && !(hint.name().equals("Option") && hint.arguments().size() == 1)
                     && !(member.member().equals("flatten")
                             && hint.name().equals("Future")
-                            && hint.arguments().size() == 1)) {
+                            && hint.arguments().size() == 1)
+                    && !(hint.name().equals("Result")
+                            && hint.arguments().size() == 2
+                            && !member.member().equals("unwrap_all"))) {
                 return null;
             }
         }
@@ -3353,7 +3362,6 @@ public final class OwnershipChecker {
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
         if (!option && !result) return null;
-        if (member.member().equals("flatten") && !option) return null;
 
         if (query) {
             for (Ast.Expr argument : arguments) checkExpr(argument, scope, true);
@@ -3409,9 +3417,33 @@ public final class OwnershipChecker {
         }
 
         if (member.member().equals("flatten")) {
-            if (!okType.name().equals("Option") || okType.arguments().size() != 1) {
+            if (option && (!okType.name().equals("Option") || okType.arguments().size() != 1)) {
                 throw error("Option.flatten requires Option<Option<T>>");
             }
+            if (result && (!okType.name().equals("Result")
+                    || okType.arguments().size() != 2
+                    || !okType.arguments().get(1).equals(receiverType.arguments().get(1)))) {
+                throw error("Result.flatten requires Result<Result<T,E>,E> with identical E");
+            }
+        }
+        if (member.member().equals("transpose")) {
+            if (option) {
+                if (!okType.name().equals("Result") || okType.arguments().size() != 2) {
+                    throw error("Option.transpose requires Option<Result<T,E>>");
+                }
+                Ast.TypeRef output = new Ast.TypeRef("Result",
+                        List.of(new Ast.TypeRef("Option",
+                                List.of(okType.arguments().getFirst()), false),
+                                okType.arguments().get(1)), false);
+                return new ValueInfo(output, kindOfType(output), null);
+            }
+            if (!okType.name().equals("Option") || okType.arguments().size() != 1) {
+                throw error("Result.transpose requires Result<Option<T>,E>");
+            }
+            Ast.TypeRef inner = new Ast.TypeRef("Result",
+                    List.of(okType.arguments().getFirst(), receiverType.arguments().get(1)), false);
+            Ast.TypeRef output = new Ast.TypeRef("Option", List.of(inner), false);
+            return new ValueInfo(output, kindOfType(output), null);
         }
 
         if (member.member().equals("unwrap_or") && containsMutexGuardType(okType)) {
