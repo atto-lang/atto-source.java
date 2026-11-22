@@ -47,8 +47,9 @@ final class AttoChildProcessGuestTest {
         String probe = quote("dev.oreslang.runtime.NativeChildProcessesTest$ChildProcessProbe");
         String cwd = quote(workingDirectory());
         return """
+                import module Process from "std/process";
                 pub async routine main(): int {
-                  val attempted = await process.spawn(%s, ["-cp", %s, %s, "exit42"], %s);
+                  val attempted = await Process.spawn(%s, ["-cp", %s, %s, "exit42"], %s);
                   if attempted.is_err() then return %d; fi
                   val child = attempted.unwrap();
                   val captured = await child.collect_output();
