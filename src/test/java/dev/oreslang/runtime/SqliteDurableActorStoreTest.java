@@ -50,6 +50,9 @@ final class SqliteDurableActorStoreTest {
             assertEquals(1, activation.inbox().size());
             assertEquals(1, store.commitTurn(turn(activation.epoch(), 0, "one",
                     List.of(intent("out-1", "key-1")))));
+            var original = store.committedDelivery(A, activation.epoch(), mail("one")).orElseThrow();
+            assertEquals(1L, original.stateVersion());
+            assertArrayEquals(new byte[] {1}, original.encodedState());
             store.hibernate(A, activation.epoch());
             assertFalse(store.enqueue(A, mail("one")), "consumed deliveries remain deduplicated");
         }
@@ -61,6 +64,10 @@ final class SqliteDurableActorStoreTest {
             assertTrue(restored.inbox().isEmpty());
             assertEquals(1, restored.pendingOutbox().size());
             assertEquals("key-1", restored.pendingOutbox().getFirst().idempotencyKey());
+            assertEquals(1L, reopened.committedDelivery(A, restored.epoch(), mail("one"))
+                    .orElseThrow().stateVersion());
+            assertThrows(IllegalStateException.class, () -> reopened.committedDelivery(
+                    A, restored.epoch(), new DurableActorStore.Inbound("one", new byte[] {99})));
             assertTrue(reopened.acknowledge(A, restored.epoch(), "out-1", "receipt"));
             assertTrue(reopened.acknowledge(A, restored.epoch(), "out-1", "receipt"));
             assertFalse(reopened.acknowledge(A, restored.epoch(), "out-1", "other"));
@@ -129,6 +136,8 @@ final class SqliteDurableActorStoreTest {
             var restored = store.activate(A);
             assertEquals(1, restored.snapshot().stateVersion());
             assertEquals("two", restored.inbox().getFirst().deliveryId());
+            assertTrue(store.committedDelivery(A, restored.epoch(), mail("two")).isEmpty(),
+                    "rolled-back outbox conflict must not leave a committed receipt");
             assertEquals(1, restored.pendingOutbox().size());
             assertEquals(2, store.commitTurn(turn(restored.epoch(), 1, "two",
                     List.of(intent("id-2", "idem-2")))));
