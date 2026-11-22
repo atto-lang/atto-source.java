@@ -9,7 +9,7 @@ const source = readFileSync(new URL('../stdlib/log.atto', import.meta.url), 'utf
 
 function pureFunction(name, dependencies = {}) {
   const pattern = new RegExp('pub fnc ' + name +
-    '\\(([^)]*)\\) -> (?:bool|String) \\{([\\s\\S]*?)\\n  \\}');
+    '\\(([^)]*)\\) -> (?:bool|String) \\{([\\s\\S]*?)\\n\\}');
   const found = source.match(pattern);
   assert.ok(found, 'missing native Atto function ' + name);
   const parameters = found[1].split(',').map((p) => p.trim().split(/\s+/).at(-1));
@@ -31,6 +31,7 @@ const enabled = pureFunction('enabled', {
   valid_threshold: validThreshold
 });
 const severityName = pureFunction('severity_name');
+const sinkByteBudgetOk = pureFunction('sink_byte_budget_ok');
 
 test('standard numeric severities and OFF are disjoint', () => {
   assert.deepEqual([10,20,30,40,50,60].map(validSeverity), [true,true,true,true,true,true]);
@@ -58,7 +59,8 @@ test('all level thresholds, OFF, and malformed filters fail closed', () => {
 });
 
 test('native module exposes typed immutable logging records and factories', () => {
-  assert.match(source, /define module Log as/);
+  assert.match(source, /^namespace log;$/m);
+  assert.doesNotMatch(source, /define module Log as/);
   assert.match(source, /pub define class LogEntry as/);
   assert.equal((source.match(/pub val /g) || []).length,11);
   assert.match(source, /pub fnc entry_with_fields\(/);
@@ -84,6 +86,9 @@ test('bounded queue rejects before mutation and counts only FULL', () => {
     offer.indexOf('self.items.add'));
   assert.match(source,/capacity < 1 \|\| capacity > 4096/);
   assert.match(source,/self.dropped < 2147483647/);
+  assert.match(source,/self.items.size >= self.capacity && self.head > 0/);
+  assert.match(source,/remaining.add\(self.items.get\(index\)\)/);
+  assert.match(source,/self.items = remaining/);
 });
 
 test('one-consumer peek/ack retains entries until acknowledged and then resets', () => {
@@ -111,4 +116,32 @@ test('close rejects production but does not prohibit draining', () => {
 test('no host implementation, incidental I/O, async blocking, dynamic runtime, or reflection', () => {
   assert.doesNotMatch(source, /java\.|System\.|interop\.|\bstdio\.|\bprintln\s*\(|writech|\bspawn\b|\bawait\b|\bffi\b|\breflect\b/);
   assert.doesNotMatch(source,/\b(?:log_async|flush_async_logs)\s*\(/);
+});
+
+test('trusted sink byte policy checks overflow and exact boundary without adding sizes', () => {
+  assert.equal(sinkByteBudgetOk(0,65536,65536,8388608), true);
+  assert.equal(sinkByteBudgetOk(8388607,1,65536,8388608), true);
+  assert.equal(sinkByteBudgetOk(8388608,1,65536,8388608), false);
+  assert.equal(sinkByteBudgetOk(0,65537,65536,8388608), false);
+  assert.equal(sinkByteBudgetOk(0,-1,65536,8388608), false);
+  assert.equal(sinkByteBudgetOk(-1,1,65536,8388608), false);
+  assert.equal(sinkByteBudgetOk(3,0,65536,2), false);
+  assert.equal(sinkByteBudgetOk(0,1,-1,8388608), false);
+  assert.equal(sinkByteBudgetOk(0,1,65536,-1), false);
+  const max = Number.MAX_SAFE_INTEGER;
+  assert.equal(sinkByteBudgetOk(max-2,2,2,max),true);
+  assert.equal(sinkByteBudgetOk(max-2,3,3,max),false);
+});
+
+test('structured fields reject orphaned values and repeated nonempty keys', () => {
+  assert.match(source,/record.field1_key eq "" && record.field1_value neq ""/);
+  assert.match(source,/record.field2_key eq "" && record.field2_value neq ""/);
+  assert.match(source,/record.field1_key neq "" && record.field1_key eq record.field2_key/);
+});
+
+test('source files use one flat namespace and no runtime module wrapper', () => {
+  assert.equal((source.match(/^namespace /gm) || []).length,1);
+  assert.ok(source.indexOf('namespace log;') < source.indexOf('pub fnc enabled'));
+  assert.ok(source.indexOf('pub define class LogEntry as') < source.indexOf('pub define class Buffer as'));
+  assert.doesNotMatch(source,/define namespace|define module|use namespace .*\\./);
 });
