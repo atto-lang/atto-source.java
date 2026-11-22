@@ -84,10 +84,11 @@ public final class AsyncNioUdp {
                 context.requirePermission(RuntimePermissions.Permission.NET,
                         "127.0.0.1:" + peerPort, "udp.send_to");
                 Objects.requireNonNull(octets, "UDP bytes");
-                if (octets.size() > UdpDatagramKernel.MAX_PAYLOAD) {
-                    throw new IllegalArgumentException("UDP payload too large");
+                int size = octets.size();
+                if (size < 0 || size > UdpDatagramKernel.MAX_PAYLOAD) {
+                    throw new IllegalArgumentException("UDP payload size out of range");
                 }
-                data = new byte[octets.size()];
+                data = new byte[size];
                 // Copy inside the checked authority boundary. The kernel
                 // reauthorizes the destination at actual physical send.
                 for (int i = 0; i < data.length; i++) {
