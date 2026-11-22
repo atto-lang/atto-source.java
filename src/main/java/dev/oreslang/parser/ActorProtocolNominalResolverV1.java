@@ -47,6 +47,8 @@ public final class ActorProtocolNominalResolverV1 {
     }
     private enum ResponseKind { ONE_WAY, UNARY, STREAM }
     private record Response(ResponseKind kind, String type) { }
+    /** Maximum validated suffix depth is retained when a shared node is memoized. */
+    private record Resolution(Response mode, int height) { }
 
     private static IllegalArgumentException error(String code, String detail) {
         return new IllegalArgumentException(code + ": " + detail);
@@ -96,7 +98,7 @@ public final class ActorProtocolNominalResolverV1 {
                 new LinkedHashMap<>();
         // Memoize completed nominal modes. Shared diamond inheritance must be
         // O(nodes + edges), never exponential in the number of paths.
-        Map<String, Response> memo = new LinkedHashMap<>();
+        Map<String, Resolution> memo = new LinkedHashMap<>();
         // One nominal message class has one payload schema even when multiple
         // protocol states admit it. A state-dependent payload would require
         // a different nominal message kind or an explicitly checked ADT.
@@ -120,8 +122,9 @@ public final class ActorProtocolNominalResolverV1 {
                     throw error("E_PROTOCOL_UNVERIFIED_MESSAGE",
                             "message must name a concrete non-generic class: "
                                     + transition.message());
-                Response marker = inheritedMode(node.name(), nodes,
+                Resolution proof = inheritedMode(node.name(), nodes,
                         new LinkedHashSet<>(), memo, 0);
+                Response marker = proof.mode();
                 if (marker == null)
                     throw error("E_PROTOCOL_UNVERIFIED_MESSAGE",
                             "missing explicit nominal response marker on "
@@ -192,12 +195,19 @@ public final class ActorProtocolNominalResolverV1 {
                             + " lacks a source-local concrete type");
     }
 
-    private static Response inheritedMode(
+    private static Resolution inheritedMode(
             String name, Map<String, Nominal> nodes, Set<String> active,
-            Map<String, Response> memo, int depth) {
-        if (memo.containsKey(name)) return memo.get(name);
+            Map<String, Resolution> memo, int depth) {
         if (depth > MAX_DEPTH)
             throw error("E_PROTOCOL_LIMIT", "nominal inheritance depth exceeded");
+        if (memo.containsKey(name)) {
+            Resolution cached = memo.get(name);
+            // A proof memoized through a short path must not hide a deeper
+            // path that exceeds the bound. Cache the maximum suffix length.
+            if (depth + cached.height() > MAX_DEPTH)
+                throw error("E_PROTOCOL_LIMIT", "nominal inheritance depth exceeded");
+            return cached;
+        }
         if (!active.add(name))
             throw error("E_PROTOCOL_CYCLE", "nominal inheritance cycle through " + name);
         Nominal n = nodes.get(name);
@@ -205,24 +215,32 @@ public final class ActorProtocolNominalResolverV1 {
             throw error("E_PROTOCOL_UNVERIFIED_MESSAGE",
                     "unlinked nominal parent " + name);
         Response mode = null;
+        int height = 0;
         for (Ast.TypeRef parent : n.parents()) {
-            Response candidate = marker(parent, nodes);
-            if (candidate == null) {
+            Response direct = marker(parent, nodes);
+            Resolution candidate;
+            if (direct != null) {
+                candidate = new Resolution(direct, 0);
+            } else {
                 if (parent.name().equals("Object") && parent.arguments().isEmpty()) continue;
                 if (parent.inferArguments() || !parent.arguments().isEmpty())
                     throw error("E_PROTOCOL_UNVERIFIED_MESSAGE",
                             "generic parent needs linked specialization: " + parent.name());
                 candidate = inheritedMode(parent.name(), nodes, active, memo, depth + 1);
             }
-            if (candidate == null) continue;
-            if (mode != null && !mode.equals(candidate))
+            height = Math.max(height, candidate.height() + 1);
+            if (depth + height > MAX_DEPTH)
+                throw error("E_PROTOCOL_LIMIT", "nominal inheritance depth exceeded");
+            if (candidate.mode() == null) continue;
+            if (mode != null && !mode.equals(candidate.mode()))
                 throw error("E_PROTOCOL_RESPONSE_MODE",
                         "incompatible inherited response markers on " + name);
-            mode = candidate;
+            mode = candidate.mode();
         }
         active.remove(name);
-        memo.put(name, mode);
-        return mode;
+        Resolution completed = new Resolution(mode, height);
+        memo.put(name, completed);
+        return completed;
     }
 
     private static Response marker(Ast.TypeRef ref, Map<String, Nominal> nodes) {
