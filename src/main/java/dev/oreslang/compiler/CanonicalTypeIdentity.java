@@ -107,9 +107,18 @@ public final class CanonicalTypeIdentity {
             DataOutputStream out = new DataOutputStream(buffer);
             List<Ast.TypeRef> args = type.arguments();
             switch (name) {
-                case "$record$", "$readonly_record$" -> {
-                    out.writeByte(name.equals("$record$") ? 1 : 2);
-                    Map<String, Ast.TypeRef> fields = type.recordMembers();
+                case "$record$", "$readonly_record$", "$struct$" -> {
+                    // Main models mutable fixed products as $struct$ (records
+                    // are readonly by default); it gets its own tag so a struct
+                    // never shares a fingerprint with a readonly record.
+                    out.writeByte(switch (name) {
+                        case "$record$" -> 1;
+                        case "$readonly_record$" -> 2;
+                        default -> 12;
+                    });
+                    Map<String, Ast.TypeRef> fields = name.equals("$struct$")
+                            ? type.structMembers()
+                            : type.recordMembers();
                     if (fields.size() > MAX_FIELDS) throw new IllegalArgumentException("too many record fields");
                     List<String> keys = new ArrayList<>(fields.keySet());
                     keys.sort(CanonicalTypeIdentity::compareUtf8);
