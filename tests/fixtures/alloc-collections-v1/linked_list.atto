@@ -1,5 +1,5 @@
 // expect-exit: 42
-import module linked_list from "../../../stdlib/alloc/linked_list.atto";
+import module linked_list from "./linked_list.atto";
 
 pub fnc main(): int {
   let mut list = linked_list.new_linked_list();
