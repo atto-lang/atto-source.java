@@ -1,4 +1,4 @@
-name: Atto atomic Arc/Weak host runtime v1
+name: Atto atomic Arc/Weak host runtime exact-head v1
 on:
   pull_request:
     paths:
@@ -12,17 +12,42 @@ on:
       - 'src/test/java/dev/oreslang/runtime/AtomicSharedCellV1*.java'
       - 'scripts/run-atomic-arc-host-v1.sh'
       - '.github/workflows/atto-atomic-arc-host-v1.yml'
+permissions:
+  contents: read
 jobs:
   host-strong-weak:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout exact PR source head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Assert immutable checkout SHA
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code
+          echo "ATTO_ARC_HOST_TEST_HEAD=$EXPECTED_HEAD"
+      - name: Setup JDK 21 for atomic host smoke
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
         with:
           distribution: temurin
           java-version: '21'
-      - name: Execute JDK host ownership and racing weak-upgrade checks
-        run: bash scripts/run-atomic-arc-host-v1.sh
+      - name: Compile and run host ownership and weak-upgrade races
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/run-atomic-arc-host-v1.sh | tee atomic-arc-host.log
+          grep -Fqx 'ATTO_ARC_ATOMIC_JAVA_HOST_PASS' atomic-arc-host.log
+          echo 'ATTO_ARC_HOST_JDK21=EXECUTED'
+      - name: Preserve evidence boundary
+        if: always()
+        run: |
+          echo 'Host-only JDK21 test. Not a compiled Atto guest, Native Image, zero-GC, or verified actor-crossing Arc<T>.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Queued/zero-step jobs are NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"
