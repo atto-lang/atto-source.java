@@ -1,0 +1,44 @@
+// Source-owned hosted std.assert v1 candidate. NOT_EXECUTED until static
+// package linking, Eq checking and guest Error effect lowering are verified.
+// A failed check throws a guest AssertionError; it must never abort or panic.
+define module assert as
+
+  define pub class AssertionError extends Error as
+    pub val String message;
+  end
+
+  pub fnc true(bool condition): void {
+    if !condition; do
+      throw new AssertionError("assert.true: expected true");
+    fi
+    return;
+  }
+
+  pub fnc false(bool condition): void {
+    if condition; do
+      throw new AssertionError("assert.false: expected false");
+    fi
+    return;
+  }
+
+  // Statically typed Eq only; no Any, coercion, address, or formatting fallback.
+  // Expected then actual; arguments evaluate once and left-to-right.
+  pub fnc equal<T: Eq>(T expected, T actual): void {
+    if !(expected eq actual); do
+      throw new AssertionError("assert.equal: values differ");
+    fi
+    return;
+  }
+
+  pub fnc not_equal<T: Eq>(T expected, T actual): void {
+    if expected eq actual; do
+      throw new AssertionError("assert.not_equal: values are equal");
+    fi
+    return;
+  }
+
+  pub fnc fail(String message): void {
+    throw new AssertionError(message);
+  }
+
+end

@@ -1,0 +1,49 @@
+// Optional Atto test helpers; report failures as existing TestOutcome values.
+// Unlike std.assert, these do not throw; test suites can collect all failures.
+import class TestOutcome from 'ores.std/testing';
+import fnc pass, fail from 'ores.std/testing';
+
+define module test_assert as
+
+  pub fnc expect_true(bool condition, String message): TestOutcome {
+    if condition; do return pass(); fi
+    return fail(message);
+  }
+
+  pub fnc expect_false(bool condition, String message): TestOutcome {
+    if !condition; do return pass(); fi
+    return fail(message);
+  }
+
+  // Expected-first, unlike legacy testing.ores actual-first functions.
+  pub fnc expect_equal_int(int expected, int actual, String message): TestOutcome {
+    if expected eq actual; do return pass(); fi
+    return fail(message);
+  }
+
+  pub fnc expect_not_equal_int(int expected, int actual, String message): TestOutcome {
+    if expected neq actual; do return pass(); fi
+    return fail(message);
+  }
+
+  pub fnc expect_equal_bool(bool expected, bool actual, String message): TestOutcome {
+    if expected eq actual; do return pass(); fi
+    return fail(message);
+  }
+
+  pub fnc expect_equal_string(String expected, String actual, String message): TestOutcome {
+    if expected eq actual; do return pass(); fi
+    return fail(message);
+  }
+
+  // Inclusive checks avoid endpoint arithmetic and integer overflow.
+  pub fnc expect_in_range_int(
+    int actual, int lower_inclusive, int upper_inclusive, String message
+  ): TestOutcome {
+    if lower_inclusive > upper_inclusive; do return fail(message); fi
+    if actual < lower_inclusive; do return fail(message); fi
+    if actual > upper_inclusive; do return fail(message); fi
+    return pass();
+  }
+
+end
