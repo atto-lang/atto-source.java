@@ -87,6 +87,11 @@ public final class AeadPrimitives {
         public byte[] ciphertext() { return ciphertext.clone(); }
     }
 
+    /** Nonce reservation exhausted; caller must rotate to a freshly generated key. */
+    public static final class NonceExhaustedException extends IllegalStateException {
+        public NonceExhaustedException() { super("AEAD per-key invocation limit exhausted"); }
+    }
+
     /** Uniform decryption failure for tampering, wrong key, nonce, or AAD. */
     public static final class AuthenticationException extends RuntimeException {
         public AuthenticationException() { super("authentication failed"); }
@@ -114,7 +119,7 @@ public final class AeadPrimitives {
 
         private byte[] reserveNonce() {
             if (exhausted || nextCounter >= MAX_ENCRYPTIONS_PER_KEY) {
-                throw new IllegalStateException("AEAD per-key invocation limit exhausted");
+                throw new NonceExhaustedException();
             }
             long n = nextCounter++;
             if (nextCounter >= MAX_ENCRYPTIONS_PER_KEY) exhausted = true;
