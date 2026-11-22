@@ -312,6 +312,10 @@ final class ActorPublisherScopedObservationTest {
             observer.send(1);
             assertTrue(done.await(5, TimeUnit.SECONDS));
             assertNull(error.get());
+            // done fires inside the actor callback before its envelope
+            // reservation has necessarily been released. Join processed-mail
+            // accounting before asserting physical shared-memory reclamation.
+            runtime.drain(observer).get(5, TimeUnit.SECONDS);
 
             // Subscription quota credits are refunded inside the receive
             // callback; other independently live actor mailbox envelopes

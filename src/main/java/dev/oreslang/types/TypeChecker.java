@@ -48,7 +48,7 @@ public final class TypeChecker {
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
-            "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
+            "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex", "Atomic",
             "Channel", "Future", "Fnc", "Function",
             "HttpClientResponse", "HttpClientBody");
 
@@ -518,7 +518,7 @@ public final class TypeChecker {
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "task_context", "task_cancel_requested", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
-                "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
+                "SharedMutex", "Atomic", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "HttpClientResponse", "HttpClientBody",
@@ -634,7 +634,8 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
-        if ("Symbol".equals(name) || "Newable".equals(name)) {
+        if ("Symbol".equals(name) || "Newable".equals(name)
+                || "Atomic".equals(name) || "AtomicCompareExchange".equals(name)) {
             throw new IllegalArgumentException(name
                     + " is a reserved compiler-owned nominal type; cannot declare "
                     + declarationKind + " " + name);
@@ -3245,6 +3246,7 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
+                    || name.name().equals("Atomic")
                     || name.name().equals("Channel") || name.name().equals("SelectCase")
                     || name.name().equals("SelectSet") || name.name().equals("SelectPlan")
                     || name.name().equals("DynamicSelectPlan"))
@@ -3752,13 +3754,25 @@ public final class TypeChecker {
                 // as the internal unary form, without nesting loan wrappers.
                 case "borrow" -> operand instanceof Borrow existing
                         ? new Borrow(existing.target(), false) : new Borrow(operand, false);
-                // A copied primitive is a detached value, not a retained loan.
-                // Keep nominal/container capabilities intact: their deep-copy
-                // and lifetime contracts require separate proofs.
-                case "copy" -> operand instanceof Borrow borrow
-                        && borrow.target() instanceof Primitive primitive
-                        && primitive != Primitive.VOID ? primitive : operand;
-                case "take", "share" -> operand;
+                case "take" -> operand;
+                case "copy", "share" -> {
+                    if (containsUnprovenAtomicCell(operand, 0)) {
+                        throw new IllegalArgumentException(
+                                "rt " + runtime.operation()
+                                        + " cannot duplicate or share Atomic<int> before "
+                                        + "shared-domain ownership and lifetime lowering");
+                    }
+                    // A copied primitive is a detached value, not a retained loan.
+                    // Keep nominal/container capabilities intact: their deep-copy
+                    // and lifetime contracts require separate proofs.
+                    if (runtime.operation().equals("copy")
+                            && operand instanceof Borrow borrow
+                            && borrow.target() instanceof Primitive primitive
+                            && primitive != Primitive.VOID) {
+                        yield primitive;
+                    }
+                    yield operand;
+                }
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
             };
@@ -4274,6 +4288,23 @@ public final class TypeChecker {
                 return futureCall.member().equals("all")
                         ? new Named("Future", List.of(new ListType(value)))
                         : new Named("Future", List.of(value));
+            }
+            // Stage-one AttoLang guest atomic: only signed i64, sequentially
+            // consistent, with compiler-checked methods. Never infer a shared
+            // pointer or capability from merely seeing the Atomic name.
+            if (call.callee() instanceof Ast.MemberExpr atomicCall
+                    && atomicCall.receiver() instanceof Ast.NameExpr atomicFactory
+                    && atomicFactory.name().equals("Atomic")
+                    && atomicCall.member().equals("new")) {
+                if (env.lookup("Atomic") != null) {
+                    throw new IllegalArgumentException("Atomic factory cannot be shadowed");
+                }
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Atomic.new expects exactly one signed int and no type arguments");
+                }
+                Type initial = typeOf(call.arguments().getFirst(), env, generics, self);
+                requireAssignable(initial, Primitive.INT, "Atomic.new initial value");
+                return new Named("Atomic", List.of(Primitive.INT));
             }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
@@ -5542,6 +5573,8 @@ public final class TypeChecker {
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
+            Type atomicMember = builtinAtomicMember(receiver, member.member());
+            if (atomicMember != null) return atomicMember;
 
             Type selectedReceiver = deref(receiver);
 
@@ -8025,6 +8058,7 @@ public final class TypeChecker {
                 || named.name().equals("Weak") || named.name().equals("Rc")
                 || named.name().equals("RefCell") || named.name().equals("RwLock")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("Atomic") || named.name().equals("AtomicCompareExchange")
                 || named.name().equals("ActorStream") || named.name().equals("StreamOperator")
                 || named.name().equals("ActorGroup") || named.name().equals("Topic")
                 || named.name().equals("Subscription")
@@ -9974,6 +10008,63 @@ public final class TypeChecker {
                 default -> null;
             };
             default -> null;
+        };
+    }
+
+    /**
+     * Atomic cells have identity and no validated share/copy transport yet.
+     * Reject nested cells too (Option/Result/List/tuple/struct), rather than
+     * treating a container as an ownership-laundering escape hatch.
+     */
+    private static boolean containsUnprovenAtomicCell(Type type, int depth) {
+        if (depth > 64) return true; // fail closed on maliciously nested types
+        if (type instanceof Borrow borrow)
+            return containsUnprovenAtomicCell(borrow.target(), depth + 1);
+        if (type instanceof SelfType selfType)
+            return containsUnprovenAtomicCell(selfType.bound(), depth + 1);
+        if (type instanceof Named named) {
+            if (named.name().equals("Atomic")) return true;
+            return named.arguments().stream()
+                    .anyMatch(t -> containsUnprovenAtomicCell(t, depth + 1));
+        }
+        if (type instanceof ListType list)
+            return containsUnprovenAtomicCell(list.element(), depth + 1);
+        if (type instanceof Tuple tuple)
+            return tuple.elements().stream().anyMatch(
+                    t -> containsUnprovenAtomicCell(t, depth + 1));
+        if (type instanceof Record record)
+            return record.members().values().stream().anyMatch(
+                    t -> containsUnprovenAtomicCell(t, depth + 1));
+        if (type instanceof Union union)
+            return union.options().stream().anyMatch(
+                    t -> containsUnprovenAtomicCell(t, depth + 1));
+        return false;
+    }
+
+    private Type builtinAtomicMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
+        // Other widths and composite types fail in resolve(TypeRef), before
+        // any backend can emit a non-atomic or widening host operation.
+        if (!named.arguments().getFirst().equals(Primitive.INT)) return null;
+        if (named.name().equals("AtomicCompareExchange")) {
+            return switch (member) {
+                case "exchanged" -> Primitive.BOOL;
+                case "observed" -> Primitive.INT;
+                default -> throw new IllegalArgumentException(
+                        "unknown AtomicCompareExchange member '" + member + "'");
+            };
+        }
+        if (!named.name().equals("Atomic")) return null;
+        return switch (member) {
+            case "load" -> new Function(List.of(), Primitive.INT);
+            case "store" -> new Function(List.of(Primitive.INT), Primitive.VOID);
+            case "swap", "fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor" ->
+                    new Function(List.of(Primitive.INT), Primitive.INT);
+            case "compare_exchange" -> new Function(
+                    List.of(Primitive.INT, Primitive.INT),
+                    new Named("AtomicCompareExchange", List.of(Primitive.INT)));
+            default -> throw new IllegalArgumentException(
+                    "unknown Atomic member '" + member + "'");
         };
     }
 
@@ -12689,6 +12780,17 @@ public final class TypeChecker {
                         resolve(ref.arguments().get(0), generics, self),
                         resolve(ref.arguments().get(1), generics, self)));
             }
+            case "Atomic" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1
+                        || !ref.arguments().getFirst().name().equals("int")
+                        || !ref.arguments().getFirst().arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Atomic<T> currently supports exactly Atomic<int>; other scalar widths are not lowered");
+                }
+                yield new Named("Atomic", List.of(Primitive.INT));
+            }
+            case "AtomicCompareExchange" -> throw new IllegalArgumentException(
+                    "AtomicCompareExchange is compiler-generated and cannot be constructed directly");
             case "MutexGuard" -> throw new IllegalArgumentException(
                     "MutexGuard<T> is compiler-managed and cannot be named in source declarations; acquire it from lock()/try_lock()/lock_async()");
             case "Mutex" -> {

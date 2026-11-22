@@ -16,7 +16,7 @@ import java.util.function.Function;
  * checked critical syntax, field identity and non-suspending effects.</p>
  *
  * <p>Every read/write revalidates the runtime-minted actor identity, execution
- * segment and the active {@link ActorStateLoans} ticket. Retirement fences
+ * segment and the active {@link ActorReadWriteLoans} ticket. Retirement fences
  * access immediately and waits for the lexical finally release before
  * reclaiming scalar storage. No mutable state object/array escapes a view.</p>
  */
@@ -26,8 +26,9 @@ final class SealedActorStateRegion
     private final ActorRuntime runtime;
     private final ActorRuntime.ActorId actorId;
     private final Object executionDomain;
+    private final boolean serialReceive;
     private final LinkedHashMap<String, Slot> slots = new LinkedHashMap<>();
-    private final ActorStateLoans loans = new ActorStateLoans(0);
+    private final ActorReadWriteLoans loans = new ActorReadWriteLoans();
     private long generation = 1;
     private boolean retired;
     private boolean physicalTasksQuiesced;
@@ -100,10 +101,15 @@ final class SealedActorStateRegion
                 throw new IllegalArgumentException("duplicate compiler-sealed state field");
             }
         }
-        return allocate(initialized);
+        return allocate(initialized, declaration.actorConcurrency().serialReceive());
     }
 
     static SealedActorStateRegion allocate(Map<String, ?> literalInitializers) {
+        return allocate(literalInitializers, false);
+    }
+
+    private static SealedActorStateRegion allocate(
+            Map<String, ?> literalInitializers, boolean serialReceive) {
         ActorRuntime current = ActorRuntime.currentActorRuntime();
         ActorRuntime.ActorId id = ActorRuntime.currentActorId().orElseThrow(
                 () -> new SecurityException("sealed region allocation requires an actor turn"));
@@ -111,14 +117,16 @@ final class SealedActorStateRegion
         if (current == null || domain == null) {
             throw new SecurityException("sealed region allocation requires runtime actor authority");
         }
-        return new SealedActorStateRegion(current, id, domain, literalInitializers);
+        return new SealedActorStateRegion(current, id, domain, literalInitializers, serialReceive);
     }
 
     private SealedActorStateRegion(ActorRuntime runtime, ActorRuntime.ActorId actorId,
-                                   Object executionDomain, Map<String, ?> initializers) {
+                                   Object executionDomain, Map<String, ?> initializers,
+                                   boolean serialReceive) {
         this.runtime = Objects.requireNonNull(runtime);
         this.actorId = Objects.requireNonNull(actorId);
         this.executionDomain = Objects.requireNonNull(executionDomain);
+        this.serialReceive = serialReceive;
         Objects.requireNonNull(initializers, "sealed schema");
         if (initializers.isEmpty() || initializers.size() > 64) {
             throw new IllegalArgumentException("sealed state requires 1..64 fields");
@@ -141,6 +149,10 @@ final class SealedActorStateRegion
         return actorId;
     }
 
+    @Override public boolean serialReceive() {
+        return serialReceive;
+    }
+
     private Object requireActorTurn() {
         if (ActorRuntime.currentActorRuntime() != runtime
                 || !ActorRuntime.currentActorId().filter(actorId::equals).isPresent()
@@ -157,13 +169,13 @@ final class SealedActorStateRegion
      * user-visible state handle.
      */
     final class LoanView {
-        private final ActorStateLoans.ExclusiveLoan ticket;
+        private final ActorReadWriteLoans.Ticket ticket;
         private final Object executionSegment;
         private final long issuedGeneration;
         private final boolean writable;
         private boolean released;
 
-        private LoanView(ActorStateLoans.ExclusiveLoan ticket, Object executionSegment,
+        private LoanView(ActorReadWriteLoans.Ticket ticket, Object executionSegment,
                          long issuedGeneration, boolean writable) {
             this.ticket = ticket;
             this.executionSegment = executionSegment;
@@ -232,21 +244,19 @@ final class SealedActorStateRegion
     private <T> T withLoan(boolean mutable, Function<LoanView, T> block) {
         Objects.requireNonNull(block, "state loan callback");
         Object segment = requireActorTurn();
-        ActorStateLoans.ExclusiveLoan ticket;
+        ActorReadWriteLoans.Ticket ticket;
         long currentGeneration;
         synchronized (lock) {
             if (retired || reclaimed) {
                 throw new IllegalStateException("sealed actor state retired");
             }
             currentGeneration = generation;
-            // A critical block must never queue or suspend to acquire a loan.
-            // ActorStateLoans(maxPending=0) returns an immediate grant/failure.
-            OresFuture<ActorStateLoans.ExclusiveLoan> candidate =
-                    loans.acquireAsync(segment);
-            if (!candidate.isDone() || candidate.isCompletedExceptionally()) {
-                throw new IllegalStateException("critical state loan unavailable or reentrant");
+            // A critical block cannot queue or suspend a carrier. Multiple
+            // distinct logical handlers can read, but writes are exclusive.
+            ticket = mutable ? loans.tryWrite(segment) : loans.tryRead(segment);
+            if (ticket == null) {
+                throw new IllegalStateException("critical state loan unavailable");
             }
-            ticket = candidate.join();
         }
         LoanView view = new LoanView(ticket, segment, currentGeneration, mutable);
         try {

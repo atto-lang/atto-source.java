@@ -21,6 +21,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.AtomicI64Cell;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -8269,6 +8270,56 @@ public final class OresEvalRootNode extends RootNode {
             return context.submitWorkflowGuest(payload);
         }
 
+        /**
+         * A host or linked AST may bypass ordinary static typechecking.
+         * Refuse to duplicate/publish atomic identity inside any of the
+         * supported guest container representations until explicit sharing
+         * authority and its lifetime have been lowered.
+         */
+        private static boolean containsAtomicCell(Object value, Set<Object> seen, int[] budget) {
+            if (value instanceof AtomicI64Cell) return true;
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Enum<?>) return false;
+            if (--budget[0] < 0) return true; // bounded fail-closed traversal
+            if (!seen.add(value)) return false;
+            if (value instanceof OptionValue option) {
+                return option.present() && containsAtomicCell(option.value(), seen, budget);
+            }
+            if (value instanceof ResultValue result) {
+                return containsAtomicCell(result.value(), seen, budget);
+            }
+            if (value instanceof ActorRuntime.Shared<?> shared) {
+                return containsAtomicCell(shared.value(), seen, budget);
+            }
+            if (value instanceof OresKeyedMap<?, ?> keyed) {
+                return containsAtomicCell(keyed.shallowSnapshot(), seen, budget);
+            }
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values())
+                    if (containsAtomicCell(field, seen, budget)) return true;
+                return false;
+            }
+            if (value instanceof List<?> list) {
+                for (Object element : list)
+                    if (containsAtomicCell(element, seen, budget)) return true;
+                return false;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (containsAtomicCell(entry.getKey(), seen, budget)
+                            || containsAtomicCell(entry.getValue(), seen, budget)) return true;
+                }
+                return false;
+            }
+            if (value instanceof Object[] array) {
+                for (Object element : array)
+                    if (containsAtomicCell(element, seen, budget)) return true;
+                return false;
+            }
+            return false;
+        }
+
         /** Mirrors independent type/ownership copy admission at the runtime boundary. */
         private boolean withCopyEligibleClass(Ast.ClassDecl klass) {
             if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
@@ -8320,10 +8371,17 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     throw new IllegalStateException(message);
                 }
-                // Borrow/take/share alter compiler ownership state, not the JVM handle.
-                case "borrow", "take", "share" -> value;
-                case "copy" -> {
-                    if (value instanceof OresObject object) {
+                // Borrow/take alter compiler ownership state, not the JVM handle.
+                case "borrow", "take" -> value;
+                case "share", "copy" -> {
+                    if (containsAtomicCell(value,
+                            java.util.Collections.newSetFromMap(new IdentityHashMap<>()),
+                            new int[] {4_096})) {
+                        throw new SecurityException(
+                                "rt " + operation + " cannot duplicate or publish Atomic<int> "
+                                        + "without proven shared-domain ownership");
+                    }
+                    if (operation.equals("copy") && value instanceof OresObject object) {
                         if (!withCopyEligibleClass(object.klass)) {
                             throw new IllegalStateException(
                                     "rt copy class requires an immutable scalar-field copy contract");
@@ -8436,6 +8494,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("Atomic")) return AtomicFactory.INSTANCE;
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("Bytes")) return BytesFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
@@ -10056,6 +10115,10 @@ public final class OresEvalRootNode extends RootNode {
                             "unknown SelectResult member " + name);
                 };
             }
+            if (receiver instanceof AtomicFactory factory) {
+                if (!name.equals("new")) throw new IllegalArgumentException("unknown Atomic factory member " + name);
+                return (Invokable) factory::create;
+            }
             if (receiver instanceof MutexFactory factory) {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
@@ -10246,6 +10309,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
+            if (receiver instanceof AtomicI64Cell cell) return atomicMember(cell, name);
+            if (receiver instanceof AtomicI64Cell.CompareExchange result) {
+                return switch (name) {
+                    case "exchanged" -> result.exchanged();
+                    case "observed" -> result.observed();
+                    default -> throw new IllegalArgumentException("unknown AtomicCompareExchange member " + name);
+                };
+            }
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
             if (receiver instanceof OresMutex.Guard<?> guard) {
                 return switch (name) {
@@ -10740,6 +10811,59 @@ public final class OresEvalRootNode extends RootNode {
                             ? new OptionValue(true, result.value()) : new OptionValue(false, null);
                 };
                 default -> throw new IllegalArgumentException("unknown Result member " + name);
+            };
+        }
+
+        private static long atomicArgument(List<Object> args, int index, String operation) {
+            Object value = args.get(index);
+            if (!(value instanceof Long number)) {
+                throw new IllegalArgumentException(operation + " expects signed int arguments");
+            }
+            return number;
+        }
+
+        private Object atomicMember(AtomicI64Cell cell, String name) {
+            return switch (name) {
+                case "load" -> (Invokable) args -> {
+                    requireZero(args, "Atomic.load");
+                    return cell.load();
+                };
+                case "store" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.store");
+                    cell.store(atomicArgument(args, 0, "Atomic.store"));
+                    return null;
+                };
+                case "swap" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.swap");
+                    return cell.swap(atomicArgument(args, 0, "Atomic.swap"));
+                };
+                case "fetch_add" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_add");
+                    return cell.fetch_add(atomicArgument(args, 0, "Atomic.fetch_add"));
+                };
+                case "fetch_sub" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_sub");
+                    return cell.fetch_sub(atomicArgument(args, 0, "Atomic.fetch_sub"));
+                };
+                case "fetch_and" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_and");
+                    return cell.fetch_and(atomicArgument(args, 0, "Atomic.fetch_and"));
+                };
+                case "fetch_or" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_or");
+                    return cell.fetch_or(atomicArgument(args, 0, "Atomic.fetch_or"));
+                };
+                case "fetch_xor" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_xor");
+                    return cell.fetch_xor(atomicArgument(args, 0, "Atomic.fetch_xor"));
+                };
+                case "compare_exchange" -> (Invokable) args -> {
+                    requireTwo(args, "Atomic.compare_exchange");
+                    return cell.compare_exchange(
+                            atomicArgument(args, 0, "Atomic.compare_exchange"),
+                            atomicArgument(args, 1, "Atomic.compare_exchange"));
+                };
+                default -> throw new IllegalArgumentException("unknown Atomic member " + name);
             };
         }
 
@@ -13026,6 +13150,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             Objects.requireNonNull(object, "object");
         }
+
+        @Override public boolean serialReceive() {
+            return object.klass.actorConcurrency().serialReceive();
+        }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
@@ -13298,6 +13426,19 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    /** Guest factory is intentionally limited to the compiler-checked i64 stage. */
+    private enum AtomicFactory {
+        INSTANCE;
+
+        private Object create(List<Object> args) {
+            requireOne(args, "Atomic.new");
+            if (!(args.getFirst() instanceof Long value)) {
+                throw new IllegalArgumentException("Atomic.new currently requires signed int");
+            }
+            return new AtomicI64Cell(value);
+        }
+    }
+
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 

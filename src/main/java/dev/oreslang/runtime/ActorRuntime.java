@@ -2759,6 +2759,13 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
+
+        /**
+         * Compiler-supplied metadata, never a guest-controlled state field.
+         * True gates DATA receive invocations, NOT unrelated receiver methods.
+         * Legacy host code executors default to non-serial declarations.
+         */
+        default boolean serialReceive() { return false; }
     }
 
     /**
@@ -3559,6 +3566,10 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 completedSequence = cell.activeMail == null
                         ? -1L : cell.activeMail.sequence();
+                // Waking a suspended receive does NOT retire its logical
+                // invocation. Completion accounting and all synchronous
+                // observer notifications must finish before the DATA permit
+                // becomes available to another serial receive.
                 cell.sourceReceiveSuspended = false;
                 cell.activeMail = null;
                 cell.lifecycleLock.notifyAll();
@@ -3577,6 +3588,11 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("source receive lost pending mail sequence");
             }
             cell.markMessageProcessed(completedSequence);
+            synchronized (cell.lifecycleLock) {
+                // Only a successful terminal completion releases the permit.
+                // A failure holds it until fail-stop physical retirement.
+                cell.completeReceivePermitLocked();
+            }
         })) {
             boolean failActor = false;
             synchronized (cell.lifecycleLock) {
@@ -9818,6 +9834,10 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        /** Receive-only permit persists across logical source suspension. */
+        private ActorReceiveAdmission receiveAdmission;
+        /** One live permit in the currently single-writer physical scheduler. */
+        private ActorReceiveAdmission.Permit activeReceivePermit;
         /**
          * Separate actor-owned receipts: the currently RUNNING callback may
          * coexist with a fully reserved continuation mailbox.
@@ -9909,6 +9929,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             this.ref = ref;
             this.kind = kind;
+            // Conservative physical stage: even ordinary actors have a
+            // single active receive until parallel stack/state lowering is
+            // independently proven. The serial qualifier is retained below.
+            this.receiveAdmission = ActorReceiveAdmission.concurrent(ref.generation(), 1);
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
             this.policy = policy;
@@ -10703,6 +10727,11 @@ public final class ActorRuntime implements AutoCloseable {
                 recordFinalizationFailure(failure);
             }
             staticSelectCursors.clear();
+            // STOP has already joined physical SourceTask cleanup at this
+            // finalization point. Only now retire the outstanding receive
+            // permit and seal its incarnation-scoped admission gate.
+            releaseReceivePermitLocked();
+            receiveAdmission.close();
             // A compiler-lowered sealed region may only be reclaimed after
             // source tasks and their cleanup reached physical quiescence above.
             // Do not release live state on the first STOP request: closing
@@ -11283,6 +11312,13 @@ public final class ActorRuntime implements AutoCloseable {
                                             + " does not match actor "
                                             + ref.id());
                         }
+                        // A serial source declaration must be preserved at
+                        // runtime; numeric 1/1 admission settings alone are
+                        // not a substitute for its receive-only semantics.
+                        if (created.serialReceive()) {
+                            receiveAdmission.close();
+                            receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                        }
                         codeActorState = created;
                     } else {
                         Behavior<M> created = Objects.requireNonNull(
@@ -11436,7 +11472,20 @@ public final class ActorRuntime implements AutoCloseable {
                                     Optional.ofNullable(activeEnvelope.sender()),
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
-                            activeMail = mail;
+                            synchronized (lifecycleLock) {
+                                if (activeReceivePermit != null) {
+                                    throw new IllegalStateException(
+                                            "actor receive permit retained across fresh DATA dispatch");
+                                }
+                                ActorReceiveAdmission.Permit permit =
+                                        receiveAdmission.tryEnter(ref.generation());
+                                if (permit == null) {
+                                    throw new IllegalStateException(
+                                            "actor receive admission exhausted during DATA dispatch");
+                                }
+                                activeReceivePermit = permit;
+                                activeMail = mail;
+                            }
                             // Each admitted receive invocation gets its own logical stack
                             // (spec ch. 25): its quota does not depend on the carrier, and
                             // its exhaustion fails this actor, not the carrier or process.
@@ -11463,7 +11512,15 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                if (!sourceReceiveSuspended) activeMail = null;
+                                synchronized (lifecycleLock) {
+                                    if (!sourceReceiveSuspended) {
+                                        // A completed DATA receive still owns its logical
+                                        // permit until markMessageProcessed has settled
+                                        // the drain/observer accounting below. On failure,
+                                        // hold the permit until fail-stop retirement.
+                                        activeMail = null;
+                                    }
+                                }
                                 receiveStack.close();
                             }
                             if (receiveStack.poisoned()) {
@@ -11487,6 +11544,13 @@ public final class ActorRuntime implements AutoCloseable {
                     // its continuation completes; the continuation marks it.
                     if (!envelope.isContinuation() && !sourceReceiveSuspended) {
                         markMessageProcessed(envelope.sequence());
+                        synchronized (lifecycleLock) {
+                            // Exactly as on suspended Future completion: release
+                            // DATA admission only after successful accounting and
+                            // all synchronous drain notifications. An exception
+                            // leaves this permit owned by fail-stop cleanup.
+                            completeReceivePermitLocked();
+                        }
                     }
                     processed++;
 
@@ -11537,6 +11601,34 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
+            }
+        }
+
+        /**
+         * Successful DATA completion must retire exactly one LIVE receive.
+         * Never treat an absent/already-retired permit as success: doing so
+         * could admit overlapping serial receives or silently conceal a stale
+         * continuation replay. Actor finalization uses the distinct optional
+         * cleanup release below, only after physical quiescence.
+         * Caller holds lifecycleLock.
+         */
+        private void completeReceivePermitLocked() {
+            if (activeReceivePermit == null || activeReceivePermit.isRetired()) {
+                throw new IllegalStateException(
+                        "actor receive completed without a live admission permit for "
+                                + ref.id());
+            }
+            releaseReceivePermitLocked();
+        }
+
+        /**
+         * Lifecycle-monitor-only release. Await/cooperate NEVER returns the
+         * permit: a suspended DATA receive still owns its logical stack.
+         */
+        private void releaseReceivePermitLocked() {
+            if (activeReceivePermit != null) {
+                activeReceivePermit.close();
+                activeReceivePermit = null;
             }
         }
 

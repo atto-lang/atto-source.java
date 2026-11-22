@@ -1868,7 +1868,8 @@ public final class Parser {
             throw error(previous(), "sealed actor state cannot mix ordinary actor fields");
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency),
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
+                        prefix.serial()),
                 sealedStateFields);
     }
 

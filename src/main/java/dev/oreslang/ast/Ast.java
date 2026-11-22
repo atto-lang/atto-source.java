@@ -566,16 +566,28 @@ public final class Ast {
      * The legacy actor scheduler currently implements precisely (1,1).
      */
     public record ActorConcurrency(
-            ActorTransport transport, int requestConcurrency, int messageConcurrency) {
+            ActorTransport transport, int requestConcurrency, int messageConcurrency,
+            boolean serialReceive) {
         public ActorConcurrency {
             java.util.Objects.requireNonNull(transport, "actor transport");
             if (requestConcurrency < 1 || messageConcurrency < 1) {
                 throw new IllegalArgumentException(
                         "actor concurrency limits must be positive");
             }
+            if (serialReceive && (requestConcurrency != 1 || messageConcurrency != 1)) {
+                throw new IllegalArgumentException(
+                        "serial receive requires one request and message lane");
+            }
         }
+
+        /** Three-argument legacy callers now mean concurrent-by-default. */
+        public ActorConcurrency(ActorTransport transport, int requestConcurrency,
+                                int messageConcurrency) {
+            this(transport, requestConcurrency, messageConcurrency, false);
+        }
+
         public static ActorConcurrency serial(ActorTransport transport) {
-            return new ActorConcurrency(transport, 1, 1);
+            return new ActorConcurrency(transport, 1, 1, true);
         }
     }
 
@@ -643,7 +655,7 @@ public final class Ast {
                          List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, genericParameters,
                     parents, interfaces, fields, constructor, methods,
-                    ActorConcurrency.serial(ActorTransport.GENERIC));
+                    new ActorConcurrency(ActorTransport.GENERIC, 1, 1));
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
