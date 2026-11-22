@@ -240,6 +240,16 @@ public final class OresContext implements AutoCloseable {
         runtimePermissions.require(permission, resource, api);
     }
 
+    /**
+     * Authorize lexical filesystem scope before walking path components. Still
+     * requires the independent canonical permission check before actual I/O.
+     */
+    public void requireLexicalFilesystemPermission(
+            RuntimePermissions.Permission permission, String resource, String api) {
+        requireCapability(permission.capability(), api);
+        runtimePermissions.requireLexicalFilesystemPath(permission, resource, api);
+    }
+
     static void requireEffectiveCapability(
             IsolatePolicy contextPolicy,
             IsolatePolicy.Capability capability,
