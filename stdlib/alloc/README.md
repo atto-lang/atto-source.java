@@ -28,3 +28,16 @@ unverified `Array<T>` alias or unchecked host pointer.
 
 Overlaps: Java #1724 implements a **runtime** actor slab heap; this `.atto`
 logical allocator is complementary, not a replacement for its runtime fences.
+
+## Instance-identity audit (hardening v2)
+
+Numeric domain/incarnation identifiers and generations are *not* globally
+unique. Each Slab/ActorHeap now creates a fresh private object-identity token.
+Handles retain that token, and `contains` first checks reference identity
+(`is`) before touching slots. Even two independently created containers with
+identical numeric identifiers, slot indices and generations reject cross-use.
+A fabricated handle holding an unrelated public OwnerToken is also rejected.
+The OwnerToken is not a backend scheduler/actor/tenant authorization capability:
+the compiler/runtime must still enforce private-field access, identity,
+non-escape, actor affinity, borrow lifetimes and source/physical memory fences.
+Runtime/guest tests must prove those checks; no guest passes are asserted here.
