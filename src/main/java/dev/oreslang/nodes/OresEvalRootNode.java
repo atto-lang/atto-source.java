@@ -8500,6 +8500,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("Bytes")) return BytesFactory.INSTANCE;
+                if (name.name().equals("ByteBuffer")) return ByteBufferFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this, false);
@@ -10090,6 +10091,48 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
+                };
+            }
+            if (receiver == ByteBufferFactory.INSTANCE) {
+                if (!name.equals("allocate")) throw new IllegalArgumentException("unknown ByteBuffer constructor " + name);
+                return (Invokable) args -> {
+                    requireOne(args, "ByteBuffer.allocate");
+                    long size = bytesIndex(args.getFirst(), "ByteBuffer.allocate size");
+                    if (size > GuestByteBuffer.MAX_SIZE) {
+                        throw new IllegalArgumentException("ByteBuffer.allocate size exceeds " + GuestByteBuffer.MAX_SIZE);
+                    }
+                    return new GuestByteBuffer(new byte[(int) size]);
+                };
+            }
+            if (receiver instanceof GuestByteBuffer buffer) {
+                if (name.equals("size")) return (Invokable) args -> { requireZero(args, "ByteBuffer.size"); return (long) buffer.bytes().length; };
+                java.util.regex.Matcher op = java.util.regex.Pattern.compile("(read|write)_u(8|16|32)(_le|_be)?").matcher(name);
+                if (!op.matches()) throw new IllegalArgumentException("unknown ByteBuffer member " + name);
+                boolean write = op.group(1).equals("write");
+                int width = Integer.parseInt(op.group(2)) / 8;
+                boolean little = "_le".equals(op.group(3));
+                return (Invokable) args -> {
+                    if (args.size() != (write ? 2 : 1)) throw new IllegalArgumentException("ByteBuffer." + name + " arity mismatch");
+                    long offset = bytesIndex(args.getFirst(), "ByteBuffer." + name + " offset");
+                    if (offset + width > buffer.bytes().length) {
+                        throw new IndexOutOfBoundsException("ByteBuffer." + name + " offset " + offset + " out of bounds");
+                    }
+                    if (write) {
+                        if (!(args.get(1) instanceof Long value) || value < 0 || value > (1L << (8 * width)) - 1) {
+                            throw new IllegalArgumentException("ByteBuffer." + name + " value must fit u" + (8 * width));
+                        }
+                        for (int i = 0; i < width; i++) {
+                            int shift = 8 * (little ? i : width - 1 - i);
+                            buffer.bytes()[(int) offset + i] = (byte) (value >>> shift);
+                        }
+                        return null;
+                    }
+                    long result = 0;
+                    for (int i = 0; i < width; i++) {
+                        int shift = 8 * (little ? i : width - 1 - i);
+                        result |= (buffer.bytes()[(int) offset + i] & 0xFFL) << shift;
+                    }
+                    return result;
                 };
             }
             if (receiver == BytesFactory.INSTANCE) {
@@ -13445,6 +13488,14 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString() { return String.valueOf(value); }
     }
     /** Static receiver for the Bytes v1 constructors. */
+    private static final class ByteBufferFactory {
+        static final ByteBufferFactory INSTANCE = new ByteBufferFactory();
+        private ByteBufferFactory() { }
+    }
+    /** Owned fixed-size mutable byte buffer (ByteBuffer.allocate). */
+    private record GuestByteBuffer(byte[] bytes) {
+        static final long MAX_SIZE = 1L << 20;
+    }
     private static final class BytesFactory {
         static final BytesFactory INSTANCE = new BytesFactory();
         private BytesFactory() { }

@@ -45,7 +45,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Bytes", "Array", "List", "Vector", "Slice",
+            "Symbol", "Bytes", "ByteBuffer", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
@@ -516,7 +516,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "task_context", "task_cancel_requested", "And", "Or", "Xor", "BooleanOps",
-                "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
+                "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock", "ByteBuffer",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
@@ -4206,6 +4206,17 @@ public final class TypeChecker {
                     return trappedCallableResult(target.trapped(), target.async(), target.suspends(), target.generator(), result);
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr bufferCall
+                    && bufferCall.receiver() instanceof Ast.NameExpr bufferFactory
+                    && bufferFactory.name().equals("ByteBuffer")
+                    && env.lookup("ByteBuffer") == null && findClass("ByteBuffer") == null) {
+                if (!bufferCall.member().equals("allocate") || call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException("ByteBuffer is created only by ByteBuffer.allocate(int size)");
+                }
+                requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self), Primitive.INT,
+                        "ByteBuffer.allocate size");
+                return new Named("ByteBuffer", List.of());
+            }
             if (call.callee() instanceof Ast.MemberExpr bytesCall
                     && bytesCall.receiver() instanceof Ast.NameExpr bytesFactory
                     && bytesFactory.name().equals("Bytes")
@@ -7805,6 +7816,13 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        if (named.name().equals("ByteBuffer")) {
+            // Fixed-size mutable byte buffer; offsets are bounds-checked at runtime.
+            if (name.equals("size")) return new Function(List.of(), Primitive.INT);
+            if (name.matches("read_u(8|16|32)(_le|_be)?")) return new Function(List.of(Primitive.INT), Primitive.INT);
+            if (name.matches("write_u(8|16|32)(_le|_be)?")) return new Function(List.of(Primitive.INT, Primitive.INT), Primitive.VOID);
+            return null;
+        }
         // Bytes methods are synchronous: never mis-type them as Future<T>.
         if (named.name().equals("Bytes")) {
             return switch (name) {
@@ -13177,6 +13195,12 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Bytes is a non-generic linear value type");
                 }
                 yield new Named("Bytes", List.of());
+            }
+            case "ByteBuffer" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("ByteBuffer is a non-generic owned buffer type");
+                }
+                yield new Named("ByteBuffer", List.of());
             }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
