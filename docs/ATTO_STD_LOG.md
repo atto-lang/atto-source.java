@@ -25,7 +25,7 @@ This stage deliberately **does not** provide `log.flush()`, a sink adapter, STDO
 
 ## Verification
 
-`node --test tests/log_module_contract.test.mjs tests/log_sink_contract.test.mjs` runs source-extracted severity vectors and static queue/source checks. This is **SOURCE-ONLY** verification, not compilation or execution by the Atto guest, actor runtime, Graal Native Image, or another backend. Dedicated guest import/linking, negative ownership tests, byte quotas, async sink integration and AOT/CI receipts are prerequisites for a production-supported `std/log`.
+`node --test tests/log_module_contract.test.mjs tests/log_sink_contract.test.mjs` runs severity and sink-byte vectors through a fail-closed no-eval `tests/atto_pure_subset.mjs` expression parser, plus static queue/source checks. The parser rejects arbitrary Atto statements and host syntax. This is **SOURCE-ONLY** verification, not compilation or execution by the Atto guest, actor runtime, Graal Native Image, or another backend. Dedicated guest import/linking, negative ownership tests, byte quotas, async sink integration and AOT/CI receipts are prerequisites for a production-supported `std/log`.
 
 Related but distinct work: Java async stdio PR #1344 and the pending perf/tracing modules. Neither is modified or silently assumed integrated here. The `std/log` namespace implementation stays owned by this backend; other compilers may implement the same public semantics with different .atto code.
 
@@ -42,3 +42,5 @@ The separate `namespace log_sink;` adapter imports `log` using the explicit sour
 `examples/log-namespace-guest-smoke.atto` exercises a file namespace import, filter, record factory, queue offer/peek/ack/close and byte-policy boundaries. The GitHub workflow now runs two independent jobs: a source-only Node contract and a GraalVM 25/Maven guest smoke, with exact source commit verification. A successful Node run is not guest proof. The separate async adapter is intentionally **not** invoked in the native smoke until dependency #1344 is integrated and compiled guest tests are added.
 
 Current state: source-only local assertions are passing, while the exact-head GraalVM guest job and Native Image AOT have **no verified executed result**. Private code may not be mirrored into another org without independently authenticated source export authorization, even if alternate GitHub Actions minutes exist.
+
+Local source-only reproduction after parser hardening: **13/13 log checks** and **5/5 sink checks**. The guest fixture now also covers filtered, invalid, full, dropped, compact-on-full FIFO, close-fence and ACK-retirement behavior once the Atto compiler actually runs it.
