@@ -10,8 +10,9 @@ import java.util.concurrent.TimeoutException;
 /**
  * Distinct guest failure boundaries:
  * <ul>
- *   <li>{@code trap} converts only ordinary failures to None. Authority denial
- *       and timeout remain terminal at that boundary.</li>
+ *   <li>{@code trap} eligibility checks fatal/authority boundaries. The evaluator
+ *       admits only recognized typed guest Errors into {@code Result.Err};
+ *       authority denial, panic, cancellation and host failures escape.</li>
  *   <li>Explicit guest {@code catch} may recover denied operations and timeouts,
  *       without consuming panic, scheduler cancellation or host failures.</li>
  * </ul>
