@@ -140,7 +140,10 @@ final class AttoAllocGuestTest {
         for (String name : new String[]{
                 "arc-shared-owner-negative.atto",
                 "set-generic-hash-negative.atto",
-                "allocator-physical-handle-negative.atto"}) {
+                "allocator-physical-handle-negative.atto",
+                "alloc-internal-scope-negative.atto",
+                "alloc-internal-loan-negative.atto",
+                "alloc-internal-checkpoint-negative.atto"}) {
             Path fixture = Path.of("tests", "fixtures", "alloc-java-guest", name);
             assertTrue(Files.isRegularFile(fixture), "missing negative .atto: " + name);
             assertThrows(IllegalArgumentException.class,
