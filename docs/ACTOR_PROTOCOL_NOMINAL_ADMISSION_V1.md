@@ -103,3 +103,60 @@ security policy and live source-main protection requirements are met.
 Related: atto-spec #203 (state-indexed protocols), atto-spec #40 (nominal
 one-way/unary/stream reply modes), atto-source.java #1708/#1735 (original
 stages), atto-source.rs #250 (nominal prototype), and the integration PR #1743.
+
+## Affine CFG oracle — source-only milestone
+
+The Java compiler branch now also contains `ActorProtocolAffineCfgV1`.
+It is a **bounded, acyclic, typed-CFG proof model**. The only authorized input
+is a complete, typed compiler CFG with authenticated `Init`/branch provenance;
+a guest must never be able to construct its own authorization witness.
+The preferred static entry point
+`verifyNominallyResolved(resolvedDeclarations, cfg)` checks nominal request
+modes again before running the affine verifier.
+
+- `Init(place, protocol)` is restricted to the entry block and must correspond
+  to a compiler-verified actor spawn; it initializes only the declared initial
+  state. The model cannot prove that correspondence itself.
+- `Take(from, into)` moves handle authority. `Copy` is always invalid.
+  Borrow/EndBorrow enforce exclusive versus read-only loans, and all loans
+  must end before any suspend/await. A branch-conditional live handle remains
+  an outstanding obligation at `Return`, even when it was moved on another
+  path. Handle, lease, loan, edge and operation counts are bounded.
+- `Begin(from, lease, message, payload, mode, replyType)` checks the
+  protocol's state-union admission and consumes the source handle into an
+  exclusively owned request lease. Lease handles can themselves be moved, but
+  not duplicated, double-cancelled or used after moving.
+- `AwaitUnary(lease, into)` must terminate a block with **four distinct
+  labeled successors**: `SUCCESS, ERROR, TIMEOUT, CANCEL`. It retires
+  the lease on every edge, returning a successor-state owner only on SUCCESS.
+- `AwaitStreamStep(lease, into)` must terminate a block with **five distinct
+  labeled successors**: `ITEM, EOF, ERROR, TIMEOUT, CANCEL`. ITEM leaves
+  the lease outstanding for another step; successful EOF retires the lease
+  and issues a successor owner once; failures retire the lease without a
+  successor. Repeated items can be modeled by finite unrolling. Cyclic
+  stream pumps and general loops are still intentionally rejected.
+- `CancelLease` retires the local lease and never returns a state proof.
+  `DisposeTerminal` is legal only in a definitely terminal state.
+  `ReturnHandle` transfers a definitely live owner to the caller; the
+  caller's return type is a separate compiler obligation.
+- Every `Return` requires all loans and leases settled and all possible
+  owned handles explicitly consumed/returned. Branch joins reject divergent
+  pending lease or loan identities; optional live handles may not be used or
+  silently discarded.
+
+**Evidence:** The checker and its smoke suite were compiled and executed
+locally with JDK 21, `javac --release 21 -Xlint:all -Werror`, against
+isolated substitute implementations of the nominal resolver and protocol
+catalog. **38/38 focused model cases passed**. The GitHub blobs for both
+production checker and smoke suite were compared byte-for-byte using their
+Git blob SHA-1 values. This is NOT a build of the complete Java repository
+or real `.atto` guests. A JDK 25 source-only CI job and Maven/JUnit coverage
+are committed; their status depends on actual executed Actions job steps.
+
+**Open safety requirements before enabling guest lowering:** the source CFG
+extractor, complete exception/defer/cancellation edges, actor spawn provenance,
+authenticated unary reply and stream item/EOF branch provenance, state lease
+identity and generation fences, cycle/loop proof, and actual native/AOT backend
+lowering. Neither an arbitrary `Program` object nor this oracle's `Proof`
+is a runtime capability. No fallback interpreter, unchecked host callback or
+fabricated stream completion is authorized.
