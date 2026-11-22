@@ -22,8 +22,14 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public final class AttoM6Runtime implements AutoCloseable {
     @FunctionalInterface public interface Receive { void receive(long value) throws Exception; }
+    // Host-only scalar reply actor for the M10 cross-process execution pilot.
+    @FunctionalInterface public interface ReceiveReply { long receive(long value) throws Exception; }
     public enum Admission { ACCEPTED, FULL, CLOSED, STALE }
     public enum ControlKind { STOP, PANIC }
+    public enum TurnOutcome { PROCESSED, FAILED, ABANDONED }
+    public record TurnResult(TurnOutcome outcome, long reply) {}
+    // The completion belongs to this individual mailbox item, not a payload value.
+    private record Mail(long value, CompletableFuture<TurnResult> completion) {}
     // Object identity as well as generation fence: no forged/reused ActorRef authority.
     public record ActorRef(String name, long generation) {}
     public record Snapshot(long accepted, long completed, long failed, long abandoned,
@@ -43,8 +49,9 @@ public final class AttoM6Runtime implements AutoCloseable {
     private static final class Actor {
         final ActorRef ref;
         final Receive handler;
+        final ReceiveReply replyHandler;
         final int capacity;
-        final ArrayDeque<Long> inbox = new ArrayDeque<>();
+        final ArrayDeque<Mail> inbox = new ArrayDeque<>();
         final Set<Long> workers = new HashSet<>();
         long accepted, completed, failed, abandoned, controlsDelivered;
         long turnStartedNanos, maxTurnNanos, overBudgetTurns, watchdogNotices;
@@ -53,8 +60,9 @@ public final class AttoM6Runtime implements AutoCloseable {
         boolean controlQueued;
         ControlKind pendingControl, lastControl;
         String failureType;
-        Actor(ActorRef ref, Receive handler, int capacity) {
-            this.ref = ref; this.handler = handler; this.capacity = capacity;
+        Actor(ActorRef ref, Receive handler, ReceiveReply replyHandler, int capacity) {
+            this.ref = ref; this.handler = handler;
+            this.replyHandler = replyHandler; this.capacity = capacity;
         }
     }
     private static final class Registration {
@@ -121,7 +129,16 @@ public final class AttoM6Runtime implements AutoCloseable {
     }
 
     public ActorRef spawn(String name, int capacity, Receive handler) {
-        if (name == null || name.isEmpty() || name.length() > 128 || handler == null ||
+        return spawn_impl(name, capacity, handler, null);
+    }
+
+    public ActorRef spawn_reply_actor(String name, int capacity, ReceiveReply handler) {
+        return spawn_impl(name, capacity, null, handler);
+    }
+
+    private ActorRef spawn_impl(String name, int capacity, Receive handler, ReceiveReply replyHandler) {
+        if (name == null || name.isEmpty() || name.length() > 128 ||
+            (handler == null) == (replyHandler == null) ||
             capacity < 1 || capacity > 4096) throw new IllegalArgumentException("invalid actor");
         synchronized (gate) {
             if (stopping || closing) throw new IllegalStateException("runtime stopping");
@@ -132,7 +149,7 @@ public final class AttoM6Runtime implements AutoCloseable {
             long generation = Math.addExact(generations.getOrDefault(name, 0L), 1L);
             generations.put(name, generation);
             ActorRef ref = new ActorRef(name, generation);
-            actors.put(name, new Actor(ref, handler, capacity));
+            actors.put(name, new Actor(ref, handler, replyHandler, capacity));
             return ref;
         }
     }
@@ -145,15 +162,33 @@ public final class AttoM6Runtime implements AutoCloseable {
     }
 
     public Admission try_send(ActorRef ref, long value) {
+        return try_send_tracked(ref, value, null);
+    }
+
+    // Atomic admission + per-mailbox-item completion, not a polling/snapshot heuristic.
+    // Host-side only: network callbacks must use an asynchronous completion executor.
+    public Admission try_send_tracked(ActorRef ref, long value,
+                                      CompletableFuture<TurnResult> completion) {
+        if (completion != null && completion.isDone())
+            throw new IllegalArgumentException("pre-settled completion");
         synchronized (gate) {
             Actor actor = resolve(ref);
             if (actor == null) return Admission.STALE;
             if (!actor.accepting || actor.fenced || stopping || closing) return Admission.CLOSED;
             if (actor.inbox.size() >= actor.capacity) return Admission.FULL;
-            actor.inbox.addLast(value);
+            actor.inbox.addLast(new Mail(value, completion));
             actor.accepted++;
             schedule(actor);
             return Admission.ACCEPTED;
+        }
+    }
+
+    private static void abandon_inbox(Actor actor,
+                               List<CompletableFuture<TurnResult>> settlements) {
+        Mail mail;
+        while ((mail = actor.inbox.pollFirst()) != null) {
+            actor.abandoned++;
+            if (mail.completion() != null) settlements.add(mail.completion());
         }
     }
     private void schedule(Actor actor) {
@@ -206,6 +241,7 @@ public final class AttoM6Runtime implements AutoCloseable {
     private void supervise() {
         try {
             while (true) {
+                List<CompletableFuture<TurnResult>> abandoned = new ArrayList<>();
                 synchronized (gate) {
                     while (controls.isEmpty() && !stopping) gate.wait();
                     if (controls.isEmpty() && stopping) return;
@@ -218,12 +254,13 @@ public final class AttoM6Runtime implements AutoCloseable {
                     if (kind == ControlKind.PANIC) {
                         actor.fenced = true;
                         actor.accepting = false;
-                        actor.abandoned += actor.inbox.size();
-                        actor.inbox.clear();
+                        abandon_inbox(actor, abandoned);
                     }
                     maybe_retire(actor);
                     gate.notifyAll();
                 }
+                for (var complete : abandoned)
+                    complete.complete(new TurnResult(TurnOutcome.ABANDONED, 0));
                 wake_reactor();
             }
         } catch (InterruptedException e) {
@@ -236,7 +273,7 @@ public final class AttoM6Runtime implements AutoCloseable {
         try {
             while (true) {
                 Actor actor;
-                long mail;
+                Mail mail;
                 synchronized (gate) {
                     while (true) {
                         if (stopping && ready.isEmpty() && controls.isEmpty()) return;
@@ -257,8 +294,12 @@ public final class AttoM6Runtime implements AutoCloseable {
                 }
                 wake_reactor(); // Capacity became available; rearm paused NIO.
                 Throwable error = null;
-                try { actor.handler.receive(mail); }
-                catch (Throwable e) { error = e; }
+                long reply = 0;
+                try {
+                    if (actor.replyHandler != null) reply = actor.replyHandler.receive(mail.value());
+                    else actor.handler.receive(mail.value());
+                } catch (Throwable e) { error = e; }
+                List<CompletableFuture<TurnResult>> abandoned = new ArrayList<>();
                 synchronized (gate) {
                     long elapsed = System.nanoTime() - actor.turnStartedNanos;
                     if (elapsed > actor.maxTurnNanos) actor.maxTurnNanos = elapsed;
@@ -274,14 +315,18 @@ public final class AttoM6Runtime implements AutoCloseable {
                         // Fence immediately; supervisor notice delivery is separate.
                         actor.fenced = true;
                         actor.accepting = false;
-                        actor.abandoned += actor.inbox.size();
-                        actor.inbox.clear();
+                        abandon_inbox(actor, abandoned);
                         control(actor, ControlKind.PANIC);
                     }
                     if (!actor.fenced) schedule(actor);
                     maybe_retire(actor);
                     gate.notifyAll();
                 }
+                if (mail.completion() != null) mail.completion().complete(
+                    new TurnResult(error == null ? TurnOutcome.PROCESSED : TurnOutcome.FAILED,
+                                   error == null ? reply : 0));
+                for (var complete : abandoned)
+                    complete.complete(new TurnResult(TurnOutcome.ABANDONED, 0));
                 wake_reactor();
             }
         } catch (InterruptedException e) {
