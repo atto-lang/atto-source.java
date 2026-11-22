@@ -1,0 +1,50 @@
+// AttoLang hosted std.process value contracts.
+// This module deliberately performs no OS calls. The trusted process provider
+// must revalidate permissions, command identity, quotas and ownership on spawn.
+// See docs/STD_PROCESS_PLAN_V1.md for the pending guest/runtime bridge.
+define module Process as
+
+  // An immutable launch request. Argument vector elements are NOT shell syntax.
+  // The host takes an owned snapshot of arguments and validates UTF-8 bytes,
+  // embedded NUL, command grants, executable identity, cwd and environment.
+  pub define class Command as
+    pub val String executable;
+    pub val Array<String> arguments;
+    pub val int stdin_mode;
+    pub val int stdout_mode;
+    pub val int stderr_mode;
+  end
+
+  // Status is separate from an ordinary spawn/pipe/permission error.
+  // Code may be platform-specific; Unix signal termination is reported
+  // separately and Windows exit codes must not be truncated to 8 bits.
+  pub define class ExitStatus as
+    pub val int code;
+    pub val bool signaled;
+  end
+
+  pub fnc command(String executable): Command {
+    return new Command(executable, new Array<String>(), 0, 2, 2);
+  }
+
+  pub fnc command_with_args(String executable, Array<String> args): Command {
+    return new Command(executable, args, 0, 2, 2);
+  }
+
+  // Stdio modes: 0 closed, 1 inherited, 2 bounded async pipe.
+  // Inheritance is subject to a separate host permission.
+  pub fnc with_stdio(Command value, int stdin_mode, int stdout_mode, int stderr_mode): Command {
+    return new Command(value.executable, value.arguments, stdin_mode, stdout_mode, stderr_mode);
+  }
+
+  pub fnc valid_stdio(Command value): bool {
+    if value.stdin_mode < 0 || value.stdin_mode > 2 then return false; fi
+    if value.stdout_mode < 0 || value.stdout_mode > 2 then return false; fi
+    return value.stderr_mode >= 0 && value.stderr_mode <= 2;
+  }
+
+  pub fnc succeeded(ExitStatus status): bool {
+    return status.code == 0 && status.signaled == false;
+  }
+
+end
