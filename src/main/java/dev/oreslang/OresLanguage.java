@@ -192,7 +192,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // themselves checked-i64 .atto units, so the call graph stays in one
         // profile; anything else (legacy .ores, Java, packages) still fails.
         if (checkedI64 && program.imports().stream().anyMatch(imported ->
-                !dev.oreslang.stdlib.CoreLibrarySources.isLayeredLibraryImport(imported.path())
+                !dev.oreslang.stdlib.CoreLibrarySources.isCompilerOwnedAttoImport(imported.path())
                         && !imported.path().endsWith(".atto"))) {
             throw new IllegalArgumentException(
                     "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: imports require profile-checked linking");
