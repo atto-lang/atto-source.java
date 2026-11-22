@@ -70,6 +70,7 @@ jobs:
             projectCannotShadowCompilerOwnedStdEnv \
             scopedDenyPrecedesHostEnvironmentLookup \
             keyScopedDenyOverridesBroadAllowAndFallback \
+            scopedGrantCannotPromoteMissingIsolateEnvCapability \
             invalidKeyIsNotRecastAsAbsence \
             portableKeyGrammarIsBoundedAndFailClosed \
             hostEnvironmentValuesEnforceUtf8ByteQuotaWithoutEchoingSecrets; do
