@@ -45,6 +45,11 @@ final class ChannelStdlibAttoSourceTest {
     }
 
     @Test
+    void directAwaitedReceiveRendezvousesWithPendingWriterAtZeroCapacity() throws Exception {
+        assertEquals("42", run("rendezvous_direct_read.atto"));
+    }
+
+    @Test
     void immediateFullProbeReturnsRejectedPayloadWithoutRegistering() throws Exception {
         assertEquals("accepted:full:2:1", run("immediate_probe.atto"));
     }
