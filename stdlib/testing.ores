@@ -269,4 +269,60 @@ pub fnc check_int_cases(
   return pass();
 }
 
+
+// Seeded, bounded integer fuzz/property helper. This is an explicit opt-in
+// native property API, not automatic coverage-guided corpus fuzzing.
+// The LCG product fits signed 64-bit because state < 2147483647.
+pub fnc check_fuzz_int_cases(
+  String property_name,
+  int seed,
+  int samples,
+  IntProperty property
+): TestOutcome {
+  if samples < 1 || samples > 4096; do
+    return fail("fuzz samples must be between 1 and 4096");
+  fi
+
+  let int state = seed % 2147483646;
+  if state < 0; do
+    state = 0 - state;
+  fi
+  state = state + 1;
+
+  let int index = 0;
+  loop {
+    if index >= samples {
+      break;
+    } fi
+
+    state = (state * 48271) % 2147483647;
+    let int generated = (state % 200001) - 100000;
+    let TestOutcome outcome = property(generated);
+
+    if !outcome.passed; do
+      // Try to minimize toward zero. A property must be deterministic and
+      // side-effect-free for this shrink to be a useful reproduction.
+      // Bounded, deterministic candidate reduction. Integer / would
+      // produce float in Oreslang, so use an integer remainder instead.
+      let int reduced = generated % 10;
+      if reduced != generated; do
+        let TestOutcome smaller = property(reduced);
+        if !smaller.passed; do
+          outcome = smaller;
+        fi
+      fi
+      let TestOutcome zero_case = property(0);
+      if !zero_case.passed; do
+        outcome = zero_case;
+      fi
+      if outcome.message == ""; do
+        return fail("fuzz property failed: " + property_name);
+      fi
+      return outcome;
+    fi
+    index = index + 1;
+  }
+  return pass();
+}
+
 end

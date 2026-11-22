@@ -1,0 +1,52 @@
+name: Actor rolling HTTP exact-head verification
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRollingGenerationRoute.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttpRollingDispatcher.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttpRollingReloadCoordinator.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRollingGenerationRouteTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRollingHttpSocketTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeHttpRollingDispatcherIntegrationTest.java'
+      - 'docs/ACTOR_ROLLING_GENERATION_CONFIG_V1.md'
+      - '.github/workflows/actor-rolling-http-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-graal-junit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_HEAD_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify exact source head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          echo "Verified source commit: $EXPECTED_HEAD_SHA"
+          git rev-parse HEAD^{tree}
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Run actual Java/Graal targeted JUnit
+        run: mvn -B -ntp -Dtest=ActorRollingGenerationRouteTest,ActorRollingHttpSocketTest,NativeHttpRollingDispatcherIntegrationTest -DfailIfNoTests=true test
+      - name: Archive executed test receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: actor-rolling-http-exact-head
+          path: target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 7

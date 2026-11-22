@@ -58,6 +58,64 @@ final class StdioLogAndSpreadTest {
     }
 
     @Test
+    void detachedAsyncJsonlRecordsDrainOnCurrentMainContextClose() throws Exception {
+        assertEquals("{\"v\":1}\n{\"v\":2}\n", run("""
+                pub routine main(): void {
+                  stdio.stdout.log_async("{\\\"v\\\":1}");
+                  stdio.stdout.log_async("{\\\"v\\\":2}");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void awaitedAsyncFlushIsAnOrderedBarrier() throws Exception {
+        assertEquals("first\nlast\n", run("""
+                pub async routine main(): void {
+                  stdio.stdout.log_async("first");
+                  await stdio.flush_async_logs();
+                  stdio.stdout.log_async("last");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void heldAsyncFlushReceiptIsAnAwaitableMoveOnlyFuture() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                pub async routine main(): void {
+                  val receipt = stdio.flush_async_logs();
+                  await receipt;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void builtinAsyncFlushRejectsArgumentsInOwnershipAnalysis() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                        pub async routine main(): void {
+                          await stdio.flush_async_logs("unexpected");
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("requires zero arguments"));
+    }
+
+    @Test
+    void asyncSpreadAndListRenderIdentically() throws Exception {
+        assertEquals("A1B\nA1B\n", run("""
+                pub routine main(): void {
+                  val parts = arr["A", 1, "B"];
+                  stdio.stdout.log_async(...parts);
+                  stdio.stdout.logList_async(parts);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void stdoutLogConcatenatesArgumentsAndAppendsOneNewline() throws Exception {
         String output = run("""
                 pub routine main(): void {

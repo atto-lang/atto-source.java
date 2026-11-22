@@ -94,13 +94,14 @@ destructuring `for-of`, and `loop` back-edges **inside an existing
 `SourceTask`** into an iterative callback trampoline. No `await` or explicit
 `rt cooperate` is needed in such a loop. Each heap-owned task keeps its own
 64-bit saturating reduction counter and a dispatch-local monotonic clock.
-A trusted source task checks the watchdog, runtime cancellation and its 2 ms
-soft quantum every **64** back-edges until reaching the **512**-backedge
-reduction cap. Thereafter, it checks at **every** subsequent committed
-back-edge so release of a live no-yield guard cannot be followed by another
-64-iteration scheduling delay. An UNTRUSTED task charges fuel at **every**
-back-edge and still cannot automatically cooperate until logical quota
-continuity is proven. The continuation preserves loop indices, iterator
+A trusted source task samples the watchdog, runtime cancellation and its 2 ms
+soft quantum every **128** committed backedges, including after the
+**512**-backedge fairness cap. The 128-step phase persists across dispatches:
+repeated 127-backedge resumes cannot evade it. When a no-yield guard drops,
+a legal handoff may be delayed by **at most 127** additional backedges;
+the watchdog cannot forcibly suspend protected state. An UNTRUSTED task
+separately charges fuel at **every** backedge and cannot automatically
+cooperate until logical quota continuity and physical isolation are proven. The continuation preserves loop indices, iterator
 cursors, locals, and pending callbacks. A new physical dispatch can start
 only after the previous guest turn fully unwinds.
 

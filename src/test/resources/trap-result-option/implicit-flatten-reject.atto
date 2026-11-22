@@ -1,0 +1,6 @@
+// No implicit Option<Result<T,E>> -> Result<T,E> coercion.
+fnc result_value(): Result<int, String> { return Err("keep-payload"); }
+fnc invalid(): void {
+  val Result<int, String> discarded = trap result_value();
+  return;
+}

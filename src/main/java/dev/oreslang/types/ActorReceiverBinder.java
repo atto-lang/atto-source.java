@@ -317,8 +317,10 @@ public final class ActorReceiverBinder {
                                 + method.actorName() + "'");
             }
             if (target instanceof Ast.ClassDecl klass) {
-                // The local binder has no proven inherited slot linearization.
-                // Fail closed rather than shadowing a parent actor's mailbox method.
+                // External bodies must not accidentally override an inherited
+                // receiver slot. The current local-only binder has no
+                // validated hierarchy/linearization witness, so any parent
+                // requires a separate inherited-slot coherence pass first.
                 if (!klass.parents().isEmpty()) {
                     throw new IllegalArgumentException(
                             "external receiver binding on inherited actor '"

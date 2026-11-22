@@ -195,28 +195,33 @@ final class AsyncFilesystemAtomicLanguageTest {
         Path link = permitted.resolve("redirect");
         Files.createSymbolicLink(link, outside);
         Path sourceFile = permitted.resolve("main.atto");
-        String source = """
-                pub routine main(): void {
-                  await fs.write_text_atomic_async("%s", "forbidden");
-                  return;
-                }
-                """.formatted(link.resolve("resource.txt"));
-        OresCompiler.parseAndTypeCheck(source);
-        Files.writeString(sourceFile, source);
-
         RuntimePermissions permissions = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.WRITE, permitted.toString());
         IsolatePolicy policy = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_WRITE);
 
-        RuntimeException thrown = assertThrows(RuntimeException.class, () ->
-                LinkedProgramRunner.run(
-                        sourceFile, policy, permissions, PermissionCheckMode.RUNTIME,
-                        ExecutionProfile.serverJit(), Set.of(), System.getenv(),
-                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
-        assertTrue(denialChain(thrown).contains("Oreslang permission denied"),
-                "resolved write target must receive an independent WRITE check: " + thrown);
+        // Both existing and missing targets must deny at the symlink itself,
+        // before realPath(parent) can disclose target existence outside scope.
+        for (Path target : java.util.List.of(
+                link.resolve("resource.txt"), link.resolve("absent.txt"))) {
+            String source = """
+                    pub routine main(): void {
+                      await fs.write_text_atomic_async("%s", "forbidden");
+                      return;
+                    }
+                    """.formatted(target);
+            OresCompiler.parseAndTypeCheck(source);
+            Files.writeString(sourceFile, source);
+            RuntimeException thrown = assertThrows(RuntimeException.class, () ->
+                    LinkedProgramRunner.run(
+                            sourceFile, policy, permissions, PermissionCheckMode.RUNTIME,
+                            ExecutionProfile.serverJit(), Set.of(), System.getenv(),
+                            new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+            assertTrue(denialChain(thrown).contains("refuses symlink component: " + link),
+                    "atomic write must deny before resolving a symlinked parent: " + thrown);
+        }
         assertEquals("preserved", Files.readString(sentinel, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(outside.resolve("absent.txt")));
     }
 
     private static String denialChain(Throwable failure) {
@@ -265,6 +270,32 @@ final class AsyncFilesystemAtomicLanguageTest {
                             new ByteArrayOutputStream(),
                             new ByteArrayOutputStream()));
         }
+
+        // Parent-component symlinks cannot be resolved before the READ
+        // capability check, regardless of the restricted target's existence.
+        Path parentLink = root.resolve("redirect-outside");
+        Files.createSymbolicLink(parentLink, outside);
+        for (Path forbidden : java.util.List.of(
+                parentLink.resolve("secret.txt"), parentLink.resolve("absent.txt"))) {
+            String source = """
+                    pub routine main(): void {
+                      stdio.println(await fs.file_size_async("%s"));
+                      return;
+                    }
+                    """.formatted(forbidden);
+            OresCompiler.parseAndTypeCheck(source);
+            Files.writeString(sourceFile, source);
+            RuntimeException denied = assertThrows(RuntimeException.class, () ->
+                    LinkedProgramRunner.run(
+                            sourceFile, policy, permissions, PermissionCheckMode.RUNTIME,
+                            ExecutionProfile.serverJit(), Set.of(), System.getenv(),
+                            new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+            assertTrue(denialChain(denied).contains(
+                    "refuses symlink component: " + parentLink),
+                    "file size must reject before probing a parent symlink: " + denied);
+        }
+        assertEquals("hidden", Files.readString(outsideTarget));
+        assertFalse(Files.exists(outside.resolve("absent.txt")));
 
         try (var entries = Files.list(root)) {
             assertFalse(entries.anyMatch(path ->

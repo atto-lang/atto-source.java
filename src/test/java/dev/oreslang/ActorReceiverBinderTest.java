@@ -205,7 +205,10 @@ final class ActorReceiverBinderTest {
                 "reject_cross_module_receiver.atto", "declared in the same module",
                 "reject_duplicate_external_slot.atto", "duplicate external actor method slot",
                 "reject_public_receive.atto", "external receive must be private",
-                "reject_in_class_collision.atto", "conflicts with an in-class actor method");
+                "reject_in_class_collision.atto", "conflicts with an in-class actor method",
+                "reject_inherited_actor.atto", "requires inherited actor slot coherence",
+                "reject_borrowed_receive.atto", "external receive must be private",
+                "reject_structural_receive.atto", "external receive must be private");
         for (Map.Entry<String, String> entry : invalid.entrySet()) {
             String source = Files.readString(root.resolve(entry.getKey()));
             rejects(source, entry.getValue());
@@ -252,6 +255,36 @@ final class ActorReceiverBinderTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> new ActorReceiverBinder.Binding(other, method));
         assertTrue(error.getMessage().contains("actor identity must match"), error.getMessage());
+    }
+
+
+    @Test
+    void inheritedActorReceiverRequiresExplicitHierarchyCoherence() {
+        rejects(module("  pub define actor Parent as end\n"
+                + "  pub define actor Worker extends Parent as end\n"
+                + method("get_count", "", "int")),
+                "requires inherited actor slot coherence");
+    }
+
+    @Test
+    void mailboxReceiveCannotBorrowItsTransportPayload() {
+        rejects(module(actor()
+                + "  define mtd receive(Worker w)(ActorMail<borrow int> mail): void { return; }\n"),
+                "external receive must be private");
+    }
+
+    @Test
+    void mailboxReceiveRejectsStructuralPayloadBeforeWitnessLowering() {
+        rejects(module(actor()
+                + "  define mtd receive(Worker w)(ActorMail<record{value: int}> mail): void { return; }\n"),
+                "external receive must be private");
+    }
+
+    @Test
+    void localActorInAnotherSourceUnitDoesNotResolveExternalMethod() {
+        // A matching spelling in a different unit is not an authorization.
+        assertEquals(0, bind(module(actor())).size());
+        rejects(module(method("get_count", "", "int")), "has no nominal actor");
     }
 
 
