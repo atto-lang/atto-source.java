@@ -2,7 +2,10 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.AbstractCollection;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -69,5 +72,47 @@ final class OresVectorTest {
         ArrayList<Object> raw = vector;
         assertThrows(IllegalArgumentException.class, () -> raw.ensureCapacity(4));
         assertEquals(2, vector.size());
+    }
+
+    @Test
+    void dishonestBulkCollectionCannotBypassCapacityThroughToArray() {
+        // The collection reports one pending element but supplies three:
+        // ArrayList's bulk add uses toArray(), NOT Collection.size().
+        Collection<Object> dishonest = new AbstractCollection<>() {
+            @Override public int size() { return 1; }
+            @Override public Iterator<Object> iterator() {
+                return List.<Object>of(20, 30, 40).iterator();
+            }
+            @Override public Object[] toArray() {
+                return new Object[]{20, 30, 40};
+            }
+        };
+        OresVector vector = new OresVector(3, 0);
+        vector.add(10);
+        assertThrows(IllegalArgumentException.class, () -> vector.addAll(dishonest));
+        assertThrows(IllegalArgumentException.class, () -> vector.addAll(0, dishonest));
+        assertEquals(List.of(10), vector);
+        assertEquals(1, vector.size());
+        assertTrue(vector.reservedCapacity() <= vector.maxCapacity());
+    }
+
+    @Test
+    void bulkInsertUsesSnapshotCardinalityNotUntrustedReportedSize() {
+        Collection<Object> misleading = new AbstractCollection<>() {
+            @Override public int size() { return 0; }
+            @Override public Iterator<Object> iterator() {
+                return List.<Object>of(20, 30).iterator();
+            }
+            @Override public Object[] toArray() {
+                return new Object[]{20, 30};
+            }
+        };
+        OresVector vector = new OresVector(3, 0);
+        vector.add(10);
+        assertTrue(vector.addAll(misleading));
+        assertEquals(List.of(10, 20, 30), vector);
+        assertEquals(3, vector.reservedCapacity());
+        assertThrows(IllegalArgumentException.class, () -> vector.addAll(1, misleading));
+        assertEquals(List.of(10, 20, 30), vector);
     }
 }
