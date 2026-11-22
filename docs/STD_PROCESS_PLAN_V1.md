@@ -1,5 +1,50 @@
 # std/process — Java backend implementation (draft)
 
+
+## Restricted root-context guest bridge — source committed, NOT EXECUTED
+
+In addition to the previously documented host-only `TrustedChildProcessRunner`,
+the branch now contains a separate `NativeChildProcesses` JVM provider,
+registered on `OresContext`, with evaluator dispatch and
+`TypeChecker` signatures. The built-in **root-context** guest invocation is:
+
+```atto
+let started = await process.spawn("/absolute/executable", ["arg1"], "/absolute/cwd");
+if started.is_err() then
+  return 1;
+fi
+let child = started.unwrap();
+let output = (await child.collect_output())?;
+let status = (await child.wait())?;
+```
+
+**Asynchronous is default:** `spawn`, `collect_output`, `wait`,
+`terminate` and `kill` have no `_async` suffix; any intentionally blocking
+guest API would use `_blocking`. `try_wait` is a nonblocking poll.
+
+This root-context bridge uses real `ProcessBuilder` and `Process.onExit`,
+bounds concurrent child reservations to 16, captures up to 1 MiB per stdout
+and stderr stream with concurrent continuous drainage, closes stdin, clears
+the environment and requires absolute argv/executable/cwd. It checks
+`OresContext.requirePermission(RUN)` and `READ` on requested and canonical
+paths. It rejects actor-originating launches until actor-owned physical
+retirement and supervision are implemented. It does not grant a shell, raw PID,
+process-tree kill, arbitrary env, stdin streaming, detach, or root-free access.
+A nonzero exit status is `Ok(ExitStatus)` rather than `Err`.
+
+This is **not yet the public `.atto` `Process.spawn(Command)` API**. The
+`std/process` `.atto` module currently owns a source-level Command/ExitStatus
+model; connecting it to this guest builtin and enforcing all stdio-mode
+options remains required. The `NativeChildProcessesTest` and
+`AttoChildProcessGuestTest` suites and
+`tests/fixtures/std-process-runtime-v1/guest.atto` are checked in but
+**NOT EXECUTED**. The new Java provider is independent from the earlier
+host-only runner whose historical smoke result is described below.
+Executable replacement after path checks, process descendant control,
+graceful escalation, cancellation after abandoned await, and Native Image
+remain unproven. Keep PR in draft until compiler, guest and security gates pass.
+
+
 ## Public import naming
 
 The normal import is `import module Process from "std/process";`.
