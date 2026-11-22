@@ -36,16 +36,105 @@ final class NativeAttoEnvStdlibTest {
     void linkedGuestExecutesStdEnvFallbackAndMissingSemantics() throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.ENVIRONMENT);
         var linked = LinkedProgramRunner.run(
                 Path.of("src/test/resources/stdlib-parity/env.atto"),
-                IsolatePolicy.developer().withCapabilities(
-                        IsolatePolicy.Capability.ENVIRONMENT),
-                ExecutionProfile.serverJit(), out, err);
+                policy, RuntimePermissions.denyAll()
+                        .allowAll(RuntimePermissions.Permission.ENV),
+                PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(),
+                Set.of(), java.util.Map.of(), out, err);
         assertTrue(linked.units().containsKey("@std/env.atto"),
                 "source library must compile and link as a guest module");
         assertEquals(String.join("\n", "false", "true", "fallback", "true",\n                        "true", "true", "true", "false", "true", "true", "true", "true"),
                 out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                 () -> err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void linkedGuestUsesOnlyExplicitContextEnvironment() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var guestEnv = java.util.Map.of(
+                "ATTO_ENV_VALUE", "42",
+                "ATTO_ENV_EMPTY", "",
+                "ATTO_ENV_FLAG", "true");
+        var policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.ENVIRONMENT);
+        var linked = LinkedProgramRunner.run(
+                Path.of("src/test/resources/stdlib-parity/env-injected.atto"),
+                policy, RuntimePermissions.denyAll()
+                        .allowAll(RuntimePermissions.Permission.ENV),
+                PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(),
+                Set.of(), guestEnv, out, err);
+        assertTrue(linked.units().containsKey("@std/env.atto"));
+        assertEquals(String.join("\n", "true", "42", "true",
+                        "true", "true", "fallback"),
+                out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                () -> err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void snapshotDoesNotInspectDeniedHostValues() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.ENVIRONMENT);
+        RuntimePermissions permission = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.ENV)
+                .withDenied(RuntimePermissions.Permission.ENV, "PRIVATE_KEY");
+        java.util.Map<String, String> values = new java.util.AbstractMap<>() {
+            @Override public Set<String> keySet() {
+                return Set.of("PUBLIC_KEY", "PRIVATE_KEY");
+            }
+            @Override public String get(Object name) {
+                if ("PRIVATE_KEY".equals(name)) {
+                    throw new AssertionError("denied host value was inspected");
+                }
+                return "allowed";
+            }
+            @Override public Set<Entry<String, String>> entrySet() {
+                throw new AssertionError("must enumerate keys, never values");
+            }
+        };
+        assertEquals(java.util.Map.of("PUBLIC_KEY", "allowed"),
+                LinkedProgramRunner.admittedGuestEnvironment(policy, permission, values));
+        assertThrows(UnsupportedOperationException.class,
+                () -> LinkedProgramRunner.admittedGuestEnvironment(
+                        policy, permission, values).put("NEW", "new"));
+    }
+
+    @Test
+    void missingCoarseEnvCapabilitySkipsEvenHostKeyEnumeration() {
+        java.util.Map<String, String> values = new java.util.AbstractMap<>() {
+            @Override public Set<String> keySet() {
+                throw new AssertionError("denied coarse capability enumerated keys");
+            }
+            @Override public Set<Entry<String, String>> entrySet() {
+                throw new AssertionError("denied coarse capability enumerated values");
+            }
+        };
+        assertTrue(LinkedProgramRunner.admittedGuestEnvironment(
+                IsolatePolicy.developer(),
+                RuntimePermissions.denyAll().allowAll(RuntimePermissions.Permission.ENV),
+                values).isEmpty());
+    }
+
+    @Test
+    void snapshotBoundsAuthorizedValuesAndNeverPrintsContents() {
+        var policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.ENVIRONMENT);
+        var permission = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.ENV);
+        for (String invalid : new String[] {
+                "MY_SECRET_" + "x".repeat(16384),
+                "NUL" + String.valueOf((char) 0),
+                String.valueOf((char) 0xD800)
+        }) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.admittedGuestEnvironment(
+                            policy, permission, java.util.Map.of("ATTO_ENV_INVALID", invalid)));
+            assertFalse(ex.getMessage().contains("MY_SECRET_"));
+            assertFalse(ex.getMessage().contains("NUL"));
+        }
     }
 
     @Test
