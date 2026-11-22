@@ -105,5 +105,51 @@ pub routine main(): void {
   let mut Array<int> one_byte = new Array<int>();
   one_byte.add(255);
   stdio.println(zorde.checked_reader(one_byte).is_ok());
+
+  // Wire framing must be exact: no extra octets, unsupported bootstrap
+  // versions, incorrect length fields or noncanonical schema varints.
+  let mut Array<int> trailing = new Array<int>();
+  for (let int i = 0; i < valid_frame.size; i = i + 1) {
+    trailing.add(valid_frame.get(i));
+  }
+  trailing.add(0);
+  stdio.println(zorde.decode_frame(trailing).is_err());
+
+  let mut Array<int> wrong_version = new Array<int>();
+  for (let int i = 0; i < valid_frame.size; i = i + 1) {
+    wrong_version.add(valid_frame.get(i));
+  }
+  wrong_version.set(4, 2);
+  stdio.println(zorde.decode_frame(wrong_version).is_err());
+
+  let mut Array<int> wrong_length = new Array<int>();
+  for (let int i = 0; i < valid_frame.size; i = i + 1) {
+    wrong_length.add(valid_frame.get(i));
+  }
+  wrong_length.set(7, 2);
+  stdio.println(zorde.decode_frame(wrong_length).is_err());
+
+  let mut Array<int> overlong_schema = new Array<int>();
+  overlong_schema.add(90);
+  overlong_schema.add(79);
+  overlong_schema.add(82);
+  overlong_schema.add(68);
+  overlong_schema.add(1);
+  overlong_schema.add(128);
+  overlong_schema.add(0);
+  overlong_schema.add(1);
+  overlong_schema.add(0);
+  stdio.println(zorde.decode_frame(overlong_schema).is_err());
+
+  let mut Array<int> empty_frame = new Array<int>();
+  empty_frame.add(90);
+  empty_frame.add(79);
+  empty_frame.add(82);
+  empty_frame.add(68);
+  empty_frame.add(1);
+  empty_frame.add(1);
+  empty_frame.add(1);
+  empty_frame.add(0);
+  stdio.println(zorde.decode_frame(empty_frame).is_ok());
   return;
 }
