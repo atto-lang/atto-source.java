@@ -24,5 +24,19 @@ pub routine main(): void {
   stdio.println(h.bucket_count(1).unwrap());
   stdio.println(h.bucket_count(2).unwrap());
   stdio.println(h.rejected_count());
+  let counter_snapshot = c.snapshot();
+  let histogram_snapshot = h.snapshot();
+  stdio.println(counter_snapshot.value());
+  stdio.println(counter_snapshot.limit());
+  stdio.println(histogram_snapshot.count());
+  stdio.println(histogram_snapshot.sum());
+  stdio.println(histogram_snapshot.bucket_count(0).unwrap());
+  stdio.println(histogram_snapshot.bucket_upper(0).unwrap());
+  stdio.println(histogram_snapshot.bucket_upper(2).is_err());
+  stdio.println(h.observe(1));
+  stdio.println(histogram_snapshot.count());
+  stdio.println(histogram_snapshot.bucket_count(0).unwrap());
+  stdio.println(h.count());
+  stdio.println(h.bucket_count(0).unwrap());
   return;
 }
