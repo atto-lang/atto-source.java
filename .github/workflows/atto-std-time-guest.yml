@@ -7,6 +7,8 @@ on:
   pull_request:
     paths:
       - 'stdlib/time.atto'
+      - 'examples/atto-time-contract.atto'
+      - 'stdlib/std/TIME.md'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/main/java/dev/oreslang/runtime/OresTimers.java'
       - 'src/test/java/dev/oreslang/runtime/NativeTimeStdlibTest.java'
