@@ -1,0 +1,23 @@
+name: Private source-free virtual actor runner admission smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/virtual-actor-runner-smoke.yml'
+      - 'src/main/java/dev/oreslang/compiler/VirtualActorProtectedOpsMirV1.java'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  checkout-free-runner-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Execute a source-free step on an assigned private runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'SOURCE_FREE_RUNNER_ASSIGNED_AND_STEP_EXECUTED=1\n'
+          test -n "${RUNNER_NAME:-}"
+          test "${RUNNER_OS:-}" = Linux

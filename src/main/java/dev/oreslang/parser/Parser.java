@@ -10,6 +10,9 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
+    // '$' cannot appear in source identifiers; only parser can mint these namespaces.
+    public static final String PKG_ROOT_NAMESPACE = "$pkg_root$";
+    public static final String IMPORTS_NAMESPACE = "$imports$";
 
     public enum AttoCallableVersion { V1, V2 }
 
@@ -1503,6 +1506,12 @@ public final class Parser {
     private void rejectUnloweredRuntimeEntityDeclaration() {
         if (check(EOF)) return;
         String name = peek().lexeme();
+        if (name.equals("singleton")) {
+            throw error(peek(), "ORES-SINGLETON-UNSUPPORTED: singleton declarations require "
+                    + "exactly-once complete publication, cycle/failure semantics, "
+                    + "runtime-derived actor authority for shared state, and "
+                    + "five-backend guest execution parity; not yet enabled");
+        }
         // Reserve the two-word declaration heads without mislowering them as
         // ordinary actor/class declarations. These are contextual identifiers,
         // so 'state' and 'virtual' remain valid names outside declaration heads.
@@ -1536,6 +1545,22 @@ public final class Parser {
                         + "edge transport and cross-backend lowering; not yet enabled");
             }
             return;
+        }
+        // These are proposed *nominal* source kinds, not synonyms for class/actor.
+        // Keep the spellings contextual so unrelated identifiers remain valid.
+        // ('state container' is a first-class protected declaration on main and
+        // is parsed by parseProtectedDeclaration, which requires a sealed state block.)
+        if (name.equals("grain")) {
+            throw error(peek(), "source grain declarations require stable keyed identity, "
+                    + "activation/passivation fencing and actor isolation; not yet enabled");
+        }
+        if (name.equals("model")) {
+            throw error(peek(), "source model declarations require typed ModelGraph "
+                    + "admission and verified code generation; not yet enabled");
+        }
+        if (name.equals("enum")) {
+            throw error(peek(), "source enum declarations require nominal ADT case "
+                    + "typing, layout and match lowering; not yet enabled");
         }
         if (!name.equals("supervisor") && !name.equals("mailman")
                 && !name.equals("scheduler") && !name.equals("proxy")
@@ -1576,6 +1601,14 @@ public final class Parser {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        // Actors have one runtime-owned mailbox, one lifecycle and one state
+        // ownership domain. Multiple actor superclasses would merge those
+        // domains without an admission or layout proof; reject at parse time
+        // rather than letting ordinary-class diamond dispatch choose a parent.
+        if (parents.size() > 1) {
+            throw error(peek(), "actor '" + name
+                    + "' may extend at most one actor superclass");
+        }
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
         // Standalone actor declaration: retain the receiver-binding name in
@@ -1865,7 +1898,8 @@ public final class Parser {
             throw error(previous(), "sealed actor state cannot mix ordinary actor fields");
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency),
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
+                        prefix.serial()),
                 sealedStateFields);
     }
 
@@ -2461,7 +2495,7 @@ public final class Parser {
                     // @Inject(MutableStateContainer()) to avoid parse-error
                     // misclassification and, more importantly, silent admission.
                     "Inject", "StateBacked", "MutableStateContainer",
-                    "StateContainer").contains(name)) {
+                    "StateContainer", "DefaultArgVals").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
@@ -2798,6 +2832,11 @@ public final class Parser {
         java.util.Set<String> seen = new java.util.HashSet<>();
         do {
             String name = consume(IDENT, "expected generic parameter name").lexeme();
+            // All declaration families must reserve inference-only '_' consistently.
+            // Functions already enforce this through parseGenericParameterSpecs.
+            if (name.equals("_") || name.startsWith("$")) {
+                throw error(previous(), "invalid generic parameter name '" + name + "'");
+            }
             if ("_".equals(name)) {
                 throw error(previous(), "'_' is a generic argument inference hole, not a declaration parameter name");
             }
@@ -6098,6 +6137,9 @@ public final class Parser {
     private Ast.Expr parseMultiplicative() {
         Ast.Expr expr = parseWithUpdate();
         while (match(STAR, SLASH, PERCENT)) {
+            if (previous().type() == PERCENT) {
+                throw error(previous(), "noncanonical '%' source operator; use named Integer.rem/mod");
+            }
             if (previous().type() == PERCENT) throw error(previous(),
                     "'%' is reserved and is not AttoLang source syntax; use Integer.rem(a, b) or Integer.mod(a, b)");
             String op = previous().lexeme();
@@ -6565,10 +6607,19 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT, DOUBLE_COLON)) {
-                // Two explicit qualified-member spellings, one binding and
-                // evaluation path; no dynamic symbol lookup or macro rewrite.
+                Token.Type qualifier = previous().type();
                 String member = consumeMemberName();
-                expr = new Ast.MemberExpr(expr, member);
+                if (qualifier == DOUBLE_COLON && expr instanceof Ast.NameExpr namespace) {
+                    if (namespace.name().equals("pkg")) {
+                        expr = new Ast.MemberExpr(new Ast.NameExpr(PKG_ROOT_NAMESPACE), member);
+                    } else if (namespace.name().equals("imports")) {
+                        expr = new Ast.MemberExpr(new Ast.NameExpr(IMPORTS_NAMESPACE), member);
+                    } else {
+                        expr = new Ast.MemberExpr(expr, member);
+                    }
+                } else {
+                    expr = new Ast.MemberExpr(expr, member);
+                }
             } else if (expr instanceof Ast.NameExpr name
                     && check(LBRACE) && isLocalTypeName(name.name())) {
                 expr = parseLocalAggregateConstructor(name.name());

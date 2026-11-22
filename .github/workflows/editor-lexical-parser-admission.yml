@@ -1,0 +1,68 @@
+name: editor-lexical-parser-admission
+
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/parser/Lexer.java"
+      - "src/main/java/dev/oreslang/parser/Token.java"
+      - "src/main/java/dev/oreslang/parser/Parser.java"
+      - "src/main/java/dev/oreslang/parser/TemplateLiterals.java"
+      - "src/main/java/dev/oreslang/runtime/OresSymbol.java"
+      - "pom.xml"
+      - "src/test/java/dev/oreslang/parser/EditorLexicalParserAdmissionTest.java"
+      - "src/test/resources/contracts/editor-syntax/v1/editor-lexical-contract.json"
+      - ".github/workflows/editor-lexical-parser-admission.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: editor-parser-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compiler-local-junit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source head and clean tree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code --quiet
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "SOURCE_HEAD=$EXPECTED_SHA"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          test "$(git hash-object src/test/resources/contracts/editor-syntax/v1/editor-lexical-contract.json)" = e9dbf3b6fad5562b7ca6df631ab3c45f478480ba
+          git hash-object src/main/java/dev/oreslang/parser/{Lexer,Parser,Token,TemplateLiterals}.java
+          git hash-object src/main/java/dev/oreslang/runtime/OresSymbol.java
+      - name: Set up source-local GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: "graalvm"
+          cache: maven
+      - name: Verify toolchain
+        run: |
+          java --version
+          mvn --version
+      - name: Execute real Java lexer/parser JUnit admission suite
+        run: mvn -B -ntp -Dtest=EditorLexicalParserAdmissionTest -DfailIfNoTests=true test
+      - name: Require executed Surefire receipt (not an empty green run)
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt=target/surefire-reports/dev.oreslang.parser.EditorLexicalParserAdmissionTest.txt
+          test -f "$receipt"
+          grep -Eq '^Tests run: 21, Failures: 0, Errors: 0, Skipped: 0' "$receipt"
+          cat "$receipt"

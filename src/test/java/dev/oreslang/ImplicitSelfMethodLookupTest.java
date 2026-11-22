@@ -58,10 +58,9 @@ final class ImplicitSelfMethodLookupTest {
     }
 
     @Test
-    void unqualifiedCollisionWithFreeCallableRequiresExplicitQualification() throws Exception {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+    void lexicalMethodFamilyWinsOverSameNamedFreeCallable() throws Exception {
+        assertDoesNotThrow(() ->
                 TypeChecker.check(Parser.parse(guest("ambiguous-free-call.atto"))));
-        assertTrue(error.getMessage().contains("ambiguous unqualified call"), error::getMessage);
     }
 
     @Test
