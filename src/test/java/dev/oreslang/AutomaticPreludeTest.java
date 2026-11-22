@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.AutomaticPrelude;
+import dev.oreslang.types.CoreTypeRegistry;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
@@ -55,6 +56,69 @@ final class AutomaticPreludeTest {
         assertFalse(AutomaticPrelude.coreSumCarrier("Option", 2));
         assertFalse(AutomaticPrelude.coreSumCarrier("Result", 1));
         assertFalse(AutomaticPrelude.coreSumCarrier("Object", 1));
+    }
+
+
+    @Test
+    void coreTypeRegistryIsTheCanonicalOwnershipAndDropSource() {
+        var option = CoreTypeRegistry.lookup("Option").orElseThrow();
+        assertEquals("core/option/Option", option.canonicalIdentity());
+        assertEquals(CoreTypeRegistry.Scope.CORE, option.scope());
+        assertEquals(CoreTypeRegistry.Kind.TYPE, option.kind());
+        assertEquals(1, option.minGenericArity());
+        assertEquals(1, option.maxGenericArity());
+        assertEquals(CoreTypeRegistry.Ownership.PAYLOAD_DEPENDENT, option.ownership());
+        assertEquals(CoreTypeRegistry.Allocation.NONE, option.allocation());
+        assertEquals(CoreTypeRegistry.DropPolicy.ACTIVE_PAYLOAD_ONCE, option.dropPolicy());
+        assertEquals(CoreTypeRegistry.SendPolicy.PAYLOAD_DEPENDENT, option.sendPolicy());
+        assertEquals(CoreTypeRegistry.LoweringStatus.JAVA_INTRINSIC, option.javaStatus());
+
+        var result = CoreTypeRegistry.lookup("Result").orElseThrow();
+        assertEquals(2, result.minGenericArity());
+        assertEquals(2, result.maxGenericArity());
+        assertEquals(CoreTypeRegistry.DropPolicy.ACTIVE_PAYLOAD_ONCE, result.dropPolicy());
+
+        var slice = CoreTypeRegistry.lookup("Slice").orElseThrow();
+        assertEquals(CoreTypeRegistry.Ownership.BORROWED_VIEW, slice.ownership());
+        assertEquals(CoreTypeRegistry.Allocation.BORROWED_VIEW, slice.allocation());
+        assertEquals(CoreTypeRegistry.SendPolicy.NEVER_BORROWED, slice.sendPolicy());
+
+        var map = CoreTypeRegistry.lookup("Map").orElseThrow();
+        assertEquals(CoreTypeRegistry.Scope.ALLOC, map.scope());
+        assertEquals(2, map.minGenericArity());
+        assertEquals(CoreTypeRegistry.Allocation.ALLOCATOR_REQUIRED, map.allocation());
+        assertEquals(CoreTypeRegistry.DropPolicy.OWNED_STORAGE, map.dropPolicy());
+
+        var string = CoreTypeRegistry.lookup("String").orElseThrow();
+        assertEquals(CoreTypeRegistry.LoweringStatus.JAVA_LEGACY_SCALAR, string.javaStatus());
+        assertEquals(CoreTypeRegistry.Allocation.ALLOCATOR_REQUIRED, string.allocation(),
+                "legacy String scalar support must not imply owned alloc::String");
+
+        assertTrue(CoreTypeRegistry.lookup("HashMap").orElseThrow().scope()
+                == CoreTypeRegistry.Scope.EXPLICIT);
+        assertTrue(CoreTypeRegistry.lookup("Object").isEmpty());
+        assertFalse(CoreTypeRegistry.lookup("Option").orElseThrow().acceptsArity(2));
+        assertFalse(CoreTypeRegistry.lookup("Result").orElseThrow().acceptsArity(1));
+        assertTrue(CoreTypeRegistry.coreSumCarrier("Option", 1));
+        assertTrue(CoreTypeRegistry.coreSumCarrier("Result", 2));
+        assertFalse(CoreTypeRegistry.coreSumCarrier("Option", 2));
+        assertFalse(CoreTypeRegistry.coreSumCarrier("Result", 1));
+    }
+
+    @Test
+    void coreRegistryGenericArityIsEnforcedByTheRealTypeChecker() {
+        for (String source : new String[]{
+                "fnc invalid(): Option { return None; }",
+                "fnc invalid(): Option<int, string> { return None; }",
+                "fnc invalid(): Result<int> { return Ok(1); }",
+                "fnc invalid(): Result<int, string, bool> { return Ok(1); }"
+        }) {
+            var program = assertDoesNotThrow(() -> Parser.parse(source),
+                    "the arity gate must run after the production parser");
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> TypeChecker.check(program), source);
+            assertTrue(error.getMessage().contains("E_CORE_TYPE_ARITY"), error::getMessage);
+        }
     }
 
     private static void assertPreludeSpoofRejected(String source) {
