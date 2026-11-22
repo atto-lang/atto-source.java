@@ -23,6 +23,10 @@ public final class NumericValueOrdering {
     public static Integer compare(Number left, Number right) {
         Objects.requireNonNull(left, "numeric left");
         Objects.requireNonNull(right, "numeric right");
+        // Admit actual carrier identities before any NaN/infinity shortcut.
+        // An arbitrary host Number is never promoted to an Atto numeric type.
+        requireSupportedCarrier(left);
+        requireSupportedCarrier(right);
 
         boolean leftBinary = isBinaryFloat(left);
         boolean rightBinary = isBinaryFloat(right);
@@ -60,6 +64,14 @@ public final class NumericValueOrdering {
 
     private static boolean isBinaryFloat(Number value) {
         return value instanceof Float || value instanceof Double;
+    }
+
+    private static void requireSupportedCarrier(Number value) {
+        if (!isMachineInteger(value) && !isBinaryFloat(value)
+                && !(value instanceof BigInteger) && !(value instanceof BigDecimal)) {
+            throw new IllegalArgumentException(
+                    "unadmitted numeric carrier: " + value.getClass().getName());
+        }
     }
 
     private static BigDecimal exactDecimal(Number value) {
