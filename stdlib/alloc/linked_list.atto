@@ -1,0 +1,164 @@
+// atto.alloc/linked_list: deterministic, owned doubly linked list of int.
+// Links are indices into owned arrays, not unsafe pointers. Recycled slots
+// remain private so there are no external stale handles or escaping borrows.
+// Allocation is on append; remove/pop reuse nodes without allocating.
+define module linked_list as
+  pub define class LinkedList as
+    let mut Array<int> values = new Array<int>();
+    let mut Array<int> next = new Array<int>();
+    let mut Array<int> prev = new Array<int>();
+    let mut int head = -1;
+    let mut int tail = -1;
+    let mut int free_head = -1;
+    let mut int length = 0;
+
+    pub constructor() {}
+
+    pub len(): int { return self.length; }
+    pub is_empty(): bool { return self.length == 0; }
+    pub allocated_slots(): int { return self.values.size; }
+
+    // No live node is reachable via free_head. All references are indices.
+    acquire_slot(mut self)(int value): int {
+      if self.free_head != -1; do
+        let int index = self.free_head;
+        self.free_head = self.next.get(index);
+        self.values.set(index, value);
+        self.next.set(index, -1);
+        self.prev.set(index, -1);
+        return index;
+      fi
+      if self.values.size >= 1048576; do
+        rt fail("linked_list: node quota exceeded");
+      fi
+      let int index = self.values.size;
+      self.values.add(value);
+      self.next.add(-1);
+      self.prev.add(-1);
+      return index;
+    }
+
+    unlink(mut self)(int index): int {
+      let int before = self.prev.get(index);
+      let int after = self.next.get(index);
+      if before == -1; do
+        self.head = after;
+      else
+        self.next.set(before, after);
+      fi
+      if after == -1; do
+        self.tail = before;
+      else
+        self.prev.set(after, before);
+      fi
+      let int value = self.values.get(index);
+      self.values.set(index, 0);
+      self.prev.set(index, -1);
+      self.next.set(index, self.free_head);
+      self.free_head = index;
+      self.length = self.length - 1;
+      return value;
+    }
+
+    pub push_front(mut self)(int value): void {
+      let int index = self.acquire_slot(value);
+      self.next.set(index, self.head);
+      if self.head == -1; do
+        self.tail = index;
+      else
+        self.prev.set(self.head, index);
+      fi
+      self.head = index;
+      self.length = self.length + 1;
+      return;
+    }
+
+    pub push_back(mut self)(int value): void {
+      let int index = self.acquire_slot(value);
+      self.prev.set(index, self.tail);
+      if self.tail == -1; do
+        self.head = index;
+      else
+        self.next.set(self.tail, index);
+      fi
+      self.tail = index;
+      self.length = self.length + 1;
+      return;
+    }
+
+    pub front(): Option<int> {
+      if self.head == -1; do
+        return None;
+      fi
+      return Some(self.values.get(self.head));
+    }
+
+    pub back(): Option<int> {
+      if self.tail == -1; do
+        return None;
+      fi
+      return Some(self.values.get(self.tail));
+    }
+
+    pub pop_front(mut self)(): Option<int> {
+      if self.head == -1; do
+        return None;
+      fi
+      return Some(self.unlink(self.head));
+    }
+
+    pub pop_back(mut self)(): Option<int> {
+      if self.tail == -1; do
+        return None;
+      fi
+      return Some(self.unlink(self.tail));
+    }
+
+    // Deletes first matching node; stable for all other list entries.
+    pub remove_first(mut self)(int value): bool {
+      let mut int index = self.head;
+      for (let int step = 0; step < self.length; step = step + 1) {
+        if self.values.get(index) == value; do
+          self.unlink(index);
+          return true;
+        fi
+        index = self.next.get(index);
+      }
+      return false;
+    }
+
+    pub contains(int value): bool {
+      let mut int index = self.head;
+      for (let int step = 0; step < self.length; step = step + 1) {
+        if self.values.get(index) == value; do
+          return true;
+        fi
+        index = self.next.get(index);
+      }
+      return false;
+    }
+
+    pub clear(mut self)(): void {
+      let int n = self.length;
+      for (let int i = 0; i < n; i = i + 1) {
+        self.pop_front();
+      }
+      return;
+    }
+
+    // Produces a copy: the returned Array<int> never aliases link storage.
+    pub to_array(): Array<int> {
+      let mut Array<int> result = new Array<int>();
+      let mut int index = self.head;
+      for (let int step = 0; step < self.length; step = step + 1) {
+        result.add(self.values.get(index));
+        index = self.next.get(index);
+      }
+      return result;
+    }
+  end
+
+  pub fnc new_linked_list(): LinkedList {
+    return new LinkedList();
+  }
+end
