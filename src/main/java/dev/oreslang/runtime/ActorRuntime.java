@@ -5431,6 +5431,22 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Admit an already-prepared, compiler-verified durable scalar actor.
+     * The privileged host must first complete AsyncPersistentScalarCodeExecutorV1
+     * preparation off an actor carrier. Activation and FIFO recovery are
+     * complete before this method publishes the actor's READY outcome.
+     *
+     * Subsequent SQLite turns suspend via the existing source continuation
+     * lane. Guest actor code has no authority to mint or replace the provider.
+     */
+    public ActorRef<Object> spawnPreparedPersistentScalarActor(
+            AsyncPersistentScalarCodeExecutorV1 executor) {
+        requireSupervisorContext("spawn prepared asynchronous durable scalar actor");
+        Objects.requireNonNull(executor, "verified asynchronous persistent executor");
+        return spawnCodeActor(ActorKind.PRIVATE, executor, executor.actor_type_name());
+    }
+
+    /**
      * Compiler-only source actor entry point. Unlike the trusted host factory
      * escape hatches, this does not capture arbitrary JVM state: the shared
      * executor is identity-bound to its CodeImage and the actor's mutable guest
