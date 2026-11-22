@@ -98,8 +98,21 @@ public final class CoreTypeRegistry {
                 throw new IllegalArgumentException("core-only type cannot require alloc profile: " + name);
             }
             if (ownership == Ownership.BORROWED_VIEW
-                    && allocation != Allocation.BORROWED_VIEW) {
-                throw new IllegalArgumentException("borrowed view allocation metadata mismatch: " + name);
+                    && (allocation != Allocation.BORROWED_VIEW
+                            || dropPolicy != DropPolicy.NONE
+                            || sendPolicy != SendPolicy.NEVER_BORROWED)) {
+                throw new IllegalArgumentException("borrowed view safety metadata mismatch: " + name);
+            }
+            if (ownership == Ownership.COPY
+                    && (allocation != Allocation.NONE || dropPolicy != DropPolicy.NONE
+                            || sendPolicy != SendPolicy.ALWAYS)) {
+                throw new IllegalArgumentException("Copy scalar safety metadata mismatch: " + name);
+            }
+            if (ownership == Ownership.OWNED && dropPolicy != DropPolicy.OWNED_STORAGE) {
+                throw new IllegalArgumentException("owned type lacks deterministic storage drop: " + name);
+            }
+            if (kind == Kind.CONSTRUCTOR && ownership != Ownership.PAYLOAD_DEPENDENT) {
+                throw new IllegalArgumentException("ADT constructor must carry payload-dependent ownership: " + name);
             }
         }
 
