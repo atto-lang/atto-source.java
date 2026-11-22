@@ -1,0 +1,25 @@
+name: Exact with-tree verifier source-free negative controls
+on:
+  pull_request:
+    paths:
+      - 'ci/verify-exact-with-tree.sh'
+      - 'ci/test-verify-exact-with-tree.sh'
+      - '.github/workflows/with-exact-tree-verifier.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-free-verifier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Checkout without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Synthetic exact Git-tree tests; no private-source export
+        run: |
+          set -euo pipefail
+          bash ci/test-verify-exact-with-tree.sh ci/verify-exact-with-tree.sh
+          echo MIRRORED_SOURCE=NOT_EXECUTED
+          echo PRIVATE_CI_EXPORT_AUTHORIZATION=NOT_GRANTED

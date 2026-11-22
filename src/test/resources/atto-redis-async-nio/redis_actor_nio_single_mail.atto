@@ -1,0 +1,92 @@
+// Optimized single-message Atto actor Redis on true async NIO2 TCP.
+// Each command is one immutable string mailbox message: OP|hex-key|hex-value.
+// Hex does not contain '|', and split_literal preserves empty trailing fields.
+// GET returns one result message VALUE|hex-value, not separate envelope+body.
+// Transport and binary RESP2 decoding stay in the real Atto NIO runtime.
+// Ephemeral/single-client: WAL, sealed state, and shared multi-client remain gated.
+define actor RedisKvSingleMail as
+  let Map<string,string> values;
+
+  on_start(): void {
+    self.values = ~map<string,string>();
+    return;
+  }
+
+  receive(ActorMail<string> mail): void {
+    if mail.value == "STOP" || mail.value == "QUIT"; do
+      self.end();
+      return;
+    fi
+    let List<string> parts = mail.value.split_literal("|");
+    val string op = parts[0];
+    if op == "SET" && parts.size == 3; do
+      self.values.set(parts[1], parts[2]);
+      self.send("OK");
+      return;
+    fi
+    if op == "GET" && parts.size == 2; do
+      val found = self.values.get_optional(parts[1]);
+      if found.is_none(); do
+        self.send("NIL");
+      else
+        self.send("VALUE|" + found.unwrap());
+      fi
+      return;
+    fi
+    if op == "DEL" && parts.size == 2; do
+      if self.values.delete(parts[1]); do
+        self.send("ONE");
+      else
+        self.send("ZERO");
+      fi
+      return;
+    fi
+    self.send("ERR");
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn RedisKvSingleMail();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", __PORT__);
+  val socket = await listener.accept_async();
+
+  loop {
+    val request = await socket.read_resp2_hex_async();
+    if request.size == 0; do
+      await socket.close_async();
+      await listener.close_async();
+      worker.send("STOP");
+      await worker.get_done();
+      return;
+    fi
+    val string op = request[0];
+    if op == "QUIT" && request.size == 1; do
+      await socket.write_resp2_hex_async("OK", "");
+      await socket.close_async();
+      await listener.close_async();
+      worker.send("STOP");
+      await worker.get_done();
+      return;
+    fi
+    if op == "PING" && request.size == 1; do
+      await socket.write_resp2_hex_async("PONG", "");
+    elseif op == "SET" && request.size == 3; do
+      worker.send("SET|" + request[1] + "|" + request[2]);
+      val output = (await worker.outputs.next()).value.unwrap();
+      await socket.write_resp2_hex_async(output.value, "");
+    elseif (op == "GET" || op == "DEL") && request.size == 2; do
+      worker.send(op + "|" + request[1]);
+      val output = (await worker.outputs.next()).value.unwrap();
+      if output.value.starts_with("VALUE|"); do
+        let List<string> fields = output.value.split_literal("|");
+        await socket.write_resp2_hex_async("VALUE", fields[1]);
+      else
+        await socket.write_resp2_hex_async(output.value, "");
+      fi
+    else
+      await socket.write_resp2_hex_async("ERR", "");
+    fi
+  }
+}

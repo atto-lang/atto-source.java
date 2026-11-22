@@ -43,9 +43,9 @@ final class OresBytesNioResp2Test {
         OresBytes equivalent = OresBytes.copyOf(raw);
         int hash = value.hashCode();
         raw[0] = 42;
-        value.copyToArray()[1] = 0;
-        assertEquals(0, value.unsignedAt(0));
-        assertEquals(255, value.unsignedAt(1));
+        value.toArrayCopy()[1] = 0;
+        assertEquals(0, value.byteAt(0));
+        assertEquals(255, value.byteAt(1));
         assertEquals(equivalent, value);
         assertEquals(hash, value.hashCode());
         assertEquals(equivalent.hashCode(), hash);
@@ -64,17 +64,17 @@ final class OresBytesNioResp2Test {
         assertEquals("SET", parsed.opcode());
         assertEquals(command.length, parsed.consumed());
         assertEquals(0, input.position());
-        assertArrayEquals(key, parsed.arguments().get(0).copyToArray());
-        assertArrayEquals(value, parsed.arguments().get(1).copyToArray());
+        assertArrayEquals(key, parsed.bulk().get(0).toArrayCopy());
+        assertArrayEquals(value, parsed.bulk().get(1).toArrayCopy());
         assertArrayEquals(new byte[]{'$', '5', '\r', '\n',
                 (byte) 254, 0, 10, 13, 42, '\r', '\n'},
-                AsyncNioResp2.encodeBinary("VALUE", parsed.arguments().get(1)));
+                AsyncNioResp2.encodeBinary("VALUE", parsed.bulk().get(1)));
         AsyncNioResp2.BinaryParsed empty = AsyncNioResp2.parseBinary(
                 ByteBuffer.wrap(frame(ascii("SET"), key, new byte[0])));
         assertNotNull(empty);
-        assertEquals(0, empty.arguments().get(1).size());
+        assertEquals(0, empty.bulk().get(1).size());
         assertArrayEquals(ascii("$0\r\n\r\n"),
-                AsyncNioResp2.encodeBinary("VALUE", empty.arguments().get(1)));
+                AsyncNioResp2.encodeBinary("VALUE", empty.bulk().get(1)));
     }
 
     @Test
@@ -91,14 +91,14 @@ final class OresBytesNioResp2Test {
         AsyncNioResp2.BinaryParsed one = AsyncNioResp2.parseBinary(full);
         assertNotNull(one);
         assertEquals(first.length, one.consumed());
-        OresBytes key = one.arguments().get(0);
+        OresBytes key = one.bulk().get(0);
         full.position(one.consumed());
         AsyncNioResp2.BinaryParsed two = AsyncNioResp2.parseBinary(full);
         assertNotNull(two);
         assertEquals("PING", two.opcode());
-        assertTrue(two.arguments().isEmpty());
+        assertTrue(two.bulk().isEmpty());
         Arrays.fill(joined, (byte) 3);
-        assertArrayEquals(new byte[]{0, (byte) 255}, key.copyToArray());
+        assertArrayEquals(new byte[]{0, (byte) 255}, key.toArrayCopy());
     }
 
     @Test

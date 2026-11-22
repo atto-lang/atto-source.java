@@ -1,0 +1,50 @@
+name: AttoLang eight compiler-negative semantic gates (Java)
+on:
+  pull_request:
+    paths:
+      - 'contracts/atto-scalar-v1/negative/**'
+      - 'tests/formal-policy-atto/negative/**'
+      - 'src/test/java/dev/oreslang/AttoNegativeSemanticGateTest.java'
+      - '.github/workflows/atto-eight-negative-java.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-compiler-negatives:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Setup Java 25
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Bind exact compiler source head and clean tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          echo "ATTO_JAVA_NEGATIVE_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_JAVA_NEGATIVE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Execute eight compiler-backed targeted negative checks
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AttoNegativeSemanticGateTest -DfailIfNoTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.AttoNegativeSemanticGateTest.xml
+          echo 'ATTO_JAVA_NEGATIVE_SOURCE_ONLY; no AOT artifact or guest execution proven'
+      - name: Retain actual JUnit reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atto-eight-negative-java-junit
+          path: target/surefire-reports/*AttoNegativeSemanticGateTest*
+          if-no-files-found: warn

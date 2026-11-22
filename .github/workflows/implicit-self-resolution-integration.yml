@@ -1,0 +1,90 @@
+name: Java implicit receiver lexical method-family conformance
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/implicit-self-resolution-integration.yml
+      - src/main/java/dev/oreslang/ast/CallableSelector.java
+      - src/main/java/dev/oreslang/types/TypeChecker.java
+      - src/main/java/dev/oreslang/types/OwnershipChecker.java
+      - src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
+      - src/test/java/dev/oreslang/ImplicitSelfLookupHardeningTest.java
+      - src/test/java/dev/oreslang/ImplicitSelfMethodLookupTest.java
+      - src/test/resources/implicit-self/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compiler-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR HEAD (never GitHub synthetic merge ref)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Fail closed on wrong source SHA or dirty checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'IMPLICIT_SELF_SOURCE_HEAD=%s\nIMPLICIT_SELF_SOURCE_TREE=%s\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')"
+          bash scripts/verify-source-tree.sh "$EXPECTED_HEAD"
+
+      - name: Java 25 / GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+
+      - name: Execute all 30 Java compiler and polyglot guest cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=ImplicitSelfLookupHardeningTest,ImplicitSelfMethodLookupTest \
+            -DfailIfNoTests=true test
+
+      - name: Require exact unskipped Surefire receipts (no Python)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target/surefire-reports
+          for entry in ImplicitSelfLookupHardeningTest:24 ImplicitSelfMethodLookupTest:6; do
+            klass="${entry%%:*}"
+            expected="${entry##*:}"
+            file="TEST-dev.oreslang.${klass}.xml"
+            test -s "$file"
+            header="$(grep -m1 '<testsuite ' "$file")"
+            [[ -n "$header" && "$header" == *"name=\"dev.oreslang.${klass}\""* ]]
+            for attr in "tests=$expected" 'errors=0' 'failures=0' 'skipped=0'; do
+              name="${attr%%=*}"; value="${attr#*=}"
+              [[ "$header" == *"${name}=\"${value}\""* ]] || {
+                printf 'INCOMPLETE_TEST_RECEIPT %s %s\n' "$klass" "$attr" >&2; exit 1;
+              }
+            done
+            count="$(grep -c '<testcase ' "$file" || true)"
+            test "$count" -eq "$expected"
+            ! grep -Eq '<skipped[ />]' "$file"
+            ! grep -Eq '<failure[ />]|<error[ />]' "$file"
+            printf 'IMPLICIT_SELF_SUITE=%s TESTS=%s FAILURES=0 ERRORS=0 SKIPPED=0\n' "$klass" "$expected"
+          done
+          printf 'IMPLICIT_SELF_TOTAL_EXECUTED=30\n'
+
+      - name: Record exact executed tree and runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'IMPLICIT_SELF_EXECUTED_HEAD=%s\n' "$(git rev-parse HEAD)"
+          printf 'IMPLICIT_SELF_EXECUTED_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          printf 'RUN_ID=%s RUN_ATTEMPT=%s RUNNER_NAME=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"

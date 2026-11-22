@@ -1,0 +1,42 @@
+// Compiler-produced guest: ordinary Result.Err and Option.None are successful
+// values when an expression trap completes normally. No implicit flattening.
+fnc result_value(bool success): Result<int, String> {
+  if success; then
+    return Ok(7);
+  fi
+  return Err("ordinary-data");
+}
+fnc optional_value(): Option<int> {
+  return None;
+}
+trap fnc trapped_result(): Result<int, String> {
+  return Err("still-data");
+}
+pub fnc main(): void {
+  val Option<Result<int, String>> failed = trap result_value(false);
+  val Option<Result<int, String>> succeeded = trap result_value(true);
+  val Option<Option<int>> absent = trap optional_value();
+  val Option<Option<Result<int, String>>> twice = trap trapped_result();
+  stdio.stdout.write(failed.is_some());
+  stdio.stdout.write(":");
+  stdio.stdout.write(failed.unwrap().is_err());
+  stdio.stdout.write(":");
+  stdio.stdout.write(failed.unwrap().unwrap_or(19) == 19);
+  stdio.stdout.write(":");
+  stdio.stdout.write(succeeded.is_some());
+  stdio.stdout.write(":");
+  stdio.stdout.write(succeeded.unwrap().is_ok());
+  stdio.stdout.write(":");
+  stdio.stdout.write(succeeded.unwrap().unwrap() == 7);
+  stdio.stdout.write(":");
+  stdio.stdout.write(absent.is_some());
+  stdio.stdout.write(":");
+  stdio.stdout.write(absent.unwrap().is_none());
+  stdio.stdout.write(":");
+  stdio.stdout.write(twice.is_some());
+  stdio.stdout.write(":");
+  stdio.stdout.write(twice.unwrap().is_some());
+  stdio.stdout.write(":");
+  stdio.stdout.write(twice.unwrap().unwrap().is_err());
+  return;
+}

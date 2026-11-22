@@ -162,6 +162,6 @@ define module data_pool as
     if nonnegative_hash < 0 || shard_count < 1 || shard_count > 512; do
       return -1;
     fi
-    return nonnegative_hash % shard_count;
+    return Integer.rem(nonnegative_hash, shard_count);
   }
 end
