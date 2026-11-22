@@ -39,6 +39,7 @@ import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
 import dev.oreslang.runtime.Utf8StringAbi;
 import dev.oreslang.types.NumericValueEquality;
+import dev.oreslang.types.NumericValueOrdering;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -11780,8 +11781,8 @@ public final class OresEvalRootNode extends RootNode {
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
-                case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
-                case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
+                case "<" -> orderedCompare(left, right, "<"); case "<=" -> orderedCompare(left, right, "<=");
+                case ">" -> orderedCompare(left, right, ">"); case ">=" -> orderedCompare(left, right, ">=");
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
@@ -12034,12 +12035,22 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unary - requires a number");
         }
 
-        private int compare(Object left, Object right) {
+        private boolean orderedCompare(Object left, Object right, String operator) {
+            Integer comparison = compare(left, right);
+            // IEEE-754 NaN is unordered: all four ordered predicates are false.
+            if (comparison == null) return false;
+            return switch (operator) {
+                case "<" -> comparison < 0;
+                case "<=" -> comparison <= 0;
+                case ">" -> comparison > 0;
+                case ">=" -> comparison >= 0;
+                default -> throw new IllegalArgumentException("unknown ordering operator");
+            };
+        }
+
+        private Integer compare(Object left, Object right) {
             if (left instanceof Number a && right instanceof Number b) {
-                if (isIntegral(a) && isIntegral(b)) {
-                    return Long.compare(a.longValue(), b.longValue());
-                }
-                return Double.compare(a.doubleValue(), b.doubleValue());
+                return NumericValueOrdering.compare(a, b);
             }
             if (left instanceof String a && right instanceof String b) return a.compareTo(b);
             throw new IllegalArgumentException("values are not comparable");
