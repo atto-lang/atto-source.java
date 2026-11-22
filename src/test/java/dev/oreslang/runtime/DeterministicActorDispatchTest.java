@@ -3,12 +3,11 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import java.util.AbstractExecutorService;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Random;
+import java.util.SplittableRandom;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -126,7 +125,7 @@ final class DeterministicActorDispatchTest {
 
             left.send(1);
             right.send(2);
-            Random random = new Random(seed);
+            SplittableRandom random = new SplittableRandom(seed);
             List<Decision> decisions = new ArrayList<>();
             for (int step = 0; step < 32 && !driver.enabled().isEmpty(); step++) {
                 List<String> enabled = driver.enabled();
