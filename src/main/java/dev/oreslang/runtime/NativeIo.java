@@ -784,6 +784,9 @@ public final class NativeIo {
         int bytes = 0;
         for (int i = 0; i < value.length(); i++) {
             char current = value.charAt(i);
+            if (current == '\0') {
+                throw new IllegalArgumentException("environment variable value contains NUL");
+            }
             int codepoint = current;
             if (Character.isHighSurrogate(current)) {
                 if (i + 1 >= value.length() ||
