@@ -160,3 +160,53 @@ identity and generation fences, cycle/loop proof, and actual native/AOT backend
 lowering. Neither an arbitrary `Program` object nor this oracle's `Proof`
 is a runtime capability. No fallback interpreter, unchecked host callback or
 fabricated stream completion is authorized.
+
+## Source-derived CFG slice (22 November 2026)
+
+`ActorProtocolSourceCfgV1.verifySource` is a source-local, **production
+lexer/Parser AST** → `ActorProtocolAffineCfgV1` adapter. It parses the same
+bounded protocol prelude and resolves request marker inheritance from real
+class/interface AST declarations before extracting a *single* specified
+function body. Unlike manually authored CFG tests, the accepted operations
+must be present in the source AST.
+
+A trusted entry-map supplies the actor-spawn handle owner identity:
+`Map<parameterName, protocolName>`. This is a **model input contract**, not
+proof that any actual guest spawn occurred; no guest can construct this map
+to authorize code generation. The adapter requires each trusted parameter to
+have an exact `ProtocolHandle<Protocol>` type, rejects untrusted sibling
+`ProtocolHandle` parameters and source declarations that shadow compiler
+model types (`ProtocolHandle`, `UnaryLease`, `StreamLease`). Imports are
+not admitted until package-aware nominal linkage supplies verified identity.
+
+The first source subset maps:
+
+- `const ProtocolHandle<P> dst = take! src` → affine `Take`
+- `const UnaryLease<R>/StreamLease<T> lease = owner.request(message)` →
+  `Begin`, with `message` an explicitly typed parameter and its mode
+  checked from real nominal class/interface inheritance
+- `lease.cancel()` → `CancelLease`
+- `return handle` / `return;` → explicit ownership transfer / terminal
+  exit, with definite-live and declared return-type checks
+- Pure Boolean `if/else` conditions and both branches → bounded CFG
+  split/join, including rejected divergent live loans/leases
+
+Other statements and expressions—including `await`, `match`, loops, defer,
+exceptions, arbitrary method calls, inferred aliases, dynamic request
+dispatch, task capture and implicit function exits—are **rejected**, not
+silently dropped. Callable generic parameters and declared throw/raise/panic
+effects are rejected in this restricted projection.
+
+The source adapter and its JUnit tests are committed to draft
+`atto-source.java#1743`; the tests include real parsed .atto snippets for
+take!, request/cancel, use-after-move, live-lease escape, forged authority,
+simple if/else, unbalanced joins, deferred effects and unsupported awaits.
+These new JUnit tests have **no verified executed CI receipt yet**.
+
+**Remaining blocker to full implementation:** even a successful
+`verifySource` result is *not* a guest codegen permit. The compiler must
+link it to the same exact typed-HIR/MIR nodes actually emitted, trace
+every exceptional/cancellation branch, prove actor spawn provenance and
+generation-fenced leases, and authenticate EOF/commit at the runtime.
+The canonical Rust mirror is staged in `atto-borrow-checker.rs#50`, but
+both sides must execute identical conformance cases before parity is claimed.
