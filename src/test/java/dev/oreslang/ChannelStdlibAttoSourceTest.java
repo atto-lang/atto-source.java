@@ -75,6 +75,22 @@ final class ChannelStdlibAttoSourceTest {
     }
 
     @Test
+    void closingRendezvousWakesPendingReaderWithTerminalGuestError() throws Exception {
+        PolyglotException failure = assertThrows(PolyglotException.class,
+                () -> run("pending_reader_close.atto"));
+        assertTrue(failure.isGuestException(),
+                "close must complete the pending reader with a guest-level terminal error");
+    }
+
+    @Test
+    void drainedClosedChannelTryReceiveIsNotTemporaryEmpty() throws Exception {
+        PolyglotException failure = assertThrows(PolyglotException.class,
+                () -> run("try_read_closed_drained.atto"));
+        assertTrue(failure.isGuestException(),
+                "a closed, drained channel must not return a temporary-empty Option");
+    }
+
+    @Test
     void negativeCapacityFailsClosedWithoutCreatingChannel() throws Exception {
         PolyglotException failure = assertThrows(PolyglotException.class,
                 () -> run("negative_capacity.atto"));
