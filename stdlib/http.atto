@@ -118,7 +118,7 @@ use namespace http;
   // Limits apply to the exact ASCII field wire line "name: value".
   // A transport must independently enforce aggregate byte and field budgets.
   pub fnc header_line_valid(String name, String value, int max_bytes): bool {
-    if max_bytes < 2 then return false; fi
+    if max_bytes < 2 || max_bytes > 65536 then return false; fi
     if !header_name_valid(name) || !header_value_valid(value) then return false; fi
     val int name_bytes = name.codepoints().size;
     val int value_bytes = value.codepoints().size;
@@ -189,6 +189,39 @@ use namespace http;
     if has_transfer_encoding && has_content_length then return false; fi
     if has_transfer_encoding then return final_transfer_is_chunked; fi
     return true;
+  }
+
+  // A canonical decoder must supply counts from the ORIGINAL raw fields.
+  // Reject duplicate CL even if equal; reject TE+CL, multiple TE fields and
+  // unsupported transfer codings. This deliberately narrower HTTP/1.1
+  // policy prevents independently parsing ambiguous framing.
+  pub fnc request_framing_fields_allowed(int content_length_fields,
+                                         int transfer_encoding_fields,
+                                         bool final_chunked,
+                                         bool unsupported_transfer_coding): bool {
+    if content_length_fields < 0 || content_length_fields > 1 ||
+       transfer_encoding_fields < 0 || transfer_encoding_fields > 1 then
+      return false;
+    fi
+    if content_length_fields > 0 && transfer_encoding_fields > 0 then
+      return false;
+    fi
+    if transfer_encoding_fields == 0 then
+      return !unsupported_transfer_coding && !final_chunked;
+    fi
+    return final_chunked && !unsupported_transfer_coding;
+  }
+
+  // Stateless per-chunk admission, safe even near the maximum integer.
+  // It is a size policy, not proof of body-stream ownership.
+  pub fnc body_chunk_allowed(int accumulated_bytes, int next_chunk_bytes,
+                             int max_body_bytes): bool {
+    if accumulated_bytes < 0 || next_chunk_bytes < 0 ||
+       max_body_bytes < 0 || max_body_bytes > 1073741824 then
+      return false;
+    fi
+    if accumulated_bytes > max_body_bytes then return false; fi
+    return next_chunk_bytes <= max_body_bytes - accumulated_bytes;
   }
 
   // Subtraction-free length admission: no untrusted offset+length addition.
@@ -320,7 +353,9 @@ use namespace http;
       if segment.starts_with(":") && !route_parameter_valid(segment) then
         return false;
       fi
-      if segment == "*" then return false; fi
+      // Never accept wildcard-like metacharacters inside a literal segment.
+      if segment.contains_literal("*") || segment.contains_literal(":") &&
+         !segment.starts_with(":") then return false; fi
     }
     return true;
   }
