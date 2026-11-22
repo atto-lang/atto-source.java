@@ -47,6 +47,14 @@ public final class StdProcessNamespaceSmoke {
             check(source.equals(CoreLibrarySources.source(qualified + ".atto")),
                     "explicit extension alias");
             check(source.contains("define module "), "valid module source");
+            if (module.equals("process")) {
+                check(source.contains("define module process as"),
+                        "process module must use lowercase namespace");
+                check(!source.contains("define module Process as"),
+                        "legacy capitalized module forbidden");
+                check(source.contains("return std.process.spawn("),
+                        "host intrinsic must be reached without recursive process.spawn");
+            }
             bad("ores.std/" + module);
             bad("ores.std/" + module + ".atto");
             bad(qualified + ".ores");
