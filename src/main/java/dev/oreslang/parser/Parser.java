@@ -595,7 +595,7 @@ public final class Parser {
                     name = t.name(); visibility = t.visibility(); found = Ast.ExportKind.TYPE;
                 } else if (decl instanceof Ast.InterfaceDecl i) {
                     name = i.name(); visibility = i.visibility();
-                    found = interfaceKinds.getOrDefault(i, INTERFACE) == TRAIT
+                    found = i.declarationKind() == Ast.InterfaceKind.TRAIT
                             ? Ast.ExportKind.TRAIT : Ast.ExportKind.INTERFACE;
                 }
                 if (!entry.name().equals(name)) continue;
