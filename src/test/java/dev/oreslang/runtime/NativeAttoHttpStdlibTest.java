@@ -14,7 +14,7 @@ final class NativeAttoHttpStdlibTest {
         assertEquals("@std/http.atto", CoreLibrarySources.unitId("std/http"));
         assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source("std/http.ores"));
         String source = CoreLibrarySources.source("std/http");
-        assertTrue(source.contains("define module http as"));
+        assertTrue(source.contains("use namespace http;"));
         assertFalse(source.contains("java:"));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
