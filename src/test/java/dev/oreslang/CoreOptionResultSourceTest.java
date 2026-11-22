@@ -54,6 +54,24 @@ final class CoreOptionResultSourceTest {
     }
 
     @Test
+    void sourceLinkedCallbacksMustSkipInactiveVariants() throws Exception {
+        Path entry = Path.of("tests/core_option_result/lazy_callbacks.atto")
+                .toAbsolutePath();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                stdout,
+                stderr);
+        assertEquals("M42:Etrue:true", stdout.toString(StandardCharsets.UTF_8)
+                .replace("\r\n", "\n").strip());
+    }
+
+    @Test
     void resultAndOptionMustRemainNominalDisjointVariants() {
         String wrongOption = """
                 fnc invalid(): Option<int> {
