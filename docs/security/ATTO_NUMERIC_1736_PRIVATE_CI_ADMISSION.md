@@ -2,6 +2,8 @@
 
 **Review-only; no authorization, no source transfer, no merge.** Security owner: `@ORESoftware`. Tracker: [atto-source.java issue #65](https://github.com/atto-lang/atto-source.java/issues/65). Language work: [Java draft #1736](https://github.com/atto-lang/atto-source.java/pull/1736); [spec #209](https://github.com/atto-lang/atto-spec/pull/209); [conformance #563](https://github.com/atto-lang/atto-platform-conformance/pull/563). The checked-in machine-readable [review packet](reviews/atto-numeric-1736-private-ci-admission.json) is **inert data**, not an approval policy.
 
+**Snapshot invalidated by subsequent source commit:** the numerical PR #1736 moved from reviewed-candidate head `c16a0313b166f4b426e5c4aa2b3f487475e107b6` to `c908c6c824c2dbb5caed3023b2c5e3e975a05834`, tree `103e305a8157e1cabce214b888df68e0777844cf`, during review. The pinned source JSON and Maven plan intentionally retain their *original* snapshot for provenance and are explicitly marked `source_head_drift.stale=true`. They **must not** be used for transfer or test admission. Require a new exact-head review packet and independently approved blob/plan proof after the numerical implementation branch is frozen; **do not silently retarget**.
+
 ## 1. Observed exact Atto Java snapshot (must be rechecked before each use)
 
 | Field | Observed value |
