@@ -257,17 +257,37 @@ public final class OwnershipChecker {
         for (Ast.ImportDecl imported : program.imports()) {
             if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
                 for (String source : imported.names()) {
-                    importedFncs.add(dev.oreslang.imports.ImportRules.localName(imported, source));
+                    String local = dev.oreslang.imports.ImportRules.localName(imported, source);
+                    if (AutomaticPrelude.protectedIdentity(local)) {
+                        throw error("E_PRELUDE_SPOOF: imported function cannot replace core identity " + local);
+                    }
+                    importedFncs.add(local);
                 }
             }
         }
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
-                else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
-                else if (decl instanceof Ast.InterfaceDecl iface) index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    rejectPreludeForge(fn.name(), "function");
+                    indexFunction(module.name(), fn);
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectPreludeForge(klass.name(), "class");
+                    index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectPreludeForge(iface.name(), "interface");
+                    index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectPreludeForge(alias.name(), "type alias");
+                }
             }
+        }
+    }
+
+    private static void rejectPreludeForge(String name, String declarationKind) {
+        if (AutomaticPrelude.protectedIdentity(name)) {
+            throw error("E_PRELUDE_SPOOF: cannot forge compiler-owned core identity "
+                    + name + " with " + declarationKind);
         }
     }
 
