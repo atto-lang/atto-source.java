@@ -115,4 +115,18 @@ final class CanonicalAttoCoreSourceIntegrityTest {
         assertTrue(metadata.contains("\"glob\": \"dev/oreslang/core/**/*.atto\""));
         assertTrue(metadata.contains("\"glob\": \"dev/oreslang/std/*.atto\""));
     }
+    @Test
+    void telemetryUsesUniquePackagedAttoSourceAndRejectsFakeLegacyAlias() throws Exception {
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("telemetry.atto"));
+        String canonical = CoreLibrarySources.source("ores.std/telemetry.atto");
+        assertEquals(canonical, CoreLibrarySources.source("std/telemetry"));
+        assertEquals(canonical, CoreLibrarySources.source("std/telemetry.atto"));
+        assertArrayEquals(Files.readAllBytes(Path.of("stdlib/telemetry.atto")),
+                canonical.getBytes(StandardCharsets.UTF_8));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.source("std/telemetry.ores"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.source("ores.std/telemetry.ores"));
+    }
+
 }
