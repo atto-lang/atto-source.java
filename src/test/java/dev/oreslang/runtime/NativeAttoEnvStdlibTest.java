@@ -54,7 +54,7 @@ final class NativeAttoEnvStdlibTest {
         Files.writeString(entry, """
                 import module std_env from "std/env";
                 pub routine main(): void {
-                  std_env.get("PATH");
+                  std_env.get_or("PATH", "fallback");
                   return;
                 }
                 """);
@@ -68,6 +68,51 @@ final class NativeAttoEnvStdlibTest {
                         Set.of(), System.getenv(),
                         new ByteArrayOutputStream(), new ByteArrayOutputStream()));
         assertTrue(deepMessage(error).contains("permission denied"), deepMessage(error));
+    }
+
+
+    @Test
+    void keyScopedDenyOverridesBroadAllowAndFallback() throws Exception {
+        Path entry = temp.resolve("deny-scoped.atto");
+        Files.writeString(entry, """
+                import module std_env from "std/env";
+                pub routine main(): void {
+                  std_env.get_or("ATTO_ENV_SECRET_KEY", "fallback");
+                  return;
+                }
+                """);
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.ENV)
+                .withDenied(RuntimePermissions.Permission.ENV, "ATTO_ENV_SECRET_KEY");
+        RuntimeException error = assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.run(entry,
+                        IsolatePolicy.developer().withCapabilities(
+                                IsolatePolicy.Capability.ENVIRONMENT),
+                        permissions, PermissionCheckMode.RUNTIME,
+                        ExecutionProfile.serverJit(),
+                        Set.of(), System.getenv(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(deepMessage(error).contains("permission denied"), deepMessage(error));
+    }
+
+    @Test
+    void invalidKeyIsNotRecastAsAbsence() throws Exception {
+        Path entry = temp.resolve("bad-name.atto");
+        Files.writeString(entry, """
+                import module std_env from "std/env";
+                pub routine main(): void {
+                  std_env.get_or("", "fallback");
+                  return;
+                }
+                """);
+        RuntimeException error = assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.run(entry,
+                        IsolatePolicy.developer().withCapabilities(
+                                IsolatePolicy.Capability.ENVIRONMENT),
+                        ExecutionProfile.serverJit(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(deepMessage(error).contains("environment variable name is invalid"),
+                deepMessage(error));
     }
 
     private static String deepMessage(Throwable failure) {
