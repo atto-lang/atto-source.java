@@ -34,8 +34,10 @@ public final class CoreTypeRegistry {
     public enum Allocation { NONE, BORROWED_VIEW, ALLOCATOR_REQUIRED }
     public enum DropPolicy {
         NONE,
-        /** Drop exactly the active variant's live payload, once. */
+        /** Drop exactly the active sum-variant payload, once. */
         ACTIVE_PAYLOAD_ONCE,
+        /** Drop every initialized member/element exactly once. */
+        ALL_INITIALIZED_MEMBERS,
         /** Drop owned backing storage and its initialized elements. */
         OWNED_STORAGE,
         /** No runtime drop contract; must not be instantiated as a value. */
@@ -185,19 +187,19 @@ public final class CoreTypeRegistry {
                 Ownership.OWNED, Allocation.NONE, DropPolicy.OWNED_STORAGE,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.CONTRACT_ONLY);
         add(out, "Array", "core/array", Scope.CORE, Kind.TYPE, 1, 2,
-                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ACTIVE_PAYLOAD_ONCE,
+                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ALL_INITIALIZED_MEMBERS,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.JAVA_INTRINSIC);
         add(out, "FixedArray", "core/array", Scope.CORE, Kind.TYPE, 2, 2,
-                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ACTIVE_PAYLOAD_ONCE,
+                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ALL_INITIALIZED_MEMBERS,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.CONTRACT_ONLY);
         add(out, "Slice", "core/slice", Scope.CORE, Kind.TYPE, 1, 1,
                 Ownership.BORROWED_VIEW, Allocation.BORROWED_VIEW, DropPolicy.NONE,
                 SendPolicy.NEVER_BORROWED, LoweringStatus.CONTRACT_ONLY);
         add(out, "Tuple", "core/tuple", Scope.CORE, Kind.TYPE, 0, 32,
-                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ACTIVE_PAYLOAD_ONCE,
+                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ALL_INITIALIZED_MEMBERS,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.CONTRACT_ONLY);
         add(out, "Pair", "core/tuple", Scope.CORE, Kind.TYPE, 2, 2,
-                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ACTIVE_PAYLOAD_ONCE,
+                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ALL_INITIALIZED_MEMBERS,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.CONTRACT_ONLY);
         add(out, "Iterator", "core/iter", Scope.CORE, Kind.TRAIT, 1, 1,
                 Ownership.TRAIT, Allocation.NONE, DropPolicy.NOT_A_VALUE,
@@ -265,7 +267,7 @@ public final class CoreTypeRegistry {
                 Ownership.OWNED, Allocation.ALLOCATOR_REQUIRED, DropPolicy.OWNED_STORAGE,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.CONTRACT_ONLY);
         add(out, "Entry", "alloc/map", Scope.EXPLICIT, Kind.TYPE, 2, 2,
-                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ACTIVE_PAYLOAD_ONCE,
+                Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ALL_INITIALIZED_MEMBERS,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.CONTRACT_ONLY);
         return Collections.unmodifiableMap(out);
     }
