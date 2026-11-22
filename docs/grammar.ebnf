@@ -489,18 +489,11 @@ lambda_body     = block | type_ref block | expression ;
    per-arm '-> Type' result typing in match/switch/select. *)
 
 tuple_literal   = "tuple" "(" [ argument_list ] ")"
-                | "(" expression "," expression { "," expression } ")"
-                | tilde_tuple_literal ;
-array_literal   = "arr" "[" [ expression { "," expression } ] "]"
-                | tilde_array_literal ;
-tilde_tuple_literal = "~" "tuple" "(" [ argument_list ] ")" ;
-tilde_array_literal = "~" "array" "(" [ argument_list ] ")" ;
-(* The '~' sigil is adjacent to the following kind token. The '(' may be
-   separated by spaces. The two tilde literals lower to the same AST nodes
-   as tuple(...) and arr[...]. A spaced '~ tuple(...)' remains an ordinary
-   unary '~' applied to a call; likewise a spaced '<' is not a generic tilde
-   witness. Explicit '~kind<T>(...)' and other tilde constructor families
-   remain fail-closed until their typed runtime/compiler contracts exist. *)
+                | "(" expression "," expression { "," expression } ")" ;
+array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
+(* Collection construction uses Type.of(...), not ~kind(...). The ~
+   sigil denotes the structural modifier, not a factory namespace.
+   Legacy array and tuple literal syntax remains independent. *)
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 record_literal  = "record"
                   "{" [ struct_value_field { "," struct_value_field } ] "}" ;
@@ -540,7 +533,6 @@ type_atom       = borrow_type
                 | alias_marker
                 | callable_generic_type
                 | named_type
-                | tilde_named_type
                 | function_type
                 | grouped_type
                 | STRING_LITERAL
@@ -553,8 +545,9 @@ tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
 (* A record or struct prefix in type position is a type-shape marker.
    At a declaration initializer / return-expression site the same prefix
    instead introduces a value literal; never inspect field payload spelling
-   to decide which grammar applies. *)
-empty_named_tuple_type = ( "Tuple" | "~tuple" ) "[" "]" ;
+   to decide which grammar applies. Tilde is structural shorthand only, so
+   there is no "~tuple" collection spelling. *)
+empty_named_tuple_type = "Tuple" "[" "]" ;
 record_type     = [ "record" | "struct" ]
                   "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
@@ -565,24 +558,12 @@ callable_generic_type
 named_type      = qualified_name
                   [ "<" [ type_arg_or_named { "," type_arg_or_named } ] ">" ]
                   { sequence_type_shape } ;
-tilde_named_type = "~" tilde_builtin_kind
-                  [ "<" [ type_arg_or_named { "," type_arg_or_named } ] ">" ]
-                  { sequence_type_shape } ;
-tilde_builtin_kind = "array" | "vector" | "tuple"
-                  | "fixed_array" | "fixed_list" | "list" | "slice"
-                  | "map" | "set" | "entry" | "pair" | "record" ;
-(* Canonical positional tuple annotations, including function returns, use
-   Tuple[T1,T2,...]. Tuple<T1,T2,...> and ~tuple<T1,T2,...>
-   remain compatibility type spellings when no separate '[...]' shape is
-   present; mixing the two forms is rejected. Intrinsic bracketed shapes
-   cannot be shadowed by nominal Tuple definitions.
-   The empty shape Tuple[] is legal and distinct from Tuple[T]; other
-   empty collection shape suffixes stay rejected.
-   Value-position ~tuple(v1,v2,...) constructs a tuple value and must not
-   be used as a return type. ~array(v1,v2,...) is explicitly an array,
-   never contextually coerced to a Tuple return; legacy arr[...] is equally
-   an explicit array while bare [...] retains contextual compatibility.
-   Other ~kind(...) value constructors remain independently gated. *)
+(* Removed: ~map<K,V>, ~tuple<A,B> and other nominal
+   ~collection<T> aliases. Tilde is structural shorthand. Existing
+   Tuple[], Tuple[T1,T2,...], generic and sequence-shape syntax remains.
+   In expression position ~map(...), ~tuple(...), ~array(...) and all
+   other ~kind(...) constructor aliases are parser errors; use Type.of(...).
+   The old ~<T>() empty-aggregate factory is likewise removed. *)
 type_arg_or_named = type_ref | named_type_param ;
 named_type_param = IDENT "=" meta_value ;
 meta_value      = INT_LITERAL | STRING_LITERAL | "true" | "false" | type_ref ;
