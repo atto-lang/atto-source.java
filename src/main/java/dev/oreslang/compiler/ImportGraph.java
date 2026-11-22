@@ -170,6 +170,11 @@ final class ImportGraph {
                 continue;
             }
 
+            // A declaration marked public does not escape a private
+            // containing module. For file-root exports the synthetic root
+            // acts as the ordinary public source surface.
+            if (!module.name().equals(Parser.ROOT_MODULE)
+                    && module.visibility() != Ast.Visibility.PUBLIC) continue;
             for (Ast.Decl decl : module.declarations()) {
                 boolean matched = switch (kind) {
                     case FUNCTION -> decl instanceof Ast.FunctionDecl fn
