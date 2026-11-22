@@ -344,3 +344,139 @@ use namespace http;
     fi
     return expected_method == request_method && route_matches(pattern, target);
   }
+
+  // Stream admission accounting owned by a single request/response reader.
+  // Does not read, allocate, decompress, or issue host network operations.
+  // Call admit() BEFORE allocating/copying any inbound transport chunk.
+  pub define class BodyBudget as
+    let int max_bytes;
+    let mut int consumed_bytes = 0;
+    let mut bool closed = false;
+
+    pub constructor(int max_bytes) {
+      if max_bytes < 0 || max_bytes > 1073741824 then
+        rt fail("invalid HTTP body budget");
+      fi
+      self.max_bytes = max_bytes;
+    }
+
+    pub admit(mut self)(int chunk_bytes): bool {
+      if self.closed || chunk_bytes < 0 then return false; fi
+      if chunk_bytes > self.max_bytes - self.consumed_bytes then
+        return false;
+      fi
+      self.consumed_bytes = self.consumed_bytes + chunk_bytes;
+      return true;
+    }
+
+    pub finish(mut self)(): bool {
+      if self.closed then return false; fi
+      self.closed = true;
+      return true;
+    }
+
+    pub is_closed(): bool {
+      return self.closed;
+    }
+
+    pub consumed(): int {
+      return self.consumed_bytes;
+    }
+
+    pub remaining(): int {
+      return self.max_bytes - self.consumed_bytes;
+    }
+  end
+
+  pub fnc body_budget(int max_bytes): Result<BodyBudget, String> {
+    if max_bytes < 0 || max_bytes > 1073741824 then
+      return Err("body budget out of bounds");
+    fi
+    return Ok(new BodyBudget(max_bytes));
+  }
+
+  // Resource ceilings only; not a token, grant or authenticated network
+  // capability. The transport intersects stronger private actor/tenant limits.
+  pub define class ClientLimits as
+    pub val int max_body_bytes;
+    pub val int max_header_bytes;
+    pub val int max_redirects;
+    pub val int timeout_ms;
+
+    pub constructor(int max_body_bytes, int max_header_bytes,
+                    int max_redirects, int timeout_ms) {
+      self.max_body_bytes = max_body_bytes;
+      self.max_header_bytes = max_header_bytes;
+      self.max_redirects = max_redirects;
+      self.timeout_ms = timeout_ms;
+    }
+  end
+
+  pub fnc client_limits(int max_body_bytes, int max_header_bytes,
+                        int max_redirects, int timeout_ms): Result<ClientLimits, String> {
+    if max_body_bytes < 0 || max_body_bytes > 1073741824 then
+      return Err("client body ceiling invalid");
+    fi
+    if max_header_bytes < 512 || max_header_bytes > 65536 then
+      return Err("client header ceiling invalid");
+    fi
+    if max_redirects < 0 || max_redirects > 16 then
+      return Err("client redirect ceiling invalid");
+    fi
+    if timeout_ms < 1 || timeout_ms > 600000 then
+      return Err("client timeout invalid");
+    fi
+    return Ok(new ClientLimits(max_body_bytes, max_header_bytes,
+                               max_redirects, timeout_ms));
+  }
+
+  pub define class ServerLimits as
+    pub val int max_connections;
+    pub val int max_request_body_bytes;
+    pub val int max_header_bytes;
+
+    pub constructor(int max_connections, int max_request_body_bytes,
+                    int max_header_bytes) {
+      self.max_connections = max_connections;
+      self.max_request_body_bytes = max_request_body_bytes;
+      self.max_header_bytes = max_header_bytes;
+    }
+  end
+
+  pub fnc server_limits(int max_connections, int max_request_body_bytes,
+                        int max_header_bytes): Result<ServerLimits, String> {
+    if max_connections < 1 || max_connections > 65536 then
+      return Err("server connection ceiling invalid");
+    fi
+    if max_request_body_bytes < 0 || max_request_body_bytes > 1073741824 then
+      return Err("server request-body ceiling invalid");
+    fi
+    if max_header_bytes < 512 || max_header_bytes > 65536 then
+      return Err("server header ceiling invalid");
+    fi
+    return Ok(new ServerLimits(max_connections, max_request_body_bytes,
+                               max_header_bytes));
+  }
+
+  // Pure structural redirect candidate only. The transport MUST perform
+  // new egress/DNS/TLS/IP/credential authorization on every hop. A caller
+  // cannot confer permissions by passing true to a public Atto function.
+  pub fnc redirect_candidate(int status, bool has_location,
+                             int completed_hops, int max_hops): bool {
+    if !has_location || completed_hops < 0 || max_hops < 0 then return false; fi
+    if completed_hops >= max_hops then return false; fi
+    return status == 301 || status == 302 || status == 303 ||
+           status == 307 || status == 308;
+  }
+
+  // A retry recommendation is never an execution decision. The privileged
+  // transport must independently determine whether a request was sent,
+  // whether the request body can be replayed, and if auth remains valid.
+  // Conservative default: only GET/HEAD, only before response is observed.
+  pub fnc retry_candidate(String method, int prior_retries,
+                          int max_retries, bool response_started): bool {
+    if method != "GET" && method != "HEAD" then return false; fi
+    if prior_retries < 0 || max_retries < 0 || max_retries > 8 then return false; fi
+    if response_started || prior_retries >= max_retries then return false; fi
+    return true;
+  }
