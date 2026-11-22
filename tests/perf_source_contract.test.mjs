@@ -18,6 +18,8 @@ test('disabled begin and sample check before all clock/record operations',()=>{
  }
  const span=source.split('pub record_span')[1].split('pub record_counter')[0];
  assert.ok(span.indexOf('if started_ns <= 0')<span.indexOf('process.monotonic_ns()'));
+ assert.ok(span.indexOf('self.items.size >= self.capacity')<span.indexOf('process.monotonic_ns()'));
+ assert.ok(span.indexOf('self.items.size >= self.capacity')<span.indexOf('new Event('));
 });
 test('bounded drop-on-full, no resizing or producer exports',()=>{
  assert.match(source,/capacity < 1 \|\| capacity > 65536/);
