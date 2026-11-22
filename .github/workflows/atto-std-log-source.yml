@@ -1,0 +1,39 @@
+name: Atto std/log native source contract
+on:
+  pull_request:
+    paths:
+      - 'stdlib/log.atto'
+      - 'tests/log_module_contract.test.mjs'
+      - 'docs/ATTO_STD_LOG.md'
+      - '.github/workflows/atto-std-log-source.yml'
+  push:
+    paths:
+      - 'stdlib/log.atto'
+      - 'tests/log_module_contract.test.mjs'
+      - 'docs/ATTO_STD_LOG.md'
+      - '.github/workflows/atto-std-log-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR source (no persisted credentials)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Test source-extracted severity and queue guards
+        run: node --test tests/log_module_contract.test.mjs
+      - name: State evidence boundary
+        if: always()
+        run: |
+          echo 'SOURCE_ONLY: not native Atto guest execution, async sink, Java compiler, or Native Image evidence.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Zero-step jobs are NOT_EXECUTED. Private mirror requires independent authorization.' >> "$GITHUB_STEP_SUMMARY"
