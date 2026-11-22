@@ -61,21 +61,29 @@ public final class AsyncSqliteDurableProviderV1 {
 
     public CompletionStage<Void> ready() { return ready.minimalCompletionStage(); }
 
-    private synchronized <T> CompletionStage<T> submit(Function<SqliteDurableActorStore, T> op) {
+    private boolean closeScheduled;
+
+    /**
+     * Admission is a short counter lease only: never hold this monitor over
+     * I/O, executor shutdown, Future callbacks, or close. An actor carrier
+     * must be able to submit or reject without waiting for SQLite.
+     */
+    private <T> CompletionStage<T> submit(Function<SqliteDurableActorStore, T> op) {
         Objects.requireNonNull(op, "operation");
-        if (closing)
-            return CompletableFuture.failedFuture(
-                    new IllegalStateException("durable provider is closing"));
-        if (pending >= maxPending)
-            return CompletableFuture.failedFuture(
-                    new RejectedExecutionException("durable provider backpressure"));
-        ++pending;
+        synchronized (this) {
+            if (closing)
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("durable provider is closing"));
+            if (pending >= maxPending)
+                return CompletableFuture.failedFuture(
+                        new RejectedExecutionException("durable provider backpressure"));
+            ++pending;
+        }
         CompletableFuture<T> response = new CompletableFuture<>();
         try {
             io.execute(() -> {
                 try {
-                    // The open task is the FIRST task on this same serial worker.
-                    // No blocking wait or join is needed to establish readiness.
+                    // Opening is the FIRST task on this same serial worker.
                     if (!ready.isDone() || ready.isCompletedExceptionally())
                         throw new IllegalStateException("SQLite provider failed to open");
                     response.complete(op.apply(store));
@@ -86,17 +94,34 @@ public final class AsyncSqliteDurableProviderV1 {
                 }
             });
         } catch (RejectedExecutionException rejected) {
-            --pending;
+            finished();
             response.completeExceptionally(rejected);
         }
         return response.minimalCompletionStage();
     }
 
-    private synchronized void finished() {
-        if (--pending < 0) throw new IllegalStateException("durable I/O task underflow");
-        if (closing && pending == 0) finishCloseOnWorker();
+    private void finished() {
+        boolean scheduleClose = false;
+        synchronized (this) {
+            if (--pending < 0) throw new IllegalStateException("durable I/O task underflow");
+            if (closing && pending == 0 && !closeScheduled) {
+                closeScheduled = true;
+                scheduleClose = true;
+            }
+        }
+        if (scheduleClose) scheduleCloseOnWorker();
     }
 
+    private void scheduleCloseOnWorker() {
+        try {
+            io.execute(this::finishCloseOnWorker);
+        } catch (RejectedExecutionException rejected) {
+            closedFuture.completeExceptionally(rejected);
+            io.shutdown();
+        }
+    }
+
+    /** Executed only on the dedicated I/O thread, never while holding a lock. */
     private void finishCloseOnWorker() {
         try {
             if (store != null) store.close();
@@ -108,14 +133,19 @@ public final class AsyncSqliteDurableProviderV1 {
         }
     }
 
-    /** Nonblocking shutdown. Already admitted I/O drains before store closure. */
-    public synchronized CompletionStage<Void> closeAsync() {
-        if (!closing) {
-            closing = true;
-            if (pending == 0) {
-                io.execute(this::finishCloseOnWorker);
+    /** Nonblocking shutdown. Admitted requests settle before the SQLite close. */
+    public CompletionStage<Void> closeAsync() {
+        boolean scheduleClose = false;
+        synchronized (this) {
+            if (!closing) {
+                closing = true;
+                if (pending == 0 && !closeScheduled) {
+                    closeScheduled = true;
+                    scheduleClose = true;
+                }
             }
         }
+        if (scheduleClose) scheduleCloseOnWorker();
         return closedFuture.minimalCompletionStage();
     }
 
