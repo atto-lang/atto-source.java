@@ -1,4 +1,4 @@
-// End-to-end source-link candidate. Expected stdout "M42:Etrue:true".
+// End-to-end source-link candidate. Expected stdout "M42:Etrue:true:true".
 // No callback is invoked on None/Err for success-only helpers; no callback
 // is invoked on Ok for map_err/or_else. Compile and execute, don't mock.
 import module option from "../../core/option.atto";
