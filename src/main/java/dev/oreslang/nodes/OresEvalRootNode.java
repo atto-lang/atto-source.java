@@ -11731,9 +11731,26 @@ public final class OresEvalRootNode extends RootNode {
             return candidate;
         }
 
+        /**
+         * A public declaration inside a private module is not a cross-unit
+         * export. Use the exact checked AST declaration identity so an
+         * unrelated equal-named public declaration cannot confer authority.
+         */
+        private boolean isPubliclyExportableDeclaration(Ast.Decl declaration) {
+            for (Ast.ModuleDecl ownerModule : program.modules()) {
+                if (!ownerModule.name().equals(Parser.ROOT_MODULE)
+                        && ownerModule.visibility() != Ast.Visibility.PUBLIC) continue;
+                for (Ast.Decl member : ownerModule.declarations()) {
+                    if (member == declaration) return true;
+                }
+            }
+            return false;
+        }
+
         private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
             Ast.FunctionDecl fn = findFunction(name, args.size());
-            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                    || !isPubliclyExportableDeclaration(fn)) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export callable '" + name + "'");
             }
@@ -11764,7 +11781,8 @@ public final class OresEvalRootNode extends RootNode {
             return switch (kind) {
                 case FUNCTION -> {
                     Ast.FunctionDecl fn = findSingleFunction(name);
-                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                            || !isPubliclyExportableDeclaration(fn)) {
                         throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export function '" + name + "'");
                     }
                     if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE) {
@@ -11783,7 +11801,8 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.ClassDecl klass = findClass(name);
                     if (klass == null
                             || klass.actorKind() != Ast.ActorKind.NONE
-                            || klass.visibility() != Ast.Visibility.PUBLIC) {
+                            || klass.visibility() != Ast.Visibility.PUBLIC
+                            || !isPubliclyExportableDeclaration(klass)) {
                         throw new IllegalArgumentException(
                                 "code unit '" + codeUnitId
                                         + "' does not export public ordinary class '" + name + "'");
@@ -11817,11 +11836,13 @@ public final class OresEvalRootNode extends RootNode {
                 return new ModuleFacade(this, module);
             }
             Ast.ClassDecl klass = findClass(name);
-            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC) {
+            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC
+                    && isPubliclyExportableDeclaration(klass)) {
                 return new ClassFacade(this, klass);
             }
             Ast.FunctionDecl fn = findSingleFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
+            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC
+                    && isPubliclyExportableDeclaration(fn)) {
                 if (fn.kind() == Ast.CallableKind.ROUTINE) {
                     throw new IllegalArgumentException(
                             "routine '" + name
@@ -11841,6 +11862,8 @@ public final class OresEvalRootNode extends RootNode {
                 return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
+                if (!candidate.name().equals(Parser.ROOT_MODULE)
+                        && candidate.visibility() != Ast.Visibility.PUBLIC) continue;
                 for (Ast.Decl decl : candidate.declarations()) {
                     if (decl instanceof Ast.FieldDecl field
                             && field.visibility() == Ast.Visibility.PUBLIC
