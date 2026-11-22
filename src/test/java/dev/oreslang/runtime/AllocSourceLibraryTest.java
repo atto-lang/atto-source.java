@@ -101,8 +101,8 @@ class AllocSourceLibraryTest {
         assertTrue(result.units().containsKey("@atto.alloc/stats.atto"));
         assertTrue(result.units().containsKey("@atto.alloc/secure.atto"));
         assertEquals(
-                "true\\ntrue\\nfalse\\n60\\ntrue\\ntrue\\n0\\ntrue\\ntrue\\ntrue\\ntrue",
-                out.toString(StandardCharsets.UTF_8).trim().replace("\\r\\n", "\\n"),
+                "true\ntrue\nfalse\n60\ntrue\ntrue\n0\ntrue\ntrue\ntrue\ntrue",
+                out.toString(StandardCharsets.UTF_8).trim().replace("\r\n", "\n"),
                 () -> "unexpected guest behavior: " + err.toString(StandardCharsets.UTF_8));
     }
 
