@@ -1,0 +1,48 @@
+name: Actor protocol typestate Java source-only admission
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/ActorProtocolTypestateV1.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/test/java/dev/oreslang/ActorProtocolTypestateV1Test.java'
+      - 'src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java'
+      - '.github/workflows/actor-protocol-typestate-source-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-declaration-source-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify exact checked-out PR head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet
+          git diff --cached --quiet
+      - name: Compile canonical Java lexer and protocol declaration preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/protocol-source-v1
+          javac --release 21 -Xlint:all -Werror -d build/protocol-source-v1 \
+            src/main/java/dev/oreslang/parser/Token.java \
+            src/main/java/dev/oreslang/parser/Lexer.java \
+            src/main/java/dev/oreslang/parser/ActorProtocolTypestateV1.java \
+            src/test/java/dev/oreslang/ActorProtocolTypestateV1Smoke.java
+          java -cp build/protocol-source-v1 dev.oreslang.ActorProtocolTypestateV1Smoke
+          echo "ATTO_ACTOR_PROTOCOL_JAVA_SOURCE_ONLY=PASS"
+          echo "ATTO_ACTOR_PROTOCOL_FULL_MAVEN_JUNIT=NOT_EXECUTED"
+          echo "ATTO_ACTOR_PROTOCOL_GUEST_EXECUTION=NOT_EXECUTED"
