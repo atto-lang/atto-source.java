@@ -519,16 +519,14 @@ public final class TreeShaker {
         }
 
         private boolean constantEquals(Object left, Object right) {
+            // Numeric identity is never a shortcut: NaN != itself, and
+            // conversion through binary64 can collapse different i64 values.
+            // Fold only with the exact same relation used by the guest.
+            if (left instanceof Number a && right instanceof Number b) {
+                return dev.oreslang.types.NumericValueEquality.equals(a, b);
+            }
             if (left == right) return true;
             if (left == null || right == null) return false;
-            if (left instanceof Number a && right instanceof Number b) {
-                boolean aIntegral = a instanceof Byte || a instanceof Short
-                        || a instanceof Integer || a instanceof Long;
-                boolean bIntegral = b instanceof Byte || b instanceof Short
-                        || b instanceof Integer || b instanceof Long;
-                if (aIntegral && bIntegral) return a.longValue() == b.longValue();
-                return a.doubleValue() == b.doubleValue();
-            }
             return Objects.equals(left, right);
         }
 
