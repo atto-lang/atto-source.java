@@ -51,7 +51,7 @@ final class ScalarCastInferenceParityTest {
                 "const inferred = (true ? 7 : 8); const int checked = inferred;",
                 "const inferred = (true ? 7 : 8) as int; const int checked = inferred;",
                 "const x = 7 as int; if true; do const nested = x as int; const int y = nested; fi",
-                "let number = 7 as int; number = 9; const int result = number;",
+                "let number = 7 as int; number = 9; val int result = number;",
                 "const x = 7 as? int; const Option<int> checked = x;"
         }) accepts(body);
     }
@@ -59,9 +59,9 @@ final class ScalarCastInferenceParityTest {
     @Test void runtimeConstAndTypeFirstShareFixedBindingSemantics() {
         String accepted = """
                 fnc next(int p): int {
-                  int typed = p + 1;
+                  val int typed = p + 1;
                   const inferred = p + 1;
-                  const int annotated = p + 1;
+                  val int annotated = p + 1;
                   return typed + inferred + annotated;
                 }
                 pub fnc main(): int { return next(13); }
@@ -127,12 +127,12 @@ final class ScalarCastInferenceParityTest {
                 "const answer = (7 + 35) as int; const int same = answer;",
                 "const x = true ? 7 : 8; const y = x as int; const int z = y;",
                 "const x = true ? true : false; const bool y = x as bool;",
-                "const x = tuple (7, true); const int y = x[0] as int;",
-                "const x = tuple (7, true); const bool y = x[1] as bool;",
-                "const x = infer struct { number: 7 }; const int y = x.number as int;",
-                "const x = infer struct { flag: true }; const bool y = x.flag as bool;",
-                "val x = 7; const int y = x as int;",
-                "let x = 7; x = 8; const int y = x as int;",
+                "const x = tuple (7, true); val int y = x[0] as int;",
+                "const x = tuple (7, true); val bool y = x[1] as bool;",
+                "const x = infer struct { number: 7 }; val int y = x.number as int;",
+                "const x = infer struct { flag: true }; val bool y = x.flag as bool;",
+                "val x = 7; val int y = x as int;",
+                "let x = 7; x = 8; val int y = x as int;",
                 "const x = 7 as? int; const Option<int> value = x;"
         }) accepts(body);
     }
@@ -161,10 +161,10 @@ final class ScalarCastInferenceParityTest {
         String accepted = """
                 fnc increment(int value): int { return value + 1; }
                 pub fnc main(): int {
-                  const int first = increment(6);
+                  val int first = increment(6);
                   const second = increment(6) as int;
                   const inferred = increment(6);
-                  const int result = first + second + inferred;
+                  val int result = first + second + inferred;
                   return result;
                 }
                 """;
@@ -251,12 +251,12 @@ final class ScalarCastInferenceParityTest {
         // These six programs match the native LLVM, wasm32, .NET and
         // independent Cranelift scalar SSA conformance candidates.
         for (String body : new String[] {
-                "let x=7; x=x+1; x=x+34; const int result=x;",
-                "let x=7; const snap=x; x=42; const int result=snap+35;",
-                "let x=7; val snap=x; x=42; const int result=snap+35;",
-                "let x=7; const snap=x as int; x=42; const int result=snap+35;",
-                "let x=7 as int; x=(x+35) as int; const int result=x;",
-                "const base=7; let x=base; x=42; const int result=x;"
+                "let x=7; x=x+1; x=x+34; val int result=x;",
+                "let x=7; const snap=x; x=42; val int result=snap+35;",
+                "let x=7; val snap=x; x=42; val int result=snap+35;",
+                "let x=7; const snap=x as int; x=42; val int result=snap+35;",
+                "let x=7 as int; x=(x+35) as int; val int result=x;",
+                "const base=7; let x=base; x=42; val int result=x;"
         }) accepts(body);
         rejects("let x=7; const snap=x; x=42; snap=8;");
         rejects("let x=7; val snap=x; x=42; snap=8;");

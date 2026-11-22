@@ -136,25 +136,25 @@ final class OptionResultTrapModularConformanceTest {
                   return;
                 }
                 pub fnc main(): void {
-                  val Option<int> success = value();
-                  val Option<Option<int>> nested_none = optional(false);
-                  val Option<Option<int>> nested_some = optional(true);
-                  val Option<void> finished = complete();
+                  val Result<int, Error> success = value();
+                  val Result<Option<int>, Error> nested_none = optional(false);
+                  val Result<Option<int>, Error> nested_some = optional(true);
+                  val Result<void, Error> finished = complete();
                   stdio.stdout.write("ORT2:trap_scalar:");
-                  // CHECK trap_value_some
-                  emit(success.is_some());
+                  // CHECK trap_value_ok
+                  emit(success.is_ok());
                   // CHECK trap_value_payload
                   emit(success.unwrap() == 27);
-                  // CHECK trap_absent_outer
-                  emit(nested_none.is_some());
+                  // CHECK trap_absent_outer_ok
+                  emit(nested_none.is_ok());
                   // CHECK trap_absent_inner
                   emit(nested_none.unwrap().is_none());
-                  // CHECK trap_present_outer
-                  emit(nested_some.is_some());
+                  // CHECK trap_present_outer_ok
+                  emit(nested_some.is_ok());
                   // CHECK trap_present_payload
                   emit(nested_some.unwrap().unwrap() == 9);
-                  // CHECK trap_void_some
-                  emit(finished.is_some());
+                  // CHECK trap_void_ok
+                  emit(finished.is_ok());
                   stdio.stdout.write(":END");
                   return;
                 }
@@ -179,26 +179,23 @@ final class OptionResultTrapModularConformanceTest {
                   return;
                 }
                 pub fnc main(): void {
-                  val Option<Result<int,String>> trapped_err = error_value();
-                  val Option<Result<int,String>> trapped_ok = success_value();
+                  // A trap callable returning Result is not wrapped again.
+                  val Result<int, String | Error> trapped_err = error_value();
+                  val Result<int, String | Error> trapped_ok = success_value();
                   stdio.stdout.write("ORT2:trap_result_data:");
-                  // CHECK error_data_outer_some
-                  emit(trapped_err.is_some());
-                  // CHECK error_data_inner_err
-                  emit(trapped_err.unwrap().is_err());
-                  // CHECK success_outer_some
-                  emit(trapped_ok.is_some());
-                  // CHECK success_inner_ok
-                  emit(trapped_ok.unwrap().is_ok());
-                  // CHECK success_inner_payload
-                  emit(trapped_ok.unwrap().unwrap() == 42);
+                  // CHECK error_data_is_err
+                  emit(trapped_err.is_err());
+                  // CHECK success_is_ok
+                  emit(trapped_ok.is_ok());
+                  // CHECK success_payload
+                  emit(trapped_ok.unwrap() == 42);
                   stdio.stdout.write(":END");
                   return;
                 }
                 
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("ORT2:trap_result_data:11111:END", run(source));
+        assertEquals("ORT2:trap_result_data:111:END", run(source));
     }
 
     @Test
@@ -221,13 +218,13 @@ final class OptionResultTrapModularConformanceTest {
                   return;
                 }
                 pub fnc main(): void {
-                  val Option<Dog> missing = as_dog(new Cat());
-                  val Option<Dog> good = as_dog(new Dog());
+                  val Result<Dog, Error> missing = as_dog(new Cat());
+                  val Result<Dog, Error> good = as_dog(new Dog());
                   stdio.stdout.write("ORT2:trap_cast:");
-                  // CHECK cast_failure_none
-                  emit(missing.is_none());
-                  // CHECK cast_success_some
-                  emit(good.is_some());
+                  // CHECK cast_failure_err
+                  emit(missing.is_err());
+                  // CHECK cast_success_ok
+                  emit(good.is_ok());
                   stdio.stdout.write(":END");
                   return;
                 }
@@ -300,7 +297,8 @@ final class OptionResultTrapModularConformanceTest {
     @Test
     void ort2_neg_no_trap_result_flatten_rejects_at_compile_time() {
         final String source = """
-                // ORT2-NEG-NO_TRAP_RESULT_FLATTEN: must produce a semantic type error, never launch guest.
+                // ORT2-NEG-NO_TRAP_RESULT_NARROW: the trapped error type is String | Error and never
+                // narrows to String implicitly; must produce a semantic type error, never launch guest.
                 trap fnc f(): Result<int,String> { return Err("e"); }
                 fnc invalid(): void {
                   val Result<int,String> b = f();
@@ -321,7 +319,7 @@ final class OptionResultTrapModularConformanceTest {
                   return missing.unwrap();
                 }
                 pub fnc main(): void {
-                  val Option<int> ignored = panicking();
+                  val Result<int, Error> ignored = panicking();
                   stdio.stdout.write("UNREACHABLE");
                   return;
                 }

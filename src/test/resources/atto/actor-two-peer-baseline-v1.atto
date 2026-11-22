@@ -1,0 +1,37 @@
+// COMPILER-BACKED two-actor BASELINE. This does not exercise failure,
+// supervisor CONTROL or process isolation. A positive compiler test must
+// execute this file rather than treating the source text as a PASS.
+define actor Witness as
+  receive(ActorMail<int> mail): void {
+    self.send(mail.value + 40);
+    self.end();
+    return;
+  }
+end
+
+define actor Worker as
+  receive(ActorMail<int> mail): void {
+    self.send(mail.value + 5);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val witness = spawn Witness();
+  val worker = spawn Worker();
+  await witness.get_ready();
+  await worker.get_ready();
+  witness.send(2);
+  worker.send(2);
+  val reply1 = (await witness.outputs.next()).value.unwrap();
+  val reply2 = (await worker.outputs.next()).value.unwrap();
+  await witness.get_done();
+  await worker.get_done();
+  if reply1.value == 42 && reply2.value == 7; do
+    stdio.println("TWO_ACTOR_BASELINE_OK|42|7");
+  else
+    stdio.println("TWO_ACTOR_BASELINE_FAILED");
+  fi
+  return;
+}

@@ -1,0 +1,7 @@
+import trait Ord from "ores.core/protocols";
+
+define pub class Counter implements Ord<int> as
+  pub compare(int other): int { return other; }
+end
+
+pub fnc main(): void { return; }

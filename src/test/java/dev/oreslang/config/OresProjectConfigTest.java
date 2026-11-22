@@ -50,6 +50,22 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void canonicalAttoImportsWinOverLegacyWhenBothAreAvailable() throws Exception {
+        Path sourceDir = temp.resolve("canonical");
+        Files.createDirectories(sourceDir);
+        Path importer = sourceDir.resolve("main.atto");
+        Files.writeString(importer, "pub routine main(): void { return; }");
+        Files.writeString(sourceDir.resolve("helper.atto"), "pub fnc value() => int { return 1; }");
+        Files.writeString(sourceDir.resolve("helper.ores"), "pub fnc value() => int { return 2; }");
+        Files.writeString(sourceDir.resolve("legacy.ores"), "pub fnc legacy() => int { return 3; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(sourceDir.resolve("helper.atto").toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./helper").orElseThrow());
+        assertEquals(sourceDir.resolve("legacy.ores").toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./legacy").orElseThrow());
+    }
+
+    @Test
     void oreslangPathIsAnOrderedOsNativePathList() throws Exception {
         Path one = temp.resolve("one");
         Path two = temp.resolve("two");
@@ -105,6 +121,25 @@ final class OresProjectConfigTest {
                 Map.of(OresProjectConfig.ENV_ORESLANG_PATH, ambient.toString()));
 
         assertTrue(config.resolveImport(importer, "./missing").isEmpty());
+    }
+
+    @Test
+    void attoImportsArePreferredAndExplicitLegacyPathsDoNotAlias() throws Exception {
+        Path importer = temp.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main(): void { return; }");
+        Path atto = temp.resolve("replay_stream.atto");
+        Path legacy = temp.resolve("replay_stream.ores");
+        Files.writeString(atto, "pub fnc current(): int { return 2; }");
+        Files.writeString(legacy, "pub fnc legacy(): int { return 1; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(atto.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream").orElseThrow());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream.ores").orElseThrow());
+        Files.delete(atto);
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream").orElseThrow());
+        assertTrue(config.resolveImport(importer, "./replay_stream.atto").isEmpty());
     }
 
     @Test

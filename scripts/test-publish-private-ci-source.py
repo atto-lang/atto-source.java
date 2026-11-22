@@ -941,9 +941,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
+            "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"sha": A, "type": "commit"}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/trees/"+E: {
+                "sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "type": "tree", "mode": "040000", "sha": D}]},
+            "repos/trusted/ci/git/refs": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"sha": A}},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -1409,6 +1417,126 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
+    def test_commit_records_exact_origin_provenance_and_ref_identity(self):
+        self.publish()
+        commit = [payload for method, route, payload in self.route_calls
+                  if method == "POST" and route == "repos/trusted/ci/git/commits"]
+        self.assertEqual(len(commit), 1)
+        trailer = commit[0]["message"]
+        self.assertIn("Oreslang-Source-Repo: "+pub.SOURCE_REPO+"\n", trailer)
+        self.assertIn("Oreslang-Source-Commit: "+A+"\n", trailer)
+        self.assertIn("Oreslang-Source-Tree: "+D+"\n", trailer)
+        self.assertIn("Oreslang-Destination-Prefix: "+pub.PREFIX+"\n", trailer)
+        self.assertEqual(commit[0]["tree"], E)
+
+    def test_ref_attestation_rejects_response_pointing_to_wrong_commit(self):
+        original = self.fake_api
+        def wrong_ref(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/refs":
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"sha": B}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_ref):
+            with self.assertRaisesRegex(pub.Denied, "new CI branch target"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+
+    def test_ref_attestation_rejects_missing_object_identity(self):
+        original = self.fake_api
+        def missing_ref(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/refs":
+                return {"ref": "refs/heads/ci/oreslang-test"}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=missing_ref):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+
+    def test_fresh_ref_must_be_read_back_from_github(self):
+        sha, count = self.publish()
+        self.assertEqual((sha, count), (A, 1))
+        observed = [route for method, route, payload in self.route_calls
+                    if method == "GET" and route ==
+                    "repos/trusted/ci/git/ref/heads/ci/oreslang-test"]
+        self.assertEqual(len(observed), 1)
+
+    def test_readback_rejects_ref_updated_by_another_writer(self):
+        original = self.fake_api
+        def swapped(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"sha": B, "type": "commit"}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=swapped):
+            with self.assertRaisesRegex(pub.Denied, "readback differs"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+
+    def test_readback_rejects_wrong_ref_type(self):
+        original = self.fake_api
+        def wrong_type(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"sha": A, "type": "tag"}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_type):
+            with self.assertRaisesRegex(pub.Denied, "readback differs"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+
+    def test_destination_root_tree_is_read_back_before_publishing(self):
+        sha, count = self.publish()
+        self.assertEqual((sha, count), (A, 1))
+        tree_reads = [i for i, (method, route, _) in enumerate(self.route_calls)
+                      if method == "GET" and route ==
+                      "repos/trusted/ci/git/trees/"+E]
+        commits = [i for i, (method, route, _) in enumerate(self.route_calls)
+                   if method == "POST" and route ==
+                   "repos/trusted/ci/git/commits"]
+        self.assertEqual(len(tree_reads), 1)
+        self.assertEqual(len(commits), 1)
+        self.assertLess(tree_reads[0], commits[0])
+
+    def test_root_tree_rejects_replaced_subtree_before_commit(self):
+        original = self.fake_api
+        def swapped(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/trees/"+E:
+                return {"sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "type": "tree",
+                     "mode": "040000", "sha": B}]}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=swapped):
+            with self.assertRaisesRegex(pub.Denied, "exact source subtree"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+        self.assertNotIn("repos/trusted/ci/git/commits",
+                         [route for method, route, _ in self.route_calls
+                          if method == "POST"])
+
+    def test_root_tree_rejects_truncation_and_duplicate_prefix(self):
+        original = self.fake_api
+        for fake_tree in (
+                {"sha": E, "truncated": True, "tree": []},
+                {"sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "type": "tree",
+                     "mode": "040000", "sha": D},
+                    {"path": pub.PREFIX, "type": "tree",
+                     "mode": "040000", "sha": D}]}):
+            with self.subTest(fake_tree=fake_tree):
+                self.route_calls.clear()
+                self.visibility = ["private"] * 100
+                def override(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/trees/"+E:
+                        return fake_tree
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=override):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, A)
+                self.assertNotIn("repos/trusted/ci/git/commits",
+                                 [route for method, route, _ in self.route_calls
+                                  if method == "POST"])
+
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
         # A new isolated source tree MUST NOT be based on that default tree.
@@ -1484,6 +1612,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_file_bound_matches_current_tree_scale_and_fails_closed(self):
+        self.assertEqual(pub.MAX_FILES, 4096)
+        extra = self.source / "second.ores"
+        extra.write_text("safe")
+        old_limit = pub.MAX_FILES
+        pub.MAX_FILES = 1
+        try:
+            with self.assertRaisesRegex(pub.Denied, "bounded capacity"):
+                pub.collect_source(self.source, self.root)
+        finally:
+            pub.MAX_FILES = old_limit
 
     def test_nested_regular_source_files_keep_expected_paths(self):
         directory = self.source / "nested"

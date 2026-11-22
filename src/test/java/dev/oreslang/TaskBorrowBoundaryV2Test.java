@@ -741,8 +741,8 @@ final class TaskBorrowBoundaryV2Test {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
                   const int original = 40;
-                  const int copied = rt copy original;
-                  const int shared = rt share original;
+                  val int copied = rt copy original;
+                  val int shared = rt share original;
                   let Future<int> child = task {
                     return copied + shared - original + 2;
                   };

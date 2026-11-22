@@ -1,0 +1,16 @@
+// The parameter s cannot be rebound: it is an exclusive, lexical borrow.
+// The caller remains the owner of the Counter.
+define class Counter as
+  pub let int count = 0;
+end
+
+fnc increment(borrow mut Counter s): void {
+  s.count = s.count + 1;
+  return;
+}
+
+pub fnc main(): int {
+  val Counter counter = new Counter();
+  increment(rt mut borrow counter);
+  return counter.count;
+}

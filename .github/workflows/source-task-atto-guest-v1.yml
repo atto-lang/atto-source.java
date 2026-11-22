@@ -71,7 +71,25 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/test-source-task-v1-java.sh
+          bash -n scripts/test-task-record-capture-v1-java.sh
           if grep -Fq '\${' scripts/test-source-task-v1-java.sh; then echo 'Escaped Bash expansion detected' >&2; exit 1; fi
+          if grep -Fq '\${' scripts/test-task-record-capture-v1-java.sh; then echo 'Escaped Bash expansion detected' >&2; exit 1; fi
+      - name: Compiler-owned Task record capture JUnit (including actual scalar guest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=TaskRecordCaptureGuestV1Test -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.TaskRecordCaptureGuestV1Test.xml
+      - name: Exact-head readonly record Task semantic gate
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/test-task-record-capture-v1-java.sh | tee target/task-record-capture-v1.log
+          test "$(grep -c '^JAVA_TASK_RECORD_COMPILER_ACCEPT|' target/task-record-capture-v1.log)" = 2
+          test "$(grep -c '^JAVA_TASK_RECORD_GUEST_PASS|' target/task-record-capture-v1.log)" = 1
+          test "$(grep -c '^JAVA_TASK_RECORD_COMPILER_REJECT|' target/task-record-capture-v1.log)" = 1
       - name: Execute actual .atto source guest (backend-specific slice only)
         shell: bash
         env:
@@ -85,5 +103,8 @@ jobs:
         if: always()
         with:
           name: task-v1-java-source-local
-          path: target/task-v1-guest.log
+          path: |
+            target/task-v1-guest.log
+            target/task-record-capture-v1.log
+            target/surefire-reports/TEST-dev.oreslang.TaskRecordCaptureGuestV1Test.xml
           if-no-files-found: ignore

@@ -1,0 +1,2 @@
+// out-of-range negative magnitude must be rejected with no generated artifact
+pub fnc main(): int -> -9223372036854775809;
