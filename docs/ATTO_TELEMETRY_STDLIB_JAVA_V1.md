@@ -1,6 +1,6 @@
 # Atto Java/Graal `stdlib/telemetry.atto` candidate
 
-This is a native **Atto source** telemetry value model. It is not a Java OpenTelemetry SDK binding, an exporter, a privileged `SpanScope`, a verified guest import, or a certified running standard-library module.
+This draft combines a native **Atto source** telemetry value model with a minimal Java compiler-owned scope observer integration. It is not a Java OpenTelemetry SDK binding, a live exporter, a proven linked guest module or a certified fully working stdlib.
 
 - `core.trace` retains cheap timestamps, phase events and the bounded `Trace.Buffer` in `stdlib/trace.atto`.
 - `Telemetry` adds W3C-v00 **field-level** admission, sampled/recording policy separation, immutable span records containing stable `operation_id` and `code_generation`, an actor-owned bounded batch, and dormant-probe admission.
@@ -34,7 +34,9 @@ and canonical `span.set_attribute(key, value)`, plus
 `span.add_event(event_name)`. These are direct, ownership-checked calls,
 not a user-defined `SpanScope`. Runtime event names must be 1..80 safe ASCII
 characters; each recording span keeps at most 16 name-only events. Overflow
-drops names without growing the collection. Disabled span scopes ignore the
+drops names without growing the collection and increments a saturating
+`droppedEvents()` host-only counter. Event names containing sensitive-key
+patterns are rejected. Disabled span scopes ignore the
 observer payload, retain incoming trace context, and do not export.
 
 The host-only `TelemetrySpanScope.eventsSnapshot()` returns an immutable
@@ -52,10 +54,12 @@ mechanisms. The two facilities do not manufacture authority for each other.
 ## Test and security gates
 
 1. Compiler-backed positive/negative tests for the pure Atto helpers and batch overflow/drop saturation; alias/capability forgery rejection; no source-defined `span` accepted as a trusted provider.
-2. Exact-head JDK25/Graal guest `using` normal/return/failure/await/cancel/actor-restart execution, single logical span with no leak or double-end; disabled hot path must not read clock or allocate.
+2. Exact-head JDK25/Graal guest `using` normal/return/failure/await/cancel/actor-restart execution, single logical span with no leak or double-end; disabled hot path must not read clock and should eventually avoid all scope allocations (currently the disabled path still allocates a scope handle).
 3. Live Truffle JIT attach/on/off/deopt with generated probe-site identity and current-generation preservation. Separately test dormant AOT activation and strict `none` denial.
 4. W3C hex/header grammar negative vectors, context propagation through tasks/actors/network, and a real OTLP receiver capture under explicit egress permission.
-5. Source tree SHA, nonzero CI runner steps, independent review and cross-backend receipts. **No such test or CI run is claimed by this source-only PR.**
+5. Source tree SHA, nonzero CI runner steps, independent review and cross-backend receipts. **No exact-head compiler-backed pass is claimed for this draft.**
 
 ### Compatibility / overlap disposition
-This PR intentionally touches only a new .atto module and its documentation, and does not reimplement parser or runtime changes in Java #1661/#1662 or the instrumentation contracts in common-source #120/#121/#122. It must be reconciled with their trusted-lowering APIs before treating it as an importable stdlib.
+This branch now adds runtime/API integration on **current mainline**: it modifies `TelemetrySpanScope`, the existing type and ownership checkers, and the evaluator's already-present native-span dispatch. It **does not** replace the older overlapping Java #1661/#1662 proposals or their distinct compiler/continuation changes. The 5 newly authored JUnit methods (1 runtime-host, 3 compiled-guest scopes, 1 linked Atto stdlib source) are intentionally material gates but are NOT YET EXECUTED. The staged 18-assertion .atto fixture is also unexecuted.
+
+Nearby work: [Java #1660](https://github.com/atto-lang/atto-source.java/pull/1660) supplies broader native instrumentation/OTLP candidate code; [Java #1682](https://github.com/atto-lang/atto-source.java/pull/1682) explores auto-call spans; [Java #1687](https://github.com/atto-lang/atto-source.java/pull/1687) explores JIT generation retirement; [Java #1760](https://github.com/atto-lang/atto-source.java/pull/1760) independently adds `perf.atto`. This PR does not claim merge readiness or replace those implementation lanes. Resolve overlapping runtime changes before any merge.
