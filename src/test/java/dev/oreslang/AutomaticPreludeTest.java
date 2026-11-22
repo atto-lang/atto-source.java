@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.types.AutomaticPrelude;
 import dev.oreslang.types.CoreTypeRegistry;
 import dev.oreslang.types.TypeChecker;
@@ -190,6 +191,10 @@ final class AutomaticPreludeTest {
                     () -> TypeChecker.checkTypesWithDiagnostics(
                             program, false, AutomaticPrelude.Profile.CORE));
             assertTrue(error.getMessage().contains("E_ALLOC_PROFILE_REQUIRED"), error::getMessage);
+            IllegalArgumentException compilerError = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source, AutomaticPrelude.Profile.CORE));
+            assertTrue(compilerError.getMessage().contains("E_ALLOC_PROFILE_REQUIRED"),
+                    compilerError::getMessage);
         }
 
         var legacyScalar = assertDoesNotThrow(() ->
@@ -197,6 +202,9 @@ final class AutomaticPreludeTest {
         assertDoesNotThrow(() -> TypeChecker.checkTypesWithDiagnostics(
                 legacyScalar, false, AutomaticPrelude.Profile.CORE),
                 "the historical Java immutable String scalar is not alloc::String");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                "fnc legacy(): String { return \"ok\"; }", AutomaticPrelude.Profile.CORE),
+                "compiler entrypoint must preserve the historical immutable String scalar");
     }
 
 
