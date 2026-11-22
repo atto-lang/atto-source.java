@@ -1,0 +1,62 @@
+name: Atto alloc collections real guest Java admission
+on:
+  pull_request:
+    paths:
+      - 'stdlib/alloc/**'
+      - 'tests/fixtures/alloc-collections-v1/**'
+      - 'src/test/java/dev/oreslang/AttoAllocCollectionsGuestTest.java'
+      - '.github/workflows/atto-alloc-collections-guest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  alloc-guest-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact PR head (not the merge ref)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record and verify exact head/tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code
+          echo "ATTO_ALLOC_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_ALLOC_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Setup GraalVM JDK 25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile, link and execute all three .atto guest fixtures
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AttoAllocCollectionsGuestTest -DfailIfNoTests=true test
+          report='target/surefire-reports/TEST-dev.oreslang.AttoAllocCollectionsGuestTest.xml'
+          test -s "$report"
+          for testname in \
+            allocModulesParseAsAttoLangSource \
+            bitsetGuestExecutesWordBoundariesAndIntersections \
+            linkedListGuestExecutesOrderingAndRecycling \
+            mapGuestExecutesCollisionsTombstonesAndQuota
+          do
+            grep -F "name=\"$testname\"" "$report"
+          done
+          grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
+          echo 'ATTO_ALLOC_JAVA_GUEST=EXECUTED 3/3'
+      - name: Preserve evidence boundary
+        if: always()
+        run: |
+          echo 'Only a nonzero-step passing JUnit run proves Java guest execution.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A queued/zero-step workflow is NOT_EXECUTED. LLVM, .NET, Wasm, AOT and other backends remain unverified.' >> "$GITHUB_STEP_SUMMARY"
