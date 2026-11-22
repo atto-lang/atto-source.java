@@ -1,50 +1,91 @@
-// AttoLang core/result: allocation-free sum-value adapters.
-// Result<T,E>, Ok(T), and Err(E) are sealed compiler-provided values;
-// this .atto module implements additional portable composition operations.
-// Every match is exhaustive. Affine payload moves and inactive drops require
-// compiler ownership verification, not runtime copying or GC.
+// AttoLang core/result (Java/Graal): source-owned, no host interop.
+// Ok/Err are values; callbacks cannot silently catch throw/raise/panic.
+// Result operations consume their receiver; compiler must prove exact drops.
 define module result as
-
-  pub fnc flatten<T, E>(Result<Result<T, E>, E> nested): Result<T, E> {
-    return match nested over
+  pub fnc flatten<T, E>(
+    Result<Result<T, E>, E> input
+  ): Result<T, E> {
+    return match input over
       on Ok(inner) -> inner,
       on Err(error) -> Err(error),
     end;
   }
 
-  // Discard the Err payload, without swallowing a thrown/raised failure.
-  pub fnc to_option<T, E>(Result<T, E> value): Option<T> {
-    return match value over
-      on Ok(payload) -> Some(payload),
+  pub fnc map<T, U, E>(
+    Result<T, E> input, Fnc<U(T)> transform
+  ): Result<U, E> {
+    return match input over
+      on Ok(value) -> Ok(transform(value)),
+      on Err(error) -> Err(error),
+    end;
+  }
+
+  pub fnc and_then<T, U, E>(
+    Result<T, E> input, Fnc<Result<U, E>(T)> next
+  ): Result<U, E> {
+    return match input over
+      on Ok(value) -> next(value),
+      on Err(error) -> Err(error),
+    end;
+  }
+
+  pub fnc map_err<T, E, F>(
+    Result<T, E> input, Fnc<F(E)> transform
+  ): Result<T, F> {
+    return match input over
+      on Ok(value) -> Ok(value),
+      on Err(error) -> Err(transform(error)),
+    end;
+  }
+
+  pub fnc or_else<T, E, F>(
+    Result<T, E> input, Fnc<Result<T, F>(E)> recover
+  ): Result<T, F> {
+    return match input over
+      on Ok(value) -> Ok(value),
+      on Err(error) -> recover(error),
+    end;
+  }
+
+  pub fnc unwrap_or_else<T, E>(
+    Result<T, E> input, Fnc<T(E)> recover
+  ): T {
+    return match input over
+      on Ok(value) -> value,
+      on Err(error) -> recover(error),
+    end;
+  }
+
+  pub fnc to_option<T, E>(Result<T, E> input): Option<T> {
+    return match input over
+      on Ok(value) -> Some(value),
       on Err(_) -> None,
     end;
   }
 
-  // Preserve only the active Err payload; Ok must be dropped exactly once.
-  pub fnc err_option<T, E>(Result<T, E> value): Option<E> {
-    return match value over
+  pub fnc err_option<T, E>(Result<T, E> input): Option<E> {
+    return match input over
       on Ok(_) -> None,
       on Err(error) -> Some(error),
     end;
   }
 
-  // Result<Option<T>,E> -> Option<Result<T,E>>, preserving Err.
-  pub fnc transpose<T, E>(Result<Option<T>, E> value): Option<Result<T, E>> {
-    return match value over
+  pub fnc transpose<T, E>(
+    Result<Option<T>, E> input
+  ): Option<Result<T, E>> {
+    return match input over
       on Err(error) -> Some(Err(error)),
       on Ok(inner) -> match inner over
-        on Some(payload) -> Some(Ok(payload)),
+        on Some(value) -> Some(Ok(value)),
         on None -> None,
       end,
     end;
   }
 
-  // Both branches have the same payload type: no panic/throw on Err.
-  pub fnc merge<T>(Result<T, T> value): T {
-    return match value over
-      on Ok(payload) -> payload,
+  pub fnc merge<T>(Result<T, T> input): T {
+    return match input over
+      on Ok(value) -> value,
       on Err(error) -> error,
     end;
   }
-
 end
