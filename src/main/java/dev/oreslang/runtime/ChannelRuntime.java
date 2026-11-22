@@ -96,6 +96,69 @@ public final class ChannelRuntime {
     }
 
     /**
+     * One immediate owned-send attempt. Only COMMITTED consumes the payload.
+     * A rejected attempt returns exactly the supplied object, including when
+     * the channel was closed. The result intentionally contains no payload on
+     * COMMITTED, so a guest binding can implement affine ownership transfer.
+     *
+     * <p>Host Java references are not linear: a compiler/guest lowering must
+     * reject uses of the original binding after a committed send. This record
+     * must not be described as guest-level ownership enforcement.</p>
+     */
+    public enum OwnedWriteOutcome {
+        COMMITTED,
+        BACKPRESSURE,
+        CLOSED
+    }
+
+    public static final class OwnedTryWriteResult<T> {
+        // Only this runtime can mint admission receipts. Do not expose a
+        // publicly constructible record to a future guest ownership bridge.
+        private final OwnedWriteOutcome outcome;
+        private final T returnedPayload;
+
+        private OwnedTryWriteResult(
+                OwnedWriteOutcome outcome, T returnedPayload) {
+            this.outcome = Objects.requireNonNull(outcome, "outcome");
+            if (outcome == OwnedWriteOutcome.COMMITTED) {
+                if (returnedPayload != null) {
+                    throw new IllegalArgumentException(
+                            "a committed send cannot return a second payload owner");
+                }
+            } else {
+                Objects.requireNonNull(returnedPayload,
+                        "a rejected send must return its original payload");
+            }
+            this.returnedPayload = returnedPayload;
+        }
+
+        public OwnedWriteOutcome outcome() {
+            return outcome;
+        }
+
+        public T returnedPayload() {
+            return returnedPayload;
+        }
+
+        public boolean committed() {
+            return outcome == OwnedWriteOutcome.COMMITTED;
+        }
+
+        private static <T> OwnedTryWriteResult<T> accepted() {
+            return new OwnedTryWriteResult<>(OwnedWriteOutcome.COMMITTED, null);
+        }
+
+        private static <T> OwnedTryWriteResult<T> rejected(
+                OwnedWriteOutcome cause, T payload) {
+            if (cause == OwnedWriteOutcome.COMMITTED) {
+                throw new IllegalArgumentException(
+                        "a committed result cannot carry a rejected payload");
+            }
+            return new OwnedTryWriteResult<>(cause, payload);
+        }
+    }
+
+    /**
      * Read-only channel capability. It cannot write, close, or expose the
      * underlying bidirectional channel.
      */
@@ -136,6 +199,11 @@ public final class ChannelRuntime {
 
         public boolean tryWrite(T value) {
             return channel.tryWrite(value);
+        }
+
+        /** Directional capability for immediate, recoverable owned attempts. */
+        public OwnedTryWriteResult<T> tryWriteOwned(T value) {
+            return channel.tryWriteOwned(value);
         }
 
         public OresFuture<Void> writeAsync(T value) {
@@ -299,6 +367,34 @@ public final class ChannelRuntime {
         }
 
         /**
+         * Immediate, non-parking send with a recoverable rejection result.
+         * Reuse tryWrite's select coordinator: a second queue or capacity
+         * pre-check would introduce a close/reader admission race.
+         *
+         * <p>The only recoverable terminal results here are BACKPRESSURE
+         * (no value committed) and CLOSED (closure won admission). The
+         * asynchronous writeAsync API remains non-recoverable until a
+         * separate cancellation-safe escrow and affine guest contract exist.
+         * Do not expose this as a guest ownership guarantee without that
+         * compiler lowering.</p>
+         */
+        public OwnedTryWriteResult<T> tryWriteOwned(T value) {
+            requireValue(value);
+            try {
+                return tryWrite(value)
+                        ? OwnedTryWriteResult.accepted()
+                        : OwnedTryWriteResult.rejected(
+                                OwnedWriteOutcome.BACKPRESSURE, value);
+            } catch (java.util.concurrent.CompletionException failure) {
+                if (OresFuture.unwrap(failure) instanceof ChannelClosedException) {
+                    return OwnedTryWriteResult.rejected(
+                            OwnedWriteOutcome.CLOSED, value);
+                }
+                throw failure;
+            }
+        }
+
+        /**
          * Scheduler-friendly receive registration.
          */
         public OresFuture<T> readAsync() {
@@ -374,6 +470,32 @@ public final class ChannelRuntime {
     @FunctionalInterface
     public interface Selectable<T> {
         SelectCase selectNext();
+    }
+
+    /**
+     * Canonical descriptor-only channel next-event source. It stores only a
+     * read capability: even a malicious caller cannot use this adapter to
+     * introduce producer-side writes or consume a value during description.
+     * The select winner coordinator performs the actual read exactly once.
+     */
+    public record ChannelReadSelectable<T>(ReadChannel<T> channel)
+            implements Selectable<T> {
+        public ChannelReadSelectable {
+            Objects.requireNonNull(channel, "channel");
+        }
+
+        @Override
+        public SelectCase selectNext() {
+            return read(channel);
+        }
+    }
+
+    public static <T> ChannelReadSelectable<T> selectableRead(ReadChannel<T> channel) {
+        return new ChannelReadSelectable<>(channel);
+    }
+
+    public static <T> ChannelReadSelectable<T> selectableRead(Channel<T> channel) {
+        return selectableRead(Objects.requireNonNull(channel, "channel").output());
     }
 
     public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
@@ -523,9 +645,14 @@ public final class ChannelRuntime {
                 SelectCase operation = Objects.requireNonNull(
                         Objects.requireNonNull(selectable, "selectable source").selectNext(),
                         "selectNext must produce one operation");
-                if (operation instanceof DefaultCase) {
+                // A Selectable describes consumption of one NEXT event.
+                // Producer writes and select-control defaults are never
+                // admissible, even when returned by a trusted host adapter.
+                // Validate before registering or arbitrating any case.
+                if (!(operation instanceof ReadCase<?>)
+                        && !(operation instanceof FutureCase<?>)) {
                     throw new IllegalArgumentException(
-                            "Selectable<T> cannot reduce to a default arm");
+                            "Selectable<T> must reduce to a read or Future arm");
                 }
                 cases.add(operation);
             }

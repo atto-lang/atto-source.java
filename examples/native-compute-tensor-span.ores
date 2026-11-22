@@ -1,0 +1,69 @@
+// Compiled guest checks for the portable tensor span metadata contract.
+// A valid span is NOT a permission to read or write an actor/host/GPU buffer.
+import class TensorSpan from '../stdlib/tensor';
+import fnc valid_tensor_span from '../stdlib/tensor';
+
+pub routine main(): void {
+  val TensorSpan full = new TensorSpan(8, 0, 8, 1);
+  val TensorSpan stepped = new TensorSpan(8, 1, 3, 3);
+  val TensorSpan empty = new TensorSpan(8, 8, 0, 3);
+  val TensorSpan zero = new TensorSpan(0, 0, 0, 1);
+  val TensorSpan max_last = new TensorSpan(9223372036854775807, 9223372036854775806, 1, 1);
+  val TensorSpan outside = new TensorSpan(8, 7, 2, 1);
+  val TensorSpan end_nonempty = new TensorSpan(8, 8, 1, 1);
+  val TensorSpan zero_stride = new TensorSpan(8, 1, 2, 0);
+  val TensorSpan neg_stride = new TensorSpan(8, 1, 2, -2);
+  val TensorSpan huge = new TensorSpan(9223372036854775807, 1, 9223372036854775807, 2);
+  val TensorSpan neg_capacity = new TensorSpan(-1, 0, 0, 1);
+  val TensorSpan neg_start = new TensorSpan(8, -1, 1, 1);
+  val TensorSpan neg_count = new TensorSpan(8, 0, -1, 1);
+  val TensorSpan start_past_end = new TensorSpan(8, 9, 0, 1);
+  val TensorSpan off_by_one = new TensorSpan(8, 0, 3, 4);
+  if !valid_tensor_span(&full); do
+    rt fail("full span wrongly rejected");
+  fi
+  if !valid_tensor_span(&stepped); do
+    rt fail("strided span wrongly rejected");
+  fi
+  if !valid_tensor_span(&empty); do
+    rt fail("empty end span wrongly rejected");
+  fi
+  if !valid_tensor_span(&zero); do
+    rt fail("zero length span wrongly rejected");
+  fi
+  if !valid_tensor_span(&max_last); do
+    rt fail("max length boundary wrongly rejected");
+  fi
+  if valid_tensor_span(&outside); do
+    rt fail("out of bounds span accepted");
+  fi
+  if valid_tensor_span(&end_nonempty); do
+    rt fail("nonempty end span accepted");
+  fi
+  if valid_tensor_span(&zero_stride); do
+    rt fail("zero stride accepted");
+  fi
+  if valid_tensor_span(&neg_stride); do
+    rt fail("negative stride accepted");
+  fi
+  if valid_tensor_span(&huge); do
+    rt fail("overflowing strided span accepted");
+  fi
+  if valid_tensor_span(&neg_capacity); do
+    rt fail("negative backing length accepted");
+  fi
+  if valid_tensor_span(&neg_start); do
+    rt fail("negative start accepted");
+  fi
+  if valid_tensor_span(&neg_count); do
+    rt fail("negative count accepted");
+  fi
+  if valid_tensor_span(&start_past_end); do
+    rt fail("past-end empty span accepted");
+  fi
+  if valid_tensor_span(&off_by_one); do
+    rt fail("last element off by one accepted");
+  fi
+  stdio.stdout.println("COMPUTE-TENSOR-SPAN-OK");
+  return;
+}

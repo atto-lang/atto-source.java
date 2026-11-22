@@ -166,7 +166,9 @@ final class ValueMatchExpressionTest {
 
     @Test
     void canonicalValueArmSyntaxFailsClosed() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        // Arm separators are optional (spec 02 match example); the remaining
+        // cases still fail closed on malformed block-arm results.
+        assertDoesNotThrow(() -> Parser.parse("""
             fnc f(bool selected): int {
                 return match<int> selected over
                     on true -> 1

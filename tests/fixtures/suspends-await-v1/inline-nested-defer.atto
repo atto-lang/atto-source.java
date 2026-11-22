@@ -1,0 +1,24 @@
+// A nested suspends call must not create an independent Task execution.
+// The only new Task here is the explicit task expression in leaf().
+suspends fnc leaf(): int {
+  defer stdio.stdout.write("defer:");
+  let Future<int> pending = task {
+    rt cooperate;
+    return 40;
+  };
+  return await pending;
+}
+
+suspends fnc middle(): int {
+  val int base = leaf();
+  return base + 2;
+}
+
+pub suspends fnc main(): void {
+  task context(#trace_id, "root") {
+    stdio.stdout.write(middle());
+    stdio.stdout.write("|");
+    stdio.stdout.write(task_context(#trace_id).unwrap_or("missing"));
+  }
+  return;
+}

@@ -123,6 +123,14 @@ public final class TaskScope implements AutoCloseable {
             if (active <= 0) {
                 throw new IllegalStateException("TaskScope child accounting underflow");
             }
+            // A post-quiescence callback is part of the compiler/runtime
+            // ownership retirement chain. If it fails, the child did exit,
+            // but the scope has NOT proved that its resources/loans were
+            // reclaimed safely. Retain the exact failure and fail getDone()
+            // closed; firstNonSuccessOutcome() alone is only diagnostic.
+            if (observationFailure != null) {
+                releaseErrors.add(observationFailure);
+            }
             releaseErrors.addAll(failedReleases);
             // A failure outranks an earlier cancellation: a deliberately
             // cancelled child must never hide a sibling's real failure.
@@ -208,7 +216,7 @@ public final class TaskScope implements AutoCloseable {
         return done;
     }
 
-    /** Child logical-lease release failures, fixed before scope retirement. */
+    /** Child lease and compiler-owned quiescence-hook failures, fixed before scope retirement. */
     public OresFuture<List<Throwable>> cleanupFailures() {
         return cleanupFailures;
     }
