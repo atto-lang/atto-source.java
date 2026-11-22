@@ -36,7 +36,7 @@ surviving scalar offsets. Neither yields a canonical serialized native path. A t
 remain further implementation milestones.
 
 ## Tests and current evidence
-`tests/fixtures/path_sync_telemetry_v1.atto` contains 26 guest output
+`tests/fixtures/path_sync_telemetry_v1.atto` contains 51 guest output
 vectors, including root escapes, Windows aliases, path ambiguity, waiter
 fairness, permit release on closed semaphore, 32-digit trace IDs and invalid
 headers. `StdPathSyncTelemetryGuestTest.java` tests closed registry/source
@@ -53,3 +53,8 @@ Overlaps: Java PR #1377 is actor synchronization *metadata* (different
 from trusted runtime Mutex/RWLock); Java #1661/#1662/#1660 and #1756 contain
 telemetry scope/provider work; .NET #209 and LLVM #883 are independently owned
 backend source candidates. Resolve semantic overlaps before merge.
+
+## Follow-up audit and exact-source runner status (2026-11-22)
+A new source audit verified that every fixture method exists in its backend-owned `.atto` module and no host-language source islands occur in those modules. Path scans reject unpaired Unicode surrogate scalars and values outside Unicode's maximum scalar range. The Java/.NET path views now scan one bounded Unicode snapshot per call and avoid temporary component arrays. Sync release and upgrade policy require an authenticated, unconsumed owner/generation receipt from a trusted runtime, not guest-created boolean authority.
+
+**Verification boundary:** Guest fixtures are authored, not executed. Exact-current-head Actions jobs were queued or pending with no recorded runner steps when checked. Private-source export is not permitted merely by naming a carrier: Java has no active reviewed destination; .NET's candidate remains inactive; LLVM's stale StreemPilot allowlist entry is explicitly under the source-security hold described by LLVM #726/#736/#778. No private-source mirror was performed. Existing draft PRs must remain draft until stepful native guest results and all required reviews are available.
