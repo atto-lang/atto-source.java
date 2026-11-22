@@ -13472,6 +13472,14 @@ public final class TypeChecker {
                 }
                 yield new Named("Bytes", List.of());
             }
+            case "AeadKey", "CryptoError", "SecretBytes" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "compiler-owned crypto nominal " + ref.name()
+                                    + " does not accept type arguments");
+                }
+                yield new Named(ref.name(), List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
