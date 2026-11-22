@@ -10278,18 +10278,28 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
-            boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
+            // int/i64 division stays in the checked integer domain. A binary
+            // floating operand is required for IEEE floating-point division.
+            boolean integral = isIntegral(a) && isIntegral(b);
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
                 // An implicit VM fast-throw exception may have suppression disabled,
                 // which would discard source-boundary diagnostics after warm-up.
-                if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
+                if ((op == '/' || op == '%') && y == 0) {
+                    throw new DivisionByZeroError("checked signed 64-bit " + op);
+                }
+                // Java silently wraps MIN / -1; AttoLang integer arithmetic is
+                // checked, and this exceptional quotient must never become MIN.
+                if (op == '/' && x == Long.MIN_VALUE && y == -1L) {
+                    throw new ArithmeticOverflowError("checked signed 64-bit /");
+                }
                 try {
                     return switch (op) {
                         case '+' -> Math.addExact(x, y);
                         case '-' -> Math.subtractExact(x, y);
                         case '*' -> Math.multiplyExact(x, y);
-                        case '%' -> x % y;
+                        case '/' -> x / y; // Java truncates toward zero.
+                        case '%' -> x % y; // Remainder has dividend sign.
                         default -> throw new IllegalArgumentException("bad numeric operator");
                     };
                 } catch (ArithmeticException overflow) {
@@ -11578,6 +11588,13 @@ public final class OresEvalRootNode extends RootNode {
         private static final int ABI_CODE = NumericErrorAbi.ARITHMETIC_OVERFLOW;
         private ArithmeticOverflowError(String message) {
             super("ArithmeticOverflowError", ABI_CODE, message);
+        }
+    }
+
+    private static final class DivisionByZeroError extends OresGuestError {
+        private static final int ABI_CODE = NumericErrorAbi.DIVISION_BY_ZERO;
+        private DivisionByZeroError(String message) {
+            super("DivisionByZeroError", ABI_CODE, message);
         }
     }
 
