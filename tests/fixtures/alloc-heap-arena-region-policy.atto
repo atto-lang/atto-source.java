@@ -17,5 +17,17 @@ pub fnc main(): int {
   if region.same_owner(11, 2, 11, 3) then return 10; fi
   if region.can_reclaim(true, true, 0, 1, 0, 0, 0, 0) then return 11; fi
   if !region.can_reclaim(true, true, 0, 0, 0, 0, 0, 0) then return 12; fi
+  if heap.can_reserve(-1, 0, 1, 10) then return 13; fi
+  if heap.can_reserve(3, 8, 1, 10) then return 14; fi
+  if !heap.can_release(10, 10) then return 15; fi
+  if heap.can_release(10, 11) then return 16; fi
+  if heap.next_generation(2147483647, 2147483647) != -1 then return 17; fi
+  if heap.can_reclaim(false, true, 0, 0, 0, 0, 0) then return 18; fi
+  if arena.alignment_valid(3) then return 19; fi
+  if arena.aligned_start(9223372036854775806, 2, 8, 9223372036854775807) != -1 then return 20; fi
+  if arena.can_rewind(8, 0, 1, 2, 0, 0) then return 21; fi
+  if arena.can_rewind(8, 0, 1, 1, -1, 0) then return 22; fi
+  if region.quiescent(0, 0, 0, 0, 0, -1) then return 23; fi
+  if region.next_epoch(2147483647, 2147483647) != -1 then return 24; fi
   return 42;
 }
