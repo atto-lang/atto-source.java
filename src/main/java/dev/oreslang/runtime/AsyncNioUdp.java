@@ -202,8 +202,20 @@ public final class AsyncNioUdp {
                 new Retry().tick();
             }, () -> {
                 if (finished.compareAndSet(false, true)) {
+                    // A canceled one-shot watch may still have a queued
+                    // selector retirement command. Reusing its channel before
+                    // that physical retirement would violate the reactor's
+                    // one-watch-per-channel rule. Fail closed by retiring this
+                    // UDP socket on cancellation, like NIO TCP; a new socket
+                    // must be explicitly bound for subsequent operations.
                     OresFuture<Integer> pending = watch.get();
                     if (pending != null) pending.cancel(false);
+                    try {
+                        close();
+                    } catch (IOException ignored) {
+                        // close() fences new calls via its atomic closed flag,
+                        // even if the OS reports a close error.
+                    }
                     // Never free the operation slot while physical I/O may
                     // still be running. Its finally block owns retirement.
                     if (!stepping.get()) operating.set(false);
