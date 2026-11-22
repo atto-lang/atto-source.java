@@ -29,6 +29,8 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // Never reuse a legacy-checked unit as strict-AOT source admission evidence.
+    private final Map<String, CompiledUnit> strictAttoCache = new LinkedHashMap<>();
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -37,8 +39,31 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
+        return compileWithProfile(sources, importResolutions, false);
+    }
+
+    /**
+     * Full-graph strict AttoLang front-end admission, not machine-code emission.
+     * Every supplied unit is parsed under the same profile. Imported external
+     * units with no supplied strict source are rejected, not trusted by name.
+     */
+    public synchronized BuildResult compileStrictAtto(Map<String, String> sources) {
+        return compileStrictAtto(sources, Map.of());
+    }
+
+    public synchronized BuildResult compileStrictAtto(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions) {
+        return compileWithProfile(sources, importResolutions, true);
+    }
+
+    private BuildResult compileWithProfile(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            boolean strictAtto) {
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
         if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
+        Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
@@ -59,7 +84,9 @@ public final class IncrementalCompiler {
             hashes.put(entry.getKey(), digest(entry.getValue()));
             final Ast.Program program;
             try {
-                program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
+                program = AnnotationExpander.expand(strictAtto
+                        ? Parser.parseStrictAtto(entry.getValue())
+                        : Parser.parse(entry.getValue()));
             } catch (IllegalArgumentException invalid) {
                 throw new SourceUnitDiagnosticException(entry.getKey(), "", "", invalid);
             }
@@ -69,6 +96,26 @@ public final class IncrementalCompiler {
 
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
+        if (strictAtto) {
+            for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+                String unitId = entry.getKey();
+                for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                    final String target;
+                    try {
+                        target = ImportGraph.resolveImportUnitId(
+                                unitId, imported, parsed.keySet(), normalizedImportResolutions);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new SourceUnitDiagnosticException(unitId, "", "", invalid);
+                    }
+                    if (target == null) {
+                        throw new SourceUnitDiagnosticException(unitId, "", "",
+                                new IllegalArgumentException(
+                                        "ATTO_STRICT_IMPORT_GRAPH_UNVERIFIED: unresolved import '"
+                                        + imported.path() + "' needs a supplied strict-profile source unit"));
+                    }
+                }
+            }
+        }
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
@@ -77,7 +124,7 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
-            CompiledUnit previous = cache.get(id);
+            CompiledUnit previous = selectedCache.get(id);
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
             if (sourceChanged || depsChanged) dirty.add(id);
@@ -106,8 +153,8 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> reused = new LinkedHashSet<>();
 
         for (String id : normalized.keySet()) {
-            if (!dirty.contains(id) && cache.containsKey(id)) {
-                next.put(id, cache.get(id));
+            if (!dirty.contains(id) && selectedCache.containsKey(id)) {
+                next.put(id, selectedCache.get(id));
                 reused.add(id);
                 continue;
             }
@@ -129,8 +176,10 @@ public final class IncrementalCompiler {
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
-                                Parser.parse(normalized.get(id)),
-                                linked.classes(), linked.aliases(), contracts);
+                                strictAtto
+                                        ? Parser.parseStrictAtto(normalized.get(id))
+                                        : Parser.parse(normalized.get(id)),
+                                linked.classes(), linked.aliases(), contracts, strictAtto);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.ownershipClasses(), analysis.shortInferredAliases());
@@ -143,7 +192,7 @@ public final class IncrementalCompiler {
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
-                    packageId(id, checked),
+                    packageId(id),
                     checked.namespace(),
                     hashes.get(id),
                     abiHashes.get(id),
@@ -154,8 +203,8 @@ public final class IncrementalCompiler {
             rebuilt.add(id);
         }
 
-        cache.keySet().retainAll(normalized.keySet());
-        cache.putAll(next);
+        selectedCache.keySet().retainAll(normalized.keySet());
+        selectedCache.putAll(next);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
@@ -177,7 +226,12 @@ public final class IncrementalCompiler {
         LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
         LinkedHashMap<String, Ast.ClassDecl> ownershipClasses = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
+            // Both classes and actors have nominal method/protocol metadata.
+            // ImportGraph already proves the requested public declaration kind;
+            // dropping ACTOR here previously let Worker.receive() fall through
+            // to the unknown-member path without checking mailbox ingress.
             if (imported.wildcard() || (imported.kind() != Ast.ImportKind.CLASS
+                    && imported.kind() != Ast.ImportKind.ACTOR
                     && imported.kind() != Ast.ImportKind.MODULE)) continue;
             String sourceId = ImportGraph.resolveImportUnitId(
                     unitId, imported, parsed.keySet(), importResolutions);
@@ -262,6 +316,7 @@ public final class IncrementalCompiler {
 
     public synchronized void clear() {
         cache.clear();
+        strictAttoCache.clear();
     }
 
     /**
@@ -449,6 +504,13 @@ public final class IncrementalCompiler {
                 }
                 validatePortableContractType(
                         fn.returnType(), generics, targetId, contract.name() + "." + fn.name());
+            } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                for (Ast.Param param : method.parameters()) {
+                    validatePortableContractType(param.type(), contractGenerics, targetId,
+                            contract.name() + "." + method.actorName() + "." + method.name());
+                }
+                validatePortableContractType(method.returnType(), contractGenerics, targetId,
+                        contract.name() + "." + method.actorName() + "." + method.name());
             }
         }
     }
@@ -581,6 +643,18 @@ public final class IncrementalCompiler {
             for (Ast.InterfaceMember member : iface.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     memberEntries.add(interfaceFunctionAbi(fn));
+                } else if (member instanceof Ast.InterfaceActorDecl actor) {
+                    // A required nominal actor is contract ABI even though it
+                    // contributes no ordinary module-value member.
+                    memberEntries.add(" contract-actor " + actor.name() + "\n");
+                } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                    StringBuilder signature = new StringBuilder(" contract-actor-mtd ");
+                    signature.append(method.visibility()).append(' ')
+                            .append(method.actorName()).append('.').append(method.name())
+                            .append("#arity").append(method.parameters().size());
+                    appendParams(signature, method.parameters());
+                    signature.append("=>").append(typeRef(method.returnType())).append('\n');
+                    memberEntries.add(signature.toString());
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
                     String requirement = iface.moduleContract()
                             ? (field.bindingKind() == null ? "readable"
@@ -736,11 +810,16 @@ public final class IncrementalCompiler {
         return Map.copyOf(frozen);
     }
 
-    private static String packageId(String unitId, Ast.Program program) {
-        if (program.namespace() != null) return program.namespace();
-        String id = unitId;
-        if (id.endsWith(".ores")) id = id.substring(0, id.length() - ".ores".length());
-        return id;
+    private static String packageId(String unitId) {
+        // A source namespace is a compile-time name, not ownership authority.
+        // Until a verified manifest-defined multi-file PackageInstanceId is
+        // plumbed through this compiler, every code unit owns an independent
+        // singleton package. In particular, two unrelated dependencies that
+        // both spell "namespace billing;" must NEVER share a packageId.
+        //
+        // Preserve the exact normalized source-unit identity, including the
+        // suffix, to avoid collisions between different source kinds.
+        return "file:" + normalizeUnitId(unitId);
     }
 
     private static String normalizeUnitId(String id) {

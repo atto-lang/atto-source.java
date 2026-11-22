@@ -52,6 +52,21 @@ grep -q -- 'OresFuturesTest,NestedWrapperSemanticsContractTest,' "$MOCK_MAVEN_LO
 grep -q -- 'NestedExtractionCallableEscapeTest' "$MOCK_MAVEN_LOG"
 grep -q -- 'NestedFutureFlattenCycleRegressionTest' "$MOCK_MAVEN_LOG"
 grep -q -- 'NestedOptionResultBoundaryRegressionTest' "$MOCK_MAVEN_LOG"
+# Every required Future regression must reach the exact-head targeted Maven
+# command. Mocking Maven here proves test selection, NOT JUnit execution.
+for future_test in \
+    FutureChainingV2PinnedGuestTest \
+    FutureSnakeCaseChainingTest \
+    OresFutureHostAdapterIsolationTest \
+    OresFutureCallbackRetentionTest \
+    FutureCombinatorsTest \
+    OresFuturesTest \
+    NestedWrapperSemanticsContractTest; do
+    grep -Fq -- "$future_test" "$MOCK_MAVEN_LOG" || {
+        printf 'missing exact-head Future JUnit selector: %s\n' "$future_test" >&2
+        exit 1
+    }
+done
 [[ "$(wc -l < "$MOCK_MAVEN_LOG")" -eq 1 ]]
 echo 'PASS clean tree invokes targeted Maven once'
 attempt 66 '0000000000000000000000000000000000000000' . targeted
