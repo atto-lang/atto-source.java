@@ -2,7 +2,6 @@ package dev.oreslang.parser;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +35,9 @@ public final class ActorProtocolTypestateV1 {
 
     public record ActorBinding(String actor, String protocol) { }
 
+    /** Compiler-resolved nominal marker; never inferred from a response method. */
+    public record NominalMessage(Mode mode, String responseType) { }
+
     /** A typed, purely static send obligation. It conveys NO runtime authority. */
     public record CheckedSend(Mode mode, String responseType,
                               List<String> nextStates, boolean consumesAuthority) {
@@ -46,6 +48,23 @@ public final class ActorProtocolTypestateV1 {
         public Catalog {
             protocols = List.copyOf(protocols);
             actorBindings = List.copyOf(actorBindings);
+        }
+
+        /** A separate nominal resolver must prove UnaryRequest<R> or StreamRequest<T>.
+         * Supplying class names or assigning a return type is not such proof. */
+        public void verifyResolvedMessages(Map<String, NominalMessage> resolved) {
+            if (resolved == null) throw error("E_PROTOCOL_UNVERIFIED_MESSAGE", "missing nominal resolution");
+            for (Protocol protocol : protocols) {
+                for (Transition transition : protocol.transitions()) {
+                    NominalMessage message = resolved.get(transition.message());
+                    if (message == null)
+                        throw error("E_PROTOCOL_UNVERIFIED_MESSAGE", transition.message());
+                    if (message.mode() != transition.mode())
+                        throw error("E_PROTOCOL_RESPONSE_MODE", transition.message());
+                    if (!transition.responseType().equals(message.responseType()))
+                        throw error("E_PROTOCOL_RESPONSE_TYPE", transition.message());
+                }
+            }
         }
 
         public CheckedSend checkSend(String protocolName, List<String> possibleStates,
