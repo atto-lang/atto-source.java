@@ -49,6 +49,11 @@ define module http as
     return c >= 48 && c <= 57;
   }
 
+  fnc is_hex_digit(int c): bool {
+    return is_digit(c) || (c >= 65 && c <= 70) ||
+           (c >= 97 && c <= 102);
+  }
+
   // RFC 9110 tchar; no whitespace, separators, controls, or Unicode.
   fnc is_token_char(int c): bool {
     if is_alpha(c) || is_digit(c) then return true; fi
@@ -109,10 +114,18 @@ define module http as
   pub fnc origin_target_valid(String target): bool {
     if !target.starts_with("/") || target.starts_with("//") then return false; fi
     val points = target.codepoints();
-    if points.size == 0 then return false; fi
+    if points.size == 0 || points.size > 8192 then return false; fi
     for (let int i = 0; i < points.size; i = i + 1) {
       val int c = points.get(i);
-      if c < 33 || c > 126 || c == 35 then return false; fi
+      if c < 33 || c > 126 || c == 35 || c == 92 then return false; fi
+      // Require valid pct-encoded octets; byte decoding/route admission must
+      // still happen in the transport before a path can be dispatched.
+      if c == 37 then
+        if i + 2 >= points.size then return false; fi
+        if !is_hex_digit(points.get(i + 1)) ||
+           !is_hex_digit(points.get(i + 2)) then return false; fi
+        i = i + 2;
+      fi
     }
     return true;
   }
