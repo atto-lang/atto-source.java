@@ -238,9 +238,11 @@ public final class CoreTypeRegistry {
 
         // Allocation-enabled convenience prelude. Visibility does not install
         // an allocator; compilation must separately admit the alloc profile.
-        add(out, "String", "alloc/string", Scope.ALLOC, Kind.TYPE, 0, 0,
-                Ownership.OWNED, Allocation.ALLOCATOR_REQUIRED, DropPolicy.OWNED_STORAGE,
-                SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.JAVA_LEGACY_SCALAR);
+        // This backend already exposes String as an immutable scalar/view.
+        // Keep its canonical identity distinct from a future owned alloc::String.
+        add(out, "String", "core/primitive", Scope.CORE, Kind.TYPE, 0, 0,
+                Ownership.COPY, Allocation.NONE, DropPolicy.NONE,
+                SendPolicy.ALWAYS, LoweringStatus.JAVA_LEGACY_SCALAR);
         add(out, "List", "alloc/list", Scope.ALLOC, Kind.TYPE, 1, 1,
                 Ownership.OWNED, Allocation.ALLOCATOR_REQUIRED, DropPolicy.OWNED_STORAGE,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.CONTRACT_ONLY);
