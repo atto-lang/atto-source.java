@@ -115,6 +115,26 @@ final class NativeAttoMetricsJsonZordeTest {
     }
 
     @Test
+    void coreBorrowCompilerExecutesPositiveLoans() throws Exception {
+        // A source-only compiler admission cannot satisfy these checks:
+        // run the actual guest and observe its integer exit status.
+        for (String fixture : Set.of("pass/read-loan.atto", "pass/write-loan.atto")) {
+            ByteArrayOutputStream guestOut = new ByteArrayOutputStream();
+            ByteArrayOutputStream guestErr = new ByteArrayOutputStream();
+            var executed = LinkedProgramRunner.runWithExitStatus(
+                    Path.of("tests/fixtures/core-borrow-v1/" + fixture),
+                    IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    guestOut, guestErr);
+            assertEquals(42, executed.exitStatus(),
+                    "compiled borrow-positive guest returned wrong code: " + fixture);
+            assertEquals(0, guestOut.size(),
+                    "borrow-positive guest unexpectedly invoked stdout: " + fixture);
+            assertEquals(0, guestErr.size(),
+                    "borrow-positive guest unexpectedly wrote stderr: " + fixture);
+        }
+    }
+
+    @Test
     void coreBorrowCompilerRejectsInvalidLoans() {
         // Target profile is canonical Atto ownership. No parse-only
         // exception can satisfy a typed-borrow diagnostic expectation.
