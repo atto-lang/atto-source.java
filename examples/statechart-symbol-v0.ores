@@ -1,0 +1,42 @@
+import class Chart from '../stdlib/behavior/statechart';
+import fnc checked, step, validate from '../stdlib/behavior/statechart';
+
+pub routine main(): void {
+  val Chart chart = checked(
+    arr[#running, #idle, #busy, #paused],
+    arr[-1, 0, 0, 0],
+    arr[#idle, #busy, #running, #busy, #paused],
+    arr[#start, #stop, #stop, #pause, #resume],
+    arr[#busy, #paused, #idle, #paused, #busy]
+  );
+
+  validate(&chart);
+  val Symbol after_start = step(&chart, #idle, #start);
+  if !(after_start eq #busy) {
+    rt fail("statechart failed to start");
+  } fi
+
+  // The nearest leaf rule overrides the ancestor #running/#stop rule.
+  val Symbol leaf_wins = step(&chart, after_start, #stop);
+  if !(leaf_wins eq #paused) {
+    rt fail("leaf override failed");
+  } fi
+
+  val Symbol resumed = step(&chart, leaf_wins, #resume);
+  if !(resumed eq #busy) {
+    rt fail("resumption failed");
+  } fi
+
+  // An unhandled event stutters, without emitting any side effect.
+  if !(step(&chart, resumed, #no_such_event) eq #busy) {
+    rt fail("unhandled event should stutter");
+  } fi
+
+  // Different logical instances of the same #symbol select the same rule.
+  if !(step(&chart, #busy, #pause) eq #paused) {
+    rt fail("symbol-key equality failed");
+  } fi
+
+  stdio.println("STATECHART_GUEST_PASS");
+  return;
+}

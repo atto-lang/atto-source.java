@@ -1,0 +1,13 @@
+define class Child as
+    pub final int value: 1;
+end
+
+define class Holder as
+    pub final Child child: new Child();
+end
+
+pub routine main(): void {
+    const Holder original = new Holder();
+    const Holder illegal = rt copy original with {child => new Child()};
+    return;
+}

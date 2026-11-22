@@ -1,0 +1,10 @@
+// This is a FAIL-CLOSED negative fixture, not an executable virtual actor.
+// The compiler must not silently interpret protected state as an ordinary class.
+define virtual actor Cart as
+  state { let int quantity: 0; }
+  add(int n) -> void ::
+    handle_state(critical-write |s| -> {
+      s.quantity = s.quantity + n;
+    });
+  end
+end

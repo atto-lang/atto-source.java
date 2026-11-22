@@ -158,7 +158,7 @@ final class ValueBoundaryAuditTest {
     void shiftsAndCheckedCastsKeepTheirExistingMeaning() throws Exception {
         assertEquals("21", run("""
                 pub fnc main(): void {
-                  if (8 >> 1) eq 4 { stdio.stdout.write(2); fi
+                  if (8 >>> 1) eq 4 { stdio.stdout.write(2); fi
                   if (1 as int) eq 1 { stdio.stdout.write(1); fi
                   return;
                 }

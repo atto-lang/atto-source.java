@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+async fnc bad(): void { val Box box = new Box(); val borrow Box view = rt borrow box; for (let i=0; i<2000; i=i+1) { stdio.println(view.value); } return; }

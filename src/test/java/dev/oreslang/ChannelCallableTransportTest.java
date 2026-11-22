@@ -2,116 +2,142 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
-import org.junit.jupiter.api.Test;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Local channels carry owned callables; actor wire envelopes never do. */
+/** Channel<T> moves Sendable data, never executable lexical environments. */
 final class ChannelCallableTransportTest {
-    @Test
-    void localChannelsAdmitOwnedFunctionsAndNestedCallablePayloads() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc twice(int value): int { return value * 2; }
-                fnc ok(): void {
-                  val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
-                  val Fnc<int, int> callback = |x| -> { return x * 2; };
-                  writech handlers, callback;
-                  return;
-                }
-                """)));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class HandlerBox as
-                  val Fnc<int, int> callback;
-                end
-                fnc ok(Channel<HandlerBox> handlers): void { return; }
-                """)));
+    private static void rejectCallable(String code) {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(error.getMessage().contains("cannot transport functions"),
+                () -> "expected the callable channel diagnostic, got: " + error.getMessage());
     }
 
     @Test
-    void transferredCallableCannotBeUsedAgainBySender() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+    void directFunctionAndFunctionAliasPayloadsAreRejected() {
+        rejectCallable("""
+                fnc bad(Channel<Fnc<int, int>> handlers): void { return; }
+                """);
+        rejectCallable("""
+                fnc bad(Channel<Function<int, int>> handlers): void { return; }
+                """);
+    }
+
+    @Test
+    void functionValuesCannotEnterChannelsAtConstruction() {
+        rejectCallable("""
                 fnc bad(): void {
                   val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
                   val Fnc<int, int> callback = |x| -> { return x * 2; };
                   writech handlers, callback;
-                  callback(2);
                   return;
                 }
-                """)));
+                """);
     }
 
     @Test
-    void actorCallableParametersRejectFunctionsTransitively() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                actor fnc bad(Fnc<int, int> callback): void { return; }
-                """)));
+    void optionalAndCollectionCallablePayloadsAreRejectedRecursively() {
+        rejectCallable("""
+                fnc bad(Channel<Option<Fnc<int, int>>> handlers): void { return; }
+                """);
+        rejectCallable("""
+                fnc bad(Channel<List<Fnc<int, int>>> handlers): void { return; }
+                """);
+        rejectCallable("""
+                fnc bad(Channel<Array<Fnc<int, int>>> handlers): void { return; }
+                """);
+        rejectCallable("""
+                fnc bad(Channel<Result<int, Fnc<int, int>>> handlers): void { return; }
+                """);
+    }
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+    @Test
+    void nominalClassCannotHideACallableField() {
+        rejectCallable("""
                 define class HandlerBox as
                   val Fnc<int, int> callback;
                 end
-                actor fnc bad(HandlerBox box): void { return; }
-                """)));
+                fnc bad(Channel<HandlerBox> handlers): void { return; }
+                """);
+        rejectCallable("""
+                define class HandlerBox as
+                  val Option<Fnc<int, int>> callback;
+                end
+                fnc bad(Channel<HandlerBox> handlers): void { return; }
+                """);
     }
 
     @Test
-    void borrowedPayloadTypesCannotOutliveChannelStorage() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(Channel<&int> borrowed): void { return; }
-                """)));
-    }
-
-    @Test
-    void nestedBorrowedPayloadsAreRejectedBeforeChannelCreation() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(Channel<Option<&int>> payload): void { return; }
-                """)));
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(Channel<Array<&int>> payload): void { return; }
-                """)));
-    }
-
-    @Test
-    void nbSelectRegistrationOwnsEveryMoveOnlyWriteCandidate() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+    void aDeferredSelectCannotRegisterFunctionPayloads() {
+        rejectCallable("""
                 fnc bad(): void {
                   val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
                   val Fnc<int, int> callback = |x| -> { return x * 2; };
                   nb select {
                     case writech handlers, callback: { }
                   }
-                  callback(2);
                   return;
                 }
-                """)));
+                """);
     }
 
     @Test
-    void nbSelectCannotRegisterSameMoveOnlyPayloadTwice() {
+    void borrowedTypesRemainRejectedForChannels() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
-                  val Channel<Fnc<int, int>> a = Channel.new<Fnc<int, int>>(1);
-                  val Channel<Fnc<int, int>> b = Channel.new<Fnc<int, int>>(1);
-                  val Fnc<int, int> callback = |x| -> { return x * 2; };
-                  nb select {
-                    case writech a, callback: { }
-                    case writech b, callback: { }
-                  }
-                  return;
-                }
+                fnc bad(Channel<Option<&int>> values): void { return; }
                 """)));
     }
 
+    /**
+     * Decision on #2440 (2026-11-17): channels are not Send-only. A channel of
+     * non-Send data is allowed, because the Channel handle is itself Send only
+     * when its payload is: such a channel is confined to one execution domain
+     * and can never reach another task or actor, so it cannot race. A blanket
+     * Send-only rule would reject safe local uses.
+     */
     @Test
-    void ordinaryDataChannelsRemainLegal() {
+    void nonSendPayloadChannelsAreConfinedToTheirExecutionDomain() {
+        for (String type : new String[] {"Future<int>", "Rc<int>"}) {
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                    "fnc local(Channel<" + type + "> value): void { return; }")),
+                    "a local channel may carry " + type);
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                    "async fnc leak(Channel<" + type + "> value): int { return 0; }")),
+                    "a Channel<" + type + "> cannot cross an async boundary");
+        }
+        // Another task cannot capture a channel of genuinely non-Send data.
+        // (Future is a thread-safe runtime handle that another task may await,
+        // so a channel of Futures may be captured.)
+        for (String type : new String[] {"Rc<int>", "Mutex<int>"}) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                    fnc leak(Channel<%s> value): void {
+                      let Future<int> other = task {
+                        val Channel<%s> captured = value;
+                        return 0;
+                      };
+                      return;
+                    }
+                    """.formatted(type, type))),
+                    "a Channel<" + type + "> cannot be captured by another task");
+        }
+        // A Send payload makes the channel itself Send: it may cross both.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "async fnc share(Channel<int> value): int { return 0; }")));
+    }
+
+    @Test
+    void callbacksStayLocalAndChannelCarriesOnlyTheirResults() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc apply(Fnc<int, int> callback, int value): int {
                   return callback(value);
@@ -124,23 +150,32 @@ final class ChannelCallableTransportTest {
                   return;
                 }
                 """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(Channel<Option<List<int>>> values): void { return; }
+                """)));
     }
 
     @Test
-    void localChannelCarriesCallableAtRuntime() throws Exception {
+    void actorCallableParametersStillRejectFunctionsTransitively() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(Fnc<int, int> callback): void { return; }
+                """)));
+    }
+
+    @Test
+    void dataOnlyChannelRoundTripRunsAtRuntime() throws Exception {
         String program = """
                 pub routine main(): void {
-                  val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
-                  val Fnc<int, int> twice = |value| -> { return value * 2; };
-                  writech handlers, twice;
-                  val Fnc<int, int> received = readch handlers;
-                  stdio.stdout.write(received(21));
+                  val Channel<int> values = Channel.new<int>(1);
+                  writech values, 42;
+                  val int received = readch values;
+                  stdio.stdout.write(received);
                   return;
                 }
                 """;
         TypeChecker.check(Parser.parse(program));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "callable-channel.ores")
+        Source source = Source.newBuilder(OresLanguage.ID, program, "data-channel.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(output).build()) {
@@ -149,4 +184,23 @@ final class ChannelCallableTransportTest {
         assertEquals("42", output.toString(StandardCharsets.UTF_8));
     }
 
+    @Test
+    void nestedBorrowedPayloadsRemainRejected() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Array<&int>> payload): void { return; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Option<&int>> payload): void { return; }
+                """)));
+    }
+
+    @Test
+    void actorMessageCannotHideCallableInNominalClass() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class HandlerBox as
+                  val Fnc<int, int> callback;
+                end
+                actor fnc bad(HandlerBox box): void { return; }
+                """)));
+    }
 }

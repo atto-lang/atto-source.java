@@ -1,37 +1,10 @@
-# Agent directives: AttoLang-first implementation
+# Repository AI agent instructions
 
-These instructions apply to the entire `oreslang-source.java` repository, including AI coding agents and human contributors. **Implement AttoLang behavior in `.atto` source, not in new `.java` source, whenever the behavior can run as AttoLang guest code.** This is a code-placement rule, not merely an extension-renaming rule. Do not rename existing Java implementation files to `.atto`.
+<!-- org-merge-review-policy:begin -->
+> **Agent/PR governance (single trusted owner):** Follow [atto-lang's canonical AGENTS.md](https://github.com/atto-lang/.github/blob/main/AGENTS.md). For any **Ready** PR, **one** independently authenticated GitHub APPROVED review from **either** `the1mills` or `ORESoftware` is sufficient, never both and never additional AI reviews; the author cannot self-approve. Retain that approval after routine PR pushes, merges from `main`, or the passage of 72 hours, 10 days or longer; only a genuinely dismissed/revoked approval or an actually enforced stronger GitHub protection changes the gate. **Drafts:** after 72 hours of the current genuine Draft cycle automatically mark Ready **only** when exact-current-head material CI really passed, the security gate is clear, and no `keep-as-draft`, `not-ready`, or `keep-draft` label applies. Recheck labels and head immediately before promotion. No Ready-cycle age exempts any PR from the one trusted independent owner, passing tests, conflict resolution, **all-Ready pre-merge overlapping-PR audit**, branch protection and CODEOWNER requirements. Never falsify reviews/statuses or manipulate Draft cycles. Reconcile mapped legacy Oreslang PRs before duplicate work.
+<!-- org-merge-review-policy:end -->
 
-## Default decision: guest first
+<!-- org-zero-step-ci-recovery:begin -->
+> **MANDATORY ZERO-STEP CI RECOVERY (every PR and agent run):** Failed/cancelled Actions with zero actual steps, `steps=null`/`[]`, or no runner admission are **NOT_EXECUTED**, not compiler failures or passes. If the source org is out of Actions minutes, immediately look for a **different org with an authorized private carrier and available Actions capacity**; prove capacity using a source-free, stepful run. Private source **cannot** be checked out by the carrier's cross-org `GITHUB_TOKEN`: never provide PATs/tokens or secrets. **Only after authenticated independent authorization of exact source head/tree and destination owner/repo ID, readers, retention, and effective source export guard**, copy the Git tree through the GitHub connector to a temporary branch within that private carrier. Verify **every blob SHA, path, mode and complete root tree SHA** before stepful tests; carrier uses its **own local token and minutes**. **Explicit export DENIED/unapproved overrides this workflow: NO MIRROR, escalate.** Record source/carrier SHA, actual runner steps/results, and remaining `NOT_VERIFIED` coverage; never bypass reviews, protected main, or source policy. See [canonical mandatory zero-step runbook](https://github.com/atto-lang/.github/blob/main/governance/ci-zero-step-recovery.md).
+<!-- org-zero-step-ci-recovery:end -->
 
-1. **Choose `.atto` by default** for new standard-library modules, collections, reusable algorithms, transformations, high-level actor/pipeline APIs, protocol and application logic, examples, and guest-visible regression cases. A feature whose public contract is expressible in AttoLang should have its substantive implementation in AttoLang, even though the reference compiler/runtime is hosted in Java.
-2. **Use `.java` only for genuine host/compiler work:** lexing/parsing, AST and type checking, code generation and Truffle integration, GraalVM/Native Image bootstrapping, host interop, privileged OS/native calls, low-level schedulers, allocation/ownership and security enforcement, or minimal runtime primitives currently impossible to implement safely in guest code.
-3. **Keep host bridges thin.** Expose the smallest capability-checked primitive from Java, then implement composition, policies and public algorithms in `.atto`. Do not move guest-level functionality into Java solely for speed of development, convenience, or because the backend already has Java classes.
-4. **If the guest language lacks a required construct,** first consider extending the parser/typechecker/runtime sufficiently to compile the `.atto` implementation. A temporary Java fallback is acceptable only when an actual bootstrapping constraint prevents this; document its removal condition and do not silently present the fallback as guest execution.
-5. **Use `.atto` for all newly authored guest source, tests and examples.** `.ores` is for legacy compatibility and migration tests only. Preserve existing import-resolution and ABI compatibility; see `docs/ATTO_SOURCE_EXTENSION.md` and the brand-compatibility contract.
-6. **Keep AttoLang portable.** Shared guest APIs must not depend on Java-only types or hidden Java behavior. Record the corresponding LLVM, Wasm, Forge/Cranelift and .NET contract/fixture work, distinguishing parity proposals from actually executed evidence.
-
-## Change review requirements
-
-Every feature PR touching implementation code must state:
-
-- **Guest implementation:** which `.atto` modules implement the feature, or why no guest implementation is yet possible.
-- **Java exception:** each new or materially expanded `.java` component and the specific compiler, privileged host, AOT or bootstrap responsibility requiring Java. A generic “performance” justification is insufficient without a benchmark and a portable contract.
-- **Boundary/security:** any new host capability, ownership transfer, actor isolation or sandbox interaction, including how guest access is controlled.
-- **Execution evidence:** the real `.atto` compiler/checker and guest-execution tests, including expected outcomes and exact status. A source fixture, Java-only unit test, source-free smoke test or zero-step CI result is **not** proof that the AttoLang guest code executes. Label unexecuted checks as **NOT EXECUTED**.
-
-For mixed-language changes, prefer the sequence: define the public `.atto` API and fixture; add only the missing Java primitive/compiler support; execute positive and negative guest tests; then record cross-backend follow-up. Do not start by implementing the entire feature in Java and leave `.atto` as a thin wrapper.
-
-## Existing implementation and tooling
-
-This directive is forward-looking. Do not mass-convert or delete required Java compiler/runtime code. Migrate suitable existing Java guest-library behavior incrementally, with equivalent tests and explicit compatibility checks. The repository's **no-Python / Rust-for-tooling** policy remains in effect and does not authorize moving guest semantics from `.atto` into Rust.
-
-**Review rule:** a guest-expressible feature implemented principally in `.java` without a documented technical exception does not meet this repository's implementation standard.
-
-## Full guest AOT and zero-GC controlled-dynamism directive (proposed policy)
-
-**Review all new features against [organization policy PR #38](https://github.com/ores-truffle-oreslang/.github/pull/38) and [language-spec chapter PR #18](https://github.com/ores-truffle-oreslang/attolang-language-spec.md/pull/18), and the [local checklist](docs/AOT_ZERO_GC_DYNAMISM.md).** In sealed full-guest-AOT builds, no runtime eval/source compilation, new classes/methods, unbounded host reflection, monkey-patching or implicit interpreter/JIT fallback. Compile static proxy forwarding, virtual dispatch metadata, generics/macros and closure state machines ahead of time; reject unsupported shapes before IR/code emission.
-
-Every allocation, closure capture, actor heap and suspended frame needs an owner, bounded accounting, release strategy and cancellation/restart/generation-fencing proof. Ban arbitrary strong-reference cycles without an approved lifetime/region plan; long-lived actors must reclaim retired allocations without waiting for actor termination. Channels/pub-sub carry Sendable data, never functions/closures, raw pointers or hidden host capabilities. Preserve explicit `rt take`/`rt copy`/`rt borrow`/`rt share`, no implicit conversions/operator overloading/`%`/single `^` (but `^^` is bool XOR only) and no implicit nested `Future`/`Option` flattening.
-
-**Review gate:** PRs declare execution profile (JIT/hybrid, host AOT, sealed guest AOT, governed precompiled-module AOT) and memory claim (managed host, zero guest tracing-GC, process zero-GC); add positive and negative `.atto` compilation/execution cases, runtime cancellation/allocator stress, immutable source/fixture IDs and stepful evidence. `steps=[]` and `steps=null` remain **NOT_EXECUTED**. Do not claim cross-backend parity from this documentation.

@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+pub async routine main(): void { val Channel<int> ch = Channel.new<int>(1); val Array<SelectCase> cases = [SelectCase.read(ch)]; val Box box = new Box(); val borrow Box view = rt borrow box; val result = try select from cases; stdio.stdout.write(view.value); return; }

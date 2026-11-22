@@ -162,8 +162,17 @@ public final class IncrementalCompiler {
             Ast.Program checked;
             LinkedClasses linked = linkedPublicClasses(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
-            Map<String, Ast.InterfaceDecl> contracts = linkedImportedContracts(
-                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            LinkedHashMap<String, Ast.InterfaceDecl> contracts = new LinkedHashMap<>(
+                    linkedImportedContracts(id, parsed.get(id), parsed, normalizedImportResolutions));
+            for (Map.Entry<String, Ast.InterfaceDecl> trait : linkedImportedTraits(
+                    id, parsed.get(id), parsed, normalizedImportResolutions).entrySet()) {
+                Ast.InterfaceDecl previous = contracts.putIfAbsent(
+                        trait.getKey(), trait.getValue());
+                if (previous != null && previous != trait.getValue()) {
+                    throw new IllegalArgumentException(
+                            "ambiguous imported contract/trait nominal name '" + trait.getKey() + "'");
+                }
+            }
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
@@ -183,7 +192,7 @@ public final class IncrementalCompiler {
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
-                    packageId(id, checked),
+                    packageId(id),
                     checked.namespace(),
                     hashes.get(id),
                     abiHashes.get(id),
@@ -217,7 +226,12 @@ public final class IncrementalCompiler {
         LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
         LinkedHashMap<String, Ast.ClassDecl> ownershipClasses = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
+            // Both classes and actors have nominal method/protocol metadata.
+            // ImportGraph already proves the requested public declaration kind;
+            // dropping ACTOR here previously let Worker.receive() fall through
+            // to the unknown-member path without checking mailbox ingress.
             if (imported.wildcard() || (imported.kind() != Ast.ImportKind.CLASS
+                    && imported.kind() != Ast.ImportKind.ACTOR
                     && imported.kind() != Ast.ImportKind.MODULE)) continue;
             String sourceId = ImportGraph.resolveImportUnitId(
                     unitId, imported, parsed.keySet(), importResolutions);
@@ -376,6 +390,97 @@ public final class IncrementalCompiler {
         return Map.copyOf(result);
     }
 
+
+    /**
+     * Imports are checked first by ImportGraph. This step carries their
+     * public nominal declarations into the type checker, including same-unit
+     * ancestor traits needed for inherited generic method obligations.
+     *
+     * Never synthesize a trait from a structural shape, an ambient filesystem
+     * path or a private/module-contract declaration. An ancestor's name is
+     * type-checker metadata, not a new runtime export.
+     */
+    private static Map<String, Ast.InterfaceDecl> linkedImportedTraits(
+            String unitId, Ast.Program program, Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.InterfaceDecl> linked = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.TRAIT
+                    && imported.kind() != Ast.ImportKind.INTERFACE) continue;
+            if (imported.wildcard()) continue; // no unchecked wildcard name grants
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, programs.keySet(), importResolutions);
+            if (targetId == null) continue;
+            Ast.Program target = programs.get(targetId);
+            if (target == null) {
+                throw new IllegalArgumentException(
+                        "missing imported trait source unit '" + targetId + "'");
+            }
+            for (String sourceName : imported.names()) {
+                collectImportedTraitAndAncestors(target, targetId, sourceName,
+                        ImportRules.localName(imported, sourceName),
+                        imported.kind(), linked, new LinkedHashSet<>(), 0);
+            }
+        }
+        return Map.copyOf(linked);
+    }
+
+    private static void collectImportedTraitAndAncestors(
+            Ast.Program target, String targetId, String sourceName,
+            String localName, Ast.ImportKind expectedKind,
+            Map<String, Ast.InterfaceDecl> linked,
+            Set<String> visiting, int depth) {
+        if (depth > 32 || !visiting.add(sourceName)) {
+            throw new IllegalArgumentException(
+                    "imported trait inheritance cycle/depth limit: " + sourceName);
+        }
+        try {
+            Ast.InterfaceDecl match = null;
+            for (Ast.ModuleDecl module : target.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.InterfaceDecl iface
+                            && !iface.moduleContract()
+                            && iface.visibility() == Ast.Visibility.PUBLIC
+                            && iface.name().equals(sourceName)) {
+                        if (match != null) {
+                            throw new IllegalArgumentException(
+                                    "ambiguous imported trait '" + sourceName
+                                            + "' in '" + targetId + "'");
+                        }
+                        match = iface;
+                    }
+                }
+            }
+            if (match == null) {
+                throw new IllegalArgumentException(
+                        "imported trait '" + sourceName
+                                + "' has no public non-contract declaration in '" + targetId + "'");
+            }
+            if ((expectedKind == Ast.ImportKind.TRAIT
+                            && match.declarationKind() != Ast.InterfaceKind.TRAIT)
+                    || (expectedKind == Ast.ImportKind.INTERFACE
+                            && match.declarationKind() != Ast.InterfaceKind.INTERFACE)) {
+                throw new IllegalArgumentException(
+                        "import " + expectedKind.name().toLowerCase()
+                                + " '" + sourceName + "' resolved to a mismatched declaration kind in '"
+                                + targetId + "'");
+            }
+            Ast.InterfaceDecl existing = linked.putIfAbsent(localName, match);
+            if (existing != null && existing != match) {
+                throw new IllegalArgumentException(
+                        "conflicting imported trait nominal '" + localName + "'");
+            }
+            for (Ast.TypeRef parent : match.parents()) {
+                // A declared parent must be resolved from the SAME authenticated
+                // imported source unit. Never look it up by arbitrary path.
+                collectImportedTraitAndAncestors(target, targetId, parent.name(),
+                        parent.name(), null, linked, visiting, depth + 1);
+            }
+        } finally {
+            visiting.remove(sourceName);
+        }
+    }
+
     private static final Set<String> LINKABLE_CONTRACT_TYPES = Set.of(
             "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
             "Object", "List", "Map", "Tuple", "FixedArray", "Option", "Result", "Future",
@@ -399,6 +504,13 @@ public final class IncrementalCompiler {
                 }
                 validatePortableContractType(
                         fn.returnType(), generics, targetId, contract.name() + "." + fn.name());
+            } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                for (Ast.Param param : method.parameters()) {
+                    validatePortableContractType(param.type(), contractGenerics, targetId,
+                            contract.name() + "." + method.actorName() + "." + method.name());
+                }
+                validatePortableContractType(method.returnType(), contractGenerics, targetId,
+                        contract.name() + "." + method.actorName() + "." + method.name());
             }
         }
     }
@@ -521,7 +633,7 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(iface.moduleContract() ? "contract " : "interface ")
+            abi.append(iface.declarationKind().name().toLowerCase()).append(' ')
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
@@ -535,6 +647,14 @@ public final class IncrementalCompiler {
                     // A required nominal actor is contract ABI even though it
                     // contributes no ordinary module-value member.
                     memberEntries.add(" contract-actor " + actor.name() + "\n");
+                } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                    StringBuilder signature = new StringBuilder(" contract-actor-mtd ");
+                    signature.append(method.visibility()).append(' ')
+                            .append(method.actorName()).append('.').append(method.name())
+                            .append("#arity").append(method.parameters().size());
+                    appendParams(signature, method.parameters());
+                    signature.append("=>").append(typeRef(method.returnType())).append('\n');
+                    memberEntries.add(signature.toString());
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
                     String requirement = iface.moduleContract()
                             ? (field.bindingKind() == null ? "readable"
@@ -690,11 +810,16 @@ public final class IncrementalCompiler {
         return Map.copyOf(frozen);
     }
 
-    private static String packageId(String unitId, Ast.Program program) {
-        if (program.namespace() != null) return program.namespace();
-        String id = unitId;
-        if (id.endsWith(".ores")) id = id.substring(0, id.length() - ".ores".length());
-        return id;
+    private static String packageId(String unitId) {
+        // A source namespace is a compile-time name, not ownership authority.
+        // Until a verified manifest-defined multi-file PackageInstanceId is
+        // plumbed through this compiler, every code unit owns an independent
+        // singleton package. In particular, two unrelated dependencies that
+        // both spell "namespace billing;" must NEVER share a packageId.
+        //
+        // Preserve the exact normalized source-unit identity, including the
+        // suffix, to avoid collisions between different source kinds.
+        return "file:" + normalizeUnitId(unitId);
     }
 
     private static String normalizeUnitId(String id) {

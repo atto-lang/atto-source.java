@@ -1,0 +1,52 @@
+// Executable memory-backed tensor lane smoke.
+// This guest uses real Array<int> storage owned by ordinary class instances.
+// It does NOT prove actor-heap confinement, pinned views or GPU ownership.
+import class TensorSpan from '../stdlib/tensor';
+import fnc valid_tensor_span from '../stdlib/tensor';
+
+define class TensorOwner as
+  pub let mut Array<int> values = new Array<int>();
+end
+
+pub routine main(): void {
+  let mut TensorOwner first = new TensorOwner();
+  let mut TensorOwner independent = new TensorOwner();
+  first.values.add(3);
+  first.values.add(5);
+  first.values.add(7);
+  first.values.add(11);
+  first.values.add(13);
+  independent.values.add(17);
+  independent.values.add(19);
+
+  val TensorSpan lane = new TensorSpan(first.values.size, 1, 2, 2);
+  if !valid_tensor_span(&lane); do
+    rt fail("real-storage tensor view unexpectedly invalid");
+  fi
+  if first.values.get(1) != 5 || first.values.get(3) != 11; do
+    rt fail("real-storage tensor view read incorrect");
+  fi
+  // A shape-checked view is a descriptor. The owner is still the only
+  // object authorized to mutate backing storage.
+  let mut TensorOwner moved = rt take(first);
+  moved.values.set(1, 23);
+  moved.values.set(3, 29);
+  if moved.values.get(1) != 23 || moved.values.get(3) != 29; do
+    rt fail("tensor lane mutation lost through ownership transfer");
+  fi
+  if moved.values.get(0) != 3 || moved.values.get(2) != 7
+      || moved.values.get(4) != 13; do
+    rt fail("tensor lane mutation damaged adjacent data");
+  fi
+  if independent.values.size != 2
+      || independent.values.get(0) != 17
+      || independent.values.get(1) != 19; do
+    rt fail("tensor owners accidentally share backing storage");
+  fi
+  val TensorSpan invalid = new TensorSpan(moved.values.size, 4, 2, 2);
+  if valid_tensor_span(&invalid); do
+    rt fail("invalid view wrongly admitted for real backing");
+  fi
+  stdio.stdout.println("TENSOR-OWNED-ARRAY-GUEST-OK");
+  return;
+}
