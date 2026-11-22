@@ -11742,6 +11742,16 @@ public final class OresEvalRootNode extends RootNode {
                         "std.crypto." + name + " expects "
                                 + signature.arguments().size() + " argument(s)");
             }
+            // Full frontend admission is required for source callers, but a
+            // direct host CallTarget invocation could supply unchecked Java
+            // values. Enforce the same closed scalar ABI at this final boundary.
+            for (int i = 0; i < arguments.size(); i++) {
+                Object argument = arguments.get(i);
+                if (!(argument instanceof Long || argument instanceof Integer)) {
+                    throw new IllegalArgumentException(
+                            "std.crypto." + name + " expects owned integer at argument " + i);
+                }
+            }
             // The source program is parsed, typechecked, and ownership checked
             // exactly once from the Maven-packaged .atto source resources.
             // Each guest evaluator gets its own pure policy evaluator and
