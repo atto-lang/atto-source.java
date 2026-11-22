@@ -49,6 +49,7 @@ public final class TelemetrySpanScope implements AutoCloseable {
     private final Map<String, String> attributes;
     /** Actor-owned, bounded observer events; no exporter runs on the scope path. */
     private final List<String> events;
+    private int droppedEvents;
 
     private record Policy(boolean enabled, int samplePercent,
                           long expiresNanos, String prefix) {
@@ -273,8 +274,28 @@ public final class TelemetrySpanScope implements AutoCloseable {
                 throw new IllegalArgumentException("telemetry event name is not safe ASCII");
             }
         }
-        if (events.size() >= MAX_EVENTS) return;
+        String lower = eventName.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("password") || lower.contains("authorization")
+                || lower.contains("cookie") || lower.contains("secret")
+                || lower.contains("token") || lower.contains("credential")
+                || lower.contains("api_key") || lower.contains("apikey")
+                || lower.contains("private_key") || lower.contains("access_key")
+                || lower.contains("headers") || lower.contains("bearer")
+                || lower.contains("file.path") || lower.contains("url.query")
+                || lower.contains("baggage")) {
+            throw new SecurityException("sensitive telemetry event names are not allowed");
+        }
+        if (events.size() >= MAX_EVENTS) {
+            if (droppedEvents < Integer.MAX_VALUE) droppedEvents++;
+            return;
+        }
         events.add(eventName);
+    }
+
+    /** Saturating drop counter: only the owning logical span may inspect it. */
+    public int droppedEvents() {
+        requireOwner();
+        return droppedEvents;
     }
 
     /** Trusted-host snapshot only; guest code cannot obtain the mutable event list. */
