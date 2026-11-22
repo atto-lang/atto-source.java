@@ -96,6 +96,23 @@ public final class NativeChildProcessesSmoke {
             assertFailureKind(silent.waitForExit(), TimeoutException.class);
             check(!silent.alive(), "timed-out process still alive");
 
+            var closed = manager.spawn(executable, child("sleep"), directory,
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            closed.close();
+            assertFailureKind(closed.waitForExit(),
+                    java.util.concurrent.CancellationException.class);
+            assertFailureKind(closed.collectOutput(),
+                    java.util.concurrent.CancellationException.class);
+            check(!closed.alive(), "owner-closed child remains alive");
+
+            var alreadyExited = manager.spawn(executable, child("exit42"), directory,
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            check(alreadyExited.waitForExit().get(8, TimeUnit.SECONDS).code() == 42,
+                    "normal exited-child status missing");
+            alreadyExited.close();
+            check(alreadyExited.waitForExit().get(8, TimeUnit.SECONDS).code() == 42,
+                    "close retroactively cancelled completed child");
+
             List<String> invalid = new ArrayList<>(child("exit42"));
             invalid.add(null);
             try {
