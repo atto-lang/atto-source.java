@@ -1779,7 +1779,7 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
-    private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
+    private boolean fieldInitializerMaySuspend(Ast.Expr expr, Env scalarInitializerArgs) {
         if (expr instanceof Ast.AwaitExpr
                 || expr instanceof Ast.TaskExpr
                 || expr instanceof Ast.ChannelOpExpr
@@ -1796,25 +1796,36 @@ public final class TypeChecker {
             return true;
         }
         if (expr instanceof Ast.BinaryExpr op) {
-            // Division/remainder can fail (notably integer remainder by
-            // zero) even when both operands were evaluated without effects.
-            // Failure cleanup of a partially built instance is not proven.
-            // Keep them outside eager initialization until that proof exists.
-            if (op.operator().equals("/") || op.operator().equals("%")) return true;
-            return fieldInitializerMaySuspend(op.left()) || fieldInitializerMaySuspend(op.right());
+            // Division/remainder can fail even when both operands are pure.
+            // Shift operations also invoke runtime shiftDistance(), which
+            // throws when an integral shift count is negative or above 63.
+            // No rollback proof exists for fields initialized before these
+            // exceptions, so fail closed on every potentially failing
+            // arithmetic operator until a constructor effect summary proves
+            // its exact argument range and unwinding behavior.
+            if (op.operator().equals("/") || op.operator().equals("%")
+                    || op.operator().equals("<<") || op.operator().equals(">>")
+                    || op.operator().equals(">>>")) return true;
+            return fieldInitializerMaySuspend(op.left(), scalarInitializerArgs) || fieldInitializerMaySuspend(op.right(), scalarInitializerArgs);
         }
-        if (expr instanceof Ast.UnaryExpr op) return fieldInitializerMaySuspend(op.operand());
+        if (expr instanceof Ast.UnaryExpr op) {
+            // Borrowing a constructor parameter is a lifetime operation, not
+            // a pure scalar read. A nested internal borrow marker must not bypass the
+            // partial-construction ownership boundary.
+            if (op.operator().equals("&") || op.operator().equals("&mut")) return true;
+            return fieldInitializerMaySuspend(op.operand(), scalarInitializerArgs);
+        }
         if (expr instanceof Ast.ConditionalExpr op) {
-            return fieldInitializerMaySuspend(op.condition())
-                    || fieldInitializerMaySuspend(op.whenTrue())
-                    || fieldInitializerMaySuspend(op.whenFalse());
+            return fieldInitializerMaySuspend(op.condition(), scalarInitializerArgs)
+                    || fieldInitializerMaySuspend(op.whenTrue(), scalarInitializerArgs)
+                    || fieldInitializerMaySuspend(op.whenFalse(), scalarInitializerArgs);
         }
         if (expr instanceof Ast.CallExpr call) {
             // Constructor-safe calls must resolve to a statically known,
             // synchronous zero-argument function whose *entire* body is one
             // return of a primitive scalar expression. No user callbacks,
             // mutations, dynamic dispatch, suspension or partial-self escape.
-            return !isConstructorSafeScalarCall(call);
+            return !isConstructorSafeScalarCall(call, scalarInitializerArgs);
         }
         if (expr instanceof Ast.NewExpr created) {
             // Nested construction is itself a transitive initialization
@@ -1823,18 +1834,28 @@ public final class TypeChecker {
             // no methods execute, no owned resources are acquired, and no
             // partially initialized child can escape into user callbacks.
             if (created.type().name().equals("Array") && created.arguments().isEmpty()
+                    && !created.type().inferArguments()
+                    && !importedValues.contains("Array")
                     && findClass("Array") == null)
-                return false; // built-in zero-arg allocator, never a shadowing guest class
+                return false; // only the unshadowed built-in zero-arg allocator
             if (!created.arguments().isEmpty() || !created.type().arguments().isEmpty())
                 return true;
             Ast.ClassDecl nested = findClass(created.type().name());
-            if (nested == null || nested.constructor() != null || !nested.parents().isEmpty()
+            if (importedValues.contains(created.type().name())
+                    || nested == null || nested.constructor() != null || !nested.parents().isEmpty()
                     || nested.actorKind() != Ast.ActorKind.NONE) return true;
             return nested.fields().stream().anyMatch(field ->
                     !(field.initializer() instanceof Ast.LiteralExpr));
         }
-        if (expr instanceof Ast.MemberExpr member)
-            return fieldInitializerMaySuspend(member.receiver());
+        if (expr instanceof Ast.MemberExpr) {
+            // Evaluating a member is not merely evaluating its receiver.
+            // Module exports, imported namespaces and host objects can
+            // resolve members by executing user or host code; even ordinary
+            // records can fail on a missing member. We do not yet have
+            // transitive member-resolution effects or failed-construction
+            // resource cleanup, so eager initialization must fail closed.
+            return true;
+        }
         if (expr instanceof Ast.IndexExpr) {
             // Even pure operands do not establish a safe indexing operation.
             // Bounds failure (and any future index dispatch) may unwind after
@@ -1842,28 +1863,74 @@ public final class TypeChecker {
             // failure cleanup is not proven, so reject indexing by default.
             return true;
         }
-        if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value());
-        if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value());
+        if (expr instanceof Ast.TypeTestExpr test) {
+            // A runtime type test is not just an operand read. Structural,
+            // union, complement and nominal type tests can recursively
+            // inspect object shape/type metadata. Admit only a direct
+            // primitive tag check until constructor-time matching effects
+            // and failure cleanup are established.
+            return !constructorSafePrimitiveTypeTest(test.targetType())
+                    || fieldInitializerMaySuspend(test.value(), scalarInitializerArgs);
+        }
+        if (expr instanceof Ast.PatternTestExpr test) {
+            // Structural/tuple/constructor patterns may recursively inspect
+            // user values. A safe operand alone does not prove their effect.
+            return !constructorSafeScalarPattern(test.pattern())
+                    || fieldInitializerMaySuspend(test.value(), scalarInitializerArgs);
+        }
         if (expr instanceof Ast.CastExpr) {
             // Checked casts can fail independently of their source expression;
             // permitting one could unwind a partially constructed instance.
             return true;
         }
-        if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression());
+        if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression(), scalarInitializerArgs);
         if (expr instanceof Ast.ListExpr list)
-            return list.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+            return list.elements().stream().anyMatch(value -> fieldInitializerMaySuspend(value, scalarInitializerArgs));
         if (expr instanceof Ast.TupleExpr tuple)
-            return tuple.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+            return tuple.elements().stream().anyMatch(value -> fieldInitializerMaySuspend(value, scalarInitializerArgs));
         if (expr instanceof Ast.ObjectExpr object)
             return object.fields().stream().anyMatch(field ->
-                    fieldInitializerMaySuspend(field.value()));
+                    fieldInitializerMaySuspend(field.value(), scalarInitializerArgs));
         // These are the only effect-free leaf expressions. In particular a
         // lambda is stored, not invoked, and the initializer environment has
         // no self or reference-valued constructor arguments to capture.
         // New expression AST variants are unsafe until reviewed explicitly.
-        return !(expr instanceof Ast.LiteralExpr
-                || expr instanceof Ast.NameExpr
-                || expr instanceof Ast.LambdaExpr);
+        if (expr instanceof Ast.NameExpr name) {
+            // Imported values may be lazily evaluated by Evaluator.exportValue,
+            // which can execute an arbitrary declaration initializer. That
+            // code is outside this class's checked constructor effect bound.
+            // Only the constructor's already checked scalar parameters are
+            // value leaves in this lexical frame. Otherwise runtime name
+            // resolution can bind a global, imported, host or module value,
+            // which has no transitive eager-initializer effect proof.
+            return scalarInitializerArgs.lookup(name.name()) == null;
+        }
+        return !(expr instanceof Ast.LiteralExpr || expr instanceof Ast.LambdaExpr);
+    }
+
+    /** Only direct primitive runtime tag checks are bounded during initialization. */
+    private boolean constructorSafePrimitiveTypeTest(Ast.TypeRef target) {
+        return !target.isRecordType() && !target.isTupleType()
+                && !target.isUnion() && !target.isComplement()
+                && !target.inferArguments() && !target.isBorrow()
+                && target.arguments().isEmpty()
+                && (target.name().equals("int")
+                        || target.name().equals("bool")
+                        || target.name().equals("float")
+                        || target.name().equals("string")
+                        || target.name().equals("String"));
+    }
+
+    /**
+     * The only admitted pattern predicates are identity-free scalar checks.
+     * Reject recursive, structural and constructor patterns: they may walk
+     * nested values and lack a transitive constructor-time failure proof.
+     */
+    private boolean constructorSafeScalarPattern(Ast.Pattern pattern) {
+        return pattern instanceof Ast.WildcardPattern
+                || pattern instanceof Ast.LiteralPattern
+                || pattern instanceof Ast.TypePattern typed
+                        && constructorSafePrimitiveTypeTest(typed.type());
     }
 
     /**
@@ -1872,11 +1939,16 @@ public final class TypeChecker {
      * return expression. This is independent of the function's name or
      * visibility; it never assumes that a routine is pure by default.
      */
-    private boolean isConstructorSafeScalarCall(Ast.CallExpr call) {
+    private boolean isConstructorSafeScalarCall(Ast.CallExpr call, Env scalarInitializerArgs) {
         if (!call.arguments().isEmpty() || call.typeArgumentsPresent()) return false;
         List<Ast.Stmt> body = null;
         Ast.TypeRef returnType = null;
         if (call.callee() instanceof Ast.NameExpr name) {
+            // Runtime invocation resolves bound constructor arguments before
+            // ordinary top-level functions. Do not authorize a function by
+            // its spelling when a scalar parameter shadows its name.
+            if (scalarInitializerArgs.lookup(name.name()) != null
+                    || importedValues.contains(name.name())) return false;
             Ast.FunctionDecl fn = findFunction(name.name(), 0);
             // A literal-looking body is not enough if the callable's
             // invocation contract is trapped or actor-dispatched. Keep the
@@ -1888,6 +1960,14 @@ public final class TypeChecker {
             returnType = fn.returnType();
         } else if (call.callee() instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr name) {
+            // A scalar constructor parameter can shadow a class namespace,
+            // and an imported class has not been proven local to this frame.
+            if (scalarInitializerArgs.lookup(name.name()) != null
+                    || importedValues.contains(name.name())
+                    || modules.containsKey(name.name())) return false;
+            // Runtime NameExpr resolves module namespaces before class
+            // namespaces. A same-named module can dispatch arbitrary code
+            // even when the class static method body passes the scalar proof.
             Ast.ClassDecl owner = findClass(name.name());
             if (owner == null) return false;
             Ast.MethodDecl candidate = null;
@@ -2043,7 +2123,7 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) {
             if (klass.actorKind() == Ast.ActorKind.NONE
                     && field.initializer() != null
-                    && fieldInitializerMaySuspend(field.initializer())) {
+                    && fieldInitializerMaySuspend(field.initializer(), fieldInitializerEnv)) {
                 throw new IllegalArgumentException("class field initializer '"
                         + klass.name() + "." + field.name()
                         + "' cannot await, select, call, or suspend during object construction "
