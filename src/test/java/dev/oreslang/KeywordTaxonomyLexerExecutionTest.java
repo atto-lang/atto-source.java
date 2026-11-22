@@ -17,16 +17,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * proof of agreement with the native LLVM reserved-name policy.
  */
 final class KeywordTaxonomyLexerExecutionTest {
-    private static final List<String> WORDS = Arrays.asList("abstract", "actor", "arr", "as", "async", "await", "block", "break", "catch", "cb", "class", "conforms", "const", "continue", "contract", "cpu", "def", "default", "defer", "define", "do", "done", "elif", "else", "elseif", "end", "eq", "extends", "false", "fi", "finally", "fnc", "for", "from", "generator", "gpu", "guard", "if", "impl", "implements", "import", "interface", "is", "isoactor", "let", "loop", "match", "matches", "module", "mut", "namespace", "nb", "neq", "new", "nlex", "null", "obj", "of", "over", "panic", "private", "pub", "quantum", "raise", "readch", "recover", "return", "routine", "rt", "select", "self", "shared", "spawn", "static", "stop", "struct", "super", "suspends", "switch", "then", "throw", "trait", "trap", "true", "try", "type", "typeof", "types", "unsafe", "untrusted", "val", "void", "while", "writech", "yield");
+    private static final List<String> WORDS = Arrays.asList("abstract", "actor", "arr", "as", "async", "await", "block", "break", "catch", "cb", "class", "conforms", "const", "continue", "contract", "cpu", "def", "default", "defer", "define", "do", "done", "elif", "else", "elseif", "end", "eq", "extends", "false", "fi", "finally", "fnc", "for", "from", "generator", "gpu", "guard", "if", "ifnot", "unless", "impl", "implements", "import", "interface", "is", "isoactor", "let", "loop", "match", "matches", "module", "mut", "namespace", "nb", "neq", "new", "nlex", "null", "obj", "of", "over", "panic", "private", "pub", "quantum", "raise", "readch", "recover", "return", "routine", "rt", "select", "self", "shared", "spawn", "static", "stop", "struct", "super", "suspends", "switch", "then", "throw", "trait", "trap", "true", "try", "type", "typeof", "types", "unsafe", "untrusted", "val", "void", "while", "writech", "yield");
 
     private static List<Token.Type> types(String source) {
         return new Lexer(source).scan().stream().map(Token::type).toList();
     }
 
     @Test
-    void allNinetyFiveDocumentedJavaKeywordsAreReallyReserved() {
-        assertEquals(95, WORDS.size());
-        assertEquals(95, WORDS.stream().distinct().count());
+    void allNinetySevenDocumentedJavaKeywordsAreReallyReserved() {
+        assertEquals(97, WORDS.size());
+        assertEquals(97, WORDS.stream().distinct().count());
         List<Token> tokens = new Lexer(String.join(" ", WORDS)).scan();
         assertEquals(WORDS.size() + 1, tokens.size());
         for (int i = 0; i < WORDS.size(); i++) {
@@ -50,7 +50,7 @@ final class KeywordTaxonomyLexerExecutionTest {
 
     @Test
     void keywordWordBoundariesRemainCaseSensitive() {
-        for (String word : List.of("actor", "implements", "guard", "unsafe", "suspends")) {
+        for (String word : List.of("actor", "implements", "guard", "ifnot", "unless", "unsafe", "suspends")) {
             for (String candidate : List.of(word + "_name", word + "2",
                     "prefix_" + word, word.toUpperCase())) {
                 assertEquals(List.of(Token.Type.IDENT, Token.Type.EOF),
