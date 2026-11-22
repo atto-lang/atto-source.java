@@ -105,6 +105,24 @@ final class UdpDatagramKernelTest {
         }
     }
 
+    @Test void localPortIntrospectionIsRevokedAfterBindAdmission() throws Exception {
+        AtomicBoolean grant = new AtomicBoolean(true);
+        UdpDatagramKernel.PermissionGate gate = (endpoint, operation) -> {
+            if (!grant.get()) throw new SecurityException("NET revoked");
+        };
+        try (var socket = UdpDatagramKernel.bindLoopback(0, gate)) {
+            int port = socket.localPort();
+            assertTrue(port > 0);
+            grant.set(false);
+            assertThrows(SecurityException.class, socket::localPort,
+                    "post-bind revocation must hide ephemeral bound port");
+            assertThrows(SecurityException.class,
+                    () -> socket.trySendTo(port, new byte[] {42}));
+            assertThrows(SecurityException.class,
+                    () -> socket.tryReceiveFrom(8));
+        }
+    }
+
     @Test void narrowedEndpointGrantCannotBeReusedForAnotherPeer() throws Exception {
         try (var sender = bind(); var receiver = bind()) {
             int permitted = receiver.localPort();
