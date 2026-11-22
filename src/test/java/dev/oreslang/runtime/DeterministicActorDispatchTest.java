@@ -34,6 +34,13 @@ final class DeterministicActorDispatchTest {
                 new EnumMap<>(ActorRuntime.ActorKind.class);
         private int sequence;
         private boolean executing;
+        private final Thread owner = Thread.currentThread();
+
+        private void requireDriverThread() {
+            if (Thread.currentThread() != owner)
+                throw new IllegalStateException(
+                        "uncontrolled cross-thread actor scheduler event");
+        }
 
         @Override
         public ExecutorService create(
@@ -56,6 +63,7 @@ final class DeterministicActorDispatchTest {
             @Override
             public void execute(Runnable command) {
                 Objects.requireNonNull(command);
+                requireDriverThread();
                 if (stopped || pending.stream().filter(t -> t.kind() == kind).count() >= capacity)
                     throw new RejectedExecutionException("controlled actor queue closed/full");
                 pending.add(new Ticket("turn-" + (++sequence), kind, command));
@@ -83,10 +91,12 @@ final class DeterministicActorDispatchTest {
         }
 
         List<String> enabled() {
+            requireDriverThread();
             return pending.stream().map(Ticket::id).sorted().toList();
         }
 
         void choose(String id) {
+            requireDriverThread();
             assertFalse(executing, "controlled actor turns cannot nest");
             Ticket chosen = pending.stream().filter(t -> t.id().equals(id))
                     .findFirst().orElseThrow(() ->
@@ -104,6 +114,8 @@ final class DeterministicActorDispatchTest {
     }
 
     private static Trace run(long seed, Trace replay) throws Exception {
+        if (replay != null && replay.seed() != seed)
+            throw new IllegalStateException("replay seed mismatch");
         ControlledDispatchers driver = new ControlledDispatchers();
         List<String> delivered = new ArrayList<>();
         var config = new ActorRuntime.DispatcherConfig(1, 1, 1, 8);
