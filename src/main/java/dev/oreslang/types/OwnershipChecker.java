@@ -3519,7 +3519,7 @@ public final class OwnershipChecker {
             }
             // Imported or implicitly visible core ADT names are the SAME
             // compiler-owned owner/loan identity; never bypass this gate.
-            boolean borrowedSum = AutomaticPrelude.coreSumCarrier(
+            boolean borrowedSum = CoreTypeRegistry.coreSumCarrier(
                     target.name(), target.arguments().size());
             if (borrowedSum && extracting && !isCopyType(target)) {
                 throw error(member.member()
