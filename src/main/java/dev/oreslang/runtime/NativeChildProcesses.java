@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -18,6 +19,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -33,6 +35,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class NativeChildProcesses implements AutoCloseable {
     public static final int MAX_CHILDREN = 16;
     public static final int MAX_CAPTURE_BYTES = 1_048_576;
+    // The root-context guest API admits no unbounded OS subprocess lifetime.
+    public static final Duration MAX_LIFETIME = Duration.ofMinutes(5);
     private static final int MAX_ARGUMENTS = 4096;
     private static final int MAX_ARGUMENT_BYTES = 4_194_304;
     private static final int MAX_PATH_BYTES = 4096;
@@ -80,6 +84,7 @@ public final class NativeChildProcesses implements AutoCloseable {
         private final Process process;
         private final CompletableFuture<ExitStatus> exit;
         private final AtomicBoolean outputExceeded = new AtomicBoolean();
+        private final AtomicBoolean deadlineExceeded = new AtomicBoolean();
         // A guest may call terminate() repeatedly. Escalation is a single
         // per-child state transition, never a new virtual thread per call.
         private final AtomicBoolean terminationRequested = new AtomicBoolean();
@@ -87,11 +92,26 @@ public final class NativeChildProcesses implements AutoCloseable {
         private final CompletableFuture<Capture> stderr = new CompletableFuture<>();
         private final CompletableFuture<Void> retired;
 
-        private Child(Process process) {
+        private Child(Process process, Duration maxLifetime) {
             this.process = Objects.requireNonNull(process);
             try { process.getOutputStream().close(); }
             catch (IOException ignored) { /* child already owns its end */ }
             exit = process.onExit().thenApply(p -> new ExitStatus(p.exitValue(), false));
+            // At most MAX_CHILDREN sleeping virtual threads; interrupt each
+            // watchdog as soon as the physical child is reaped.
+            Thread watchdog = Thread.ofVirtual().name("atto-process-deadline").start(() -> {
+                try {
+                    Thread.sleep(maxLifetime);
+                } catch (InterruptedException reaped) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                if (!exit.isDone() && process.isAlive()) {
+                    deadlineExceeded.set(true);
+                    process.destroyForcibly();
+                }
+            });
+            exit.whenComplete((status, failure) -> watchdog.interrupt());
             Thread.ofVirtual().name("atto-process-stdout").start(() ->
                     drain(process.getInputStream(), stdout));
             Thread.ofVirtual().name("atto-process-stderr").start(() ->
@@ -101,7 +121,13 @@ public final class NativeChildProcesses implements AutoCloseable {
 
         /** Returned future is observer-only: cancelling wait does not kill child. */
         public CompletableFuture<ExitStatus> waitForExit() {
-            return exit.thenApply(x -> x);
+            return exit.thenApply(status -> {
+                if (deadlineExceeded.get()) {
+                    throw new CompletionException(new TimeoutException(
+                            "child process lifetime exceeded"));
+                }
+                return status;
+            });
         }
 
         /** Both pipes drain concurrently from launch, even if guest only waits. */
@@ -110,6 +136,8 @@ public final class NativeChildProcesses implements AutoCloseable {
                 // An output-limit kill may also close the other pipe. Do not
                 // mistakenly report that collateral stream close as I/O error.
                 if (outputExceeded.get()) throw new OutputLimitException();
+                if (deadlineExceeded.get()) throw new CompletionException(
+                        new TimeoutException("child process lifetime exceeded"));
                 if (failure != null) throw new CompletionException(failure);
                 Capture out = stdout.join();
                 Capture err = stderr.join();
@@ -120,6 +148,8 @@ public final class NativeChildProcesses implements AutoCloseable {
         }
 
         public ExitStatus tryWait() {
+            // Poll cannot encode a ProcessError; wait() reports timeout.
+            if (deadlineExceeded.get()) return null;
             return exit.isDone() && !exit.isCompletedExceptionally()
                     ? exit.getNow(null) : null;
         }
@@ -207,7 +237,18 @@ public final class NativeChildProcesses implements AutoCloseable {
 
     public CompletableFuture<Child> spawn(
             String executable, List<String> arguments, String cwd, Authorizer authorizer) {
+        return spawn(executable, arguments, cwd, authorizer, MAX_LIFETIME);
+    }
+
+    /** Host-side bounded override for tests and separately authorized callers. */
+    CompletableFuture<Child> spawn(
+            String executable, List<String> arguments, String cwd,
+            Authorizer authorizer, Duration maxLifetime) {
         Objects.requireNonNull(authorizer, "process authorizer");
+        if (maxLifetime == null || maxLifetime.compareTo(Duration.ofMillis(50)) < 0
+                || maxLifetime.compareTo(MAX_LIFETIME) > 0) {
+            throw new IllegalArgumentException("child lifetime must be 50ms..5min");
+        }
         String requestedExe = checkedString(executable, MAX_PATH_BYTES, "executable");
         String requestedCwd = checkedString(cwd, MAX_PATH_BYTES, "cwd");
         Path lexicalExe = Path.of(requestedExe);
@@ -260,7 +301,7 @@ public final class NativeChildProcesses implements AutoCloseable {
                     Process process = builder.start();
                     Child child;
                     try {
-                        child = new Child(process);
+                        child = new Child(process, maxLifetime);
                     } catch (RuntimeException | Error failed) {
                         process.destroyForcibly();
                         throw failed;
