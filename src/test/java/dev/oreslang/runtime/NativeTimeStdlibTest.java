@@ -140,7 +140,7 @@ final class NativeTimeStdlibTest {
         assertTrue(linked.units().containsKey("@std/time.atto"),
                 "time fixture must link compiler-owned .atto source");
         String[] lines = output.toString(StandardCharsets.UTF_8)
-                .replace("\\r", "").strip().split("\\n");
+                .replace("\r", "").strip().split("\n");
         assertEquals(53, lines.length, () -> errors.toString(StandardCharsets.UTF_8));
         java.util.Set<String> names = new java.util.HashSet<>();
         for (int i = 0; i < 52; ++i) {
