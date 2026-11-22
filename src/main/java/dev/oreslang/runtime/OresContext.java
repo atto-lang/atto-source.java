@@ -45,37 +45,51 @@ public final class OresContext implements AutoCloseable {
     private final SourceActorPubSub actorPubSub;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
-    // Keys are owned by exactly one context. Never serialize/copy a handle.
-    private final java.util.Set<AeadPrimitives.Key> cryptoKeys =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // Crypto handles are tied to both a context and an actor incarnation.
+    // An untrusted actor cannot borrow a key created in another actor turn
+    // or in the root. Actor cleanup can later use the same owner metadata.
+    private record CryptoKeyOwner(Object actorId, long generation) { }
+
+    private static CryptoKeyOwner currentCryptoOwner() {
+        return new CryptoKeyOwner(
+                ActorRuntime.currentActorId().orElse(null),
+                ActorRuntime.currentActorGeneration().orElse(-1L));
+    }
+
+    private final java.util.Map<AeadPrimitives.Key, CryptoKeyOwner> cryptoKeys =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private boolean cryptoAdmissionSealed;
 
     public synchronized AeadPrimitives.Key newCryptoKey(int algorithm) {
         requireCapability(IsolatePolicy.Capability.CRYPTO, "crypto.aead_new_key");
         if (cryptoAdmissionSealed) throw new IllegalStateException("crypto context closed");
         AeadPrimitives.Key key = AeadPrimitives.generateKey(algorithm);
-        cryptoKeys.add(key);
+        cryptoKeys.put(key, currentCryptoOwner());
         return key;
     }
 
     public void requireCryptoKey(AeadPrimitives.Key key, String operation) {
         requireCapability(IsolatePolicy.Capability.CRYPTO, operation);
-        if (key == null || !cryptoKeys.contains(key)) {
-            throw new SecurityException("AEAD key is not owned by this context");
+        CryptoKeyOwner actual = cryptoKeys.get(key);
+        if (actual == null || !actual.equals(currentCryptoOwner())) {
+            throw new SecurityException("AEAD key is not owned by this actor/context");
         }
     }
 
     public void closeCryptoKey(AeadPrimitives.Key key) {
         requireCryptoKey(key, "crypto.aead_close");
-        if (!cryptoKeys.remove(key)) throw new IllegalStateException("AEAD key already released");
+        if (cryptoKeys.remove(key) == null) {
+            throw new IllegalStateException("AEAD key already released");
+        }
         key.close();
     }
 
     private synchronized void retireCryptoKeys() {
         cryptoAdmissionSealed = true;
-        for (AeadPrimitives.Key key : cryptoKeys) key.close();
+        for (AeadPrimitives.Key key : cryptoKeys.keySet()) key.close();
         cryptoKeys.clear();
     }
+
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     // Host-provisioned at context creation; default is DENY with no service.
     private final WorkflowHostServiceRegistry workflowHostServices;
