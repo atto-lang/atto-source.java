@@ -50,7 +50,7 @@ public final class PersistentScalarActorV1 implements AutoCloseable {
             // last crash. Replay them in inbox sequence BEFORE publishing ready.
             for (DurableActorStore.Inbound inbound : activated.inbox())
                 process_committed_delivery(inbound.deliveryId(),
-                        plan.decode(inbound.payload()));
+                        plan.decode_increment_message(inbound.payload()));
         } catch (RuntimeException | Error error) {
             closed = true;
             state.close();
@@ -82,7 +82,7 @@ public final class PersistentScalarActorV1 implements AutoCloseable {
             // admission are one SQLite transaction. Stale actors may not
             // enqueue commands for the new incarnation to execute.
             if (!storage.enqueueFenced(address, epoch, new DurableActorStore.Inbound(
-                    deliveryId, plan.encode(delta))))
+                    deliveryId, plan.encode_increment_message(delta))))
                 return OptionalLong.empty();
             return OptionalLong.of(process_committed_delivery(deliveryId, delta));
         } catch (RuntimeException | Error failure) {
