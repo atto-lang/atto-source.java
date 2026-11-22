@@ -7,6 +7,8 @@ on:
       - 'stdlib/telemetry.atto'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/test/java/dev/oreslang/runtime/StdPathSyncTelemetryGuestTest.java'
+      - 'src/test/java/dev/oreslang/CoreBorrowRangesCompilerTest.java'
+      - 'stdlib/core/borrow_ranges.atto'
       - 'src/test/java/dev/oreslang/runtime/NativeTraceStdlibTest.java'
       - 'tests/fixtures/path_sync_telemetry_v1.atto'
       - 'tests/fixtures/atto_std_pure_policy_guest_v1.atto'
@@ -58,7 +60,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -B -ntp \
-            -Dtest=StdPathSyncTelemetryGuestTest,NativeTraceStdlibTest \
+            -Dtest=StdPathSyncTelemetryGuestTest,NativeTraceStdlibTest,CoreBorrowRangesCompilerTest \
             -DfailIfNoTests=true clean test
       - name: Require executed tests, not a source-only or skipped suite
         shell: bash
@@ -75,6 +77,12 @@ jobs:
                   "applicationFilesCannotShadowTrustedStdModules",
                   "invalidPathInstancesFailInGuestBeforeReturning",
                   "all134SharedPolicyVectorsExecuteAndMutationChangesGuestExitStatus",
+              },
+              "dev.oreslang.CoreBorrowRangesCompilerTest": {
+                  "distinctCoreOwnedLoansAreAdmittedAndReleasedAfterCall",
+                  "coreRangePredicateCannotAuthorizeDuplicateMutableLoan",
+                  "coreRangePredicateCannotAuthorizeSharedExclusiveAlias",
+                  "ownerCannotBeReusedAfterMoveDespiteValueLevelPermission",
               },
               "dev.oreslang.runtime.NativeTraceStdlibTest": {
                   "independentlyPackagedTelemetryPolicyAndBatchExecuteInGuest",
