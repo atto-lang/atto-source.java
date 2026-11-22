@@ -79,6 +79,11 @@ public final class SingletonSharedDomain {
     // Protected by the values monitor. Checked compiler publications must never
     // silently reuse a declaration whose resolved schema has changed.
     private final Map<Key, String> compiledSchemas = new HashMap<>();
+    // Protected by values. Exactly one producer (normal completion or cycle
+    // poison) may claim a pending registry cell. Claiming under this monitor,
+    // but completing the future outside it, avoids a success-vs-poison race
+    // without ever invoking completion observers while holding a registry lock.
+    private final Set<Key> undecidedSnapshots = new HashSet<>();
     private final int maxSnapshots;
 
     public SingletonSharedDomain() { this(4096); }
@@ -113,8 +118,10 @@ public final class SingletonSharedDomain {
         boolean grantFromRuntime(T value) { return super.complete(value); }
         boolean failFromRuntime(Throwable error) { return super.completeExceptionally(error); }
     }
-    private final ThreadLocal<Set<Key>> activeInitializers =
-            ThreadLocal.withInitial(HashSet::new);
+    // Per-domain bounded dependency DAG; authority never comes from Java threads.
+    // The graph detects synchronous initializer wait cycles across carriers.
+    private final SingletonDependencyGraph<Key> initializerDependencies =
+            new SingletonDependencyGraph<>();
     private final Map<Turn, Principal> principals = new ConcurrentHashMap<>();
     private final Map<Key, Region> regions = new ConcurrentHashMap<>();
 
@@ -122,7 +129,7 @@ public final class SingletonSharedDomain {
      * Nonblocking publication receipt. Initialization runs on the first caller
      * outside the shared registry lock, completes exactly once, and is sticky
      * on failure. Compiler stage zero only admits constant primitive initializers.
-     * Recursive same-turn initialization fails instead of deadlocking.
+     * Recursive and cross-thread initializer dependency cycles fail instead of deadlocking.
      */
     public CompletableFuture<Object> snapshotOnce(Key key, Supplier<?> initialize) {
         return snapshotInternal(key, null, initialize);
@@ -149,6 +156,10 @@ public final class SingletonSharedDomain {
         Objects.requireNonNull(initialize, "initialize");
         CompletableFuture<Object> existing;
         CompletableFuture<Object> created = null;
+        // Cycle publication must fail *outside* values monitor; completion can
+        // run user callbacks synchronously. Preserve the old sticky-failure rule
+        // even if the nested caller ignores the rejected lookup receipt.
+        IllegalStateException cycleFailure = null;
         synchronized (values) {
             existing = values.get(key);
             if (existing != null) {
@@ -157,40 +168,83 @@ public final class SingletonSharedDomain {
                     return CompletableFuture.failedFuture(
                             new IllegalStateException("singleton declaration schema mismatch"));
                 }
+                if (!existing.isDone() && undecidedSnapshots.contains(key)) {
+                    try {
+                        initializerDependencies.dependOn(key);
+                    } catch (IllegalStateException dependencyFailure) {
+                        if ("singleton initializer cycle".equals(dependencyFailure.getMessage())) {
+                            // The winner is selected under the same lock as
+                            // the initializer's successful publication claim.
+                            // Future completion happens after monitor release.
+                            if (undecidedSnapshots.remove(key)) {
+                                cycleFailure = dependencyFailure;
+                            }
+                        } else {
+                            return CompletableFuture.failedFuture(dependencyFailure);
+                        }
+                    }
+                }
             } else {
                 if (values.size() >= maxSnapshots) {
                     return CompletableFuture.failedFuture(
                             new IllegalStateException("singleton identity quota exceeded"));
                 }
+                // Check the nesting quota before allocating/publishing a cell.
+                // A failed registration must never leave an unresolved future.
+                try {
+                    initializerDependencies.dependOn(key);
+                } catch (IllegalStateException dependencyFailure) {
+                    return CompletableFuture.failedFuture(dependencyFailure);
+                }
                 created = new CompletableFuture<>();
                 values.put(key, created);
+                undecidedSnapshots.add(key);
                 if (compilerFingerprint != null) {
                     compiledSchemas.put(key, compilerFingerprint);
                 }
             }
         }
+        if (cycleFailure != null) {
+            // Do not let an initializer swallow the failed nested result and
+            // publish a "successful" singleton after observing a dependency cycle.
+            // Completing under values would run arbitrary Future observers while
+            // holding the global registry monitor, so it happens only here.
+            existing.completeExceptionally(cycleFailure);
+            return CompletableFuture.failedFuture(cycleFailure);
+        }
         if (existing != null) {
-            if (activeInitializers.get().contains(key)) {
-                existing.completeExceptionally(
-                        new IllegalStateException("singleton initializer cycle"));
-            }
             // Never leak the registry's writable completion receipt.
             return existing.copy();
         }
         final CompletableFuture<Object> published = created;
-        Set<Key> stack = activeInitializers.get();
-        stack.add(key);
+        boolean entered = false;
         try {
+            // A depth-limit exception must complete the just-created cell.
+            // Never leave an unresolved future behind after begin() rejects.
+            initializerDependencies.begin(key);
+            entered = true;
             Object produced = initialize.get();
             if (produced instanceof java.util.concurrent.CompletionStage<?>) {
                 throw new IllegalStateException("async singleton initializer is not supported");
             }
-            published.complete(freeze(produced));
+            Object frozen = freeze(produced);
+            boolean canPublish;
+            synchronized (values) {
+                canPublish = undecidedSnapshots.remove(key);
+            }
+            if (canPublish) {
+                published.complete(frozen);
+            }
         } catch (Throwable error) {
-            published.completeExceptionally(error);
+            boolean canFail;
+            synchronized (values) {
+                canFail = undecidedSnapshots.remove(key);
+            }
+            if (canFail) {
+                published.completeExceptionally(error);
+            }
         } finally {
-            stack.remove(key);
-            if (stack.isEmpty()) activeInitializers.remove();
+            if (entered) initializerDependencies.finish(key);
         }
         return published.copy();
     }
