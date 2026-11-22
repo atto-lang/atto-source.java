@@ -168,6 +168,51 @@ VM. Unix backends should prefer `posix_spawn()`; Windows should use
 `CreateProcess`. If a native fork/exec fallback is necessary, only async-signal
 safe work may occur between fork and exec.
 
+## Exact-source proof plan and CI governance (2026-11-22)
+
+The source-Java JVM provider now has a dedicated **no-Maven JDK 21**
+smoke (`tests/host/NativeChildProcessesSmoke.java`), compiled directly
+from the production `NativeChildProcesses.java` by
+`tests/host/run-std-process-smoke.sh`. It tests real exit status 42,
+concurrent stdout/stderr, canonical permission revocation, literal argv
+(no shell), cleared environment, infinite-output termination, bounded
+lifetime timeout, and a deterministic shutdown-vs-launch race.
+
+The `std-process-host-smoke` workflow has three independently
+named exact-head jobs:
+
+- `host-jdk21-actual-execution` — JDK 21 standalone host smoke.
+- `guest-graalvm25-process-bridge` — Maven JUnit host and genuine `.atto`
+  guest/namespace integration tests under GraalVM 25.
+- `aot-graalvm25-host-process-provider` — build and execute Native Image
+  for the standalone OS-process provider. **This does not prove full Atto
+  compiler or guest Native Image AOT**.
+
+Every job checks its actual Git commit and root tree before execution.
+A printed workflow summary or zero-step Actions failure is not an executed
+source/compiler result. None of these three latest-head jobs has an
+independently verified stepful PASS as of this writing.
+
+**Security/export admission:** `atto-lang/atto-source.java` source `main`
+currently reports `protected=false`, and its protected-main private CI
+destination allowlist has no active entries. The carrier contract only
+authorizes other PRs and does **not** include Java #1759. A *source-free*
+private carrier admission probe in
+`opto-sync-test/go-java-validation` completed as Actions run
+`45048248665` with failure and **zero job steps**; the only conclusion
+is that runner admission was not proven. No private source tree was moved
+to another organization. Source export requires independently reviewed
+source protection, the immutable destination ID, a carrier workflow/test
+plan, and an exact current-head source commit/tree approval. Do not
+override this gate by manually pushing blobs or temporary Git refs.
+
+**Known remaining safety limits:** process descendants/process groups are
+not yet managed; actor-owned subprocess launch is denied; cancellation of
+a guest await does not independently own child shutdown; and executable
+replacement between canonical permission checking and
+`ProcessBuilder.start` remains a TOCTOU hazard. Keep this PR in Draft
+until real exact-head JVM, guest, AOT and cleanup evidence exists.
+
 ## Testing and evidence
 
 A previous local JDK 21 standalone run of the host prototype was reported to produce
