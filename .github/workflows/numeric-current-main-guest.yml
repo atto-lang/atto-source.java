@@ -7,6 +7,9 @@ on:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/runtime/NumericErrorAbi.java'
       - 'src/test/java/dev/oreslang/Numeric*Test.java'
+      - 'src/test/java/dev/oreslang/TreeShakerNumericEqualityTest.java'
+      - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
+      - 'src/main/java/dev/oreslang/types/NumericValueEquality.java'
       - 'contracts/v1/numeric-error-abi.json'
       - '.github/workflows/numeric-current-main-guest.yml'
   workflow_dispatch:
@@ -41,5 +44,5 @@ jobs:
       - name: Execute checked scalar and IEEE ordering unit + real guest JUnit
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=NumericValueOrderingTest,NumericValueEqualityExactTest,NumericGuestOrderingV1Test,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest \
+            -Dtest=NumericValueOrderingTest,NumericValueEqualityExactTest,NumericGuestOrderingV1Test,TreeShakerNumericEqualityTest,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest \
             test
