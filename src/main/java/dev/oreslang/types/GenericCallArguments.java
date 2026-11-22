@@ -29,8 +29,13 @@ final class GenericCallArguments {
 
     record Bound(Map<String, Ast.TypeRef> explicitTypes, Set<String> inferenceHoles) {
         Bound {
-            explicitTypes = Map.copyOf(explicitTypes);
-            inferenceHoles = Set.copyOf(inferenceHoles);
+            // Preserve lexical call-site order for deterministic resolution and diagnostics.
+            // Map.copyOf/Set.copyOf do not guarantee traversal order, even when
+            // the binder supplied a LinkedHashMap/LinkedHashSet.
+            explicitTypes = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(explicitTypes));
+            inferenceHoles = java.util.Collections.unmodifiableSet(
+                    new LinkedHashSet<>(inferenceHoles));
         }
     }
 
