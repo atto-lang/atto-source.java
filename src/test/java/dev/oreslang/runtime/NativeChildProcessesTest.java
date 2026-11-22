@@ -199,7 +199,10 @@ final class NativeChildProcessesTest {
             var child = manager.spawn(javaExe(), probe("sleep"), cwd(),
                     (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
             manager.close();
-            child.waitForExit().get(8, TimeUnit.SECONDS);
+            assertEquals("cancelled", child.waitForExit()
+                    .handle((status, failure) ->
+                            NativeChildProcesses.ProcessError.from(failure).kind())
+                    .get(8, TimeUnit.SECONDS));
             assertFalse(child.alive());
             assertEquals(0, manager.reservedCount());
         } finally {
@@ -292,6 +295,33 @@ final class NativeChildProcessesTest {
         } finally {
             release.countDown();
             manager.close();
+        }
+    }
+
+    @Test void explicitOwnerCloseCancelsWaitAndCollection() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            var child = manager.spawn(javaExe(), probe("sleep"), cwd(),
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            child.close();
+            assertEquals("cancelled", child.waitForExit()
+                    .handle((status, failure) ->
+                            NativeChildProcesses.ProcessError.from(failure).kind())
+                    .get(8, TimeUnit.SECONDS));
+            assertEquals("cancelled", child.collectOutput()
+                    .handle((output, failure) ->
+                            NativeChildProcesses.ProcessError.from(failure).kind())
+                    .get(8, TimeUnit.SECONDS));
+            assertNull(child.tryWait());
+        }
+    }
+
+    @Test void closingAlreadyExitedChildDoesNotRetroactivelyCancel() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            var child = manager.spawn(javaExe(), probe("exit42"), cwd(),
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            assertEquals(42, child.waitForExit().get(8, TimeUnit.SECONDS).code());
+            child.close();
+            assertEquals(42, child.waitForExit().get(8, TimeUnit.SECONDS).code());
         }
     }
 
