@@ -81,6 +81,7 @@ final class NativeAttoMetricsJsonZordeTest {
                 "true", "-1073741824", "1073741823", "true", "true", "true", "3",
                 "20", "0", "false", "0", "true", "true", "true",
                 "true", "true", "true", "true", "true", "true", "true",
-                "true", "true", "true");
+                "true", "true", "true", "true", "5", "false", "5",
+                "false", "5", "true", "true", "true", "true");
     }
 }
