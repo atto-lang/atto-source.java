@@ -18,7 +18,7 @@ import java.nio.file.Path;
 
 @TruffleLanguage.Registration(
         id = OresLanguage.ID,
-        name = "Oreslang",
+        name = "AttoLang",
         version = "0.1.0",
         defaultMimeType = OresLanguage.MIME_TYPE,
         characterMimeTypes = OresLanguage.MIME_TYPE,
@@ -144,6 +144,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
         return singleThreaded
+                || dev.oreslang.runtime.HotReloadManager.isManagedEntryThread(thread)
                 || ActorRuntime.isActorCarrierThread()
                 || AsyncRuntime.isAsyncCarrierThread()
                 || OresScheduler.isSchedulerCarrierThread();

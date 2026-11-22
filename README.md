@@ -1,42 +1,42 @@
-# Oreslang
+> **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/atto-lang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
 
-Oreslang is a statically typed GraalVM/Truffle language with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
+# atto-source.java
 
-This repository contains the Java/Truffle reference implementation.
+AttoLang compiler and actor runtime targeting the JVM, GraalVM, and GraalVM Native Image AOT.
 
-The language is intentionally opinionated:
+## Naming and specification migration
 
-- static nominal typing by default, with explicit structural compatibility at selected call boundaries;
-- private functions by default (`fnc`), with `pub` for exported functions;
-- class methods omit `fnc` and have an implicit `self` receiver;
-- class construction uses a single explicit `constructor(...)` declaration (never a Java-style class-name constructor); top-level classes/constructors are file-private, while module classes/constructors are private by default and may be `pub`;
-- classes cannot nest inside classes; class bodies contain fields, an optional constructor, methods, and `static fnc` members only;
-- one return value only (tuples/arrays/records are ordinary single values);
-- `val`, `const`, and `let` are the only variable declarations;
-- private actor state is logically confined in the current backend; shared actors may access explicit synchronized shared cells; protected per-actor heaps are under development;
-- immutable/sendable values may be message-passed, and explicitly frozen regions may be shared read-only;
-- host access is denied and Oreslang APIs are capability-gated by default; the current actor kinds alone do not establish an OS sandbox;
-- JIT, AOT/interpreter, and AOT-host + guest-JIT hybrid execution profiles;
-- file-granular incremental compilation with stable code-unit/package identities and reverse-dependency invalidation;
-- flat optional file namespaces and flat modules (neither may nest);
-- class-level `static fnc` functions separated from receiver methods;
-- first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
-- lexical closures with persistent captured environments;
-- affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax - see [ft borrow, ft copy, ft take, ft share]
-- hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
-- direct method calls reuse shared class method definitions; instance/actor methods are direct-call-only, and callbacks use explicit lambdas instead of implicit bound-method values;
-- multiple named modules may appear in one source file;
-- explicit `return` statements;
-- generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, and `try/catch/finally` are language-level features.
+This is the canonical [AttoLang backend repository](https://github.com/atto-lang/atto-source.java). Use `.atto` for portable AttoLang source and update local remotes to `https://github.com/atto-lang/atto-source.java.git`; do not use historical repository links or naming in new examples.
 
-The first implementation is developed on a feature branch and will land with an executable Truffle skeleton, grammar/specification, examples, tests, and CI.
+- **Normative grammar and semantics:** [atto-spec](https://github.com/atto-lang/atto-spec). Check the current versioned contracts for ownership operations (`borrow!`, `take!`, `share!`, `copy!`, `copy!!`), implicit argument borrowing, `lt!` binders, `eq`/`neq` value equality, `susp` effects and file/module `define const`. These are *specification targets*, not claims of executable support in this backend.
+- **Positive and negative guest execution evidence:** [atto-platform-conformance](https://github.com/atto-lang/atto-platform-conformance) and [atto-compilers-parity-testing](https://github.com/atto-lang/atto-compilers-parity-testing). Report `passed`, `failed`, `unsupported` or `not executed`, and pin exact compiler, source tree, target and toolchain.
+- **Portable shared sources and target constraints:** [atto-common-source](https://github.com/atto-lang/atto-common-source) and [atto-target-profiles](https://github.com/atto-lang/atto-target-profiles). Keep backend-specific gaps explicit, and do not infer guest parity from host tests or zero-step CI runs.
 
-Native inbound HTTP capabilities and actor-owned request transfer are documented in [docs/HTTP_SERVER.md](docs/HTTP_SERVER.md).
+## Scope
 
-The implemented actor scheduling guarantees, native descriptor-transfer experiment,
-and remaining physical-isolation work are tracked in
-[Actor physical boundaries](docs/runtime/actor-physical-boundaries.md).
+This repository is intended to host the Java/GraalVM compiler backend, actor runtime integration, and supporting build and conformance tooling.
 
-Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](docs/ASYNC_IO.md).
+## Status
 
-Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).
+Repository initialization and implementation status should be checked against the source tree and CI. This README describes the intended scope and does not assert that every feature is implemented.
+
+## Ecosystem
+
+- [AttoLang language organization](https://github.com/atto-lang)
+- [Atto commercial infrastructure](https://github.com/atto-co)
+
+## Development
+
+See the repository's source tree, workflows, and contribution documentation for verified build and test instructions. Do not assume cross-backend parity without executed conformance results.
+
+## Repository ownership and contribution routing
+
+**Belongs here:** Java/GraalVM compiler, JVM execution, Graal Native Image AOT path, Java host-library import admission, actor-owned heap/stack runtime and guest execution tests.
+
+**Belongs elsewhere:** Normative semantics live in atto-spec; portable .atto library source belongs in atto-common-source; LLVM/.NET/Rust/Wasm implementation must remain in their own backend repos.
+
+**Security and portability boundary:** Host Java/Graal library calls require explicit capabilities, ownership and lifetime fencing. Native Image compilation or Epsilon host smoke alone is not proof of zero GC, isolation or guest-level parity.
+
+AttoLang is the canonical project identity. Use `.atto` source, `atto-*` package and repository names, and the active AttoLang CLI contract for current documentation. Do not duplicate normative semantics from [atto-spec](https://github.com/atto-lang/atto-spec).
+
+**Evidence gate:** record exact compiler/runtime head and tree, target/toolchain, nonzero executed steps, positive and negative guest results, and explicit passed/failed/unsupported/not-executed states. Host-only CI and `steps=[]` do not establish guest support. README scope is not a feature-completeness claim.

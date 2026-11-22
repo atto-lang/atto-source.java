@@ -230,6 +230,27 @@ do select {
 }
 ```
 
+The outer braces are interchangeable with `over ... end`; arm bodies remain
+braced and the runtime semantics are identical:
+
+```ores
+do select over
+  when readch incoming: let msg {
+    stdio.println("Received:", msg);
+  }
+  when writech outgoing, payload: {
+    stdio.println("Sent payload successfully");
+  }
+  when readch shutdown: const signal {
+    return;
+  }
+end
+```
+
+The same delimiter equivalence applies to `select`, `nb select`, and the
+legacy-compatible `do nb select` form. Selection policy (`first`, `fair`,
+or `random`) appears before either `{` or `over`.
+
 **One wait mode per selection:** the enclosing `select`, `nb select`, or `try select` controls whether the entire selection suspends, registers an asynchronous selection, or probes immediately. An arm is atomic and must use plain `readch` or `writech`. Arm-level `nb` or `try` modifiers are invalid. Standalone operations in arm bodies remain governed by their own rules.
 
 A read arm may bind with `let`, `val`, or `const`. `const` means the
@@ -239,10 +260,11 @@ compile-time constant.
 Every `when` (or legacy `case`) and `default` arm requires its own `{ ... }` body, including
 empty arms. Canonical source uses two spaces per indentation level and no tabs
 for indentation: arms sit one level inside `select`, and their statements sit
-one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`.
+one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`,
+whether the outer selection uses braces or `over ... end`.
 Legacy unbraced arms are rejected by the parser; `oresfmt` migrates them.
 
-A select may include one `default: { ... }` arm.
+A select may include one `default: { ... }` arm, and `default` must be the final arm.
 
 A static select arm is a non-throwing control-flow boundary. An ordinary
 `throw` may be handled by a local `try/catch`, or absorbed by a called
@@ -504,10 +526,39 @@ This transformation is permitted only when evaluating the case expressions has
 no required per-iteration observable behavior and the referenced channel/value
 bindings are stable. Otherwise the compiler must keep the original lowering.
 
-Dynamic selection can explicitly build a plan after constructing its runtime
-case list. Mutating the source list afterward does not mutate the plan; create a
-new plan for a changed case set. A later versioned dynamic-plan builder may
-support incremental add/remove/rebind without changing this snapshot contract.
+A fixed `SelectPlan` freezes its input case list. For a changing case set, the
+Java runtime now provides `ChannelRuntime.DynamicSelectPlan<K>`: `put(key, case)`,
+`remove(key)`, `selectSetSnapshot()`, `trySelectKeyed(policy)` and
+`selectKeyedAsync(policy)`. The keyed result contains `{version, key, selection}`
+and is pinned to the exact generation captured when the selection began.
+The source-language `DynamicSelectPlan.new` and implicit lexical-loop hoisting
+remain staged on Java PR #526 and are **not yet merged into main**.
+
+```java
+var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+plan.put("inbox", ChannelRuntime.read(inbox)); // once, outside loop
+while (running) {
+    var result = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+    handle(result.key(), result.selection().value());
+}
+```
+
+The `SelectSet` snapshot is immutable and reused while the plan's structure is
+unchanged. Each selection allocates fresh winner/cancellation state and fresh
+Channel/Future waiter registrations. A mutation publishes a new descriptor
+generation; existing operations keep their old generation, even if its key was
+removed or replaced. Previous-generation completions cannot rotate the new
+generation's FAIR cursor. The current admission limit of
+`ChannelRuntime.MAX_SELECT_CASES` applies to dynamic plans at insertion time.
+Default-only wins do not advance FAIR credit.
+
+A compiler may hoist an inline static select only when it proves every retained
+operand is loop-invariant, immutable, ownership-safe and actor-generation-local.
+Channel writes, dynamic expressions, per-iteration shadowing and mutable
+bindings must still be evaluated every iteration. Compiler lowering must also
+preserve the source-site FAIR ticket and fresh per-invocation cancellation/winner
+state. Native LLVM currently remains fail-closed pending explicit lowering and
+equivalent cancellation/sanitizer tests.
 
 ## Cancellation
 

@@ -74,27 +74,64 @@ public final class Types {
         }
     }
 
+    /** Compiler-internal resolved may-effects; source effect syntax is not admitted here. */
+    public record CheckedEffects(List<Type> throwsTypes, List<Type> raisesTypes,
+                                 List<Type> panicsTypes) {
+        public CheckedEffects {
+            throwsTypes = normalize(throwsTypes);
+            raisesTypes = normalize(raisesTypes);
+            panicsTypes = normalize(panicsTypes);
+        }
+
+        /** Effect clauses denote sets rather than declaration-order-sensitive lists. */
+        private static List<Type> normalize(List<Type> input) {
+            return List.copyOf(input).stream()
+                    .distinct()
+                    .sorted(java.util.Comparator.comparing(Type::toString))
+                    .toList();
+        }
+
+        public static CheckedEffects none() {
+            return new CheckedEffects(List.of(), List.of(), List.of());
+        }
+
+        public boolean isEmpty() {
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
+        }
+
+        /** Exact-type category preservation; nominal Error subtyping is a separate gate. */
+        public boolean isSubsetOf(CheckedEffects allowance) {
+            return allowance.throwsTypes.containsAll(throwsTypes)
+                    && allowance.raisesTypes.containsAll(raisesTypes)
+                    && allowance.panicsTypes.containsAll(panicsTypes);
+        }
+    }
+
     public record Function(
             List<Type> parameters,
             List<Boolean> mutableParameters,
             boolean async,
-            Type result) implements Type {
+            Type result,
+            CheckedEffects effects) implements Type {
         public Function {
             parameters = List.copyOf(parameters);
             mutableParameters = List.copyOf(mutableParameters);
+            Objects.requireNonNull(effects, "checked function effects");
             if (parameters.size() != mutableParameters.size()) {
                 throw new IllegalArgumentException(
                         "function parameter mutability metadata must match parameter arity");
             }
         }
 
-        /**
-         * Source-level Fnc<...> types and built-in callables have no mutable
-         * parameters and are synchronous unless a declaration explicitly says
-         * otherwise.
-         */
+        /** Existing producers emit pure function values until effect inference is connected. */
+        public Function(List<Type> parameters, List<Boolean> mutableParameters,
+                        boolean async, Type result) {
+            this(parameters, mutableParameters, async, result, CheckedEffects.none());
+        }
+
         public Function(List<Type> parameters, Type result) {
-            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false, result);
+            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false,
+                    result, CheckedEffects.none());
         }
     }
 
@@ -198,7 +235,8 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
-    private static boolean containsUncertainType(Type type) {
+    // Shared package-internal proof query for both type relations.
+    static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
@@ -207,7 +245,10 @@ public final class Types {
         if (type instanceof ListType list) return containsUncertainType(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
-                || containsUncertainType(function.result());
+                || containsUncertainType(function.result())
+                || function.effects().throwsTypes().stream().anyMatch(Types::containsUncertainType)
+                || function.effects().raisesTypes().stream().anyMatch(Types::containsUncertainType)
+                || function.effects().panicsTypes().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
         if (type instanceof SelfType self) return containsUncertainType(self.bound());
         return false;
@@ -224,6 +265,11 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        // Unknown cannot prove a callable's checked effect contract; an
+        // effectful callable cannot discard its effects through Unknown.
+        if (from == Unknown.INSTANCE && to instanceof Function) return false;
+        if (to == Unknown.INSTANCE && from instanceof Function fn
+                && !fn.effects().isEmpty()) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
@@ -266,9 +312,22 @@ public final class Types {
             // therefore name the exact generated struct shape.
             if (source.kind() == AggregateKind.STRUCT
                     && source.members().size() != target.members().size()) return false;
+            // Readonly structural views may covariantly read fields, but
+            // writable destinations cannot widen even one member type:
+            // such an alias could later write a FLOAT/Unknown into an INT slot.
+            if (!target.readOnly() && source.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (actual == null) return false;
+                if (target.readOnly()) {
+                    // Unknown/Generic are inference holes, not evidence that
+                    // a concrete readable field exists under an alias.
+                    if (!actual.equals(required.getValue())
+                            && (containsUncertainType(actual)
+                                    || !isAssignable(actual, required.getValue()))) return false;
+                } else if (!actual.equals(required.getValue())) {
+                    return false;
+                }
             }
             return true;
         }
@@ -289,6 +348,7 @@ public final class Types {
         if (from instanceof Function source && to instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
             if (source.async() != target.async()) return false;
+            if (!source.effects().isSubsetOf(target.effects())) return false;
             // Parameter mutation authority is part of the callable contract.
             // Keep it invariant: callers and implementations must agree exactly
             // on which arguments may be mutated.
@@ -299,21 +359,19 @@ public final class Types {
             return isAssignable(source.result(), target.result());
         }
 
-        return numericWidening(from, to);
-    }
-
-    private static boolean numericWidening(Type from, Type to) {
-        if (from == Primitive.INT && (to == Primitive.FLOAT || to == Primitive.DECIMAL || to == Primitive.COMPLEX)) return true;
-        if ((from == Primitive.FLOAT || from == Primitive.DECIMAL) && to == Primitive.COMPLEX) return true;
+        // P0: every numeric representation change must be explicit. A
+        // contextual literal's exact type is handled before this relation;
+        // ordinary INT -> FLOAT/DECIMAL/COMPLEX is not assignment.
         return false;
     }
 
+    /**
+     * Source numeric expressions cannot silently widen either operand.
+     * Explicit checked casts produce matching types before reaching this
+     * operation. Division may have a language-defined output type.
+     */
     public static Type numericJoin(Type left, Type right) {
-        if (!isNumeric(left) || !isNumeric(right)) return Unknown.INSTANCE;
-        if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) return Primitive.COMPLEX;
-        if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) return Primitive.DECIMAL;
-        if (left == Primitive.FLOAT || right == Primitive.FLOAT) return Primitive.FLOAT;
-        return Primitive.INT;
+        return isNumeric(left) && left.equals(right) ? left : Unknown.INSTANCE;
     }
 
     public static Type unionOf(Type left, Type right) {

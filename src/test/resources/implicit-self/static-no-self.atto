@@ -1,0 +1,10 @@
+define module m as
+  define class C as
+    pub instance_value(): int {
+      return 1;
+    }
+    pub static fnc invalid(): int {
+      return instance_value();
+    }
+  end
+end

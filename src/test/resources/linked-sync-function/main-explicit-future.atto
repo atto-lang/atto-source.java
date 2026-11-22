@@ -1,0 +1,7 @@
+import fnc async_decode from "./decode.atto";
+
+pub fnc main(): void {
+  val Future<int> pending = async_decode(41);
+  stdio.stdout.write(await pending);
+  return;
+}

@@ -1,0 +1,20 @@
+import class TinyState from '../src/tiny_mlp';
+import fnc relu, hidden, predict, squared_loss, train_step from '../src/tiny_mlp';
+
+pub routine main(): void {
+  let TinyState state = new TinyState(0.5, 0.0, 1.0, 0.0);
+  if relu(-2.0) != 0.0; do rt fail("relu negative"); fi
+  if relu(3.0) != 3.0; do rt fail("relu positive"); fi
+  if hidden(&state, 2.0) != 1.0; do rt fail("hidden forward"); fi
+  if predict(&state, 2.0) != 1.0; do rt fail("output forward"); fi
+  val float starting_loss = squared_loss(&state, 2.0, 6.0);
+  for let step = 0; step < 12; step++ do
+    state = train_step(&state, 2.0, 6.0, 0.01);
+  done
+  val float final_loss = squared_loss(&state, 2.0, 6.0);
+  if final_loss >= starting_loss; do
+    rt fail("MLP training did not improve loss");
+  fi
+  stdio.stdout.println("ORES-TINY-MLP-NATIVE-PASS");
+  return;
+}

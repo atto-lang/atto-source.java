@@ -1,0 +1,167 @@
+name: Real Java/GraalVM OTel guest smoke (JVM + Native Image ELF host)
+
+on:
+  pull_request:
+    paths:
+      - 'verification/otel/**'
+      - '.github/workflows/otel-java-real-guest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target/otel/rust-build
+
+jobs:
+  otel-source-only-guardrails:
+    name: OTel bounded guest harness negative controls (NOT guest execution)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact original PR head without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check original SHA and pristine working tree
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Bash syntax for runner plus independent source-only guardrails
+        run: |
+          set -euo pipefail
+          bash -n verification/otel/execute-pinned-smoke.sh
+          bash -n verification/otel/guardrails.sh
+          bash -n verification/otel/test-guardrails.sh
+          bash verification/otel/test-guardrails.sh
+          echo 'SOURCE_ONLY: no Oreslang guest executed and no production parity certified'
+
+  otel-jvm:
+    name: Java/GraalVM JVM actual Oreslang guest
+    needs: otel-source-only-guardrails
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact original pull request SHA with no persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Fail if source HEAD differs from requested PR SHA
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test ! -e target
+          echo "SOURCE_HEAD=$EXPECTED_SOURCE_SHA"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify source-owned guest, original Rust checker and locked dependency bytes BEFORE execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object --no-filters verification/otel/pinned/tests/smoke.ores)" = c22a8841b868cd89dd4cb720435d9585fbbb05cc
+          test "$(git hash-object --no-filters verification/otel/pinned/src/otel.ores)" = 6a1b9b940f10e4b273ae2b02be5cfff5e0572afc
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/src/main.rs)" = 2f91087449a58e7b5756d23868860dbcb82e4847
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/Cargo.toml)" = bb007125dff7b207f34acdde22f91f61283db256
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/Cargo.lock)" = cc5a82761a5188f1a2ed4f9ec67e566ddfed7f45
+          echo "Pinned OTel guest and Rust oracle: five immutable Git blobs matched"
+      - name: Use GraalVM 25.3 on JDK 25 (same toolchain as compiler CI)
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Select immutable Rust toolchain for source-owned semantic oracle
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Execute source-owned Rust checker negative/unit tests
+        run: cargo +1.95.0 test --locked --manifest-path verification/otel/pinned/tools/telemetry-check/Cargo.toml
+      - name: Compile actual Java/GraalVM compiler and linked-classpath runtime
+        run: mvn -B -ntp -DskipTests package dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
+      - name: Compile/load and RUN original .ores telemetry smoke on the JVM
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash verification/otel/execute-pinned-smoke.sh jvm
+      - name: Show only synthetic evidence metadata, not runtime stderr
+        run: cat target/otel/jvm/receipt.txt
+      - name: Keep bounded synthetic stdout, no private compiler source
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: otel-jvm-execution-candidate
+          path: |
+            target/otel/jvm/guest.stdout.jsonl
+            target/otel/jvm/receipt.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  otel-native-image:
+    name: GraalVM native ELF host running original Oreslang guest
+    needs: otel-source-only-guardrails
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact original pull request SHA with no persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Fail if source HEAD differs from requested PR SHA
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test ! -e target
+          echo "SOURCE_HEAD=$EXPECTED_SOURCE_SHA"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify source-owned guest, original Rust checker and locked dependency bytes BEFORE execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object --no-filters verification/otel/pinned/tests/smoke.ores)" = c22a8841b868cd89dd4cb720435d9585fbbb05cc
+          test "$(git hash-object --no-filters verification/otel/pinned/src/otel.ores)" = 6a1b9b940f10e4b273ae2b02be5cfff5e0572afc
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/src/main.rs)" = 2f91087449a58e7b5756d23868860dbcb82e4847
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/Cargo.toml)" = bb007125dff7b207f34acdde22f91f61283db256
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/Cargo.lock)" = cc5a82761a5188f1a2ed4f9ec67e566ddfed7f45
+          echo "Pinned OTel guest and Rust oracle: five immutable Git blobs matched"
+      - name: Use GraalVM 25.3 JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Select immutable Rust toolchain for original source-owned checker
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Build actual GraalVM Native Image host from the existing Maven AOT profile
+        run: mvn -B -ntp -Pnative-aot -DskipTests package
+      - name: Execute original Oreslang OTel guest in genuine ELF Native Image host
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash verification/otel/execute-pinned-smoke.sh aot
+      - name: Show synthetic AOT build info and evidence metadata
+        run: |
+          cat target/otel/aot/build-info.json
+          cat target/otel/aot/receipt.txt
+      - name: Keep bounded synthetic stdout, no private compiler source or AOT executable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: otel-native-aot-execution-candidate
+          path: |
+            target/otel/aot/guest.stdout.jsonl
+            target/otel/aot/receipt.txt
+            target/otel/aot/build-info.json
+            target/otel/aot/native-image-version.txt
+            target/otel/aot/elf-header.txt
+            target/otel/aot/elf-dynamic.txt
+          if-no-files-found: error
+          retention-days: 7
