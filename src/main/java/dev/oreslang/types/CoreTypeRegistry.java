@@ -22,6 +22,7 @@ public final class CoreTypeRegistry {
     public enum Kind { TYPE, CONSTRUCTOR, TRAIT }
     public enum Ownership {
         /** Copy/send/drop behavior is derived recursively from payloads. */
+        COPY,
         PAYLOAD_DEPENDENT,
         /** Non-owning view with a source lifetime. */
         BORROWED_VIEW,
@@ -42,6 +43,7 @@ public final class CoreTypeRegistry {
     }
     public enum SendPolicy {
         /** Sendable iff all live payload/member types are Sendable. */
+        ALWAYS,
         PAYLOAD_DEPENDENT,
         /** Borrow never becomes Sendable merely from its referent's type. */
         NEVER_BORROWED,
@@ -81,7 +83,7 @@ public final class CoreTypeRegistry {
             Objects.requireNonNull(dropPolicy, "dropPolicy");
             Objects.requireNonNull(sendPolicy, "sendPolicy");
             Objects.requireNonNull(javaStatus, "javaStatus");
-            if (name.isBlank() || !canonicalIdentity.endsWith("/" + name)
+            if (name.isBlank() || canonicalIdentity.isBlank()
                     || canonicalIdentity.startsWith("/") || canonicalIdentity.contains("..")
                     || minGenericArity < 0 || maxGenericArity < minGenericArity) {
                 throw new IllegalArgumentException("invalid canonical core type metadata: " + name);
@@ -114,6 +116,37 @@ public final class CoreTypeRegistry {
 
     private static Map<String, TypeInfo> create() {
         Map<String, TypeInfo> out = new LinkedHashMap<>();
+        // Fundamental scalar identities. Spelling aliases intentionally
+        // point at one canonical compiler type identity.
+        addScalar(out, "int", "core/primitive/i64");
+        addScalar(out, "Int", "core/primitive/i64");
+        addScalar(out, "i64", "core/primitive/i64");
+        addScalar(out, "i8", "core/primitive/i8");
+        addScalar(out, "i16", "core/primitive/i16");
+        addScalar(out, "i32", "core/primitive/i32");
+        addScalar(out, "uint", "core/primitive/u64");
+        addScalar(out, "UInt", "core/primitive/u64");
+        addScalar(out, "u8", "core/primitive/u8");
+        addScalar(out, "u16", "core/primitive/u16");
+        addScalar(out, "u32", "core/primitive/u32");
+        addScalar(out, "u64", "core/primitive/u64");
+        addScalar(out, "bool", "core/primitive/bool");
+        addScalar(out, "Bool", "core/primitive/bool");
+        addScalar(out, "boolean", "core/primitive/bool");
+        addScalar(out, "char", "core/primitive/char");
+        addScalar(out, "Char", "core/primitive/char");
+        addScalar(out, "byte", "core/primitive/u8");
+        addScalar(out, "Byte", "core/primitive/u8");
+        addScalar(out, "float", "core/primitive/f64");
+        addScalar(out, "Float", "core/primitive/f64");
+        addScalar(out, "f32", "core/primitive/f32");
+        addScalar(out, "f64", "core/primitive/f64");
+        addScalar(out, "decimal", "core/primitive/decimal");
+        addScalar(out, "complex", "core/primitive/complex128");
+        addScalar(out, "complex64", "core/primitive/complex64");
+        addScalar(out, "complex128", "core/primitive/complex128");
+        addScalar(out, "string", "core/primitive/string-view");
+
         // Core ADTs. Payload-dependent does not mean Copy: affine payloads
         // make their carrier affine, and only the active tag is live.
         add(out, "Option", "core/option", Scope.CORE, Kind.TYPE, 1, 1,
@@ -220,6 +253,15 @@ public final class CoreTypeRegistry {
                 Ownership.PAYLOAD_DEPENDENT, Allocation.NONE, DropPolicy.ACTIVE_PAYLOAD_ONCE,
                 SendPolicy.PAYLOAD_DEPENDENT, LoweringStatus.CONTRACT_ONLY);
         return Collections.unmodifiableMap(out);
+    }
+
+    private static void addScalar(Map<String, TypeInfo> out, String name, String canonical) {
+        TypeInfo scalar = new TypeInfo(name, canonical, Scope.CORE, Kind.TYPE, 0, 0,
+                Ownership.COPY, Allocation.NONE, DropPolicy.NONE,
+                SendPolicy.ALWAYS, LoweringStatus.JAVA_INTRINSIC);
+        if (out.putIfAbsent(name, scalar) != null) {
+            throw new IllegalStateException("duplicate core scalar identity: " + name);
+        }
     }
 
     private static void add(Map<String, TypeInfo> out, String name, String module,
