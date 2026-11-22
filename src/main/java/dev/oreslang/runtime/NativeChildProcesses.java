@@ -115,7 +115,26 @@ public final class NativeChildProcesses implements AutoCloseable {
         }
 
         public CompletableFuture<ExitStatus> terminate() {
-            if (process.isAlive()) process.destroy();
+            if (process.isAlive()) {
+                process.destroy();
+                // A graceful signal must not create an unbounded await if
+                // the child ignores it. Escalation runs on a virtual thread,
+                // never on the caller's actor/root carrier.
+                try {
+                    Thread.ofVirtual().name("atto-process-escalation").start(() -> {
+                        try {
+                            Thread.sleep(500);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        } finally {
+                            if (process.isAlive()) process.destroyForcibly();
+                        }
+                    });
+                } catch (RuntimeException | Error failed) {
+                    process.destroyForcibly();
+                    throw failed;
+                }
+            }
             return waitForExit();
         }
 
