@@ -11,4 +11,5 @@ public final class NumericErrorAbi {
     private NumericErrorAbi() {}
 
     public static final int ARITHMETIC_OVERFLOW = 0x0001_0001;
+    public static final int DIVISION_BY_ZERO = 0x0001_0002;
 }
