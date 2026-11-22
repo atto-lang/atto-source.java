@@ -305,4 +305,41 @@ final class TelemetrySpanScopeTest {
             TelemetrySpanScope.disableExistingSites();
         }
     }
+    @Test
+    void otelStyleEventsAreBoundedOwnerCheckedAndNeverPersistAfterClose() {
+        TelemetrySpanScope.enableExistingSites(100, 10_000, "otel.");
+        TraceContext previous = TraceContext.install(PARENT);
+        try (TelemetrySpanScope scope = TelemetrySpanScope.open("otel.checkout")) {
+            scope.setAttribute("cart.items", 3);
+            assertEquals("3", scope.attributesSnapshot().get("cart.items"));
+            scope.addEvent("payment_started");
+            assertThrows(IllegalArgumentException.class,
+                    () -> TelemetrySpanScope.open("bad" + (char) 10 + "name"));
+            for (int i = 0; i < 32; i++) {
+                scope.addEvent("step." + i);
+            }
+            assertEquals(16, scope.eventsSnapshot().size());
+            assertEquals("payment_started", scope.eventsSnapshot().getFirst());
+            assertThrows(IllegalArgumentException.class,
+                    () -> scope.addEvent("newline" + (char) 10 + "forged"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> scope.addEvent("oversized_" + "x".repeat(81)));
+            scope.close();
+            assertThrows(IllegalStateException.class, () -> scope.addEvent("late"));
+            assertEquals(16, scope.eventsSnapshot().size(),
+                    "the host diagnostic view is immutable after lexical close");
+            assertThrows(UnsupportedOperationException.class,
+                    () -> scope.eventsSnapshot().add("forged"));
+        } finally {
+            TraceContext.install(previous);
+            TelemetrySpanScope.disableExistingSites();
+        }
+        try (TelemetrySpanScope disabled = TelemetrySpanScope.open("otel.disabled")) {
+            disabled.addEvent("valid_event");
+            disabled.setAttribute("safe.key", "value");
+            assertTrue(disabled.eventsSnapshot().isEmpty());
+            assertTrue(disabled.attributesSnapshot().isEmpty());
+        }
+    }
+
 }
