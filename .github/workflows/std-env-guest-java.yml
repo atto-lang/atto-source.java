@@ -75,6 +75,7 @@ jobs:
             snapshotDoesNotInspectDeniedHostValues \
             missingCoarseEnvCapabilitySkipsEvenHostKeyEnumeration \
             snapshotBoundsAuthorizedValuesAndNeverPrintsContents \
+            contextSnapshotEnforcesAggregateAndKeyCountBudgets \
             projectCannotShadowCompilerOwnedStdEnv \
             scopedDenyPrecedesHostEnvironmentLookup \
             keyScopedDenyOverridesBroadAllowAndFallback \
