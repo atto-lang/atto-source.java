@@ -83,7 +83,12 @@ mvn -Dtest=ChannelStdlibAttoSourceTest test
 Expected fixtures: `buffered_fifo`, `rendezvous_pending`,
 `rendezvous_direct_read` (awaited ordinary receive on capacity zero),
 `immediate_probe`, `negative_capacity`, `owned_payload`,
-`close_drain`, `try_read` and `closed_move`. Guest execution, native
+`close_drain`, `try_read`, `closed_move`, `pending_reader_close`
+(registered pending reader settles on closure), and
+`try_read_closed_drained` (terminal closed is not open-empty).
+The two new terminal-close fixtures intentionally expect guest exceptions,
+not successful stdout. Execution is **NOT_VERIFIED** until a stepful exact-head
+GraalVM/JUnit run succeeds. Guest execution, native
 AOT, race/cancellation, and cross-compiler parity must remain marked
 NOT_EXECUTED until a stepful exact-head CI or local compiler receipt exists.
 
