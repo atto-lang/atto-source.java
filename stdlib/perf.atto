@@ -81,6 +81,13 @@ define module Perf as
       if started_ns <= 0; do
         return false;
       fi
+      // Reject at capacity before reading a clock or allocating Event.
+      if self.items.size >= self.capacity; do
+        if self.dropped < 2147483647; do
+          self.dropped = self.dropped + 1;
+        fi
+        return false;
+      fi
       val int finished = process.monotonic_ns();
       let int elapsed = 0;
       if finished >= started_ns; do
@@ -94,11 +101,25 @@ define module Perf as
       if !enabled; do
         return false;
       fi
+      // Reject at capacity before reading a clock or allocating Event.
+      if self.items.size >= self.capacity; do
+        if self.dropped < 2147483647; do
+          self.dropped = self.dropped + 1;
+        fi
+        return false;
+      fi
       return self.record_event(new Event(2, trace_id, 0, 0, probe_id, 0, delta));
     }
 
     pub record_gauge(mut self)(bool enabled, int trace_id, int probe_id, int amount) -> bool {
       if !enabled; do
+        return false;
+      fi
+      // Reject at capacity before reading a clock or allocating Event.
+      if self.items.size >= self.capacity; do
+        if self.dropped < 2147483647; do
+          self.dropped = self.dropped + 1;
+        fi
         return false;
       fi
       return self.record_event(new Event(3, trace_id, 0, 0, probe_id, 0, amount));
