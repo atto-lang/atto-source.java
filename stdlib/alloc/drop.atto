@@ -3,110 +3,109 @@
 // must perform the actual destruction and acknowledge it after success, even
 // during throw/raise/panic/cancellation unwinds. Integer tickets are not
 // authenticated owner handles or deallocation capabilities.
-define module drop as
+use namespace atto_alloc_drop;
 
-  pub define class DropStack as
-    let int limit;
-    let mut Array<int> tickets = new Array<int>();
-    let mut int depth = 0;
-    let mut int next_ticket = 1;
-    let mut bool pending = false;
-    let mut bool sealed = false;
+pub define class DropStack as
+  let int limit;
+  let mut Array<int> tickets = new Array<int>();
+  let mut int depth = 0;
+  let mut int next_ticket = 1;
+  let mut bool pending = false;
+  let mut bool sealed = false;
 
-    pub constructor(int max_entries) {
-      if max_entries < 1 || max_entries > 65536; do
-        rt fail("alloc/drop: capacity must be 1..65536");
-      fi
-      self.limit = max_entries;
-      for (let int i = 0; i < max_entries; i = i + 1) do
-        self.tickets.add(0);
-      done
-    }
-
-    // Returns 0 on admission failure. Tickets are never reused, including
-    // after generation exhaustion; caller does not acquire a physical owner.
-    pub register(mut self)(): int {
-      if self.sealed || self.pending || self.depth >= self.limit ||
-         self.next_ticket <= 0; do
-        return 0;
-      fi
-      let int ticket = self.next_ticket;
-      if ticket == 2147483647; do
-        self.next_ticket = 0;
-      else
-        self.next_ticket = ticket + 1;
-      fi
-      self.tickets.set(self.depth, ticket);
-      self.depth = self.depth + 1;
-      return ticket;
-    }
-
-    pub next_drop_ticket(): int {
-      if self.depth == 0; do return 0; fi
-      return self.tickets.get(self.depth - 1);
-    }
-
-    // Begin last destructor. No other destructor may start while this one
-    // is pending; an unacknowledged failure must not release physical memory.
-    pub begin_last(mut self)(int ticket): bool {
-      if self.depth == 0 || self.pending || ticket <= 0 ||
-         self.tickets.get(self.depth - 1) != ticket; do
-        return false;
-      fi
-      self.pending = true;
-      return true;
-    }
-
-    // Trusted adapter ONLY, after actual destructor and quiescence. Never
-    // interpret a user-supplied ticket as proof that destruction occurred.
-    pub finish_last(mut self)(int ticket): bool {
-      if !self.pending || self.depth == 0 || ticket <= 0 ||
-         self.tickets.get(self.depth - 1) != ticket; do
-        return false;
-      fi
-      self.tickets.set(self.depth - 1, 0);
-      self.depth = self.depth - 1;
-      self.pending = false;
-      return true;
-    }
-
-    pub seal(mut self)(): bool {
-      if self.sealed; do return false; fi
-      self.sealed = true;
-      return true;
-    }
-
-    pub len(): int { return self.depth; }
-    pub capacity(): int { return self.limit; }
-    pub drop_pending(): bool { return self.pending; }
-    pub is_sealed(): bool { return self.sealed; }
-    pub is_drained(): bool {
-      return self.sealed && self.depth == 0 && !self.pending;
-    }
-  end
-
-  pub fnc drop_stack(int max_entries): DropStack {
-    return new DropStack(max_entries);
+  pub constructor(int max_entries) {
+    if max_entries < 1 || max_entries > 65536; do
+      rt fail("alloc/drop: capacity must be 1..65536");
+    fi
+    self.limit = max_entries;
+    for (let int i = 0; i < max_entries; i = i + 1) do
+      self.tickets.add(0);
+    done
   }
 
-  pub fnc self_test(): bool {
-    let mut DropStack stack = new DropStack(2);
-    let int first = stack.register();
-    let int second = stack.register();
-    if first != 1 || second != 2 || stack.register() != 0 ||
-       stack.next_drop_ticket() != second ||
-       stack.begin_last(first) || stack.finish_last(second); do
+  // Returns 0 on admission failure. Tickets are never reused, including
+  // after generation exhaustion; caller does not acquire a physical owner.
+  pub register(mut self)(): int {
+    if self.sealed || self.pending || self.depth >= self.limit ||
+       self.next_ticket <= 0; do
+      return 0;
+    fi
+    let int ticket = self.next_ticket;
+    if ticket == 2147483647; do
+      self.next_ticket = 0;
+    else
+      self.next_ticket = ticket + 1;
+    fi
+    self.tickets.set(self.depth, ticket);
+    self.depth = self.depth + 1;
+    return ticket;
+  }
+
+  pub next_drop_ticket(): int {
+    if self.depth == 0; do return 0; fi
+    return self.tickets.get(self.depth - 1);
+  }
+
+  // Begin last destructor. No other destructor may start while this one
+  // is pending; an unacknowledged failure must not release physical memory.
+  pub begin_last(mut self)(int ticket): bool {
+    if self.depth == 0 || self.pending || ticket <= 0 ||
+       self.tickets.get(self.depth - 1) != ticket; do
       return false;
     fi
-    if !stack.begin_last(second) || stack.begin_last(second) ||
-       stack.register() != 0 || !stack.drop_pending() ||
-       !stack.finish_last(second) || stack.finish_last(second); do
+    self.pending = true;
+    return true;
+  }
+
+  // Trusted adapter ONLY, after actual destructor and quiescence. Never
+  // interpret a user-supplied ticket as proof that destruction occurred.
+  pub finish_last(mut self)(int ticket): bool {
+    if !self.pending || self.depth == 0 || ticket <= 0 ||
+       self.tickets.get(self.depth - 1) != ticket; do
       return false;
     fi
-    if !stack.seal() || stack.seal() || stack.register() != 0 ||
-       !stack.begin_last(first) || !stack.finish_last(first); do
-      return false;
-    fi
-    return stack.is_drained() && stack.next_drop_ticket() == 0;
+    self.tickets.set(self.depth - 1, 0);
+    self.depth = self.depth - 1;
+    self.pending = false;
+    return true;
+  }
+
+  pub seal(mut self)(): bool {
+    if self.sealed; do return false; fi
+    self.sealed = true;
+    return true;
+  }
+
+  pub len(): int { return self.depth; }
+  pub capacity(): int { return self.limit; }
+  pub drop_pending(): bool { return self.pending; }
+  pub is_sealed(): bool { return self.sealed; }
+  pub is_drained(): bool {
+    return self.sealed && self.depth == 0 && !self.pending;
   }
 end
+
+pub fnc drop_stack(int max_entries): DropStack {
+  return new DropStack(max_entries);
+}
+
+pub fnc self_test(): bool {
+  let mut DropStack stack = new DropStack(2);
+  let int first = stack.register();
+  let int second = stack.register();
+  if first != 1 || second != 2 || stack.register() != 0 ||
+     stack.next_drop_ticket() != second ||
+     stack.begin_last(first) || stack.finish_last(second); do
+    return false;
+  fi
+  if !stack.begin_last(second) || stack.begin_last(second) ||
+     stack.register() != 0 || !stack.drop_pending() ||
+     !stack.finish_last(second) || stack.finish_last(second); do
+    return false;
+  fi
+  if !stack.seal() || stack.seal() || stack.register() != 0 ||
+     !stack.begin_last(first) || !stack.finish_last(first); do
+    return false;
+  fi
+  return stack.is_drained() && stack.next_drop_ticket() == 0;
+}

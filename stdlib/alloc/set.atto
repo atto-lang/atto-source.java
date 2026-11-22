@@ -2,285 +2,284 @@
 // Explicit dense key domain [0, domain_size); no hashing, host collections,
 // fabricated generic Hash/Eq capabilities or uncontrolled resizing.
 // Owner-local Array<int> storage; no implicit Send/Sync or actor transfer.
-define module set as
+use namespace atto_alloc_set;
 
-  pub define class BoundedIntSet as
-    let int domain;
-    let mut Array<int> flags = new Array<int>();
-    let mut int members = 0;
+pub define class BoundedIntSet as
+  let int domain;
+  let mut Array<int> flags = new Array<int>();
+  let mut int members = 0;
 
-    pub constructor(int domain_size) {
-      if domain_size < 1 || domain_size > 65536; do
-        rt fail("alloc/set: domain must be 1..65536");
+  pub constructor(int domain_size) {
+    if domain_size < 1 || domain_size > 65536; do
+      rt fail("alloc/set: domain must be 1..65536");
+    fi
+    self.domain = domain_size;
+    for (let int i = 0; i < domain_size; i = i + 1) do
+      self.flags.add(0);
+    done
+  }
+
+  pub capacity(): int { return self.domain; }
+  pub len(): int { return self.members; }
+  pub is_empty(): bool { return self.members == 0; }
+
+  pub contains(int key): bool {
+    if key < 0 || key >= self.domain; do return false; fi
+    return self.flags.get(key) == 1;
+  }
+
+  // True only on a new insertion. Invalid/out-of-range keys fail closed.
+  pub insert(mut self)(int key): bool {
+    if key < 0 || key >= self.domain || self.flags.get(key) != 0; do
+      return false;
+    fi
+    self.flags.set(key, 1);
+    self.members = self.members + 1;
+    return true;
+  }
+
+  // True only when an existing member is removed.
+  pub remove(mut self)(int key): bool {
+    if key < 0 || key >= self.domain || self.flags.get(key) == 0; do
+      return false;
+    fi
+    self.flags.set(key, 0);
+    self.members = self.members - 1;
+    return true;
+  }
+
+  pub clear(mut self)(): void {
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      self.flags.set(i, 0);
+    done
+    self.members = 0;
+    return;
+  }
+
+  // Return the least present key >= start, or -1. Useful for deterministic
+  // enumeration without returning mutable aliases into backing storage.
+  pub next_from(int start): int {
+    if start < 0; do return -1; fi
+    for (let int i = start; i < self.domain; i = i + 1) do
+      if self.flags.get(i) == 1; do return i; fi
+    done
+    return -1;
+  }
+
+  // All binary operations require identical domains; a mismatch causes no
+  // mutation. Callers must not create overlapping mutable/immutable loans.
+  pub union_from(mut self)(BoundedIntSet other): bool {
+    if self.domain != other.capacity(); do return false; fi
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if other.contains(i) && self.flags.get(i) == 0; do
+        self.flags.set(i, 1);
+        self.members = self.members + 1;
       fi
-      self.domain = domain_size;
-      for (let int i = 0; i < domain_size; i = i + 1) do
-        self.flags.add(0);
-      done
-    }
+    done
+    return true;
+  }
 
-    pub capacity(): int { return self.domain; }
-    pub len(): int { return self.members; }
-    pub is_empty(): bool { return self.members == 0; }
-
-    pub contains(int key): bool {
-      if key < 0 || key >= self.domain; do return false; fi
-      return self.flags.get(key) == 1;
-    }
-
-    // True only on a new insertion. Invalid/out-of-range keys fail closed.
-    pub insert(mut self)(int key): bool {
-      if key < 0 || key >= self.domain || self.flags.get(key) != 0; do
-        return false;
-      fi
-      self.flags.set(key, 1);
-      self.members = self.members + 1;
-      return true;
-    }
-
-    // True only when an existing member is removed.
-    pub remove(mut self)(int key): bool {
-      if key < 0 || key >= self.domain || self.flags.get(key) == 0; do
-        return false;
-      fi
-      self.flags.set(key, 0);
-      self.members = self.members - 1;
-      return true;
-    }
-
-    pub clear(mut self)(): void {
-      for (let int i = 0; i < self.domain; i = i + 1) do
+  pub intersect_from(mut self)(BoundedIntSet other): bool {
+    if self.domain != other.capacity(); do return false; fi
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if self.flags.get(i) == 1 && !other.contains(i); do
         self.flags.set(i, 0);
-      done
-      self.members = 0;
-      return;
-    }
-
-    // Return the least present key >= start, or -1. Useful for deterministic
-    // enumeration without returning mutable aliases into backing storage.
-    pub next_from(int start): int {
-      if start < 0; do return -1; fi
-      for (let int i = start; i < self.domain; i = i + 1) do
-        if self.flags.get(i) == 1; do return i; fi
-      done
-      return -1;
-    }
-
-    // All binary operations require identical domains; a mismatch causes no
-    // mutation. Callers must not create overlapping mutable/immutable loans.
-    pub union_from(mut self)(BoundedIntSet other): bool {
-      if self.domain != other.capacity(); do return false; fi
-      for (let int i = 0; i < self.domain; i = i + 1) do
-        if other.contains(i) && self.flags.get(i) == 0; do
-          self.flags.set(i, 1);
-          self.members = self.members + 1;
-        fi
-      done
-      return true;
-    }
-
-    pub intersect_from(mut self)(BoundedIntSet other): bool {
-      if self.domain != other.capacity(); do return false; fi
-      for (let int i = 0; i < self.domain; i = i + 1) do
-        if self.flags.get(i) == 1 && !other.contains(i); do
-          self.flags.set(i, 0);
-          self.members = self.members - 1;
-        fi
-      done
-      return true;
-    }
-
-    pub subtract_from(mut self)(BoundedIntSet other): bool {
-      if self.domain != other.capacity(); do return false; fi
-      for (let int i = 0; i < self.domain; i = i + 1) do
-        if self.flags.get(i) == 1 && other.contains(i); do
-          self.flags.set(i, 0);
-          self.members = self.members - 1;
-        fi
-      done
-      return true;
-    }
-
-    pub is_subset_of(BoundedIntSet other): bool {
-      if self.domain != other.capacity(); do return false; fi
-      for (let int i = 0; i < self.domain; i = i + 1) do
-        if self.flags.get(i) == 1 && !other.contains(i); do
-          return false;
-        fi
-      done
-      return true;
-    }
-  end
-
-  // A real, bounded open-addressed Set of arbitrary *signed integer* keys.
-  // No generic Hash/Eq or cross-thread sharing is inferred from this class.
-  // States: 0=empty, 1=live, 2=tombstone.
-  pub define class IntHashSet as
-    let int limit;
-    let mut Array<int> states = new Array<int>();
-    let mut Array<int> keys = new Array<int>();
-    let mut int count = 0;
-    let mut int tombs = 0;
-
-    pub constructor(int capacity) {
-      if capacity < 1 || capacity > 65536; do
-        rt fail("alloc/set: hash capacity must be 1..65536");
+        self.members = self.members - 1;
       fi
-      self.limit = capacity;
-      for (let int i = 0; i < capacity; i = i + 1) do
-        self.states.add(0);
-        self.keys.add(0);
-      done
-    }
+    done
+    return true;
+  }
 
-    home(int key): int {
-      // Signed remainder is bounded by capacity-1; correction cannot overflow.
-      let int remainder = key % self.limit;
-      if remainder < 0; do return remainder + self.limit; fi
-      return remainder;
-    }
-
-    pub capacity(): int { return self.limit; }
-    pub len(): int { return self.count; }
-    pub tombstones(): int { return self.tombs; }
-    pub is_empty(): bool { return self.count == 0; }
-
-    pub contains(int key): bool {
-      let int start = self.home(key);
-      for (let int step = 0; step < self.limit; step = step + 1) do
-        let mut int pos = start + step;
-        if pos >= self.limit; do pos = pos - self.limit; fi
-        let int state = self.states.get(pos);
-        if state == 0; do return false; fi
-        if state == 1 && self.keys.get(pos) == key; do return true; fi
-      done
-      return false;
-    }
-
-    // Full probe first: a tombstone can precede a duplicate key.
-    pub insert(mut self)(int key): bool {
-      if self.count >= self.limit; do return false; fi
-      let int start = self.home(key);
-      let mut int tomb = -1;
-      for (let int step = 0; step < self.limit; step = step + 1) do
-        let mut int pos = start + step;
-        if pos >= self.limit; do pos = pos - self.limit; fi
-        let int state = self.states.get(pos);
-        if state == 1; do
-          if self.keys.get(pos) == key; do return false; fi
-        else
-          if state == 2; do
-            if tomb < 0; do tomb = pos; fi
-          else
-            let mut int chosen = pos;
-            if tomb >= 0; do chosen = tomb; fi
-            self.states.set(chosen, 1);
-            self.keys.set(chosen, key);
-            self.count = self.count + 1;
-            if tomb >= 0; do self.tombs = self.tombs - 1; fi
-            return true;
-          fi
-        fi
-      done
-      if tomb >= 0; do
-        self.states.set(tomb, 1);
-        self.keys.set(tomb, key);
-        self.count = self.count + 1;
-        self.tombs = self.tombs - 1;
-        return true;
+  pub subtract_from(mut self)(BoundedIntSet other): bool {
+    if self.domain != other.capacity(); do return false; fi
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if self.flags.get(i) == 1 && other.contains(i); do
+        self.flags.set(i, 0);
+        self.members = self.members - 1;
       fi
-      return false;
-    }
-
-    pub remove(mut self)(int key): bool {
-      let int start = self.home(key);
-      for (let int step = 0; step < self.limit; step = step + 1) do
-        let mut int pos = start + step;
-        if pos >= self.limit; do pos = pos - self.limit; fi
-        let int state = self.states.get(pos);
-        if state == 0; do return false; fi
-        if state == 1 && self.keys.get(pos) == key; do
-          self.states.set(pos, 2);
-          self.keys.set(pos, 0);
-          self.count = self.count - 1;
-          self.tombs = self.tombs + 1;
-          return true;
-        fi
-      done
-      return false;
-    }
-
-    pub clear(mut self)(): void {
-      for (let int i = 0; i < self.limit; i = i + 1) do
-        self.states.set(i, 0);
-        self.keys.set(i, 0);
-      done
-      self.count = 0;
-      self.tombs = 0;
-      return;
-    }
-  end
-
-  pub fnc int_hash_set(int capacity): IntHashSet {
-    return new IntHashSet(capacity);
+    done
+    return true;
   }
 
-  pub fnc hash_set_self_test(): bool {
-    let mut IntHashSet table = new IntHashSet(4);
-    // Signed -1, 3 and 7 all collide at bucket 3.
-    if !table.insert(-1) || !table.insert(3) ||
-       !table.insert(7) || table.insert(3) ||
-       !table.contains(-1) || !table.contains(7) ||
-       table.len() != 3; do return false; fi
-    if !table.remove(3) || table.remove(3) ||
-       !table.contains(7) || table.tombstones() != 1; do
-      return false;
-    fi
-    if !table.insert(11) || table.tombstones() != 0 ||
-       table.contains(3) || !table.contains(11) ||
-       !table.insert(15) || table.insert(19); do
-      return false;
-    fi
-    if !table.remove(-1) || !table.remove(7) ||
-       !table.remove(11) || !table.remove(15) ||
-       !table.is_empty(); do return false; fi
-    // Fully tombstoned table still admits new data.
-    if !table.insert(0) || !table.contains(0); do
-      return false;
-    fi
-    table.clear();
-    return table.is_empty() && table.tombstones() == 0 &&
-           !table.contains(0);
-  }
-
-  pub fnc bounded_int_set(int domain_size): BoundedIntSet {
-    return new BoundedIntSet(domain_size);
-  }
-
-  pub fnc self_test(): bool {
-    let mut BoundedIntSet lhs = new BoundedIntSet(8);
-    let mut BoundedIntSet rhs = new BoundedIntSet(8);
-    let mut BoundedIntSet wrong = new BoundedIntSet(7);
-    if !lhs.insert(2) || !lhs.insert(4) || lhs.insert(2) ||
-       lhs.insert(-1) || lhs.insert(8) ||
-       lhs.len() != 2 || lhs.next_from(0) != 2 ||
-       lhs.next_from(3) != 4 || lhs.next_from(5) != -1; do
-      return false;
-    fi
-    rhs.insert(4);
-    rhs.insert(7);
-    if lhs.union_from(wrong) || lhs.len() != 2 ||
-       !lhs.union_from(rhs) || lhs.len() != 3 ||
-       !lhs.contains(7) || !rhs.is_subset_of(lhs); do
-      return false;
-    fi
-    if !lhs.intersect_from(rhs) || lhs.len() != 2 ||
-       lhs.contains(2) || !lhs.subtract_from(rhs) ||
-       !lhs.is_empty() || lhs.remove(4); do
-      return false;
-    fi
-    lhs.insert(0);
-    lhs.clear();
-    return lhs.len() == 0 && !lhs.contains(0) && hash_set_self_test();
+  pub is_subset_of(BoundedIntSet other): bool {
+    if self.domain != other.capacity(); do return false; fi
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if self.flags.get(i) == 1 && !other.contains(i); do
+        return false;
+      fi
+    done
+    return true;
   }
 end
+
+// A real, bounded open-addressed Set of arbitrary *signed integer* keys.
+// No generic Hash/Eq or cross-thread sharing is inferred from this class.
+// States: 0=empty, 1=live, 2=tombstone.
+pub define class IntHashSet as
+  let int limit;
+  let mut Array<int> states = new Array<int>();
+  let mut Array<int> keys = new Array<int>();
+  let mut int count = 0;
+  let mut int tombs = 0;
+
+  pub constructor(int capacity) {
+    if capacity < 1 || capacity > 65536; do
+      rt fail("alloc/set: hash capacity must be 1..65536");
+    fi
+    self.limit = capacity;
+    for (let int i = 0; i < capacity; i = i + 1) do
+      self.states.add(0);
+      self.keys.add(0);
+    done
+  }
+
+  home(int key): int {
+    // Signed remainder is bounded by capacity-1; correction cannot overflow.
+    let int remainder = key % self.limit;
+    if remainder < 0; do return remainder + self.limit; fi
+    return remainder;
+  }
+
+  pub capacity(): int { return self.limit; }
+  pub len(): int { return self.count; }
+  pub tombstones(): int { return self.tombs; }
+  pub is_empty(): bool { return self.count == 0; }
+
+  pub contains(int key): bool {
+    let int start = self.home(key);
+    for (let int step = 0; step < self.limit; step = step + 1) do
+      let mut int pos = start + step;
+      if pos >= self.limit; do pos = pos - self.limit; fi
+      let int state = self.states.get(pos);
+      if state == 0; do return false; fi
+      if state == 1 && self.keys.get(pos) == key; do return true; fi
+    done
+    return false;
+  }
+
+  // Full probe first: a tombstone can precede a duplicate key.
+  pub insert(mut self)(int key): bool {
+    if self.count >= self.limit; do return false; fi
+    let int start = self.home(key);
+    let mut int tomb = -1;
+    for (let int step = 0; step < self.limit; step = step + 1) do
+      let mut int pos = start + step;
+      if pos >= self.limit; do pos = pos - self.limit; fi
+      let int state = self.states.get(pos);
+      if state == 1; do
+        if self.keys.get(pos) == key; do return false; fi
+      else
+        if state == 2; do
+          if tomb < 0; do tomb = pos; fi
+        else
+          let mut int chosen = pos;
+          if tomb >= 0; do chosen = tomb; fi
+          self.states.set(chosen, 1);
+          self.keys.set(chosen, key);
+          self.count = self.count + 1;
+          if tomb >= 0; do self.tombs = self.tombs - 1; fi
+          return true;
+        fi
+      fi
+    done
+    if tomb >= 0; do
+      self.states.set(tomb, 1);
+      self.keys.set(tomb, key);
+      self.count = self.count + 1;
+      self.tombs = self.tombs - 1;
+      return true;
+    fi
+    return false;
+  }
+
+  pub remove(mut self)(int key): bool {
+    let int start = self.home(key);
+    for (let int step = 0; step < self.limit; step = step + 1) do
+      let mut int pos = start + step;
+      if pos >= self.limit; do pos = pos - self.limit; fi
+      let int state = self.states.get(pos);
+      if state == 0; do return false; fi
+      if state == 1 && self.keys.get(pos) == key; do
+        self.states.set(pos, 2);
+        self.keys.set(pos, 0);
+        self.count = self.count - 1;
+        self.tombs = self.tombs + 1;
+        return true;
+      fi
+    done
+    return false;
+  }
+
+  pub clear(mut self)(): void {
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      self.states.set(i, 0);
+      self.keys.set(i, 0);
+    done
+    self.count = 0;
+    self.tombs = 0;
+    return;
+  }
+end
+
+pub fnc int_hash_set(int capacity): IntHashSet {
+  return new IntHashSet(capacity);
+}
+
+pub fnc hash_set_self_test(): bool {
+  let mut IntHashSet table = new IntHashSet(4);
+  // Signed -1, 3 and 7 all collide at bucket 3.
+  if !table.insert(-1) || !table.insert(3) ||
+     !table.insert(7) || table.insert(3) ||
+     !table.contains(-1) || !table.contains(7) ||
+     table.len() != 3; do return false; fi
+  if !table.remove(3) || table.remove(3) ||
+     !table.contains(7) || table.tombstones() != 1; do
+    return false;
+  fi
+  if !table.insert(11) || table.tombstones() != 0 ||
+     table.contains(3) || !table.contains(11) ||
+     !table.insert(15) || table.insert(19); do
+    return false;
+  fi
+  if !table.remove(-1) || !table.remove(7) ||
+     !table.remove(11) || !table.remove(15) ||
+     !table.is_empty(); do return false; fi
+  // Fully tombstoned table still admits new data.
+  if !table.insert(0) || !table.contains(0); do
+    return false;
+  fi
+  table.clear();
+  return table.is_empty() && table.tombstones() == 0 &&
+         !table.contains(0);
+}
+
+pub fnc bounded_int_set(int domain_size): BoundedIntSet {
+  return new BoundedIntSet(domain_size);
+}
+
+pub fnc self_test(): bool {
+  let mut BoundedIntSet lhs = new BoundedIntSet(8);
+  let mut BoundedIntSet rhs = new BoundedIntSet(8);
+  let mut BoundedIntSet wrong = new BoundedIntSet(7);
+  if !lhs.insert(2) || !lhs.insert(4) || lhs.insert(2) ||
+     lhs.insert(-1) || lhs.insert(8) ||
+     lhs.len() != 2 || lhs.next_from(0) != 2 ||
+     lhs.next_from(3) != 4 || lhs.next_from(5) != -1; do
+    return false;
+  fi
+  rhs.insert(4);
+  rhs.insert(7);
+  if lhs.union_from(wrong) || lhs.len() != 2 ||
+     !lhs.union_from(rhs) || lhs.len() != 3 ||
+     !lhs.contains(7) || !rhs.is_subset_of(lhs); do
+    return false;
+  fi
+  if !lhs.intersect_from(rhs) || lhs.len() != 2 ||
+     lhs.contains(2) || !lhs.subtract_from(rhs) ||
+     !lhs.is_empty() || lhs.remove(4); do
+    return false;
+  fi
+  lhs.insert(0);
+  lhs.clear();
+  return lhs.len() == 0 && !lhs.contains(0) && hash_set_self_test();
+}
