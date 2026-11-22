@@ -3689,6 +3689,13 @@ public final class TypeChecker {
                 }
                 return local.type();
             }
+            // A linked lowercase 'process' module is a lexical module
+            // namespace, not the ambient process intrinsic. std.process
+            // remains the explicit intrinsic inside its implementation.
+            if (name.name().equals("process") && modules.containsKey("process")) {
+                rejectUnimportedModuleNamespace("process");
+                return moduleShape(modules.get("process"));
+            }
             if (name.name().equals("stdio")
                     || name.name().equals("std")
                     || name.name().equals("process")
