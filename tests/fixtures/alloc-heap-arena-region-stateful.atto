@@ -27,8 +27,9 @@ pub fnc main(): int {
   if a.try_rewind(2, 0, 0, 0) then return 17; fi
   if a.try_rewind(1, 0, 1, 0) then return 18; fi
   if !a.try_rewind(1, 0, 0, 0) then return 19; fi
+  if a.epoch() != 2 then return 35; fi
   if !a.try_reset(0, 0) then return 20; fi
-  if a.epoch() != 2 then return 21; fi
+  if a.epoch() != 3 then return 21; fi
   if a.try_rewind(1, 0, 0, 0) then return 22; fi
   if !a.seal() then return 23; fi
   if a.try_reserve(1, 1) != -1 then return 24; fi
