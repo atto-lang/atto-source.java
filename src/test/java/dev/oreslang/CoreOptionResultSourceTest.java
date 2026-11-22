@@ -67,7 +67,7 @@ final class CoreOptionResultSourceTest {
                 Map.of(),
                 stdout,
                 stderr);
-        assertEquals("M42:Etrue:true", stdout.toString(StandardCharsets.UTF_8)
+        assertEquals("M42:Etrue:true:true", stdout.toString(StandardCharsets.UTF_8)
                 .replace("\r\n", "\n").strip());
     }
 
