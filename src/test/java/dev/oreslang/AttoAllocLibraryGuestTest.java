@@ -85,6 +85,16 @@ final class AttoAllocLibraryGuestTest {
     }
 
     @Test
+    void movedRegionOwnerCannotBeUsedAfterTransfer() throws Exception {
+        Path source = Path.of("tests/fixtures/alloc-region-moved-owner-reject.atto");
+        assertTrue(Files.isRegularFile(source));
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.validate(source, Map.of()));
+        assertTrue(failure.getMessage().toLowerCase(java.util.Locale.ROOT).contains("moved"),
+                () -> "expected genuine ownership rejection: " + failure.getMessage());
+    }
+
+    @Test
     void invalidPackagePathCannotFallBackToAmbientModule() throws Exception {
         Path entry = temp.resolve("invalid.atto");
         Files.writeString(entry, """
