@@ -41,8 +41,12 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
+      - name: Self-test fail-closed numerical JUnit receipt verifier
+        run: python3 -m unittest discover -s tests -p 'test_verify_numeric_junit_receipts.py' -v
       - name: Execute checked scalar and IEEE ordering unit + real guest JUnit
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
             -Dtest=NumericValueOrderingTest,NumericValueEqualityExactTest,NumericGuestOrderingV1Test,TreeShakerNumericEqualityTest,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest \
             test
+      - name: Require all eight numerical JVM guest suites to have actually run
+        run: python3 scripts/verify_numeric_junit_receipts.py target/surefire-reports
