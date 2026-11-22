@@ -68,6 +68,31 @@ final class CoreFourGuestTest {
                 "actual compiled Atto smoke guest must exit 42; stderr=" + stderr);
     }
 
+
+    @Test
+    void importedCoreCellCannotBypassCompilerOwnershipChecks() throws Exception {
+        // These are real linked-source compiler negatives, not checks of
+        // the core/cell integer-state model. Policy helpers do not issue loans.
+        for (String fixture : new String[] {
+                "borrow-use-after-take.atto", "borrow-escape.atto"
+        }) {
+            Path source = FIXTURES.resolve(fixture);
+            assertTrue(Files.isRegularFile(source), source.toString());
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(source, Map.of()), fixture);
+            String diagnostic = String.valueOf(failure.getMessage()).toLowerCase();
+            if (fixture.equals("borrow-use-after-take.atto")) {
+                assertTrue(diagnostic.contains("moved") || diagnostic.contains("move"),
+                        fixture + ": " + failure.getMessage());
+            } else {
+                assertTrue(diagnostic.contains("borrow") && (
+                        diagnostic.contains("outlive") || diagnostic.contains("return")),
+                        fixture + ": " + failure.getMessage());
+            }
+        }
+    }
+
     @Test
     void requiresFalseRemainsTrappableInGuestExecution() throws Exception {
         Path negative = FIXTURES.resolve("contract-failure.atto");
