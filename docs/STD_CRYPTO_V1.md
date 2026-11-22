@@ -9,6 +9,7 @@ A module path of `"std.crypto"` is the intended core import (never
 need implementation and an executed compiler-backed test**. Do not promote
 the fixture or this PR as proof of functioning encryption.
 
+\n### Java trusted-host progress (this PR)\n\n\`src/main/java/dev/oreslang/runtime/AeadPrimitives.java\` now implements\nAES-256-GCM and IETF ChaCha20-Poly1305 using JCA ciphers (not\nhandwritten primitives). Fresh opaque keys cannot be imported or exported;\nper-key 4-byte random prefixes plus synchronized 64-bit counters reserve\nunique 12-byte nonces. Handles implement explicit \`close()\` key scrubbing.\nCiphertexts include a full 16-byte tag and are only returned after\nauthentication. Bad tags/wrong key/wrong AAD produce one error.\n\nHost-only Java 21 smoke compilation and execution passed for both ciphers,\nround trips, repeated unique nonces, tampering, wrong AAD/key/nonce,\nzero-length messages, defensive output copies and closed handles. The\nretrieved Git blob hash of the tested source was\n\`4a7c7e9774c4f3109c876895011ea748bfa331e2\`. The repo also has\n\`AeadPrimitivesTest.java\` JUnit tests, but the **JUnit project suite and\nactual guest compiler, importer and AOT tests remain NOT_EXECUTED**.\nThis host primitive is not yet guest-callable, and its opaque key handle\nwill need actor-lifecycle ownership, no-log, capabilities and memory gates\nwhen integrated. Avoid claiming it is a released \`std.crypto\` API.\n
 ## Public API to implement
 
 - `hash.sha256(bytes) -> Bytes` and `mac.hmac_sha256(secret, bytes) -> Bytes`.
