@@ -44,15 +44,19 @@ public final class AsyncSqliteDurableProviderV1 {
         // Opening SQLite is itself disk I/O: never do it on the caller/carrier.
         pending = 1;
         io.execute(() -> {
+            Throwable failure = null;
             try {
                 requireHostIoWorker();
                 store = SqliteDurableActorStore.open(file);
-                ready.complete(null);
-            } catch (Throwable failure) {
-                ready.completeExceptionally(failure);
+            } catch (Throwable error) {
+                failure = error;
             } finally {
+                // Free the I/O slot BEFORE notifying readiness. A callback
+                // can chain the first operation even with maxPending=1.
                 finished();
             }
+            if (failure == null) ready.complete(null);
+            else ready.completeExceptionally(failure);
         });
     }
 
@@ -83,17 +87,25 @@ public final class AsyncSqliteDurableProviderV1 {
         CompletableFuture<T> response = new CompletableFuture<>();
         try {
             io.execute(() -> {
+                T value = null;
+                Throwable failure = null;
                 try {
                     requireHostIoWorker();
                     // Opening is the FIRST task on this same serial worker.
                     if (!ready.isDone() || ready.isCompletedExceptionally())
                         throw new IllegalStateException("SQLite provider failed to open");
-                    response.complete(op.apply(store));
-                } catch (Throwable failure) {
-                    response.completeExceptionally(failure);
+                    value = op.apply(store);
+                } catch (Throwable error) {
+                    failure = error;
                 } finally {
+                    // The SQLite work is complete. Release the admission slot
+                    // before invoking user/host completion callbacks. Chained
+                    // replay ops therefore work at maxPending=1; a concurrent
+                    // close is still queued AFTER the current worker turn.
                     finished();
                 }
+                if (failure == null) response.complete(value);
+                else response.completeExceptionally(failure);
             });
         } catch (RejectedExecutionException rejected) {
             finished();
