@@ -22,7 +22,45 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public final class AttoM6Runtime implements AutoCloseable {
     @FunctionalInterface public interface Receive { void receive(long value) throws Exception; }
+    @FunctionalInterface public interface ReceiveWithResult { long receive(long value) throws Exception; }
     public enum Admission { ACCEPTED, FULL, CLOSED, STALE }
+    // Host-issued, opaque per-mail authority. Never a guest-visible wire token.
+    public enum TicketState { ADMITTED, STARTED, PROCESSED, FAILED, ABANDONED }
+    // Correlation data is validated by an authenticated host gateway before
+    // enqueue. This record is NOT an authorization capability by itself.
+    public record ReceiptRoute(int protocolMajor, long tenant, long callerIncarnation,
+            long targetActor, long targetIncarnation, long associationGeneration,
+            long placementEpoch, long messageId, long attempt) {
+        boolean valid_for(ActorRef ref) {
+            return protocolMajor == 1 && tenant > 0 && callerIncarnation > 0 &&
+                targetActor > 0 && targetIncarnation > 0 &&
+                associationGeneration > 0 && placementEpoch > 0 &&
+                messageId > 0 && attempt > 0 && ref != null &&
+                targetIncarnation == ref.generation();
+        }
+    }
+    public static final class Ticket {
+        private final AttoM6Runtime runtime;
+        private final ActorRef destination;
+        private final ReceiptRoute route;
+        private final long sequence;
+        private TicketState state = TicketState.ADMITTED;
+        private boolean hasResult;
+        private long result;
+        private Ticket(AttoM6Runtime runtime, ActorRef destination, ReceiptRoute route,
+                       long sequence) {
+            this.runtime = runtime; this.destination = destination;
+            this.route = route; this.sequence = sequence;
+        }
+    }
+    public record TicketAdmission(Admission admission, Ticket ticket) {
+        public TicketAdmission {
+            if ((admission == Admission.ACCEPTED) != (ticket != null))
+                throw new IllegalArgumentException("ticket must be minted on mailbox admission");
+        }
+    }
+    public record TicketSnapshot(TicketState state, boolean hasResult, long result) {}
+    private record Mail(long value, Ticket ticket) {}
     public enum ControlKind { STOP, PANIC }
     // Object identity as well as generation fence: no forged/reused ActorRef authority.
     public record ActorRef(String name, long generation) {}
@@ -43,8 +81,10 @@ public final class AttoM6Runtime implements AutoCloseable {
     private static final class Actor {
         final ActorRef ref;
         final Receive handler;
+        final ReceiveWithResult resultHandler;
         final int capacity;
-        final ArrayDeque<Long> inbox = new ArrayDeque<>();
+        final ArrayDeque<Mail> inbox = new ArrayDeque<>();
+        long nextTicketSequence;
         final Set<Long> workers = new HashSet<>();
         long accepted, completed, failed, abandoned, controlsDelivered;
         long turnStartedNanos, maxTurnNanos, overBudgetTurns, watchdogNotices;
@@ -53,8 +93,9 @@ public final class AttoM6Runtime implements AutoCloseable {
         boolean controlQueued;
         ControlKind pendingControl, lastControl;
         String failureType;
-        Actor(ActorRef ref, Receive handler, int capacity) {
-            this.ref = ref; this.handler = handler; this.capacity = capacity;
+        Actor(ActorRef ref, Receive handler, ReceiveWithResult resultHandler, int capacity) {
+            this.ref = ref; this.handler = handler;
+            this.resultHandler = resultHandler; this.capacity = capacity;
         }
     }
     private static final class Registration {
@@ -121,8 +162,18 @@ public final class AttoM6Runtime implements AutoCloseable {
     }
 
     public ActorRef spawn(String name, int capacity, Receive handler) {
-        if (name == null || name.isEmpty() || name.length() > 128 || handler == null ||
-            capacity < 1 || capacity > 4096) throw new IllegalArgumentException("invalid actor");
+        if (handler == null) throw new IllegalArgumentException("null receive");
+        return spawn_internal(name, capacity, handler, null);
+    }
+    public ActorRef spawn_with_result(String name, int capacity, ReceiveWithResult handler) {
+        if (handler == null) throw new IllegalArgumentException("null result receive");
+        return spawn_internal(name, capacity, null, handler);
+    }
+    private ActorRef spawn_internal(String name, int capacity, Receive handler,
+                                    ReceiveWithResult resultHandler) {
+        if (name == null || name.isEmpty() || name.length() > 128 ||
+            capacity < 1 || capacity > 4096)
+            throw new IllegalArgumentException("invalid actor");
         synchronized (gate) {
             if (stopping || closing) throw new IllegalStateException("runtime stopping");
             Actor prior = actors.get(name);
@@ -132,7 +183,7 @@ public final class AttoM6Runtime implements AutoCloseable {
             long generation = Math.addExact(generations.getOrDefault(name, 0L), 1L);
             generations.put(name, generation);
             ActorRef ref = new ActorRef(name, generation);
-            actors.put(name, new Actor(ref, handler, capacity));
+            actors.put(name, new Actor(ref, handler, resultHandler, capacity));
             return ref;
         }
     }
@@ -145,16 +196,91 @@ public final class AttoM6Runtime implements AutoCloseable {
     }
 
     public Admission try_send(ActorRef ref, long value) {
+        // Legacy local/NIO sends require no reply ticket, but share the same
+        // linearizable M6 bounded admission semantics and actor fences.
         synchronized (gate) {
             Actor actor = resolve(ref);
             if (actor == null) return Admission.STALE;
-            if (!actor.accepting || actor.fenced || stopping || closing) return Admission.CLOSED;
+            if (!actor.accepting || actor.fenced || stopping || closing)
+                return Admission.CLOSED;
             if (actor.inbox.size() >= actor.capacity) return Admission.FULL;
-            actor.inbox.addLast(value);
+            actor.inbox.addLast(new Mail(value, null));
             actor.accepted++;
             schedule(actor);
             return Admission.ACCEPTED;
         }
+    }
+    // Only a trusted host gateway can supply a prevalidated route, and only
+    // this mailbox may issue the opaque ticket for that route after admission.
+    public TicketAdmission try_send_ticket(ActorRef ref, long value, ReceiptRoute route) {
+        if (route == null || !route.valid_for(ref))
+            throw new IllegalArgumentException("invalid scoped receipt route");
+        synchronized (gate) { return enqueue(ref, value, route); }
+    }
+    private TicketAdmission enqueue(ActorRef ref, long value, ReceiptRoute route) {
+        Actor actor = resolve(ref);
+        if (actor == null) return new TicketAdmission(Admission.STALE, null);
+        if (!actor.accepting || actor.fenced || stopping || closing)
+            return new TicketAdmission(Admission.CLOSED, null);
+        if (actor.inbox.size() >= actor.capacity)
+            return new TicketAdmission(Admission.FULL, null);
+        actor.nextTicketSequence = Math.addExact(actor.nextTicketSequence, 1L);
+        Ticket ticket = new Ticket(this, actor.ref, route, actor.nextTicketSequence);
+        actor.inbox.addLast(new Mail(value, ticket));
+        actor.accepted++;
+        schedule(actor);
+        return new TicketAdmission(Admission.ACCEPTED, ticket);
+    }
+    private void check_ticket(Ticket ticket) {
+        if (ticket == null || ticket.runtime != this ||
+            ticket.destination == null || ticket.route == null ||
+            ticket.sequence <= 0)
+            throw new IllegalArgumentException("foreign/unissued ticket");
+    }
+    public TicketSnapshot ticket_snapshot(Ticket ticket) {
+        synchronized (gate) {
+            check_ticket(ticket);
+            return new TicketSnapshot(ticket.state, ticket.hasResult, ticket.result);
+        }
+    }
+    public ReceiptRoute ticket_route(Ticket ticket) {
+        synchronized (gate) {
+            check_ticket(ticket);
+            return ticket.route;
+        }
+    }
+    // Only a trusted host I/O thread may block; carrier/CONTROL/reactor never parks.
+    public TicketSnapshot await_ticket(Ticket ticket, TicketState desired,
+                                        long timeoutMillis) throws InterruptedException {
+        if (carriers.contains(Thread.currentThread()) ||
+            Thread.currentThread() == supervisor || Thread.currentThread() == reactor ||
+            Thread.currentThread() == watchdog)
+            throw new IllegalStateException("ticket await on runtime thread");
+        if ((desired != TicketState.STARTED && desired != TicketState.PROCESSED) ||
+            timeoutMillis < 0 || timeoutMillis > 60_000)
+            throw new IllegalArgumentException("invalid ticket wait");
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        synchronized (gate) {
+            check_ticket(ticket);
+            for (;;) {
+                TicketState state = ticket.state;
+                if (state == TicketState.PROCESSED || state == TicketState.FAILED ||
+                    state == TicketState.ABANDONED ||
+                    (desired == TicketState.STARTED && state == TicketState.STARTED))
+                    return new TicketSnapshot(state, ticket.hasResult, ticket.result);
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0)
+                    return new TicketSnapshot(state, ticket.hasResult, ticket.result);
+                TimeUnit.NANOSECONDS.timedWait(gate, remaining);
+            }
+        }
+    }
+    private void abandon_queued(Actor actor) {
+        for (Mail mail : actor.inbox)
+            if (mail.ticket() != null) mail.ticket().state = TicketState.ABANDONED;
+        actor.abandoned += actor.inbox.size();
+        actor.inbox.clear();
+        gate.notifyAll();
     }
     private void schedule(Actor actor) {
         if (!actor.scheduled && !actor.running && !actor.fenced && !actor.inbox.isEmpty()) {
@@ -218,8 +344,7 @@ public final class AttoM6Runtime implements AutoCloseable {
                     if (kind == ControlKind.PANIC) {
                         actor.fenced = true;
                         actor.accepting = false;
-                        actor.abandoned += actor.inbox.size();
-                        actor.inbox.clear();
+                        abandon_queued(actor);
                     }
                     maybe_retire(actor);
                     gate.notifyAll();
@@ -236,7 +361,7 @@ public final class AttoM6Runtime implements AutoCloseable {
         try {
             while (true) {
                 Actor actor;
-                long mail;
+                Mail mail;
                 synchronized (gate) {
                     while (true) {
                         if (stopping && ready.isEmpty() && controls.isEmpty()) return;
@@ -247,6 +372,7 @@ public final class AttoM6Runtime implements AutoCloseable {
                         if (actor.retired || actor.fenced || actor.running || actor.inbox.isEmpty())
                             continue;
                         mail = actor.inbox.removeFirst();
+                        if (mail.ticket() != null) mail.ticket().state = TicketState.STARTED;
                         actor.running = true;
                         actor.turnStartedNanos = System.nanoTime();
                         actor.currentTurnNotified = false;
@@ -257,8 +383,12 @@ public final class AttoM6Runtime implements AutoCloseable {
                 }
                 wake_reactor(); // Capacity became available; rearm paused NIO.
                 Throwable error = null;
-                try { actor.handler.receive(mail); }
-                catch (Throwable e) { error = e; }
+                long returned = 0;
+                boolean hasResult = actor.resultHandler != null;
+                try {
+                    if (hasResult) returned = actor.resultHandler.receive(mail.value());
+                    else actor.handler.receive(mail.value());
+                } catch (Throwable e) { error = e; }
                 synchronized (gate) {
                     long elapsed = System.nanoTime() - actor.turnStartedNanos;
                     if (elapsed > actor.maxTurnNanos) actor.maxTurnNanos = elapsed;
@@ -267,15 +397,21 @@ public final class AttoM6Runtime implements AutoCloseable {
                         totalOverBudgetTurns++;
                     }
                     actor.running = false;
-                    if (error == null) actor.completed++;
-                    else {
+                    if (error == null) {
+                        actor.completed++;
+                        if (mail.ticket() != null) {
+                            mail.ticket().result = returned;
+                            mail.ticket().hasResult = hasResult;
+                            mail.ticket().state = TicketState.PROCESSED;
+                        }
+                    } else {
                         actor.failed++;
+                        if (mail.ticket() != null) mail.ticket().state = TicketState.FAILED;
                         actor.failureType = error.getClass().getSimpleName();
                         // Fence immediately; supervisor notice delivery is separate.
                         actor.fenced = true;
                         actor.accepting = false;
-                        actor.abandoned += actor.inbox.size();
-                        actor.inbox.clear();
+                        abandon_queued(actor);
                         control(actor, ControlKind.PANIC);
                     }
                     if (!actor.fenced) schedule(actor);

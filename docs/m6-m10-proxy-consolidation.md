@@ -1,0 +1,160 @@
+# M6 / M10 proxy IPC consolidation — experimental host runtime
+
+**Status: DRAFT. The combined restricted-source M6/M10 sender/receiver pilot and scheduler regressions have passed a JDK 25 execution on an exact-Git-tree private carrier. This is not canonical Atto compiled-guest support or production TenantVM isolation. See the current PR body for the passing source commit/tree and workflow run.**
+
+Source: [atto-source.java PR #44](https://github.com/atto-lang/atto-source.java/pull/44).
+Overlap: [Java #45](https://github.com/atto-lang/atto-source.java/pull/45).
+Governance: [atto-spec #40](https://github.com/atto-lang/atto-spec/pull/40);
+[conformance #40](https://github.com/atto-lang/atto-platform-conformance/pull/40).
+
+## Single destination receipt authority
+
+* **M6** owns mailbox admission: `try_send_ticket(ref, value, ReceiptRoute)`
+  under its runtime gate returns a private ticket **only for ACCEPTED mail**.
+  The same `Mail` holds its ticket until dequeue, handler return, handler
+  exception or supervised abandonment. On a successful scalar handler return,
+  M6 commits `PROCESSED` with that one typed `i64` result. Faults mark that
+  mail `FAILED`; queued items after PANIC become `ABANDONED`. Supervisor
+  priority CONTROL stays a separate lane.
+* **M10** has one nonblocking selector-owned server reactor, up to 64 sessions,
+  fixed 84-byte test protocol, a 1,024-entry replay window, bounded output
+  queues and per-session five-second timeout. It no longer receives
+  independently constructed `CompletableFuture<TurnResult>` completions
+  or uses `try_send_tracked`. It calls M6 once on admission, sends ADMITTED
+  only after the actual bounded mailbox returned ACCEPTED, and polls **that
+  exact M6 runtime ticket** on the reactor thread. Only PROCESSED with a typed
+  result emits a positive terminal ACK. FAILED and ABANDONED are distinct.
+* The selector uses a 20 ms maximum select interval for ticket checks, does
+  not wait on a scheduler carrier, and stops delivering network receipts if
+  the client closes or the deadline expires. A disconnect **after possible
+  admission is indeterminate**, never a verified REJECTED.
+* **No second reply/correlation registry.** This ticket is not the existing
+  Atto typed unary application reply registry; that integration is still
+  required by Rust #250/#254.
+
+## Full-Git-tree alternate runner evidence and scope
+
+An authorized private `opto-sync/atto-ci` Actions carrier (not the source
+organization) received the **entire original source Git tree**, including
+file modes and 126 source blobs, in a temporary private branch through
+GitHub's Git tree API. No cross-organization `GITHUB_TOKEN`, installation
+token or secret was supplied. The CI workflow verified that the carrier's
+nested mirror tree SHA **equaled the original Git tree SHA**, then initialized
+a local source Git repository on those exact files and ran the original
+`ci/m10/verify-remote-actor-ipc-jvm.sh` under Temurin JDK 25.
+
+The executable suite includes the M6 NIO/supervisor regressions,
+128 per-message mailbox receipt correlation stress, source-compiled
+sender and receiver, negative UTF-8/TOCTOU/symlink/overwrite tests,
+same-user kernel UDS peer principal checks, M10 bounded mailbox
+commit/failure/abandon tests, two independent JVM processes,
+12 concurrent clients, replay/incarnation rejection and checked arithmetic.
+
+**Additional signed-rejection hardening:** clients validate the entire
+authenticated request correlation (tenant, server incarnation, message ID
+and attempt) **before** promoting a `REJECTED` response into a confirmed
+remote refusal. A signed but wrong-route rejection is treated as
+unverified I/O failure, not a completed refusal. The dedicated test
+`M10ResponseCorrelationProbe` covers both HELLO and SEND negative paths.
+
+This run proves the named **restricted source-compiled + trusted host bridge
+profile only**. It does not demonstrate canonical Atto `susp` lowering,
+`ActorRegistry.connect_async`, native `ProxyActor<T>` type safety,
+TenantVM capability enforcement, the application unary reply sidecar,
+durable processing, independent native AOT, or compiler parity.
+Full 24-case compiled guest conformance remains NOT_EXECUTED.
+
+## Security boundary
+
+The M10 proof is a **private same-user UDS and test-secret profile**, not a
+TenantVM trust boundary. It checks a 0700 parent, 0600 socket,
+`SO_PEERCRED` on accepted and outbound connected sockets, pins the socket's
+`fileKey` before close, and only unlinks the originally owned inode.
+It authenticates each frame with a provisioned 32-byte HMAC-SHA256 key tied
+to the configured actor name. The tenant and fresh server-issued incarnation
+are checked. The experimental M10 84-byte frame is missing canonical caller
+incarnation, target actor ID, association generation, capability chain,
+schema/contract hash and placement epoch. Those missing ticket correlation
+fields are filled **only by private host configuration**, not by a guest or
+claimed authenticated client identity. They are NOT authorization tokens.
+Before production deployment the wire needs full canonical typed identity,
+explicit per-tenant capability verification, replay journal/epoch rotation,
+peer/key lifecycle, quotas and no insecure transport downgrade.
+
+The restricted M10 compiler accepts **one** source-compiled
+`RemoteAdder.on_message(int value)` fixture and generates Java bytecode for
+actual execution in OS process B. The sender remains Java HOST test code.
+This is not the canonical Atto frontend, not a compiled Atto proxy sender,
+not independent LLVM/Rust/Forge/NET/Wasm/JS interoperability and not
+Native Image verification.
+
+## Restricted Atto source sender slice (NEW, NOT canonical)
+
+The source fixture fixtures/m10/remote_adder_sender.atto declares a
+RemoteAdder proxy actor with a fixed nominal contract, fixed service key
+and IPC transport. Its suspending main function accepts a ProxyActor<RemoteAdder>
+and contains exactly one await proxy.request(32) expression. The deliberately
+limited src/compiler/m10/AttoM10RestrictedSenderCompiler.java accepts only this
+one syntax shape via a whole-file matcher, rejects source injection, and
+generates M10GeneratedSender.java with its original source SHA-256.
+
+The generated sender executes in the parent **process A**. A trusted host
+provides an AttoM10TrustedScalarProxy association bound to M10's test-only
+client. The receiver in process B is independently source-compiled from
+remote_adder.atto to Java bytecode and executes in the real M6 actor mailbox.
+Neither source program chooses its own socket, credentials or tenant ID.
+
+**Critical semantic limit:** this restricted sender DOES NOT implement
+the canonical frontend, general parser/type checker, ProxyActor<T> capability
+validation, ActorRegistry.connect_async, actual susp/await continuation
+lowering, the application unary reply registry, nonblocking client pool,
+TenantVM isolation or a portable Atto proxy ABI. The generated source calls
+a HOST-bound synchronous bridge on a trusted main/test thread, never a
+scheduler carrier. A passing two-source E2E test is a useful interim proof
+of restricted source compilation, not canonical compiled proxy interoperability.
+
+The stand-alone restricted sender compiler, interface and fixture passed
+a local JDK21 source -> bytecode -> injected callback smoke with negative
+grammar cases. All three original Git blobs match the local tested source.
+The earlier local source-only test is separate from the now executed
+full-Git-tree JDK25 M6/M10 integration described above.
+
+## Tests and evidence gate
+
+The two-process M10 harness now checks: a genuine second JVM; compiled
+restricted Atto receiver SHA; wrong HMAC/tenant/target/association; replay;
+typed remote scalar; 12 concurrent clients where each observes only its own
+result or explicit FULL; PANIC/FAILED; stale actor association after restart.
+The M10 mailbox probe checks exact per-mail STARTED, PROCESSED, FAILED and
+ABANDONED and independent supervisor CONTROL. The existing M6 native NIO and
+128-ticket probes continue to run.
+
+**Prior-head evidence** (not proof of the newly consolidated source):
+* [Java #44 M6 ticket and restricted receiver success](https://github.com/bait-bikes-test/atto-ci/actions/runs/44653461640).
+* [Java #45 independent M10 pilot success](https://github.com/bait-bikes-test/atto-ci/actions/runs/44635718533).
+
+**Consolidated exact-head attempts**:
+* [bait-bikes-test run #44660093745](https://github.com/bait-bikes-test/atto-ci/actions/runs/44660093745): failed before any job step (0 steps).
+* [ores-stack run #44660323082](https://github.com/ores-stack/ores-stack-cli/actions/runs/44660323082): failed before any job step (0 steps).
+Neither is a compiler failure, runtime test PASS or evidence for merge readiness.
+
+A passing CI claim needs a checked original Git blob SHA for each imported
+source/test/fixture, an executed JDK25 compile (strict lint where possible),
+the generated restricted source, both OS processes, native M6 regressions,
+concurrent M10 gateway tests, negative authentication/replay/shutdown cases.
+Even after those pass, the **24 canonical compiled-guest conformance gates
+remain NOT_EXECUTED** until independently compiled `.atto` sender and
+receiver programs, a reviewed cross-tenant wire and runtime integration are
+actually exercised.
+
+## Follow-on work
+
+1. Get stepful, exact-source JDK25 tests for the combined head; fix failures.
+2. Add the canonical typed `ProxyActor` grammar/type checker/lowering and
+   compile actual sender `.atto` in process A. Fail closed for unlowered APIs.
+3. Replace the test client with an async selector-owned client pool; connect
+   the existing unary reply registry instead of creating a second one.
+4. Add full authenticated tenant/capability/schema/epoch negotiation and
+   resource/ownership fencing. Test restart and ambiguous in-flight cancel.
+5. Run independently compiled Java ↔ LLVM ↔ Rust first, then Forge/.NET/
+   Cranelift/Wasm/JS using the conformance registry and exact SHA evidence.

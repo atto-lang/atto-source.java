@@ -1,0 +1,44 @@
+name: M10 restricted Atto source actor across two OS processes (JVM)
+on:
+  push:
+    paths:
+      - 'src/m6/AttoM6Runtime.java'
+      - 'src/m10/**'
+      - 'src/compiler/m10/**'
+      - 'tests/m10/**'
+      - 'fixtures/m10/**'
+      - 'ci/m10/**'
+      - '.github/workflows/m10-two-process-proxy-ipc.yml'
+  pull_request:
+    paths:
+      - 'src/m6/AttoM6Runtime.java'
+      - 'src/m10/**'
+      - 'src/compiler/m10/**'
+      - 'tests/m10/**'
+      - 'fixtures/m10/**'
+      - 'ci/m10/**'
+      - '.github/workflows/m10-two-process-proxy-ipc.yml'
+permissions:
+  contents: read
+jobs:
+  m10-atto-source-to-jvm-two-process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify full source HEAD
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Compile restrictive .atto guest and prove independent-process delivery
+        shell: bash
+        run: |
+          set -euo pipefail
+          ATTO_EXPECTED_HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}" bash ci/m10/verify-remote-actor-ipc-jvm.sh
