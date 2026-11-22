@@ -24,7 +24,7 @@ final class NativeAttoHttpStdlibTest {
         assertTrue(linked.units().containsKey("@std/http.atto"),
                 "HTTP decisions must execute as linked Atto guest source");
         String[] lines = out.toString(StandardCharsets.UTF_8).trim().replace("\r", "").split("\n");
-        assertEquals(66, lines.length, () -> err.toString(StandardCharsets.UTF_8));
+        assertEquals(71, lines.length, () -> err.toString(StandardCharsets.UTF_8));
         for (int i = 0; i < lines.length; i++) {
             assertEquals("true", lines[i], "HTTP case " + (i + 1) + ": "
                     + err.toString(StandardCharsets.UTF_8));
