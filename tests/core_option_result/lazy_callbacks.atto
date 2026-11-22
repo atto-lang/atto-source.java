@@ -1,0 +1,49 @@
+// End-to-end source-link candidate. Expected stdout "M42:Etrue:true".
+// No callback is invoked on None/Err for success-only helpers; no callback
+// is invoked on Ok for map_err/or_else. Compile and execute, don't mock.
+import module option from "../../core/option.atto";
+import module result from "../../core/result.atto";
+
+pub fnc main(): void {
+  val Option<int> present = Some(41);
+  val Option<int> mapped = option.map<int, int>(present, |int x| -> {
+    stdio.stdout.write("M");
+    return x + 1;
+  });
+  stdio.stdout.write(mapped.unwrap());
+  stdio.stdout.write(":");
+
+  val Option<int> missing = None;
+  val Option<int> still_none =
+    option.and_then<int, int>(missing, |int x| -> {
+      stdio.stdout.write("BAD-OPTION");
+      return Some(x);
+    });
+
+  val Result<int, String> bad = Err("boom");
+  val Result<int, String> no_call =
+    result.map<int, int, String>(bad, |int x| -> {
+      stdio.stdout.write("BAD-RESULT");
+      return x + 1;
+    });
+
+  val Result<int, String> renamed =
+    result.map_err<int, String, String>(no_call, |String error| -> {
+      stdio.stdout.write("E");
+      return error.replace_literal("boom", "expected");
+    });
+
+  val Result<int, String> good = Ok(42);
+  val Result<int, String> unchanged =
+    result.or_else<int, String, String>(good, |String reason| -> {
+      stdio.stdout.write("BAD-RECOVERY");
+      return Err(reason);
+    });
+
+  stdio.stdout.write(still_none.is_none());
+  stdio.stdout.write(":");
+  stdio.stdout.write(renamed.is_err());
+  stdio.stdout.write(":");
+  stdio.stdout.write(unchanged.is_ok());
+  return;
+}
