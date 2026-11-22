@@ -1,0 +1,103 @@
+// Atto-owned bump arena cursor and checked alignment arithmetic.
+// Offsets are logical, not dereferenceable pointers or allocation authority.
+// Real allocation, zeroing, owned Drop and pin checks belong to the sealed
+// allocator provider and compiler. Reset/rewind must use trusted loan counts.
+define module arena as
+  pub fnc alignment_valid(int alignment): bool {
+    if alignment <= 0 then return false; fi
+    return (alignment & (alignment - 1)) == 0;
+  }
+
+  pub fnc aligned_start(int cursor, int bytes, int alignment, int limit): int {
+    if cursor < 0 || bytes < 0 || limit < 0 || cursor > limit then return -1; fi
+    if !alignment_valid(alignment) then return -1; fi
+    // Empty allocations are zero-cost; no phantom alignment charge.
+    if bytes == 0 then return cursor; fi
+    let int remainder = cursor - (cursor / alignment) * alignment;
+    let int padding = 0;
+    if remainder != 0 then
+      padding = alignment - remainder;
+    fi
+    if padding > limit - cursor then return -1; fi
+    let int start = cursor + padding;
+    if bytes > limit - start then return -1; fi
+    return start;
+  }
+
+  pub fnc allocation_end(int cursor, int bytes, int alignment, int limit): int {
+    let int start = aligned_start(cursor, bytes, alignment, limit);
+    if start < 0 then return -1; fi
+    return start + bytes;
+  }
+
+  pub fnc can_rewind(int cursor, int checkpoint,
+                     int checkpoint_generation, int current_generation,
+                     int outstanding_loans, int live_owned_values): bool {
+    if cursor < 0 || checkpoint < 0 || checkpoint > cursor then return false; fi
+    if checkpoint_generation < 1 || checkpoint_generation != current_generation then
+      return false;
+    fi
+    return outstanding_loans == 0 && live_owned_values == 0;
+  }
+
+  pub define class Cursor as
+    let int quota;
+    let mut int offset = 0;
+    let mut int generation = 1;
+    let mut bool sealed = false;
+
+    pub constructor(int quota_bytes) {
+      if quota_bytes < 0 then rt fail("alloc/arena: negative quota"); fi
+      self.quota = quota_bytes;
+    }
+
+    pub used_bytes(): int { return self.offset; }
+    pub quota_bytes(): int { return self.quota; }
+    pub epoch(): int { return self.generation; }
+    pub is_sealed(): bool { return self.sealed; }
+
+    // Returns aligned logical offset, or -1. Mutates only on success.
+    pub try_reserve(mut self)(int bytes, int alignment): int {
+      if self.sealed || bytes <= 0 then return -1; fi
+      let int start = aligned_start(self.offset, bytes, alignment, self.quota);
+      if start < 0 then return -1; fi
+      self.offset = start + bytes;
+      return start;
+    }
+
+    // Must be called only after provider proves no references or owned values
+    // remain in the rewound tail; neither proof can be inferred from an int.
+    pub try_rewind(mut self)(int saved_epoch, int saved_offset,
+                             int outstanding_loans, int live_owned_values): bool {
+      if self.sealed then return false; fi
+      if !can_rewind(self.offset, saved_offset, saved_epoch, self.generation,
+                     outstanding_loans, live_owned_values) then
+        return false;
+      fi
+      self.offset = saved_offset;
+      return true;
+    }
+
+    // Invalidate old offsets by changing the epoch. The allocator provider
+    // must retire all physical references before calling this policy method.
+    pub try_reset(mut self)(int outstanding_loans, int live_owned_values): bool {
+      if self.sealed || outstanding_loans != 0 || live_owned_values != 0 then
+        return false;
+      fi
+      if self.generation >= 2147483647 then return false; fi
+      self.generation = self.generation + 1;
+      self.offset = 0;
+      return true;
+    }
+
+    pub seal(mut self)(): bool {
+      if self.sealed then return false; fi
+      self.sealed = true;
+      return true;
+    }
+  end
+
+  pub fnc cursor(int quota_bytes): Cursor {
+    return new Cursor(quota_bytes);
+  }
+end
