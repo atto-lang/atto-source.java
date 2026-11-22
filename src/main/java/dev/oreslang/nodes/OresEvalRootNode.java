@@ -10,6 +10,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
+import dev.oreslang.types.ReadonlyShapeProjectionV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresVector;
@@ -90,6 +91,15 @@ public final class OresEvalRootNode extends RootNode {
                             boolean checkedI64Arithmetic) {
         super(language);
         this.program = Objects.requireNonNull(program, "checked Oreslang program");
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.SingletonDecl) {
+                    throw new IllegalArgumentException(
+                            "ORES-SINGLETON-UNSUPPORTED: check-only singleton AST "
+                                    + "cannot be installed into an executable guest root");
+                }
+            }
+        }
         this.codeUnitId = codeUnitId;
         this.checkedI64Arithmetic = checkedI64Arithmetic;
         this.taskAdmissionEpoch =
@@ -1217,11 +1227,169 @@ public final class OresEvalRootNode extends RootNode {
         }
 
 
+        /**
+         * A narrowly typed, non-escaping structural loan. A guest only sees
+         * this opaque object, never the underlying OresObject or its mutable
+         * field map. Every scalar read uses the ACTUAL source-class slot from
+         * the compiler-derived witness and checks the live code generation.
+         */
+        private static final class ReadonlyShapeLoan {
+            private final OresObject source;
+            private final ReadonlyShapeProjectionV1.Plan witness;
+            private final SharedCodeImageStore.CodeImage image;
+            private boolean active = true;
+
+            private ReadonlyShapeLoan(
+                    OresObject source,
+                    ReadonlyShapeProjectionV1.Plan witness,
+                    SharedCodeImageStore.CodeImage image) {
+                this.source = Objects.requireNonNull(source);
+                this.witness = Objects.requireNonNull(witness);
+                this.image = Objects.requireNonNull(image);
+            }
+
+            private Object read(String name) {
+                if (!active || source.owner.linkedCodeImage != image
+                        || image.checkedLayoutGeneration() != witness.layoutEpoch()) {
+                    throw new IllegalStateException(
+                            "readonly structural loan expired or code-image layout changed");
+                }
+                ReadonlyShapeProjectionV1.FieldWitness field = witness.field(name);
+                int slot = field.sourceSlot();
+                if (slot < 0 || slot >= source.fields.size()) {
+                    throw new IllegalStateException("readonly structural source field offset invalid");
+                }
+                int offset = 0;
+                for (var entry : source.fields.entrySet()) {
+                    if (offset++ != slot) continue;
+                    if (!entry.getKey().equals(name)) {
+                        throw new IllegalStateException(
+                                "readonly structural actual-source field layout mismatch");
+                    }
+                    Object result = entry.getValue();
+                    if (!(result instanceof Long || result instanceof Integer)) {
+                        throw new IllegalStateException(
+                                "readonly structural int field is not a checked i64 scalar");
+                    }
+                    return result;
+                }
+                throw new IllegalStateException("verified source field offset disappeared");
+            }
+
+            private void revoke() { active = false; }
+        }
+
+        private int checkedSourceClassOrdinal(Ast.ClassDecl klass) {
+            Set<Ast.ClassDecl> seen =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            int id = 0;
+            for (Ast.ClassDecl candidate : classes.values()) {
+                if (!seen.add(candidate)) continue;
+                if (id == Integer.MAX_VALUE) {
+                    throw new IllegalStateException("code image contains too many nominal classes");
+                }
+                ++id;
+                if (candidate == klass) return id;
+            }
+            throw new IllegalStateException("source class absent from its linked code image");
+        }
+
+        /**
+         * Native anonymous rows and all-field-only structural interfaces
+         * share the same small readonly source-verified projection. Richer
+         * method contracts continue down their existing checked dispatch
+         * path; this first-stage ABI deliberately does not emulate methods.
+         */
+        private Ast.TypeRef checkedReadonlyShapeTarget(Ast.Param param) {
+            if (param.type().isReadonlyRecordType()) return param.type();
+            if (!param.structural() || !param.type().arguments().isEmpty()) {
+                return null;
+            }
+            Ast.InterfaceDecl contract = findInterface(param.type().name());
+            if (contract == null || !contract.parents().isEmpty()
+                    || !contract.genericParameters().isEmpty()
+                    || contract.members().isEmpty()
+                    || contract.members().size() > ReadonlyShapeProjectionV1.MAX_FIELDS) {
+                return null;
+            }
+            LinkedHashMap<String, Ast.TypeRef> required = new LinkedHashMap<>();
+            for (Ast.InterfaceMember member : contract.members()) {
+                if (!(member instanceof Ast.InterfaceFieldDecl field)
+                        || field.bindingKind() == Ast.BindingKind.LET
+                        || !field.type().name().equals("int")
+                        || !field.type().arguments().isEmpty()
+                        || required.putIfAbsent(field.name(), field.type()) != null) {
+                    return null;
+                }
+            }
+            return Ast.TypeRef.readonlyRecordType(required);
+        }
+
+        private ReadonlyShapeLoan checkedReadonlyShapeLoan(
+                OresObject source, Ast.TypeRef target, Env callFrame) {
+            Evaluator owner = source.owner;
+            SharedCodeImageStore.CodeImage image = owner.linkedCodeImage;
+            if (image == null || image.program() != owner.program
+                    || source.klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "structural loan requires a live verified ordinary class");
+            }
+            // Only runtime-owned linked type metadata supplies the source
+            // nominal identity, real class declaration order and epoch.
+            ReadonlyShapeProjectionV1.Plan proof =
+                    ReadonlyShapeProjectionV1.proveCheckedClass(
+                            source.klass, target, owner.checkedSourceClassOrdinal(source.klass),
+                            image.checkedLayoutGeneration(), callFrame.scopeEpoch());
+            if (source.fields.size() != source.klass.fields().size()) {
+                throw new IllegalStateException(
+                        "runtime class field layout differs from checked declaration");
+            }
+            int index = 0;
+            for (Ast.FieldDecl field : source.klass.fields()) {
+                String actualName = null;
+                int offset = 0;
+                for (String key : source.fields.keySet()) {
+                    if (offset++ == index) { actualName = key; break; }
+                }
+                if (!field.name().equals(actualName)) {
+                    throw new IllegalStateException(
+                            "runtime class slot order differs from checked declaration");
+                }
+                ++index;
+            }
+            return new ReadonlyShapeLoan(source, proof, image);
+        }
+
         private void bindCallableArguments(
                 Env env,
                 List<Ast.Param> parameters,
                 List<?> args,
                 String label) {
+            bindCallableArguments(env, parameters, args, label, false);
+        }
+
+        private void bindSyncReadonlyShapeArguments(
+                Env env,
+                List<Ast.Param> parameters,
+                List<?> args,
+                String label) {
+            // Binding can reject after the first shape loan was minted
+            // (for example, a later malformed argument). Make admission
+            // failure-atomic: no live borrow may survive partial binding.
+            try {
+                bindCallableArguments(env, parameters, args, label, true);
+            } catch (RuntimeException | Error failure) {
+                env.revokeReadonlyShapeLoans();
+                throw failure;
+            }
+        }
+
+        private void bindCallableArguments(
+                Env env,
+                List<Ast.Param> parameters,
+                List<?> args,
+                String label,
+                boolean permitScopedReadonlyShape) {
             if (parameters.size() != args.size()) {
                 throw new IllegalArgumentException(
                         label + " argument arity mismatch: expected "
@@ -1232,12 +1400,27 @@ public final class OresEvalRootNode extends RootNode {
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
                 Object value = admitDeclaredVector(param.type(), args.get(i));
+                Ast.TypeRef readonlyTarget = checkedReadonlyShapeTarget(param);
+                if (readonlyTarget != null) {
+                    if (!permitScopedReadonlyShape || param.mutable()) {
+                        throw new IllegalArgumentException(
+                                "readonly structural parameters require a verified synchronous, immutable call");
+                    }
+                    if (!(value instanceof OresObject source)) {
+                        throw new IllegalArgumentException(
+                                "readonly class shape cannot be forged or reborrowed from an unknown value");
+                    }
+                    ReadonlyShapeLoan loan =
+                            source.owner.checkedReadonlyShapeLoan(source, readonlyTarget, env);
+                    env.registerReadonlyShapeLoan(loan);
+                    value = loan;
+                }
                 tuple.add(value);
                 env.define(
                         param.name(),
                         value,
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
-                        staticClassView(param.type()));
+                        readonlyTarget != null ? null : staticClassView(param.type()));
             }
             env.define(
                     "arguments",
@@ -2164,7 +2347,11 @@ public final class OresEvalRootNode extends RootNode {
             if (!seen.add(function)) return true;
             try {
                 for (Ast.Stmt stmt : function.body()) {
-                    if (statementContainsPotentialSuspension(stmt, seen)) {
+                    // A synchronous helper's CPU backedge still needs a resumable
+                    // SourceTask, even when the helper declares no async effects.
+                    // Otherwise its caller can occupy an actor carrier forever.
+                    if (containsSourceLoop(stmt)
+                            || statementContainsPotentialSuspension(stmt, seen)) {
                         return true;
                     }
                 }
@@ -2376,7 +2563,14 @@ public final class OresEvalRootNode extends RootNode {
                                 try {
                                     if (method.async() || method.suspends()) return true;
                                     for (Ast.Stmt statement : method.body()) {
-                                        if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                        // Calls through self.foo() must propagate
+                                        // a synchronous helper's backedges to the
+                                        // outer receive turn; otherwise actor
+                                        // mailbox dispatch is never promoted to
+                                        // a resumable continuation.
+                                        if (containsSourceLoop(statement)
+                                                || statementContainsPotentialSuspension(statement, seen))
+                                            return true;
                                     }
                                 } finally {
                                     seen.remove(method);
@@ -2511,9 +2705,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
-         * Lower loops only inside already-async source tasks. Promoting every
-         * synchronous function containing a loop into an async task would
-         * silently change its return value and actor protocol.
+         * Detect guest CPU backedges in both declared async and synchronous
+         * callables. A synchronous call's result remains synchronous at its
+         * source boundary; the scheduler uses a heap-owned SourceTask only
+         * when its runtime context requires cooperative suspension.
          */
         private boolean containsSourceLoop(Ast.Stmt stmt) {
             if (stmt instanceof Ast.ForStmt
@@ -5525,7 +5720,7 @@ public final class OresEvalRootNode extends RootNode {
                                         try {
                                             continuation.accept(
                                                     t2,
-                                                    channel.tryWrite(value),
+                                                    channel.tryWriteResult(value),
                                                     null);
                                         } catch (RuntimeException | Error failure) {
                                             continuation.accept(
@@ -7022,7 +7217,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
-            bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
+            bindSyncReadonlyShapeArguments(env, fn.parameters(), args, "function " + fn.name());
             try {
                 // A trap boundary must survive tail-call lowering. Treat it as a
                 // tail barrier so a callee failure cannot escape by replacing
@@ -7040,6 +7235,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
             } catch (RuntimeException failure) {
                 throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, fn.name(), "function");
+            } finally {
+                env.revokeReadonlyShapeLoans();
             }
         }
 
@@ -7056,10 +7253,14 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean methodBodyMaySuspend(Ast.MethodDecl method) {
             for (Ast.Stmt stmt : method.body()) {
-                if (statementContainsPotentialSuspension(
-                        stmt,
-                        java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
+                // Account for synchronous loops in instance methods as well
+                // as free functions. The cached callability decision must
+                // match the SourceTask cooperative backedge lowering.
+                if (containsSourceLoop(stmt)
+                        || statementContainsPotentialSuspension(
+                                stmt,
+                                java.util.Collections.newSetFromMap(
+                                        new IdentityHashMap<>()))) {
                     return true;
                 }
             }
@@ -7123,7 +7324,7 @@ public final class OresEvalRootNode extends RootNode {
                 env.instanceMethodOwner = declaringClass(method);
                 env.define("self", receiver, Ast.BindingKind.VAL, declaringClass(method));
             }
-            bindCallableArguments(env, method.parameters(), args, "method " + method.name());
+            bindSyncReadonlyShapeArguments(env, method.parameters(), args, "method " + method.name());
             try {
                 executeBlock(method.body(), env);
                 return null;
@@ -7135,6 +7336,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException("loop control cannot cross a method boundary", signal);
             } catch (RuntimeException failure) {
                 throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, method.name(), "method");
+            } finally {
+                env.revokeReadonlyShapeLoans();
             }
         }
 
@@ -7809,7 +8012,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             return switch (operation.mode()) {
-                case IMMEDIATE -> channel.tryWrite(value);
+                case IMMEDIATE -> channel.tryWriteResult(value);
                 case NONBLOCKING -> context.actors()
                         .ownCurrentActorFuture(channel.writeAsync(value));
                 case BLOCKING -> {
@@ -9346,7 +9549,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.ContextualEmptyMapExpr) {
                 throw new IllegalArgumentException(
-                        "unresolved ~map() cannot execute without typed Map<K,V> admission");
+                        "unresolved Map.of() cannot execute without typed Map<K,V> admission");
             }
             if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
                 // Defensive runtime check: only canonical, fully concrete
@@ -9453,6 +9656,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof ReadonlyShapeLoan loan) {
+                return loan.read(name);
+            }
             if (name.equals("to_string") && (receiver instanceof String
                     || receiver instanceof Boolean || receiver instanceof Long
                     || receiver instanceof Integer || receiver instanceof Short
@@ -11383,7 +11589,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
             Env env = new Env(null, false, declaringClass(fn));
-            bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());
+            bindSyncReadonlyShapeArguments(env, fn.parameters(), args, "static function " + fn.name());
             try {
                 executeBlock(fn.body(), env);
                 return null;
@@ -11393,6 +11599,8 @@ public final class OresEvalRootNode extends RootNode {
                 return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name());
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a static function boundary", signal);
+            } finally {
+                env.revokeReadonlyShapeLoans();
             }
         }
 
@@ -12205,6 +12413,20 @@ public final class OresEvalRootNode extends RootNode {
                     if (!(value instanceof ResultValue result) || result.ok() || constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), result.value(), bindings);
                 }
+                if (name.equals("Accepted")) {
+                    return value instanceof ChannelRuntime.TryWriteResult.Accepted<?>
+                            && constructor.arguments().isEmpty();
+                }
+                if (name.equals("Full")) {
+                    return value instanceof ChannelRuntime.TryWriteResult.Full<?> full
+                            && constructor.arguments().size() == 1
+                            && patternMatches(constructor.arguments().getFirst(), full.value(), bindings);
+                }
+                if (name.equals("Closed")) {
+                    return value instanceof ChannelRuntime.TryWriteResult.Closed<?> closed
+                            && constructor.arguments().size() == 1
+                            && patternMatches(constructor.arguments().getFirst(), closed.value(), bindings);
+                }
                 return false;
             }
             return false;
@@ -12765,6 +12987,10 @@ public final class OresEvalRootNode extends RootNode {
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
+            if (value instanceof ReadonlyShapeLoan) {
+                throw new IllegalArgumentException(
+                        "readonly structural view cannot escape its synchronous borrow scope");
+            }
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
         }
 
@@ -13029,6 +13255,14 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        private final List<Evaluator.ReadonlyShapeLoan> readonlyShapeLoans = new ArrayList<>();
+        private void registerReadonlyShapeLoan(Evaluator.ReadonlyShapeLoan loan) {
+            readonlyShapeLoans.add(Objects.requireNonNull(loan));
+        }
+        private void revokeReadonlyShapeLoans() {
+            for (Evaluator.ReadonlyShapeLoan loan : readonlyShapeLoans) loan.revoke();
+            readonlyShapeLoans.clear();
+        }
         // Logical structured scope follows the source continuation and captured
         // child Env across carrier migration; it is never a ThreadLocal token.
         private TaskScope structuredTaskScope;

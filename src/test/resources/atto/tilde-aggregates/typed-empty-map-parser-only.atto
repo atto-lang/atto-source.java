@@ -1,4 +1,4 @@
 fnc read(): void {
-    const empty = ~<Map<string, int>>();
+    const empty = Map.of<string, int>();
     return;
 }

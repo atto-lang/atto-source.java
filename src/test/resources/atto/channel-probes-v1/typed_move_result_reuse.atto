@@ -1,0 +1,17 @@
+// The affine result is consumed on match; matching it twice must fail.
+pub routine main(): void {
+  val Channel<Array<int>> channel = Channel.new<Array<int>>(1);
+  val Array<int> payload = [4];
+  val TryWriteResult<Array<int>> result = try writech channel, rt take payload;
+  do match result over
+    on Accepted -> { }
+    on Full(value) -> { stdio.stdout.write(value[0]); }
+    on Closed(value) -> { stdio.stdout.write(value[0]); }
+  end
+  do match result over
+    on Accepted -> { }
+    on Full(value) -> { stdio.stdout.write(value[0]); }
+    on Closed(value) -> { stdio.stdout.write(value[0]); }
+  end
+  return;
+}

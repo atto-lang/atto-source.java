@@ -25,6 +25,7 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
     private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
     private final List<StaticProxySynthesis.InterceptorRequest> staticProxyInterceptors =
@@ -34,6 +35,18 @@ public final class Parser {
     /** Canonical AttoLang source rules, never guessed from a legacy filename. */
     private final boolean canonicalAttoSource;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
+    private static final java.util.Set<String> BUILTIN_OF_TYPES =
+            java.util.Set.of("Map", "Array", "Tuple", "Record");
+    private static final java.util.Set<String> PENDING_OF_TYPES =
+            java.util.Set.of("Entry", "Pair", "List", "Vector", "Set");
+    private static final java.util.Set<String> COLLECTION_OF_TYPES =
+            java.util.Set.of("Map", "Array", "Tuple", "Record",
+                    "Entry", "Pair", "List", "Vector", "Set");
+    // Conservative module-wide lexical collision gate. A factory rewrite may
+    // not capture a user class, import alias, parameter or local binding.
+    // Global conservatism is deliberate until typed-HIR symbol ownership is
+    // available: preserving ordinary CallExpr beats inventing guest authority.
+    private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
     private int current;
     // A long chain of contextual ownership prefixes must not exhaust the JVM
     // call stack before the compiler can issue a deterministic parse error.
@@ -56,14 +69,20 @@ public final class Parser {
     private final List<ForwardType> rootForwards = new ArrayList<>();
     private List<ForwardType> moduleForwards;
     public Parser(List<Token> tokens) {
-        this(tokens, null, false);
+        this(tokens, null, false, false);
     }
 
     private Parser(List<Token> tokens, AttoCallableVersion version) {
-        this(tokens, version, true);
+        this(tokens, version, true, false);
     }
 
-    private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource) {
+    private Parser(List<Token> tokens, boolean singletonCheckOnly) {
+        this(tokens, null, false, singletonCheckOnly);
+    }
+
+    private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource,
+                   boolean singletonCheckOnly) {
+        this.singletonCheckOnly = singletonCheckOnly;
         this.attoCallableVersion = version;
         this.canonicalAttoSource = canonicalAttoSource;
         this.tokens = List.copyOf(tokens);
@@ -78,6 +97,83 @@ public final class Parser {
                 throw error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
             }
         }
+        // Read only lexer-produced token kinds, never source substrings.
+        // This scans declarations forward so a later nominal Tuple does not
+        // retroactively become an unowned compiler Tuple.of constructor.
+        for (int i = 0; i < this.tokens.size(); i++) {
+            Token token = this.tokens.get(i);
+            if (token.type() != IDENT || !COLLECTION_OF_TYPES.contains(token.lexeme())) continue;
+            Token.Type prior = i == 0 ? EOF : this.tokens.get(i - 1).type();
+            Token.Type next = i + 1 == this.tokens.size()
+                    ? EOF : this.tokens.get(i + 1).type();
+            boolean nominal = prior == CLASS || prior == STRUCT || prior == MODULE
+                    || prior == TYPE || prior == TYPES || prior == ACTOR
+                    || prior == ISOACTOR || prior == CONTRACT
+                    || prior == INTERFACE || prior == TRAIT;
+            boolean importAlias = prior == AS && next == FROM;
+            boolean callableName = (prior == FNC || prior == ROUTINE)
+                    && next == LPAREN;
+            boolean bindingName = (next == EQUAL || next == COLON)
+                    && (prior == VAL || prior == CONST || prior == LET
+                        || prior == MUT || prior == IDENT);
+            boolean formalName = (next == COMMA || next == RPAREN
+                    || next == PIPE) && (prior == IDENT || prior == PIPE);
+            // Only *declaration* type parameters shadow canonical factories.
+            // A type reference such as Result<Map> or Map<string, Tuple> is
+            // NOT a declaration of Map/Tuple; scanning '<Foo>' substrings
+            // without tracking the declaration owner incorrectly suppresses
+            // compiler-owned .of calls elsewhere in the compilation unit.
+            boolean genericFormalCandidate = isDeclarationGenericParameter(i);
+            boolean forBindingName = next == OF
+                    && (prior == CONST || prior == LET || prior == VAL);
+            boolean contextualTypeAlias = prior == IDENT
+                    && this.tokens.get(i - 1).lexeme().equals("alias")
+                    && i > 1 && this.tokens.get(i - 2).type() == TYPE;
+            if (nominal || importAlias || callableName || bindingName
+                    || formalName || genericFormalCandidate || forBindingName
+                    || contextualTypeAlias) {
+                shadowedOfTypes.add(token.lexeme());
+            }
+        }
+    }
+
+    /**
+     * Distinguish a declaration's generic *formal* from an applied type
+     * argument. This remains a conservative lexical safeguard, not final
+     * symbol resolution. Only recognizable declaration heads may hide the
+     * intrinsic owner; unrelated uses of '<Map>' or '<Tuple>' must not.
+     */
+    private boolean isDeclarationGenericParameter(int tokenIndex) {
+        // Only a formal identifier immediately after '<' or a parameter
+        // separator can declare/shadow a compiler-owned factory name.
+        // A default type reference in 'fnc build<T = Tuple>()' is a use,
+        // not a declaration of Tuple; nested defaults behave likewise.
+        if (tokenIndex == 0) return false;
+        Token.Type preceding = tokens.get(tokenIndex - 1).type();
+        if (preceding != LT && preceding != COMMA) return false;
+        int depth = 0;
+        int opening = -1;
+        for (int j = tokenIndex - 1; j >= 0; j--) {
+            Token.Type t = tokens.get(j).type();
+            if (t == GT) {
+                depth++;
+            } else if (t == LT) {
+                if (depth == 0) {
+                    opening = j;
+                    break;
+                }
+                depth--;
+            } else if (depth == 0 && (t == SEMICOLON || t == LBRACE
+                    || t == RBRACE || t == LPAREN || t == RPAREN)) {
+                return false;
+            }
+        }
+        if (opening < 2 || tokens.get(opening - 1).type() != IDENT) return false;
+        Token.Type head = tokens.get(opening - 2).type();
+        return head == FNC || head == ROUTINE || head == CLASS
+                || head == STRUCT || head == ACTOR || head == ISOACTOR
+                || head == INTERFACE || head == TRAIT || head == MODULE
+                || head == TYPE || head == TYPES || head == CONTRACT;
     }
 
     public static Ast.Program parse(String source) {
@@ -132,6 +228,26 @@ public final class Parser {
     }
 
     /**
+     * TEST/CHECK ONLY: parse singleton ASTs without making them executable.
+     * The normal parser and runtime entry points continue to fail closed.
+     */
+    public static Ast.Program parseSingletonsCheckOnly(String source) {
+        // The normal parser interns Symbol process literals while building the
+        // AST. A subsequently rejected check-only singleton must not consume
+        // permanent domain Symbol capacity. Scan all tokens before parsing.
+        List<Token> scanned = new Lexer(source).scan();
+        for (Token token : scanned) {
+            if (token.type() == SYMBOL_LITERAL) {
+                throw new IllegalArgumentException(
+                        "ORES-SINGLETON-CHECKONLY: Symbol literals cannot be "
+                                + "interned during singleton check-only admission at "
+                                + token.line() + ":" + token.column());
+            }
+        }
+        return new Parser(scanned, true).parseProgram();
+    }
+
+    /**
      * Explicit opt-in strict AttoLang v1 syntax admission. This is not inferred
      * from the filename: existing .ores and .atto legacy callers remain intact.
      * Fail before AST lowering on C-style equality or opaque template payloads,
@@ -160,7 +276,7 @@ public final class Parser {
                         + ": template interpolation requires profile-preserving typed lowering");
             }
         }
-        return new Parser(scanned, null, true).parseProgram();
+        return new Parser(scanned, null, true, false).parseProgram();
     }
 
 
@@ -268,6 +384,20 @@ public final class Parser {
             }
         }
 
+        // Use parser-resolved import selections as an additional identity
+        // boundary: grouped imports and local aliases must not be captured
+        // by a syntactic Type.of rewrite, even when token lookbehind misses
+        // their brace-delimited declaration form.
+        for (Ast.ImportDecl imported : imports) {
+            for (String name : imported.names()) {
+                if (COLLECTION_OF_TYPES.contains(name)) shadowedOfTypes.add(name);
+            }
+            if (imported.namespace() != null
+                    && COLLECTION_OF_TYPES.contains(imported.namespace())) {
+                shadowedOfTypes.add(imported.namespace());
+            }
+        }
+
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
@@ -323,6 +453,12 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (isContextualIdentifier("singleton")) {
+                    Token keyword = advance();
+                    if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
+                    rootDeclarations.add(parseSingleton(modifiers, annotations, keyword));
+                    continue;
+                }
                 if (isExternalActorMethodHead()) {
                     rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
                     continue;
@@ -459,7 +595,7 @@ public final class Parser {
                     name = t.name(); visibility = t.visibility(); found = Ast.ExportKind.TYPE;
                 } else if (decl instanceof Ast.InterfaceDecl i) {
                     name = i.name(); visibility = i.visibility();
-                    found = interfaceKinds.getOrDefault(i, INTERFACE) == TRAIT
+                    found = i.declarationKind() == Ast.InterfaceKind.TRAIT
                             ? Ast.ExportKind.TRAIT : Ast.ExportKind.INTERFACE;
                 }
                 if (!entry.name().equals(name)) continue;
@@ -683,6 +819,44 @@ public final class Parser {
         }
     }
 
+    private IllegalArgumentException unsupportedSingleton(Token keyword) {
+        return error(keyword, "ORES-SINGLETON-UNSUPPORTED: define singleton requires "
+                + "compiler ownership, initialization and guest execution parity; "
+                + "the check-only AST does not authorize runtime lowering");
+    }
+
+    private Ast.SingletonDecl parseSingleton(
+            Modifiers modifiers, List<Ast.Annotation> annotations, Token keyword) {
+        validateOnlyVisibilityModifiers(modifiers, "singletons");
+        rejectDiscardedDeclarationAnnotations(annotations, "singleton declarations");
+        Token declaredName = consume(IDENT, "expected singleton name");
+        if (check(DOT)) throw error(peek(), "singleton names must be flat");
+        consume(AS, "singleton declaration requires 'as' before fields");
+        List<Ast.SingletonField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        while (!check(END) && !check(EOF)) {
+            Token position = peek();
+            List<Ast.Annotation> fieldAnnotations = parseAnnotations();
+            Modifiers fieldModifiers = parseModifiers();
+            validateOnlyVisibilityModifiers(fieldModifiers, "singleton fields");
+            if (!isBindingKind(peek().type())) {
+                throw error(peek(), "ORES-SINGLETON-CHECKONLY: only explicit const/val/let "
+                        + "field bindings are parsed; methods and runtime behavior are not enabled");
+            }
+            Ast.FieldDecl field = parseModuleBinding(fieldAnnotations, fieldModifiers.visibility);
+            if (!names.add(field.name())) {
+                throw error(position, "duplicate singleton field '" + field.name() + "'");
+            }
+            fields.add(new Ast.SingletonField(field, position.line(), position.column()));
+            if (fields.size() > 64) {
+                throw error(position, "ORES-SINGLETON-CHECKONLY: field budget exceeded");
+            }
+        }
+        consume(END, "expected 'end' to close singleton " + declaredName.lexeme());
+        return new Ast.SingletonDecl(declaredName.lexeme(), modifiers.visibility,
+                fields, keyword.line(), keyword.column());
+    }
+
     private Ast.Decl parseModuleMember() {
         rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
@@ -729,6 +903,11 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isContextualIdentifier("singleton")) {
+                Token keyword = advance();
+                if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
+                return parseSingleton(modifiers, annotations, keyword);
+            }
             if (isExternalActorMethodHead()) {
                 return parseExternalActorMethod(annotations, modifiers);
             }
@@ -788,6 +967,11 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         rejectUnsupportedAcceleratorSyntax();
+        // Allow 'pub mtd (Actor self) method(...)' without a redundant
+        // 'define'. Bare 'mtd' stays contextual, not a new global keyword.
+        if (modifiers.visibilitySeen && isExternalActorMethodHead()) {
+            return parseExternalActorMethod(annotations, modifiers);
+        }
         if (isLegacyFnSpelling()) {
             throw error(peek(), "functions are declared with 'fnc', not 'fn'");
         }
@@ -1076,12 +1260,14 @@ public final class Parser {
         }
     }
 
-    /** Contextual mtd only counts as a source receiver declaration in a define head. */
+    /** Contextual mtd accepts both receiver-first and name-first declarations. */
     private boolean isExternalActorMethodHead() {
         return isContextualIdentifier("mtd")
-                && current + 2 < tokens.size()
-                && tokens.get(current + 1).type() == IDENT
-                && tokens.get(current + 2).type() == LPAREN;
+                && current + 1 < tokens.size()
+                && (tokens.get(current + 1).type() == LPAREN
+                    || (current + 2 < tokens.size()
+                        && tokens.get(current + 1).type() == IDENT
+                        && tokens.get(current + 2).type() == LPAREN));
     }
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
@@ -1090,11 +1276,12 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
         consumeContextualIdentifier("mtd", "expected external receiver method declaration");
-        String name = consumeCallableName("expected external actor method name");
-        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
-                "on_recover").contains(name)) {
-            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
-        }
+        // The canonical form is 'define mtd (Worker w) update(...): void'.
+        // Keep the earlier 'define mtd update(Worker w)(...): void' as
+        // a compatibility spelling; both produce one identical typed AST.
+        boolean receiverFirst = check(LPAREN);
+        String name = receiverFirst ? null
+                : consumeCallableName("expected external actor method name");
         consume(LPAREN, "external receiver method requires '(Actor receiver)'");
         Ast.TypeRef receiverType = parseTypeRef();
         if (receiverType.inferArguments() || !receiverType.arguments().isEmpty()
@@ -1103,6 +1290,13 @@ public final class Parser {
         }
         String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
         consume(RPAREN, "expected ')' after external actor receiver");
+        if (receiverFirst) {
+            name = consumeCallableName("expected external actor method name after receiver");
+        }
+        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
+                "on_recover").contains(name)) {
+            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
+        }
         consume(LPAREN, "expected '(' before external receiver method parameters");
         List<Ast.Param> parameters = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after external receiver method parameters");
@@ -1684,6 +1878,22 @@ public final class Parser {
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
+        // 'receives' and 'sends' are contextual actor-header keywords. Do
+        // not steal existing method, local or field identifiers in unrelated
+        // syntax; declaration order is arbitrary but duplicates are errors.
+        Ast.TypeRef receives = null;
+        Ast.TypeRef sends = null;
+        while (isContextualIdentifier("receives") || isContextualIdentifier("sends")) {
+            Token clause = advance();
+            Ast.TypeRef declared = parseTypeRef();
+            if (clause.lexeme().equals("receives")) {
+                if (receives != null) throw error(clause, "duplicate actor receives clause");
+                receives = declared;
+            } else {
+                if (sends != null) throw error(clause, "duplicate actor sends clause");
+                sends = declared;
+            }
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         // Actors have one runtime-owned mailbox, one lifecycle and one state
         // ownership domain. Multiple actor superclasses would merge those
@@ -1694,6 +1904,21 @@ public final class Parser {
                     + "' may extend at most one actor superclass");
         }
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        // A nominal, semicolon-terminated actor may name contract obligations
+        // without defining an implicit runtime actor, empty class or alias.
+        // Actual actor-contract conformance remains a separate checked gate.
+        if (check(SEMICOLON)) {
+            if (!generics.isEmpty() || !parents.isEmpty()
+                    || actorKind != Ast.ActorKind.SHARED
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                throw error(peek(), "semicolon actor declarations require a plain "
+                        + "non-generic actor without transport or inheritance modifiers");
+            }
+            advance();
+            return new Ast.StandaloneActorDecl(
+                    name, null, visibility, actorKind, interfaces);
+        }
 
         // Standalone actor declaration: retain the receiver-binding name in
         // its own AST node. Never synthesize an empty class, dispatch table,
@@ -1984,7 +2209,7 @@ public final class Parser {
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
                         prefix.serial()),
-                sealedStateFields);
+                sealedStateFields, new Ast.ActorMessageContract(receives, sends));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -2924,7 +3149,7 @@ public final class Parser {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
-            boolean structural = matchContextualKeyword("structural");
+            boolean structural = matchContextualKeyword("structural") || match(TILDE);
 
             // Migration spelling for named-argument-friendly declarations:
             // |value: Type| is accepted, while oreslang-format emits |Type value|.
@@ -3015,7 +3240,7 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
-            boolean structural = matchContextualKeyword("structural");
+            boolean structural = matchContextualKeyword("structural") || match(TILDE);
 
             // Canonical type-first structural spelling: structural Foo y
             if (structural) {
@@ -3229,30 +3454,16 @@ public final class Parser {
             return grouped;
         }
 
-        // Tilde aggregate types are only a source spelling of established
-        // built-in types. Keep the complete bracketed shape/metadata grammar
-        // below; do not create a new type family or an unchecked nominal.
-        boolean explicitTildeType = match(TILDE);
+        // The tilde is reserved for structural typing, not the former
+        // lowercase collection type aliases. Structural parameter syntax
+        // consumes the sigil before entering parseTypeRef.
+        if (match(TILDE)) {
+            Token structuralSigil = previous();
+            throw error(structuralSigil, "'~' marks structural typing, not a nominal collection alias; "
+                    + "use 'structural T' in this position and canonical Type.of(...) for construction");
+        }
         String name;
-        if (explicitTildeType) {
-            Token kind = consume(IDENT, "expected a built-in aggregate type after '~'");
-            name = switch (kind.lexeme()) {
-                case "array" -> "Array";
-                case "vector" -> "Vector";
-                case "tuple" -> "Tuple";
-                case "fixed_array" -> "FixedArray";
-                case "fixed_list" -> "FixedList";
-                case "list" -> "List";
-                case "slice" -> "Slice";
-                case "map" -> "Map";
-                case "set" -> "Set";
-                case "entry" -> "Entry";
-                case "pair" -> "Pair";
-                case "record" -> "Record";
-                default -> throw error(kind, "unknown built-in tilde type '~" + kind.lexeme()
-                        + "'; aggregate aliases must name a supported built-in kind");
-            };
-        } else if (match(VOID)) name = "void";
+        if (match(VOID)) name = "void";
         else if (match(SELF)) name = "self";
         else if (match(NULL)) name = "null";
         else name = parseQualifiedName();
@@ -3310,14 +3521,6 @@ public final class Parser {
             }
         }
 
-        // Tilde tuple calls are values, not return/parameter type annotations.
-        // A type witness may be written ~tuple<T...> for compatibility, but
-        // ~tuple(...) in type position must fail with a precise diagnostic.
-        if (explicitTildeType && name.equals("Tuple") && check(LPAREN)) {
-            throw error(peek(), "~tuple(...) constructs a value, not a type; "
-                    + "use Tuple[T1, T2, ...] in type annotations");
-        }
-
         // Newable[T] is a type-level static factory trait application,
         // not an array/collection sequence shape. Other bracketed type
         // syntax retains the existing sequence-shape interpretation.
@@ -3331,7 +3534,7 @@ public final class Parser {
         }
         args = canonicalizeNamedParameters(args);
         while (match(LBRACKET)) {
-            // Zero-arity tuples are values (~tuple()) and types (Tuple[]).
+            // Zero-arity Tuple[] is a named tuple type.
             // Model the empty intrinsic with the existing finite tuple type
             // rather than allowing an empty sequence shape for every collection.
             if (name.equals("Tuple") && !infer && args.isEmpty() && check(RBRACKET)) {
@@ -3342,20 +3545,6 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
 
-        // Explicit ~tuple<T1,T2,...> resolves directly to the existing
-        // Tuple[T1,T2,...] shape. Preserve *unprefixed* Tuple<A,B> ASTs:
-        // a user-declared nominal Tuple<A,B> must still resolve as a class.
-        // The builtin unprefixed Tuple<T...> compatibility path is handled
-        // only by TypeChecker after lexical class resolution.
-        if (explicitTildeType && name.equals("Tuple") && !infer
-                && args.stream().noneMatch(Ast.TypeRef::isSequenceShape)) {
-            List<Ast.TypeRef> slots = args.stream()
-                    .filter(arg -> !arg.isNamedParameter()).toList();
-            if (!slots.isEmpty()) {
-                args.removeIf(arg -> !arg.isNamedParameter());
-                args.add(Ast.TypeRef.sequenceShape(slots));
-            }
-        }
         return new Ast.TypeRef(name, args, infer);
     }
 
@@ -4760,21 +4949,23 @@ public final class Parser {
     }
 
     /**
-     * Resolve ~map() only in an immediate, explicitly typed binding.
-     * This is a syntax-level witness, NOT an inferred runtime dictionary.
-     * Aliases, generics and implicit expected types remain fail closed until
-     * an independently verified typed-HIR contextual lowering pass exists.
+     * Resolve contextual Map.of(...) / Map.of() only in an immediate, explicitly
+     * typed binding. This is a syntax-level witness, NOT an inferred runtime
+     * dictionary. Aliases, generics and implicit expected types fail closed
+     * until independently verified typed-HIR contextual lowering exists.
      */
     private Ast.Expr resolveDirectContextualEmptyMap(
             Ast.TypeRef declaredType, Ast.Expr initializer) {
-        if (!(initializer instanceof Ast.ContextualEmptyMapExpr)
-                && !(initializer instanceof Ast.MapLiteralExpr map && map.mapType() == null)) {
+        boolean untypedEntries = initializer instanceof Ast.MapLiteralExpr map
+                && map.mapType() == null;
+        if (!(initializer instanceof Ast.ContextualEmptyMapExpr) && !untypedEntries) {
             return initializer;
         }
         if (declaredType == null || !declaredType.name().equals("Map")
                 || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
-            throw error(previous(),
-                    "~map() requires a directly declared, fully typed Map<K,V> binding");
+            String spelling = untypedEntries ? "Map.of(...)" : "Map.of()";
+            throw error(previous(), spelling
+                    + " requires a directly declared, fully typed Map<K,V> binding");
         }
         // Never lose the exact key/value witness. TypeChecker and
         // OwnershipChecker still independently validate both domains.
@@ -5730,8 +5921,7 @@ public final class Parser {
 
         if (match(TILDE)) {
             // '~ {field: Type, ...} as name' is the short spelling of
-            // 'structural {field: Type, ...} as name'. Do not reinterpret the
-            // established '~(field: Pattern)' or '~record(...)' pattern forms.
+            // 'structural {field: Type, ...} as name'.
             if (check(LBRACE)) {
                 Ast.TypeRef shape = parseTypeRef();
                 String binding = match(AS)
@@ -5739,18 +5929,43 @@ public final class Parser {
                         : null;
                 return new Ast.StructuralPattern(shape, binding);
             }
+            // Bare "on ~Point" is a structural VALUE pattern, not the same
+            // operation as the type test "on is ~Point". Until the value-
+            // intersection contract has lowering, do not silently treat the
+            // two forms as equivalent or steal the nominal TypePattern path.
             if (isContextualIdentifier("record") && checkNext(LPAREN)) {
-                advance();
+                throw error(peek(), "on ~record(...) is retired; use an explicit structural field pattern");
+            }
+            if (!check(LPAREN)) {
+                throw error(peek(), "on ~Type is a structural value pattern requiring checked intersection lowering; use 'on is ~Type' for a structural type test");
             }
             return parseTildeRecordPattern(false);
         }
 
         if (match(IS)) {
+            // "is ~Point" is a structural TYPE test (not a collection factory
+            // and not the value-equality/destructuring "on ~Point" form).
+            // Keep the existing structural checker and runtime semantics:
+            // do not erase the sigil into a nominal TypePattern.
+            boolean structuralTest = match(TILDE)
+                    || match(STRUCTURAL)
+                    || matchContextualIdentifier("structural");
             Ast.TypeRef target = parseTypeRef();
-            String binding = match(AS)
-                    ? consume(IDENT, "expected name after type pattern 'as'").lexeme()
-                    : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
-            return new Ast.TypePattern(target, binding);
+            String binding = null;
+            if (match(AS)) {
+                // Pattern bindings are currently readonly VAL in both
+                // StructuralPattern and TypePattern; do not accept "as let"
+                // or "as const" and silently discard its distinct semantics.
+                if (match(LET, CONST))
+                    throw error(previous(), "type pattern binding qualifier requires 'val' in this backend");
+                match(VAL);
+                binding = consume(IDENT, "expected bound name after type pattern 'as val'").lexeme();
+            } else if (check(IDENT) && !peek().lexeme().equals("_")) {
+                binding = advance().lexeme();
+            }
+            return structuralTest
+                    ? new Ast.StructuralPattern(target, binding)
+                    : new Ast.TypePattern(target, binding);
         }
 
         if (match(LPAREN)) {
@@ -6320,31 +6535,19 @@ public final class Parser {
         return expr;
     }
 
-    /** Dispatch only explicit, allowlisted ~kind(...) / ~kind<T>(...) heads.
-     *  Ordinary unary ~expr remains on the original operator path.
+    /** Detect removed collection-factory spellings only in expression
+     * context; structural type and match parsing have separate entry paths.
      */
-    /** Forms the canonical ~ branch in parseUnary owns: ~tuple(, ~record(, ~map( and ~map<. */
-    private boolean mainParsesTildeInline() {
-        String kind = tokens.get(current + 1).lexeme();
-        Token.Type next = tokens.get(current + 2).type();
-        return switch (kind) {
-            case "tuple", "record" -> next == LPAREN;
-            case "map" -> next == LPAREN || next == LT;
-            default -> false;
-        };
-    }
-
     private boolean isTildeAggregateConstructorHead() {
         if (!check(TILDE) || current + 2 >= tokens.size()
                 || tokens.get(current + 1).type() != IDENT) return false;
         Token tilde = tokens.get(current);
         Token kind = tokens.get(current + 1);
         Token next = tokens.get(current + 2);
-        // A source sigil must be contiguous with its built-in kind. Preserve
-        // old unary "~ array(...)" and "~ tuple(...)" expressions verbatim.
-        if (!adjacent(tilde, kind)) return false;
+        // Whitespace is insignificant for a removed constructor call:
+        // reject both ~tuple(...) and ~ tuple (...). A spaced '<' still
+        // parses as comparison rather than a former generic witness.
         Token.Type suffix = next.type();
-        // Spaced '<' is a comparison, not a generic constructor witness.
         if (suffix != LPAREN && (suffix != LT || !adjacent(kind, next))) return false;
         return switch (tokens.get(current + 1).lexeme()) {
             case "array", "tuple", "vector", "fixed_array", "fixed_list",
@@ -6433,95 +6636,49 @@ public final class Parser {
             }
             return new Ast.UnaryExpr("-", parseUnary());
         }
-        // main parses ~<T>(), ~tuple, ~record and ~map inline below; the remaining
-        // built-in tilde kinds (~array, ~vector, ~list, ~set, ~entry, ~pair, ...) use
-        // the postfix constructor path so they keep indexed/member/call postfixes.
-        if (isTildeAggregateConstructorHead() && !mainParsesTildeInline())
-            return parsePostfix();
+        // Former ~kind(...) collection constructors are invalid regardless of
+        // whether canonical Type.of lowering exists in this backend.
+        if (isTildeAggregateConstructorHead()) {
+            String kind = tokens.get(current + 1).lexeme();
+            String canonical = switch (kind) {
+                case "fixed_array" -> "FixedArray";
+                case "fixed_list" -> "FixedList";
+                default -> Character.toUpperCase(kind.charAt(0)) + kind.substring(1);
+            };
+            throw error(peek(), "'~' is reserved for structural typing; use "
+                    + canonical + ".of(...) to construct collections");
+        }
         if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(TILDE)) {
             Token sigil = previous();
-            // Only a statically named ':' entry selects a short record.
-            // Keep ~(expression) as unary bitwise complement, including calls
-            // and parenthesized expressions. The map spelling cannot be
-            // lowered until guest Map<K,V> typing and ownership are integrated.
+            // Typed-empty ~<T>() was a constructor alias, not structural
+            // syntax; explicit typed empties use Type.of<T>().
             if (check(LT) && adjacent(sigil, peek())) {
-                advance(); // ~<T> retains a compile-time type witness
-                if (check(GT)) {
-                    throw error(peek(), "typed empty aggregate requires exactly one type: ~<T>()");
-                }
-                Ast.TypeRef aggregateType = parseTypeRef();
-                if (check(COMMA)) {
-                    throw error(peek(), "typed empty aggregate requires exactly one type: ~<T>()");
-                }
-                consume(GT, "expected '>' after typed empty aggregate type");
-                consume(LPAREN, "expected '(' after ~<T>");
-                consume(RPAREN, "typed empty aggregate accepts no value arguments; use ~map, ~record or ~tuple");
-                return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(aggregateType));
+                throw error(peek(), "'~<T>()' collection constructors are removed; "
+                        + "use the canonical Type.of<T>() spelling");
             }
-            if (isContextualIdentifier("tuple") && checkNext(LPAREN)
-                    && adjacent(sigil, peek())) {
-                advance();
-                consume(LPAREN, "expected '(' after ~tuple");
-                List<Ast.Expr> items = new ArrayList<>();
-                if (!check(RPAREN)) {
-                    do {
-                        items.add(parseExpression());
-                    } while (match(COMMA) && !check(RPAREN));
-                }
-                consume(RPAREN, "expected ')' after ~tuple");
-                return parsePostfixSuffix(new Ast.TupleExpr(items));
-            }
-            if (isContextualIdentifier("record") && checkNext(LPAREN)
-                    && adjacent(sigil, peek())) {
-                advance();
-                return parsePostfixSuffix(parseTildeRecordLiteral(true));
-            }
-            if (isContextualIdentifier("map") && (checkNext(LPAREN) || checkNext(LT))
-                    && adjacent(sigil, peek())) {
-                advance(); // contextual map head
-                if (match(LPAREN)) {
-                    if (match(RPAREN)) {
-                        return parsePostfixSuffix(new Ast.ContextualEmptyMapExpr());
-                    }
-                    return parsePostfixSuffix(parseTildeMapEntries(null));
-                }
-                consume(LT, "expected explicit <K,V> or () after ~map");
-                Ast.TypeRef keyType = parseTypeRef();
-                consume(COMMA, "~map<K,V>() requires both key and value types");
-                Ast.TypeRef valueType = parseTypeRef();
-                consume(GT, "~map<K,V>() requires exactly two type arguments");
-                consume(LPAREN, "expected '(' after ~map<K,V>");
-                Ast.TypeRef mapType = new Ast.TypeRef(
-                        "Map", List.of(keyType, valueType), false);
-                if (match(RPAREN)) {
-                    return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(mapType));
-                }
-                return parsePostfixSuffix(parseTildeMapEntries(mapType));
-            }
+            // The ordinary unary ~(expr) path is independent of collection
+            // construction. Bare ~(field: value) or ~(key => value) used
+            // to select implicit Record/Map construction; those are also
+            // removed, because tilde must not manufacture aggregates.
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
-                    throw error(peek(), "empty '~()' is ambiguous; use '~record()' or, when supported, '~map()'");
+                    throw error(peek(), "empty '~()' cannot construct an aggregate; use Type.of(...)");
                 }
                 int first = current + 1;
                 if (first < tokens.size() && tokens.get(first).type() == ELLIPSIS) {
-                    throw error(peek(), "bare '~(...source)' has no record/map separator; use '~record(...source)'");
+                    throw error(peek(), "tilde aggregate spread constructors are removed; use Type.of(...)");
                 }
                 if (first + 1 < tokens.size()) {
                     Token.Type keyKind = tokens.get(first).type();
                     Token.Type separator = tokens.get(first + 1).type();
-                    if ((keyKind == IDENT || keyKind == STRING) && separator == COLON) {
-                        return parsePostfixSuffix(parseTildeRecordLiteral(false));
-                    }
-                    if (separator == FAT_ARROW) {
-                        advance(); // consume '(' after the tilde literal
-                        return parsePostfixSuffix(parseTildeMapEntries(null));
+                    if ((keyKind == IDENT || keyKind == STRING) && separator == COLON
+                            || separator == FAT_ARROW) {
+                        throw error(peek(), "tilde Map/Record construction is removed; use Map.of(...) or Record.of(...)");
                     }
                 }
                 if (tildeHasTopLevelMapSeparator()) {
-                    // Computed evaluated keys require a static Map<K,V> witness.
-                    advance(); // consume '(' and parse checked typed entries
-                    return parsePostfixSuffix(parseTildeMapEntries(null));
+                    throw error(peek(), "tilde Map construction is removed; use Map.of(...)");
                 }
             }
             return new Ast.UnaryExpr("~", parseUnary());
@@ -6739,6 +6896,63 @@ public final class Parser {
         return new Ast.DynamicSelectExpr(mode, policy, cases);
     }
 
+    /**
+     * Compiler-owned factories must lower to the same aggregate AST as the
+     * corresponding literals, not to dynamic members or host collections.
+     * Only kinds with an existing checked value representation are admitted.
+     */
+    private String builtinOfFactory(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !member.member().equals("of")
+                || !(member.receiver() instanceof Ast.NameExpr owner)) return null;
+        String name = owner.name();
+        if (!BUILTIN_OF_TYPES.contains(name) || shadowedOfTypes.contains(name))
+            return null;
+        return name;
+    }
+
+    private boolean unsupportedBuiltInOf(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !member.member().equals("of")
+                || !(member.receiver() instanceof Ast.NameExpr owner)) return false;
+        return PENDING_OF_TYPES.contains(owner.name())
+                && !shadowedOfTypes.contains(owner.name());
+    }
+
+    private Ast.Expr parseFactoryOf(String kind, List<Ast.TypeRef> explicitTypes) {
+        if (kind.equals("Map")) {
+            Ast.TypeRef witness = null;
+            if (explicitTypes != null) {
+                if (explicitTypes.size() != 2
+                        || explicitTypes.stream().anyMatch(Ast.TypeRef::isNamedParameter)) {
+                    throw error(previous(), "Map.of<K,V> requires exactly two positional type witnesses");
+                }
+                witness = new Ast.TypeRef("Map", explicitTypes, false);
+            }
+            if (match(RPAREN)) {
+                return witness == null
+                        ? new Ast.ContextualEmptyMapExpr()
+                        : new Ast.TypedEmptyAggregateExpr(witness);
+            }
+            return parseMapOfEntries(witness);
+        }
+        if (explicitTypes != null) {
+            throw error(previous(), kind + ".of<T>(...) requires independently checked typed factory lowering");
+        }
+        if (kind.equals("Record")) {
+            throw error(previous(), "Record.of must be parsed through the checked static-field record parser");
+        }
+        // This is exactly the existing array/tuple literal argument grammar:
+        // spreads, named call labels and foreign argument dispatch are not
+        // silently enabled by a new factory spelling.
+        List<Ast.Expr> elements = parseArgumentsUntil(RPAREN);
+        consume(RPAREN, "expected ')' after " + kind + ".of arguments");
+        if (kind.equals("Array") && elements.isEmpty()) {
+            throw error(previous(), "Array.of() needs a checked element type; an empty untyped array cannot infer T");
+        }
+        return kind.equals("Tuple") ? new Ast.TupleExpr(elements) : new Ast.ListExpr(elements, true);
+    }
+
     private Ast.Expr parsePostfix() {
         return parsePostfixSuffix(parsePrimary());
     }
@@ -6746,7 +6960,37 @@ public final class Parser {
     /** Preserve postfix member/index behavior for typed aggregate literals. */
     private Ast.Expr parsePostfixSuffix(Ast.Expr expr) {
         while (true) {
-            if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
+            // A pending standard-library factory is not a dynamic host
+            // member. User-defined/shadowed nominal methods remain ordinary
+            // calls so the typechecker, not this parser, resolves identity.
+            if (unsupportedBuiltInOf(expr)) {
+                throw error(peek(), "collection factory requires compiler-owned "
+                        + "type, ownership and guest lowering; unsupported: "
+                        + ((Ast.NameExpr) ((Ast.MemberExpr) expr).receiver()).name()
+                        + ".of");
+            }
+            String factory = builtinOfFactory(expr);
+            if (factory != null && check(LT) && adjacent(previous(), peek())
+                    && looksLikeTypeArgumentCall()) {
+                List<Ast.TypeRef> types = parseCallTypeArguments();
+                consume(LPAREN, "expected '(' after " + factory + ".of type arguments");
+                if (factory.equals("Record")) {
+                    throw error(previous(), "Record.of does not admit explicit generic arguments");
+                }
+                expr = parseFactoryOf(factory, types);
+            } else if (factory != null && check(LPAREN)) {
+                if (factory.equals("Record")) {
+                    expr = parseRecordOfLiteral();
+                } else {
+                    advance(); // '('; factory owns closing ')'
+                    expr = parseFactoryOf(factory, null);
+                }
+            } else if (factory != null) {
+                // Do not allow a bare compiler-owned factory to escape as
+                // a first-class dynamic/host member until it has a typed
+                // function-value representation with ownership and AOT proof.
+                throw error(peek(), factory + ".of must be invoked as a checked collection factory");
+            } else if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 rejectUnsupportedActorFactory(expr);
@@ -6938,28 +7182,6 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
-        // One semantic constructor path: reuse the old array/tuple AST.
-        // Explicit typed value constructors and other aggregate families
-        // remain unavailable until their runtime/type-witness reviews.
-        if (isTildeAggregateConstructorHead()) {
-            advance(); // tilde
-            String kind = advance().lexeme();
-            if (check(LT)) {
-                throw error(peek(), "~" + kind + "<...>(...) requires checked "
-                        + "explicit-constructor type witnesses; use a declared expected type");
-            }
-            if (kind.equals("array") || kind.equals("tuple")) {
-                consume(LPAREN, "expected '(' after ~" + kind);
-                List<Ast.Expr> values = parseArgumentsUntil(RPAREN);
-                consume(RPAREN, "expected ')' after ~" + kind + " literal");
-                return kind.equals("array")
-                        ? new Ast.ListExpr(values, true)
-                        : new Ast.TupleExpr(values);
-            }
-            throw error(previous(), "~" + kind
-                    + "(...) requires reviewed compiler-owned aggregate lowering; "
-                    + "no host fallback is allowed");
-        }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
@@ -7163,7 +7385,7 @@ public final class Parser {
      * Map value becomes visible. Mixed record ':' syntax is not accepted.
      * The '=>' token is consumed outside parseExpression's pipeline grammar.
      */
-    private Ast.MapLiteralExpr parseTildeMapEntries(Ast.TypeRef mapType) {
+    private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType) {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
         do {
             if (check(ELLIPSIS)) {
@@ -7183,11 +7405,8 @@ public final class Parser {
         return new Ast.MapLiteralExpr(mapType, entries);
     }
 
-    private Ast.ObjectExpr parseTildeRecordLiteral(boolean explicit) {
-        consume(LPAREN, "expected '(' after tilde record prefix");
-        if (!explicit && check(RPAREN)) {
-            throw error(peek(), "empty '~()' is ambiguous; use '~record()'");
-        }
+    private Ast.ObjectExpr parseRecordOfLiteral() {
+        consume(LPAREN, "expected '(' after Record.of");
         List<Ast.ObjectField> fields = new ArrayList<>();
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
         while (!check(RPAREN)) {
@@ -7196,20 +7415,20 @@ public final class Parser {
                 // their lifetime and partial-move proof is implemented.
                 fields.add(Ast.ObjectField.spreading(parseExpression()));
             } else {
-                String name = consumeStaticObjectKeyName("expected static tilde record field name");
+                String name = consumeStaticObjectKeyName("expected static Record.of field name");
                 if (!names.add(name)) {
-                    throw error(previous(), "duplicate named field in tilde record: '" + name + "'");
+                    throw error(previous(), "duplicate named field in Record.of: '" + name + "'");
                 }
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "mixed record ':' and map '=>' entries are forbidden");
                 }
-                consume(COLON, "tilde records use ':' after a static field name; maps use '=>'");
+                consume(COLON, "Record.of fields use ':' after a static field name; Map.of keys use '=>'");
                 fields.add(Ast.ObjectField.named(name, parseExpression()));
             }
             if (!match(COMMA)) break;
             if (check(RPAREN)) break; // an optional trailing comma
         }
-        consume(RPAREN, "expected ')' after tilde record literal");
+        consume(RPAREN, "expected ')' after Record.of literal");
         return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
     }
 

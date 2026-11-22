@@ -1,12 +1,18 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * Static-only nominal binding of external actor receiver declarations.
@@ -75,9 +81,165 @@ public final class ActorReceiverBinder {
         return Collections.unmodifiableMap(new LinkedHashMap<>(bindings));
     }
 
+    /**
+     * An explicitly supplied package source set can resolve root-namespace
+     * external actor methods across files. This is STATIC METADATA ONLY:
+     * the caller must authenticate package membership separately, and the
+     * executable compiler must still reject external actor method bodies.
+     *
+     * In particular, equal textual namespaces do not imply cross-package
+     * authority. Named modules are never implicitly coalesced across files.
+     */
+    public record SourceSlot(
+            String packageIdentity, String namespace,
+            String actor, String name, int arity) {
+        public SourceSlot {
+            if (packageIdentity == null || packageIdentity.isBlank()
+                    || namespace == null || namespace.isBlank()
+                    || actor == null || actor.isBlank()
+                    || name == null || name.isBlank() || arity < 0) {
+                throw new IllegalArgumentException("invalid package actor receiver slot");
+            }
+        }
+    }
+
+    public record SourceBinding(
+            String actorUnit, String methodUnit, Binding nominalBinding) {
+        public SourceBinding {
+            java.util.Objects.requireNonNull(actorUnit, "actor source unit");
+            java.util.Objects.requireNonNull(methodUnit, "method source unit");
+            java.util.Objects.requireNonNull(nominalBinding, "nominal binding");
+        }
+    }
+
+    public static Map<SourceSlot, SourceBinding> bindSourceSet(
+            String packageIdentity, Map<String, Ast.Program> sourceUnits) {
+        if (packageIdentity == null || packageIdentity.isBlank()) {
+            throw new IllegalArgumentException("cross-file receiver binding requires a package identity");
+        }
+        java.util.Objects.requireNonNull(sourceUnits, "explicit package source units");
+        if (sourceUnits.size() > 4096) {
+            throw new IllegalArgumentException("cross-file actor binding source-set exceeds 4096 units");
+        }
+        Map<String, Ast.Program> ordered = new TreeMap<>();
+        Map<String, String> foldedSourceIds = new LinkedHashMap<>();
+        for (Map.Entry<String, Ast.Program> unit : sourceUnits.entrySet()) {
+            String sourceId = unit.getKey();
+            if (!validSourceUnitId(sourceId)) {
+                throw new IllegalArgumentException("invalid package-relative source unit ID: " + sourceId);
+            }
+            if (unit.getValue() == null) {
+                throw new IllegalArgumentException("null source program: " + sourceId);
+            }
+            String previous = foldedSourceIds.putIfAbsent(
+                    sourceId.toLowerCase(Locale.ROOT), sourceId);
+            if (previous != null && !previous.equals(sourceId)) {
+                throw new IllegalArgumentException(
+                        "case-insensitive source unit collision: " + previous + " and " + sourceId);
+            }
+            ordered.put(sourceId, unit.getValue());
+        }
+        Map<String, List<Ast.Decl>> grouped = new TreeMap<>();
+        // Record identity instead of structural equality: two identical AST
+        // values from different files remain different declarations. Reusing
+        // one AST instance under two source IDs is ambiguous and rejected.
+        Map<Ast.Decl, String> origins = new IdentityHashMap<>();
+        int declarationCount = 0;
+        for (Map.Entry<String, Ast.Program> unit : ordered.entrySet()) {
+            String sourceId = unit.getKey();
+            Ast.Program program = unit.getValue();
+            String namespace = program.namespace();
+            if (namespace == null || namespace.isBlank()) {
+                throw new IllegalArgumentException(
+                        "cross-file actor methods require an explicit source namespace: " + sourceId);
+            }
+            for (Ast.ModuleDecl module : program.modules()) {
+                if (!Parser.ROOT_MODULE.equals(module.name())) {
+                    if (module.declarations().stream()
+                            .anyMatch(d -> d instanceof Ast.ExternalActorMethodDecl)) {
+                        throw new IllegalArgumentException(
+                                "named modules do not share cross-file actor receiver scope: " + sourceId);
+                    }
+                    continue;
+                }
+                List<Ast.Decl> declarations =
+                        grouped.computeIfAbsent(namespace, ignored -> new ArrayList<>());
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (++declarationCount > 65536) {
+                        throw new IllegalArgumentException(
+                                "cross-file actor binding exceeds 65536 root declarations");
+                    }
+                    if (declaration == null) {
+                        throw new IllegalArgumentException("null source declaration: " + sourceId);
+                    }
+                    String previousUnit = origins.putIfAbsent(declaration, sourceId);
+                    if (previousUnit != null && !previousUnit.equals(sourceId)) {
+                        throw new IllegalArgumentException(
+                                "ambiguous declaration provenance: one AST node appears in source units '"
+                                        + previousUnit + "' and '" + sourceId + "'");
+                    }
+                    declarations.add(declaration);
+                }
+            }
+        }
+
+        Map<SourceSlot, SourceBinding> resolved = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Ast.Decl>> group : grouped.entrySet()) {
+            // Validate namespace-wide nominal type collisions even if there
+            // are zero external methods. Otherwise adding an mtd later could
+            // silently change the actor bound to an existing type identity.
+            Ast.ModuleDecl syntheticRoot = new Ast.ModuleDecl(
+                    Parser.ROOT_MODULE, List.of(), List.of(), group.getValue());
+            Map<Slot, Binding> local = new LinkedHashMap<>();
+            bindModule(syntheticRoot, local);
+            for (Map.Entry<Slot, Binding> entry : local.entrySet()) {
+                Binding binding = entry.getValue();
+                String actorUnit = origins.get(binding.nominalActor());
+                String methodUnit = origins.get(binding.method());
+                if (actorUnit == null || methodUnit == null) {
+                    throw new IllegalArgumentException(
+                            "external actor method has no source provenance");
+                }
+                // Method attachment is actor-owned code inside the same
+                // verified namespace, including for a non-public actor.
+                // This metadata does not make that actor public or authorize
+                // an unrelated function to call its private members.
+                Slot slot = entry.getKey();
+                SourceSlot key = new SourceSlot(
+                        packageIdentity, group.getKey(), slot.actor(),
+                        slot.name(), slot.arity());
+                if (resolved.putIfAbsent(key, new SourceBinding(
+                        actorUnit, methodUnit, binding)) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate cross-file external actor method slot: " + key);
+                }
+            }
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(resolved));
+    }
+
+    /** Only normalized, package-relative slash-delimited source IDs are valid. */
+    private static boolean validSourceUnitId(String sourceId) {
+        if (sourceId == null || sourceId.isBlank()
+                || sourceId.startsWith("/") || sourceId.indexOf('\\') >= 0
+                || (!sourceId.endsWith(".atto") && !sourceId.endsWith(".ores"))) {
+            return false;
+        }
+        for (String segment : sourceId.split("/", -1)) {
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
+                return false;
+            }
+        }
+        for (int i = 0; i < sourceId.length(); i++) {
+            if (Character.isISOControl(sourceId.charAt(i))) return false;
+        }
+        return true;
+    }
+
     private static void bindModule(
             Ast.ModuleDecl module, Map<Slot, Binding> bindings) {
         Map<String, Ast.Decl> nominalActors = new LinkedHashMap<>();
+        Map<String, Set<String>> embeddedInstanceSlots = new LinkedHashMap<>();
         Map<String, String> declaredTypes = new LinkedHashMap<>();
         Set<String> receiverAliases = new LinkedHashSet<>();
 
@@ -89,10 +251,20 @@ public final class ActorReceiverBinder {
             if (declaration instanceof Ast.StandaloneActorDecl actor) {
                 typeName = actor.name();
                 category = "standalone actor";
-                if (!receiverAliases.add(actor.receiverName())) {
+                if (actor.receiverName() != null
+                        && !receiverAliases.add(actor.receiverName())) {
                     throw new IllegalArgumentException(
                             "duplicate standalone actor receiver binding '"
                                     + module.name() + "." + actor.receiverName() + "'");
+                }
+                // Contract references from a semicolon-only actor header must
+                // not be laundered into an implementation witness. The
+                // actor-targeted contract linker is not part of this binder.
+                if (!actor.implementedContracts().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_CONTRACT_WITNESS_UNSUPPORTED: nominal actor '"
+                                    + module.name() + "." + actor.name()
+                                    + "' requires verified actor-only contract conformance");
                 }
                 nominalActors.put(typeName, actor);
             } else if (declaration instanceof Ast.ClassDecl klass) {
@@ -100,6 +272,17 @@ public final class ActorReceiverBinder {
                 category = klass.actorKind() == Ast.ActorKind.NONE ? "class" : "actor class";
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
                     nominalActors.put(typeName, klass);
+                    Set<String> slots = new LinkedHashSet<>();
+                    for (Ast.MethodDecl owned : klass.methods()) {
+                        if (owned.isStatic()) continue;
+                        if (!slots.add(methodSelector(owned.name(), owned.arity()))) {
+                            throw new IllegalArgumentException(
+                                    "duplicate in-class actor method slot '" + module.name() + "."
+                                            + klass.name() + "." + owned.name() + "/"
+                                            + owned.arity() + "'");
+                        }
+                    }
+                    embeddedInstanceSlots.put(typeName, slots);
                 }
             } else if (declaration instanceof Ast.InterfaceDecl iface) {
                 typeName = iface.name();
@@ -160,15 +343,13 @@ public final class ActorReceiverBinder {
                                     + module.name() + "." + klass.name()
                                     + "' requires generic witness lowering");
                 }
-                for (Ast.MethodDecl owned : klass.methods()) {
-                    if (!owned.isStatic() && owned.name().equals(method.name())
-                            && owned.arity() == method.parameters().size()) {
-                        throw new IllegalArgumentException(
-                                "external actor method slot '" + module.name() + "."
-                                        + klass.name() + "." + method.name() + "/"
-                                        + method.parameters().size()
-                                        + "' conflicts with an in-class actor method");
-                    }
+                if (embeddedInstanceSlots.get(klass.name()).contains(
+                        methodSelector(method.name(), method.parameters().size()))) {
+                    throw new IllegalArgumentException(
+                            "external actor method slot '" + module.name() + "."
+                                    + klass.name() + "." + method.name() + "/"
+                                    + method.parameters().size()
+                                    + "' conflicts with an in-class actor method");
                 }
             }
             validateHookShape(method);
@@ -184,6 +365,12 @@ public final class ActorReceiverBinder {
                                 + "'; parameter types and return types do not disambiguate overloads");
             }
         }
+    }
+
+    private static String methodSelector(String name, int arity) {
+        // The caller-visible selector is name/arity. Types, parameter names,
+        // effects and return types never distinguish two instance method slots.
+        return name + "/" + arity;
     }
 
     private static void validateHookShape(Ast.ExternalActorMethodDecl method) {

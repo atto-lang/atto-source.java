@@ -207,6 +207,10 @@ public final class TypeChecker {
         ActorReceiverBinder.bind(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.SingletonDecl) {
+                    throw new IllegalArgumentException(
+                            "ORES-SINGLETON-UNSUPPORTED: semantic check-only AST is not runtime-lowered");
+                }
                 if (declaration instanceof Ast.ExternalActorMethodDecl method) {
                     throw new IllegalArgumentException(
                             "EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED: '" + method.name()
@@ -1810,6 +1814,34 @@ public final class TypeChecker {
                     "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
                     + klass.name() + "' requires compiler-sealed state ownership "
                     + "and handle_state lowering; not yet enabled");
+        Ast.ActorMessageContract protocol = klass.actorMessageContract();
+        if (protocol.sends() != null) {
+            // Direct calls are already checked against the receiver's
+            // ActorRef<ActorClass>, but a complete sends effect must also
+            // account for helper calls, callbacks, inherited methods and
+            // dynamic dispatch. Do not claim an enforced outbound bound until
+            // transitive effect summaries and CONTROL separation are proven.
+            throw new IllegalArgumentException(
+                    "ACTOR_SENDS_EFFECT_UNSUPPORTED: actor '" + klass.name()
+                    + "' requires transitive outbound message effect checking");
+        }
+        if (protocol.receives() != null) {
+            if (protocol.receives().name().equals("never"))
+                throw new IllegalArgumentException(
+                        "ACTOR_RECEIVES_NEVER_UNSUPPORTED: actor '" + klass.name()
+                        + "' requires a verified CONTROL-only mailbox path");
+            Type declared = resolve(protocol.receives(),
+                    Set.copyOf(klass.genericParameters()), nominalClassType(klass));
+            Type handler = actorMailboxPayloadType(
+                    new Named("ActorRef", List.of(nominalClassType(klass))));
+            // The existing typed ActorMail<T> handler and outbound ActorRef
+            // checks already enforce the receiving boundary. Require exact
+            // equivalence, not a widening that could hide another payload.
+            requireAssignable(handler, declared,
+                    "receives contract of actor '" + klass.name() + "'");
+            requireAssignable(declared, handler,
+                    "receive(ActorMail<T>) of actor '" + klass.name() + "'");
+        }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
@@ -6519,7 +6551,7 @@ public final class TypeChecker {
                 return switch (channelOp.mode()) {
                     case BLOCKING -> Primitive.VOID;
                     case NONBLOCKING -> new Named("Future", List.of(Primitive.VOID));
-                    case IMMEDIATE -> Primitive.BOOL;
+                    case IMMEDIATE -> new Named("TryWriteResult", List.of(element));
                 };
             }
 
@@ -6634,7 +6666,7 @@ public final class TypeChecker {
             if (witness == null) {
                 throw new IllegalArgumentException(
                         "nonempty Map literal requires a directly declared Map<K,V> "
-                                + "or explicit ~map<K,V>(...) type witness");
+                                + "or explicit Map.of<K,V>(...) type witness");
             }
             // Use the same narrow, compiler-owned typed-map proof as the
             // already admitted empty constructor. This rejects aliases,
@@ -6664,7 +6696,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw new IllegalArgumentException(
-                    "~map() requires a directly declared Map<K,V> type; "
+                    "Map.of() requires a directly declared Map<K,V> type; "
                             + "unresolved contextual map literals cannot be lowered");
         }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
@@ -9314,6 +9346,10 @@ public final class TypeChecker {
                         : null;
                 case "Err" -> named.name().equals("Result") && named.arguments().size() == 2
                         ? List.of(named.arguments().get(1)) : null;
+                case "Accepted" -> named.name().equals("TryWriteResult") && named.arguments().size() == 1
+                        ? List.of() : null;
+                case "Full", "Closed" -> named.name().equals("TryWriteResult") && named.arguments().size() == 1
+                        ? List.of(named.arguments().getFirst()) : null;
                 default -> null;
             };
             if (args == null) {
@@ -9543,7 +9579,9 @@ public final class TypeChecker {
                 if ((a.constructor().equals("Some") && b.constructor().equals("None"))
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
-                        || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                        || (a.constructor().equals("Err") && b.constructor().equals("Ok"))
+                        || (java.util.Set.of("Accepted", "Full", "Closed").contains(a.constructor())
+                            && java.util.Set.of("Accepted", "Full", "Closed").contains(b.constructor()))) return true;
             }
             return false;
         }
@@ -9675,6 +9713,26 @@ public final class TypeChecker {
                     okPayloads, named.arguments().get(0), generics, self, depth + 1))
                     && patternsProvablyExhaustive(
                             errPayloads, named.arguments().get(1), generics, self, depth + 1);
+        }
+
+        if (subject instanceof Named named
+                && named.name().equals("TryWriteResult") && named.arguments().size() == 1) {
+            boolean accepted = false;
+            List<Ast.Pattern> fullPayloads = new ArrayList<>();
+            List<Ast.Pattern> closedPayloads = new ArrayList<>();
+            for (Ast.Pattern pattern : patterns) {
+                if (!(pattern instanceof Ast.ConstructorPattern ctor)) continue;
+                if (ctor.constructor().equals("Accepted") && ctor.arguments().isEmpty()) {
+                    accepted = true;
+                }
+                if (ctor.arguments().size() != 1) continue;
+                if (ctor.constructor().equals("Full")) fullPayloads.add(ctor.arguments().getFirst());
+                if (ctor.constructor().equals("Closed")) closedPayloads.add(ctor.arguments().getFirst());
+            }
+            Type payload = named.arguments().getFirst();
+            return accepted
+                    && patternsProvablyExhaustive(fullPayloads, payload, generics, self, depth + 1)
+                    && patternsProvablyExhaustive(closedPayloads, payload, generics, self, depth + 1);
         }
 
         // Open/infinite domains require an irrefutable pattern. More elaborate
@@ -13436,6 +13494,14 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 yield new Named("Option", List.of(element));
+            }
+            case "TryWriteResult" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("TryWriteResult<T> requires exactly one element type");
+                }
+                Type payload = resolve(ref.arguments().getFirst(), generics, self);
+                validateChannelPayloadType(payload, "TryWriteResult<T>");
+                yield new Named("TryWriteResult", List.of(payload));
             }
             case "Result" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2) {

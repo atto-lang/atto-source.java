@@ -1,5 +1,5 @@
 pub fnc main(): void {
-    const duplicate = ~map<Symbol, bool>(
+    const duplicate = Map.of<Symbol, bool>(
         #ready => true,
         #ready => false
     );

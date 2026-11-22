@@ -283,7 +283,7 @@ final class ChannelSelectSyntaxTest {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 fnc probe(Channel<int> input, Channel<int> output): void {
                   val Option<int> read = try readch input;
-                  val bool wrote = try writech output, 42;
+                  val TryWriteResult<int> wrote = try writech output, 42;
 
                   try {
                     stdio.println("ordinary try still works");
