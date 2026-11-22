@@ -6,6 +6,10 @@ pub routine main(): void {
   let raw = zorde.encode_frame(7, 1, payload);
   stdio.println(raw.is_ok());
   let wire = raw.unwrap();
+  stdio.println(wire.size);
+  stdio.println(wire.get(5));
+  stdio.println(wire.get(6));
+  stdio.println(wire.get(7));
   let decoded = zorde.decode_frame(wire);
   stdio.println(decoded.is_ok());
   let frame = decoded.unwrap();
@@ -84,5 +88,9 @@ pub routine main(): void {
   }
   invalid_frame.set(invalid_frame.size - 1, 256);
   stdio.println(zorde.decode_frame(invalid_frame).is_err());
+  let mut Array<int> invalid_bool_payload = new Array<int>();
+  invalid_bool_payload.add(2);
+  let invalid_bool_wire = zorde.encode_frame(42, 2, invalid_bool_payload).unwrap();
+  stdio.println(zorde.decode_bool_frame(42, 2, invalid_bool_wire).is_err());
   return;
 }
