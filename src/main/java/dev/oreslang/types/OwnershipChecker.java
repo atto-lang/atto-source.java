@@ -3177,6 +3177,10 @@ public final class OwnershipChecker {
 
     private ValueInfo checkBuiltinAeadCall(
             String member, List<Ast.Expr> args, Scope scope) {
+        if (checkedProgram.imports().stream().noneMatch(
+                dev.oreslang.imports.ImportRules::isStandardCryptoImport)) {
+            throw error("crypto namespace requires explicit import from std.crypto");
+        }
         Ast.TypeRef key = Ast.TypeRef.simple("AeadKey");
         Ast.TypeRef bytes = new Ast.TypeRef(
                 "List", List.of(Ast.TypeRef.simple("int")), false);
