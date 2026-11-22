@@ -92,5 +92,18 @@ pub routine main(): void {
   invalid_bool_payload.add(2);
   let invalid_bool_wire = zorde.encode_frame(42, 2, invalid_bool_payload).unwrap();
   stdio.println(zorde.decode_bool_frame(42, 2, invalid_bool_wire).is_err());
+
+  let mut Array<int> wrong_byte = new Array<int>();
+  wrong_byte.add(-1);
+  stdio.println(zorde.checked_reader(wrong_byte).is_err());
+  let mut Array<int> upper_byte = new Array<int>();
+  upper_byte.add(256);
+  stdio.println(zorde.checked_reader(upper_byte).is_err());
+  stdio.println(zorde.checked_writer(0).is_err());
+  stdio.println(zorde.checked_writer(1048577).is_err());
+  stdio.println(zorde.checked_writer(16).is_ok());
+  let mut Array<int> one_byte = new Array<int>();
+  one_byte.add(255);
+  stdio.println(zorde.checked_reader(one_byte).is_ok());
   return;
 }
