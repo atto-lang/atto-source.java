@@ -1,0 +1,74 @@
+name: Java explicit pkg imports class qualifier guest proof
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/explicit-call-scopes-exact-head.yml
+      - ci/fixtures/class-qualifiers/**
+      - ci/run_class_qualifier_proof.sh
+      - ci/verify_exact_tree_mirror.sh
+      - ci/tests/test_exact_tree_mirror.sh
+      - src/main/java/dev/oreslang/compiler/ImportGraph.java
+      - src/main/java/dev/oreslang/parser/Parser.java
+      - src/main/java/dev/oreslang/types/OwnershipChecker.java
+      - src/main/java/dev/oreslang/types/TypeChecker.java
+      - src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
+      - src/test/java/dev/oreslang/ImplicitSelfMethodCallTest.java
+      - src/test/java/dev/oreslang/ImportsQualifiedCallTest.java
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-compiler-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact contributor PR HEAD (not synthetic merge)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify immutable source identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          bash scripts/verify-source-tree.sh "$EXPECTED_HEAD"
+          printf 'QUALIFIER_SOURCE_HEAD=%s\nQUALIFIER_SOURCE_TREE=%s\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')"
+
+      - name: Source-free exact mirror security gate (1 positive + 7 negatives)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/tests/test_exact_tree_mirror.sh
+
+      - name: Set up Java 25 GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+
+      - name: Execute 34 JUnit and real linked namespace guest checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          export EXPECTED_SOURCE_COMMIT="$(git rev-parse HEAD)"
+          export EXPECTED_SOURCE_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
+          export CLASS_QUALIFIER_PROFILE=jvm
+          bash ci/run_class_qualifier_proof.sh
+
+      - name: Record stepful receipt, exact source and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'QUALIFIER_EXECUTED_HEAD=%s\nQUALIFIER_EXECUTED_TREE=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+          printf 'RUN_ID=%s RUN_ATTEMPT=%s RUNNER_NAME=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"

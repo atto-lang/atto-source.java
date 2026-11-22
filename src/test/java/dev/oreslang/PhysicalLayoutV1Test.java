@@ -130,4 +130,64 @@ final class PhysicalLayoutV1Test {
         assertThrows(IndexOutOfBoundsException.class, () -> soa.address(5, 0));
         assertThrows(IndexOutOfBoundsException.class, () -> soa.address(0, 3));
     }
+
+    @Test
+    void unicodeFieldNamesUseStrictUtf8ByteBudgetAndPreserveExactIdentity() {
+        for (String name : List.of(" ", "β", "é", "e\u0301", "💾",
+                "a".repeat(1024), "💾".repeat(256))) {
+            var f = new PhysicalLayoutV1.Field(name, 4, 4);
+            assertEquals(name, f.name());
+        }
+        var plan = PhysicalLayoutV1.lower(Kind.AOS, 2, List.of(
+                new PhysicalLayoutV1.Field("é", 2, 2),
+                new PhysicalLayoutV1.Field("e\u0301", 4, 4)), 1,
+                List.of(), 4096);
+        assertNotEquals(plan.address(0, 0).absolute(), plan.address(0, 1).absolute());
+        for (String name : List.of("", String.valueOf((char) 0),
+                String.valueOf((char) 0xD800), String.valueOf((char) 0xDC00),
+                "x" + (char) 0xD800 + "y", "a".repeat(1025),
+                "💾".repeat(257), "€".repeat(342))) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new PhysicalLayoutV1.Field(name, 4, 4),
+                    "invalid Unicode/UTF-8 name was admitted");
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                PhysicalLayoutV1.lower(Kind.AOS, 1, List.of(
+                        new PhysicalLayoutV1.Field("💾", 4, 4),
+                        new PhysicalLayoutV1.Field("💾", 4, 4)),
+                        1, List.of(), 4096));
+    }
+
+    @Test
+    void geometryRemainsAlignedAndNonoverlappingAcrossTailRowCounts() {
+        var fs = List.of(new PhysicalLayoutV1.Field("u8", 1, 1),
+                new PhysicalLayoutV1.Field("u16", 2, 4),
+                new PhysicalLayoutV1.Field("u32", 4, 8),
+                new PhysicalLayoutV1.Field("u64", 8, 16));
+        for (long rows : new long[]{0, 1, 2, 3, 4, 5, 7, 8, 9, 17, 31, 32, 33}) {
+            for (Kind kind : Kind.values()) {
+                var p = PhysicalLayoutV1.lower(kind, rows, fs, kind == Kind.AOSOA ? 4 : 1,
+                        kind == Kind.SOAOS ? List.of(List.of(0, 2), List.of(3, 1))
+                                : List.of(), 100_000);
+                Set<Long> used = new HashSet<>();
+                for (long row = 0; row < rows; row++) {
+                    for (int field = 0; field < fs.size(); field++) {
+                        var cell = p.address(row, field);
+                        var spec = fs.get(field);
+                        assertEquals(0L, cell.absolute() % spec.alignment(), kind.name());
+                        var segment = p.segments().get(cell.segment());
+                        assertTrue(cell.offset() + spec.bytes() <= segment.bytes());
+                        assertTrue(cell.absolute() + spec.bytes() <= p.physicalBytes());
+                        for (int j = 0; j < spec.bytes(); j++) {
+                            assertTrue(used.add(cell.absolute() + j),
+                                    kind + " overlapping cell row=" + row + " field=" + field);
+                        }
+                    }
+                }
+                if (rows == 0) assertEquals(0L, p.physicalBytes());
+                else assertTrue(p.physicalBytes() >= rows * 15);
+            }
+        }
+    }
+
 }

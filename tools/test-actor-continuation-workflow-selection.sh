@@ -55,7 +55,8 @@ check() {
         ActorOffCarrierTurnExecutorTest \
         VersionedActorCellTest \
         ActorContinuationLedgerTest \
-        ActorContinuationLedgerIntegrationTest; do
+        ActorContinuationLedgerIntegrationTest \
+        ActorSupervisorMailChannelBoundaryTest; do
         [[ ",$selection," == *",$test_name,"* ]] || fail "missing active Maven selector $test_name"
     done
     grep -Eq -- '^[[:space:]]*-DfailIfNoTests=true test[[:space:]]*$' <<< "$test_step" \
@@ -77,6 +78,10 @@ case "$mode" in
         sed 's/,ActorContinuationLedgerTest//' "$workflow" > "$work/dropped-ledger.yml"
         if bash "$0" --check "$work/dropped-ledger.yml" >/dev/null 2>&1; then
             fail 'negative fixture dropping ledger test was accepted'
+        fi
+        sed 's/,ActorSupervisorMailChannelBoundaryTest//' "$workflow" > "$work/dropped-supervisor-mail-channel.yml"
+        if bash "$0" --check "$work/dropped-supervisor-mail-channel.yml" >/dev/null 2>&1; then
+            fail 'negative fixture dropping supervisor mail/channel gate was accepted'
         fi
         sed "s/java-version: '25'/java-version: '21'/" "$workflow" > "$work/jdk21.yml"
         if bash "$0" --check "$work/jdk21.yml" >/dev/null 2>&1; then
@@ -118,7 +123,7 @@ case "$mode" in
         if bash "$0" --check "$work/env-injection.yml" >/dev/null 2>&1; then
             fail 'negative fixture injecting an ambient shell hook was accepted'
         fi
-        printf 'ACTOR_CI_SELECTION_SELFTEST_PASS: 1 positive and 12 negative cases\n'
+        printf 'ACTOR_CI_SELECTION_SELFTEST_PASS: 1 positive and 13 negative cases\n'
         ;;
     *) fail 'usage: script --check|--self-test [path to actor workflow]' ;;
 esac

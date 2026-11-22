@@ -1,0 +1,15 @@
+import trait Clone from "ores.core/protocols";
+
+define pub class Counter implements Clone<int> as
+  pub val int value;
+  pub constructor(int initial) { self.value = initial; }
+  pub clone_value(): int { return self.value; }
+end
+
+fnc check_clone(Clone<int> candidate): int {
+  return candidate.clone_value();
+}
+
+pub fnc main(): int {
+  return check_clone(new Counter(42));
+}

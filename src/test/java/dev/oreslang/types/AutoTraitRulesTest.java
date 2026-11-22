@@ -175,4 +175,76 @@ final class AutoTraitRulesTest {
         var denied = nested.denying(SEND);
         assertFalse(AutoTraitRules.infer(denied).send());
     }
+
+    @Test
+    void malformedScalarMetadataCannotLaunderNestedNonSendStorage() {
+        var nonSend = AutoTraitRules.TypeModel.wrapped(
+                RC, AutoTraitRules.TypeModel.scalar(), false);
+        var forgedScalar = new AutoTraitRules.TypeModel(
+                SCALAR, java.util.List.of(nonSend), Set.of(), true, Set.of());
+        assertEquals(
+                new AutoTraitRules.Capabilities(false, false, false),
+                AutoTraitRules.infer(forgedScalar));
+        var forgedScalarBounds = new AutoTraitRules.TypeModel(
+                SCALAR, java.util.List.of(), Set.of(SEND, SYNC, SHARE), true, Set.of());
+        assertEquals(
+                new AutoTraitRules.Capabilities(false, false, false),
+                AutoTraitRules.infer(forgedScalarBounds));
+        assertEquals(
+                new AutoTraitRules.Capabilities(true, true, true),
+                AutoTraitRules.infer(AutoTraitRules.TypeModel.scalar()));
+    }
+
+    @Test
+    void malformedDynWithHiddenPayloadCannotMintSendSyncOrShare() {
+        var nonSend = AutoTraitRules.TypeModel.wrapped(
+                RC, AutoTraitRules.TypeModel.scalar(), false);
+        var forgedDyn = new AutoTraitRules.TypeModel(
+                DYN, java.util.List.of(nonSend), Set.of(SEND, SYNC, SHARE),
+                true, Set.of());
+        assertEquals(
+                new AutoTraitRules.Capabilities(false, false, false),
+                AutoTraitRules.infer(forgedDyn));
+        assertEquals(
+                new AutoTraitRules.Capabilities(true, true, true),
+                AutoTraitRules.infer(AutoTraitRules.TypeModel.dyn(
+                        Set.of(SEND, SYNC, SHARE), true)));
+    }
+
+    @Test
+    void deepTaskCaptureTypeDoesNotOverflowOrGainSendSync() {
+        var nested = AutoTraitRules.TypeModel.scalar();
+        for (int index = 0; index < 10000; index++) {
+            nested = AutoTraitRules.TypeModel.wrapped(BOX, nested, false);
+        }
+        var deep = nested;
+        assertEquals(
+                new AutoTraitRules.Capabilities(false, false, false),
+                assertDoesNotThrow(() -> AutoTraitRules.infer(deep)));
+
+        var ordinary = AutoTraitRules.TypeModel.scalar();
+        for (int index = 0; index < 24; index++) {
+            ordinary = AutoTraitRules.TypeModel.wrapped(BOX, ordinary, false);
+        }
+        var proof = AutoTraitRules.infer(ordinary);
+        assertTrue(proof.send());
+        assertTrue(proof.sync());
+        assertFalse(proof.share());
+    }
+
+    @Test
+    void wideNominalProofCannotResetNodeBudgetForEachChild() {
+        var scalar = AutoTraitRules.TypeModel.scalar();
+        var oversized = new AutoTraitRules.TypeModel(
+                NOMINAL, java.util.Collections.nCopies(5000, scalar),
+                Set.of(), true, Set.of());
+        var proof = assertDoesNotThrow(() -> AutoTraitRules.infer(oversized));
+        assertFalse(proof.send());
+        assertFalse(proof.sync());
+        assertFalse(proof.share());
+        // A genuine small complete nominal still composes all three traits.
+        assertEquals(
+                new AutoTraitRules.Capabilities(true, true, true),
+                AutoTraitRules.infer(AutoTraitRules.TypeModel.nominal(true, scalar)));
+    }
 }

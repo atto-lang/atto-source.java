@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+pub async routine main(): void { val Box box = new Box(); let total=0; for (let i=0; i<2000; i=i+1) { val view = rt borrow box; total=total+view.value; } stdio.stdout.write(total); stdio.stdout.write("|"); stdio.stdout.write(process.descriptor.source_loop_cooperates); return; }
