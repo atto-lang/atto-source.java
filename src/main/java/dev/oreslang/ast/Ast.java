@@ -2438,8 +2438,13 @@ public final class Ast {
         }
     }
 
-    /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
-    public record TrapExpr(Expr expression) implements Expr { }
+    /** Caller-side failure capture. Historical bare trap is Option<T>; canonical
+     *  trap! is a distinct Result<T,Error> target. Preserve this spelling
+     *  distinction all the way to type admission so unsupported Result
+     *  lowering cannot silently execute an Option-producing guest node. */
+    public record TrapExpr(Expr expression, boolean canonicalBangResult) implements Expr {
+        public TrapExpr(Expr expression) { this(expression, false); }
+    }
 
     public record ChannelOpExpr(
             ChannelOperation operation,

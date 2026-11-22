@@ -3894,6 +3894,13 @@ public final class TypeChecker {
                     : narrowed;
         }
         if (expr instanceof Ast.TrapExpr trapped) {
+            // The legacy trap expression produces Option<T>. The canonical
+            // trap! must produce Result<T,Error> with ordinary-error identity
+            // and cleanup; reusing legacy Option lowering is unsound.
+            if (trapped.canonicalBangResult()) {
+                throw new IllegalArgumentException(
+                        "TRAP_BANG_RESULT_LOWERING_UNVERIFIED: trap! requires checked Result<T,Error> and guest unwind; legacy trap Option<T> is not equivalent");
+            }
             // A trap expression cannot safely unwind a suspending or unknown
             // callback without continuation-owned cleanup.
             if (hasSuspendingSumCallbackSyntax(trapped.expression())) {
