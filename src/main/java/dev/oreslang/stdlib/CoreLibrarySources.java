@@ -23,6 +23,8 @@ import java.util.Set;
  */
 public final class CoreLibrarySources {
     private static final String CORE_IMPORT_PREFIX = "ores.core/";
+    private static final String ATTO_CORE_IMPORT_PREFIX = "atto.core/";
+    private static final String SHORT_CORE_IMPORT_PREFIX = "core/";
     private static final String CORE_UNIT_PREFIX = "@ores.core/";
     private static final String CORE_RESOURCE_PREFIX = "dev/oreslang/core/";
 
@@ -56,7 +58,10 @@ public final class CoreLibrarySources {
     /** Canonical freestanding library namespace. */
     public static boolean isOresCoreImport(String importPath) {
         if (importPath == null) return false;
-        return importPath.replace('\\', '/').startsWith(CORE_IMPORT_PREFIX);
+        String normalized = importPath.replace('\\', '/');
+        return normalized.startsWith(CORE_IMPORT_PREFIX)
+                || normalized.startsWith(ATTO_CORE_IMPORT_PREFIX)
+                || normalized.startsWith(SHORT_CORE_IMPORT_PREFIX);
     }
 
     /** Canonical hosted namespace plus the temporary legacy std/* spelling. */
@@ -81,8 +86,12 @@ public final class CoreLibrarySources {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
         return normalized.equals("ores.core")
+                || normalized.equals("atto.core")
+                || normalized.equals("core")
                 || normalized.equals("ores.std")
                 || normalized.startsWith(CORE_IMPORT_PREFIX)
+                || normalized.startsWith(ATTO_CORE_IMPORT_PREFIX)
+                || normalized.startsWith(SHORT_CORE_IMPORT_PREFIX)
                 || normalized.startsWith(STD_IMPORT_PREFIX);
     }
 
@@ -149,7 +158,11 @@ public final class CoreLibrarySources {
         // Compiler-owned guest modules use canonical .atto bytes; the legacy
         // .ores spelling of a migrated core module is an explicit closed alias
         // to the same unit (no ambient file-system or extension probing).
-        String relative = canonicalPathBody(importPath, CORE_IMPORT_PREFIX, CORE_SOURCES);
+        String prefix = importPath.startsWith(ATTO_CORE_IMPORT_PREFIX)
+                ? ATTO_CORE_IMPORT_PREFIX
+                : (importPath.startsWith(SHORT_CORE_IMPORT_PREFIX)
+                ? SHORT_CORE_IMPORT_PREFIX : CORE_IMPORT_PREFIX);
+        String relative = canonicalPathBody(importPath, prefix, CORE_SOURCES);
         if (relative.equals("numeric.ores")) return "numeric.atto";
         if (relative.equals("protocols.ores")) return "protocols.atto";
         return relative;
