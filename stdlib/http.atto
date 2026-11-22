@@ -10,6 +10,9 @@ use namespace http;
     pub val String name;
     pub val String value;
     pub constructor(String name, String value) {
+      if !header_line_valid(name, value, 65536) then
+        rt fail("invalid HTTP header construction");
+      fi
       self.name = name;
       self.value = value;
     }
@@ -21,6 +24,10 @@ use namespace http;
     // -1 means unspecified, NOT zero and NOT an admitted stream length.
     pub val int content_length;
     pub constructor(String method, String target, int content_length) {
+      if !method_valid(method) || !origin_target_valid(target) ||
+         content_length < -1 || content_length > 1073741824 then
+        rt fail("invalid HTTP request metadata construction");
+      fi
       self.method = method;
       self.target = target;
       self.content_length = content_length;
@@ -30,9 +37,12 @@ use namespace http;
   pub define class ResponseMeta as
     pub val int status;
     pub val bool can_have_body;
-    pub constructor(int status, bool can_have_body) {
+    pub constructor(int status, bool is_head, bool is_connect) {
+      if !status_valid(status) then
+        rt fail("invalid HTTP response status construction");
+      fi
       self.status = status;
-      self.can_have_body = can_have_body;
+      self.can_have_body = response_body_allowed(status, is_head, is_connect);
     }
   end
 
@@ -209,7 +219,7 @@ use namespace http;
   pub fnc response_meta(int status, bool is_head,
                         bool is_connect): Result<ResponseMeta, String> {
     if !status_valid(status) then return Err("invalid response status"); fi
-    return Ok(new ResponseMeta(status, response_body_allowed(status, is_head, is_connect)));
+    return Ok(new ResponseMeta(status, is_head, is_connect));
   }
 
   // Strictly parse *three* ASCII decimal digits. An HTTP status line's reason
@@ -405,6 +415,12 @@ use namespace http;
 
     pub constructor(int max_body_bytes, int max_header_bytes,
                     int max_redirects, int timeout_ms) {
+      if max_body_bytes < 0 || max_body_bytes > 1073741824 ||
+         max_header_bytes < 512 || max_header_bytes > 65536 ||
+         max_redirects < 0 || max_redirects > 16 ||
+         timeout_ms < 1 || timeout_ms > 600000 then
+        rt fail("invalid HTTP client limits construction");
+      fi
       self.max_body_bytes = max_body_bytes;
       self.max_header_bytes = max_header_bytes;
       self.max_redirects = max_redirects;
@@ -437,6 +453,11 @@ use namespace http;
 
     pub constructor(int max_connections, int max_request_body_bytes,
                     int max_header_bytes) {
+      if max_connections < 1 || max_connections > 65536 ||
+         max_request_body_bytes < 0 || max_request_body_bytes > 1073741824 ||
+         max_header_bytes < 512 || max_header_bytes > 65536 then
+        rt fail("invalid HTTP server limits construction");
+      fi
       self.max_connections = max_connections;
       self.max_request_body_bytes = max_request_body_bytes;
       self.max_header_bytes = max_header_bytes;
