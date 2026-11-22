@@ -1684,6 +1684,20 @@ public final class Parser {
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
+        // Contextual actor DATA headers: do not globally reserve receives/sends.
+        Ast.TypeRef receives = null;
+        Ast.TypeRef sends = null;
+        while (isContextualIdentifier("receives") || isContextualIdentifier("sends")) {
+            Token clause = advance();
+            Ast.TypeRef payload = parseTypeRef();
+            if (clause.lexeme().equals("receives")) {
+                if (receives != null) throw error(clause, "duplicate actor receives clause");
+                receives = payload;
+            } else {
+                if (sends != null) throw error(clause, "duplicate actor sends clause");
+                sends = payload;
+            }
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         // Actors have one runtime-owned mailbox, one lifecycle and one state
         // ownership domain. Multiple actor superclasses would merge those
@@ -1984,7 +1998,7 @@ public final class Parser {
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
                         prefix.serial()),
-                sealedStateFields);
+                sealedStateFields, List.of(), new Ast.ActorMessageContract(receives, sends));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
