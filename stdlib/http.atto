@@ -124,7 +124,6 @@ define module http as
         if i + 2 >= points.size then return false; fi
         if !is_hex_digit(points.get(i + 1)) ||
            !is_hex_digit(points.get(i + 2)) then return false; fi
-        i = i + 2;
       fi
     }
     return true;
