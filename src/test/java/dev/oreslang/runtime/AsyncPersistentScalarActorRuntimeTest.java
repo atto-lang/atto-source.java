@@ -171,6 +171,34 @@ final class AsyncPersistentScalarActorRuntimeTest {
     }
 
     @Test
+    void checkedOverflowRetainsAdmittedInboxAndCannotPublishSpeculativeState()
+            throws Exception {
+        var path = temp.resolve("async-overflow.db");
+        var plan = PersistentScalarMirV1.lower(SOURCE);
+        var io = AsyncSqliteDurableProviderV1.open(path, 8);
+        try (var images = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            await(io.ready());
+            await(io.bootstrap(KEY, plan.initial_snapshot()));
+            await(io.enqueue(KEY, new DurableActorStore.Inbound(
+                    "seed-max", plan.encode(Long.MAX_VALUE))));
+            var prepared = prepare(images, io);
+            var actor = runtime.spawnPreparedPersistentScalarActor(prepared);
+            assertNull(actor.ready().get(10, TimeUnit.SECONDS));
+            actor.send(PersistentScalarCodeExecutor.increment_message("overflow", 1));
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isPresent(), "overflow must terminate this activation");
+            var recovered = await(io.activate(KEY));
+            assertEquals(1L, recovered.snapshot().stateVersion());
+            assertEquals(Long.MAX_VALUE, plan.decode(recovered.snapshot()));
+            assertEquals(1, recovered.inbox().size());
+            assertEquals("overflow", recovered.inbox().getFirst().deliveryId());
+        } finally {
+            await(io.closeAsync());
+        }
+    }
+
+    @Test
     void abruptProcessHaltAfterCommittedReceiptRecoversStateAndOriginalResult()
             throws Exception {
         Path db = temp.resolve("async-abrupt-halt.db");
