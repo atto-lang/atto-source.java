@@ -47,7 +47,7 @@ final class StdPathSyncTelemetryGuestTest {
         String expected = String.join("\n",
                 "2", "-1", "-1", "-1", "-1", "true", "false", "true",
                 "true", "false", "true", "false", "true", "false",
-                "true", "false", "true", "false", "false", "false");
+                "true", "false", "true", "false", "false", "false", "false", "true");
         assertEquals(expected,
                 stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                 () -> stderr.toString(StandardCharsets.UTF_8));
