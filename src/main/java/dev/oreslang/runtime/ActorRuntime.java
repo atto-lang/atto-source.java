@@ -1099,12 +1099,36 @@ public final class ActorRuntime implements AutoCloseable {
         this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher, null);
     }
 
+    /**
+     * Host-test-only dispatcher seam. An injected executor accepts physical
+     * turn Runnables and may hold them until a test controller selects one.
+     * Never expose the factory to guest source, or use it in production:
+     * untrusted admission, real carrier startup and physical scheduling still
+     * require the standard runtime-owned dispatchers.
+     */
+    @FunctionalInterface
+    interface DispatcherFactoryForTesting {
+        ExecutorService create(ActorKind kind, int parallelism, int capacity);
+    }
+
     public ActorRuntime(
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher,
             PhysicalStopDispatcher physicalStopDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                physicalStopDispatcher, null);
+    }
+
+    // Package-private and used only by real-runtime deterministic host tests.
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            PhysicalStopDispatcher physicalStopDispatcher,
+            DispatcherFactoryForTesting dispatcherFactoryForTesting) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
@@ -1130,12 +1154,26 @@ public final class ActorRuntime implements AutoCloseable {
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
         try {
-            privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
-                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
-            sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
-                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
-            untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
-                    dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
+            // Preserve production bootstrap exactly; only the explicitly
+            // package-private test constructor can inject a controlled queue.
+            privatePool = dispatcherFactoryForTesting == null
+                    ? newActorDispatcher(dispatcherConfig.privateParallelism(),
+                            dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-")
+                    : Objects.requireNonNull(dispatcherFactoryForTesting.create(
+                            ActorKind.PRIVATE, dispatcherConfig.privateParallelism(),
+                            dispatcherConfig.maxActors()), "test PRIVATE dispatcher");
+            sharedPool = dispatcherFactoryForTesting == null
+                    ? newActorDispatcher(dispatcherConfig.sharedParallelism(),
+                            dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-")
+                    : Objects.requireNonNull(dispatcherFactoryForTesting.create(
+                            ActorKind.SHARED, dispatcherConfig.sharedParallelism(),
+                            dispatcherConfig.maxActors()), "test SHARED dispatcher");
+            untrustedPool = dispatcherFactoryForTesting == null
+                    ? newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
+                            dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-")
+                    : Objects.requireNonNull(dispatcherFactoryForTesting.create(
+                            ActorKind.UNTRUSTED, Math.max(1, dispatcherConfig.privateParallelism()),
+                            dispatcherConfig.maxActors()), "test UNTRUSTED dispatcher");
         } catch (RuntimeException | Error failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
             if (privatePool != null) privatePool.shutdownNow();
