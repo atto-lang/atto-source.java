@@ -19,6 +19,7 @@ import java.util.Objects;
  * Scope closure is rejected while any borrow is live.
  */
 final class TrustedAllocationScopeV1 implements AutoCloseable {
+    private static final int MAX_LEXICAL_DEPTH = 1024;
     private final ActorLinearArena arena;
     private final Thread ownerThread;
     private final ArrayList<Owner> owners = new ArrayList<>();
@@ -103,8 +104,8 @@ final class TrustedAllocationScopeV1 implements AutoCloseable {
     /** Opaque lexical checkpoint for compiler-generated finally/unwind code. */
     ScopeMark begin_lexical_scope() {
         requireOpen();
-        if (lexicalMarks.size() == Integer.MAX_VALUE) {
-            throw new IllegalStateException("lexical scope mark budget exhausted");
+        if (lexicalMarks.size() >= MAX_LEXICAL_DEPTH) {
+            throw new IllegalStateException("lexical scope mark depth exceeded");
         }
         lexicalMarks.ensureCapacity(lexicalMarks.size() + 1);
         ScopeMark mark = new ScopeMark(this, lastOwnerSerial);

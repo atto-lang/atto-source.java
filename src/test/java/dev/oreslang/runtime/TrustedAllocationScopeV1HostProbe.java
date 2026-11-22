@@ -190,6 +190,29 @@ public final class TrustedAllocationScopeV1HostProbe {
             check(arena.liveAllocations() == 0, "exceptional lexical cleanup leaked");
         }
     }
+    private static void lexicalFailureStillDropsOtherOwners() {
+        try (ActorLinearArena arena = new ActorLinearArena(64, 4)) {
+            var observed = new ArrayList<Integer>();
+            var scope = TrustedAllocationScopeV1.trusted_open(arena);
+            var mark = scope.begin_lexical_scope();
+            scope.allocate_word(() -> observed.add(1));
+            scope.allocate_word(() -> {
+                observed.add(2);
+                throw new IllegalStateException("lexical destructor failed");
+            });
+            scope.allocate_word(() -> observed.add(3));
+            rejects(() -> scope.end_lexical_scope(mark),
+                    "lexical destructor error must surface");
+            check(observed.equals(List.of(3, 2, 1)),
+                    "lexical failure must not suppress unaffected destructors");
+            rejects(() -> scope.end_lexical_scope(mark),
+                    "failed lexical checkpoint must still be one-shot");
+            check(arena.liveAllocations() == 1,
+                    "failed destructor must poison and quarantine real allocation");
+            rejects(scope::close, "poisoned owner must be reported at final scope exit");
+        }
+    }
+
     private static void admissionAndForeignOwner() {
         try (ActorLinearArena arena = new ActorLinearArena(8, 1)) {
             var first = TrustedAllocationScopeV1.trusted_open(arena);
@@ -210,6 +233,7 @@ public final class TrustedAllocationScopeV1HostProbe {
         admissionAndForeignOwner();
         destructorReentrancyAndQuarantine();
         lexicalCleanupAndBoundedOwnerMetadata();
+        lexicalFailureStillDropsOtherOwners();
         System.out.println("ATTO_TRUSTED_ALLOC_SCOPE_JDK21_PASS");
     }
 }
