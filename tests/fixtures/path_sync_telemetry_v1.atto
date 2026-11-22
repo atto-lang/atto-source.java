@@ -33,5 +33,19 @@ pub routine main(): void {
   stdio.println(path.normalized_component_length("a/./b/../c", false, 1));
   stdio.println(path.normalized_component_scalar("a/./b/../c", false, 1, 0));
   stdio.println(path.normalized_component_start("a/..", false, 0));
+  stdio.println(path.file_name_start("a/./b/../c", false));
+  stdio.println(path.file_name_length("archive.tar.gz", false));
+  stdio.println(path.extension_start("archive.tar.gz", false));
+  stdio.println(path.file_stem_length("archive.tar.gz", false));
+  stdio.println(path.extension_start("files/.env", false));
+  stdio.println(path.file_stem_length("files/.env", false));
+  stdio.println(path.parent_depth("a/./b/../c", false));
+  stdio.println(path.file_name_start("a/..", false));
+  stdio.println(path.join_admissible("logs", "2026/events.json", false));
+  stdio.println(path.join_admissible("logs", "../escape", false));
+  stdio.println(path.join_admissible("CON", "file", true));
+  stdio.println(path.normalized_component_scalar("a/./b/../c", false, 1, 1));
+  stdio.println(path.is_portable_relative("a/.."));
+  stdio.println(path.join_admissible("a", "b", true));
   return;
 }
