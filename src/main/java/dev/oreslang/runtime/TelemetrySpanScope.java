@@ -45,9 +45,10 @@ public final class TelemetrySpanScope implements AutoCloseable {
     /** Frozen at lexical close; never compute a closed span against the wall clock. */
     private long finishedDurationNanos;
     private final AtomicBoolean ended = new AtomicBoolean();
-    private final Map<String, String> attributes = new LinkedHashMap<>();
+    /** Disabled spans have no per-span mutable collections. */
+    private final Map<String, String> attributes;
     /** Actor-owned, bounded observer events; no exporter runs on the scope path. */
-    private final List<String> events = new ArrayList<>();
+    private final List<String> events;
 
     private record Policy(boolean enabled, int samplePercent,
                           long expiresNanos, String prefix) {
@@ -66,6 +67,8 @@ public final class TelemetrySpanScope implements AutoCloseable {
         this.parent = parent;
         this.active = active;
         this.recording = recording;
+        this.attributes = recording ? new LinkedHashMap<>() : Map.of();
+        this.events = recording ? new ArrayList<>() : List.of();
         this.startNanos = recording ? System.nanoTime() : 0L;
     }
 
