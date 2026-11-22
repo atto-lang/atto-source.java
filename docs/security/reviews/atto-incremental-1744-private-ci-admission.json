@@ -1,0 +1,98 @@
+{
+  "schema": "atto.private-ci-admission-review.v1",
+  "status": "REVIEW_ONLY_NOT_AUTHORIZED",
+  "disposition": "DENY_PRIVATE_SOURCE_EXPORT",
+  "subject": "atto-lang/atto-source.java PR #1744 incremental compilation",
+  "source": {
+    "repository": "atto-lang/atto-source.java",
+    "repository_id": 1448697198,
+    "private": true,
+    "pull_request": 1744,
+    "observed_head_sha": "c09cada6e7c22fb545ea22b5d9a7b87e58c6644e",
+    "observed_root_tree_sha": "f25becfe44e789df645ad57c61bda21818ba7bff",
+    "observed_tree_truncated": false,
+    "observed_tree_entries": 3777,
+    "observed_regular_blobs": 3394,
+    "observed_blob_bytes": 23372306,
+    "observed_largest_blob_bytes": 793164,
+    "observed_executable_files": 18,
+    "observed_symlinks": 0,
+    "observed_submodules": 0,
+    "observed_main_sha": "f7b0db8edba040008c94beb5d00d924415601825",
+    "observed_main_protected": false
+  },
+  "publisher": {
+    "legacy_source_repository": "ores-truffle-oreslang/oreslang-source.java",
+    "legacy_source_repository_id": 1400792274,
+    "atto_source_repository_id": 1448697198,
+    "legacy_origin_compatible_with_atto": false,
+    "authorized_atto_v3_publisher": false,
+    "implemented_max_files": 4096,
+    "implemented_max_total_bytes": 41943040,
+    "implemented_max_single_blob_bytes": 10485760
+  },
+  "candidates": [
+    {
+      "repository": "opto-sync-test/go-java-validation",
+      "repository_id": 1323598177,
+      "private": true,
+      "observed_default_branch": "main",
+      "observed_main_sha": "db642bca2ed19ffa4262e85f95d8f296020b978c",
+      "observed_main_protected": false,
+      "existing_legacy_carrier_workflow": ".github/workflows/oreslang-exact-tree-carrier.yml",
+      "existing_legacy_carrier_workflow_blob_sha": "a071ba75b75b3a6c784a3e0e9c6e1817a111f139",
+      "current_capacity_probe_run_url": "https://github.com/opto-sync-test/go-java-validation/actions/runs/44955824813",
+      "current_capacity_probe_steps": 0,
+      "capacity_proven_now": false,
+      "approved_for_pr1744": false,
+      "approved_for_transfer": false
+    },
+    {
+      "repository": "opto-sync/atto-ci",
+      "repository_id": 1458322748,
+      "private": true,
+      "observed_default_branch": "ci/java-2980-8d9b35d2-a88353e6-1794703979",
+      "observed_default_branch_is_main": false,
+      "source_free_capacity_run_url": "https://github.com/opto-sync/atto-ci/actions/runs/44979279980",
+      "source_free_steps_executed": 8,
+      "source_free_capacity_proven_on_2026_11_22": true,
+      "approved_for_pr1744": false,
+      "approved_for_transfer": false
+    }
+  ],
+  "review_only_test_plan": "docs/security/reviews/atto-incremental-1744-junit-plan-proposal.json",
+  "active_allowlist_modified": false,
+  "active_carrier_contract_modified": false,
+  "private_source_transferred": false,
+  "source_free_capacity_probe_rerun": {
+    "repo": "opto-sync-test/go-java-validation",
+    "run_id": 44955824813,
+    "attempt": 3,
+    "status": "completed",
+    "conclusion": "failure",
+    "executed_steps": 0,
+    "private_source_transferred": false
+  },
+  "pending_independent_approvals": [
+    "@ORESoftware independently rules whether V3 applies to Atto and approves exact Atto-origin fail-closed publisher",
+    "source main protection is enabled, live verified, and meets all V3 CODEOWNER/status-check/review requirements",
+    "exact private carrier numeric repo ID, reader access, retention, base SHA, workflow blob and test-plan SHA approved on protected source main",
+    "fresh source-free stepful capacity probe at chosen V3-compliant carrier",
+    "freeze exact #1744 head SHA/root tree and get independent exact-head security review",
+    "recheck current source head/tree and entire Git blob/path/mode manifest before each source-bearing transfer write"
+  ],
+  "required_execution_after_authorization": [
+    "verify exact source root tree and every blob SHA, executable mode and normalized path before launching tests",
+    "run only approved offline Maven commands with isolated credentials and network",
+    "require JDK 25 compilation, 15 named unskipped Surefire tests and proven nonzero runner steps",
+    "compare clean vs incremental compiled guest outputs, errors and dependency behavior before declaring codegen parity",
+    "retain draft PR, branch rules and independent review gates until materially passing exact-head evidence"
+  ],
+  "stale_on_source_head_change": true,
+  "notes": [
+    "Data-only review artifact: not an approved destination, credential, workflow, test plan or grant.",
+    "No active allowlist or live carrier contract changed.",
+    "The source-free capacity probe is a runner test, not a Java or Atto guest test.",
+    "A new #1744 code commit makes the recorded candidate head stale; do not auto repin."
+  ]
+}
