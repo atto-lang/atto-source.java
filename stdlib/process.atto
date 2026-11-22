@@ -52,4 +52,14 @@ define module Process as
     return status.code == 0 && status.signaled == false;
   }
 
+  // Restricted hosted root-context bridge. A future stage will accept the
+  // full Command object and honor its stdio/cwd/env configuration, after
+  // the independent owned pipe/actor retirement contracts are implemented.
+  // Async is the default: do not add an _async suffix to this function.
+  pub fnc spawn(
+      String executable, Array<String> arguments, String absolute_cwd):
+      Future<Result<ChildProcess, ProcessError>> {
+    return process.spawn(executable, arguments, absolute_cwd);
+  }
+
 end
