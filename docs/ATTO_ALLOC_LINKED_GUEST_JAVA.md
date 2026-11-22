@@ -59,3 +59,36 @@ do not turn them into placeholder constructors.
 
 Resolution uses the same closed import registry and budget for every edge,
 including transitive `std -> alloc -> core` dependencies.
+
+## 2026-11-22: Atto file namespaces and allocation transactions
+
+The six source files now use the canonical **file-scope Atto header**
+`use namespace atto_alloc_<name>;` instead of wrapping all declarations in
+`define module <name> as ... end`. Atto's parser only admits flat, static
+namespaces. Different namespace names avoid same-named `self_test()`
+collisions across compiler-owned source files. The public import remains
+`atto.alloc/allocator` (and other closed registry paths); namespace spelling
+does not create or authorize an ambient source lookup.
+
+`allocator.ReservationLedger` is implemented in Atto source and provides:
+
+- Strictly bounded outstanding allocation reservations, safe subtraction-based
+  quota checks and no fake success for zero-size or full capacity
+- Two-phase `reserve -> record_commit` after trusted physical allocation;
+  `record_cancel` after provider failure, with generation invalidation
+- Two-phase `begin_retirement -> finish_retirement`, blocking duplicate,
+  stale, out-of-order and unfinished retirement transitions
+- Slot retirement on generation exhaustion and `seal/is_drained` accounting
+- An Atto `reservation_self_test()`, invoked by `allocator.self_test()`
+
+**Security boundary:** `Reservation` and its `slot/generation/bytes`
+fields are policy metadata, not secure capabilities. Callers can forge
+numeric values. Only an actual allocator provider with opaque compiler-issued
+receipts may authorize physical allocation or release; the trusted adapter
+must enforce real borrow/continuation quiescence, exactly-once destructor
+execution, and failure-atomic reclamation. Neither a successful ledger
+transition nor source namespace syntax establishes those facts.
+
+**Verification:** exact Git source readback, namespace assertions and guest
+fixture tests are authored; JVM guest execution and AOT have not yet been
+confirmed on a running exact-head CI job. Keep Draft.
