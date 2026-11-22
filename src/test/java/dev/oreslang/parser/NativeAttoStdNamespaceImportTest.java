@@ -2,6 +2,7 @@ package dev.oreslang.parser;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -41,6 +42,15 @@ final class NativeAttoStdNamespaceImportTest {
                 "import web from \"std/http.atto\";\n" + BODY).imports().getFirst();
         assertEquals("web", renamed.namespace());
         assertEquals("std/http.atto", renamed.path());
+    }
+
+    @Test
+    void namespaceAliasesMustNotSilentlyCollide() {
+        Ast.Program program = Parser.parse(
+                "import http from \"std/http.atto\";\\n"
+                + "import * as http from \"std/http.atto\";\\n" + BODY);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithDiagnostics(program));
     }
 
     @Test
