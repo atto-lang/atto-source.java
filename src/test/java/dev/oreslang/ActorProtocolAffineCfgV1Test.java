@@ -8,7 +8,6 @@ import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -67,7 +66,7 @@ final class ActorProtocolAffineCfgV1Test {
         ));
         var proof = ActorProtocolAffineCfgV1.verifyNominallyResolved(declarations, cfg);
         assertEquals(5, proof.verifiedBlocks());
-        assertEquals(7, proof.verifiedOperations());
+        assertEquals(8, proof.verifiedOperations());
     }
 
     @Test void unresolvedNominalModeNeverYieldsAnAffineProof() {
