@@ -22,6 +22,17 @@ Existing built-in method contracts must remain authoritative:
   `Option -> Result` conversion and no catchable throw on `Err`.
 - `trap` is an independent effect boundary, not an alias for `Err`/`None`.
 
+## Namespaces and explicit import authority
+
+Both source files declare `use namespace core;` for file-scoped identity and
+`define pub module option/result as` for separately exported, qualified
+functions. Java's current strict Atto linker **does not** make standalone
+namespace functions importable merely by naming their namespace; callers
+still use explicit `import module option/result from "..."` edges. The
+namespace header must precede imports and declarations. The JUnit gate
+`coreNamespaceIsSourceIdentityNotImplicitImportAuthority` checks these
+boundaries, but has not been run on a stepful runner.
+
 ## Additional source functions
 
 | `core/option.atto` | Meaning |
@@ -39,8 +50,8 @@ Existing built-in method contracts must remain authoritative:
 | `transpose<T,E>` | `Result<Option<T>,E> -> Option<Result<T,E>>` |
 | `merge<T>` | `Result<T,T> -> T` |
 
-All functions are synchronous and require no scheduler, heap, OS, global
-state, callback, or interop. They **consume** sum operands. The compiler
+Pure carrier-only functions require no scheduler, heap, OS, or interop.
+Other helpers below accept callbacks, whose effects must remain visible. They **consume** sum operands. The compiler
 must support generic ADT pattern extraction and active-variant destruction
 before these source bodies can be enabled for affine values. No silent
 fallback to host `Optional`/`Either`.
