@@ -67,3 +67,30 @@ fallback to host `Optional`/`Either`.
 This source is **not** the canonical source to be copied into other
 `atto-source.*` repositories. Each backend can implement these functions
 independently; only public behavior and conformance cases should match.
+
+## Expanded Java source composition (this branch)
+
+The two .atto modules now also provide public **function** adapters (not
+replacement built-in methods):
+
+- `option.map<T,U>`, `option.and_then<T,U>`, `option.or_else<T>`,
+  `option.unwrap_or_else<T>`, `option.ok_or_else<T,E>`,
+  `option.zip_with<T,U,V>`.
+- `result.map<T,U,E>`, `result.and_then<T,U,E>`,
+  `result.map_err<T,E,F>`, `result.or_else<T,E,F>`,
+  `result.unwrap_or_else<T,E>`.
+
+These take typed `Fnc` callback values, invoking the callback only for the
+matching active variant. Eager `to_result` evaluates its error at call-site;
+`ok_or_else` is deliberately lazy. `zip_with` consumes both Options and
+must correctly drop unused right-hand payload when the left is None. No
+implicit `Option -> Result` propagation or loss of the original error type.
+
+`tests/core_option_result/lazy_callbacks.atto` is a linked guest candidate
+with explicit side effects to detect a mistakenly executed callback. The
+real `CoreOptionResultSourceTest` now requires both this case and the nested
+round-trip test to execute; current run remains **NOT_EXECUTED** because
+GitHub source-org jobs have no runner steps. This is a draft and may require
+compiler work before the tests can pass. Callback type/effect capture, move,
+exception propagation and deterministic active-variant disposal require
+independent hardening rather than assuming generic source compatibility.
