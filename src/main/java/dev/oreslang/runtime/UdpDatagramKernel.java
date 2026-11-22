@@ -70,7 +70,9 @@ final class UdpDatagramKernel implements AutoCloseable {
     int requestedBindPort() { return bindPort; }
 
     int localPort() throws IOException {
-        requireOpen();
+        // Port introspection is itself an operation on a permissioned handle.
+        // Never reveal an ephemeral port after local NETWORK revocation.
+        requireLocal("udp.local_port");
         return ((InetSocketAddress) channel.getLocalAddress()).getPort();
     }
 
