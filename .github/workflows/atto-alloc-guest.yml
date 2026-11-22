@@ -1,0 +1,56 @@
+name: Atto alloc guest JVM exact-head (slab deque actor_heap)
+on:
+  pull_request:
+    paths:
+      - 'stdlib/alloc/**'
+      - 'tests/fixtures/alloc/**'
+      - 'src/test/java/dev/oreslang/AttoAllocGuestTest.java'
+      - '.github/workflows/atto-alloc-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-atto-alloc-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR HEAD without credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install JDK 25
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Execute linked .atto guests and negative privacy cases
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --quiet && git diff --cached --quiet
+          echo "ATTO_ALLOC_JAVA_HEAD=$EXPECTED_SHA TREE=$(git rev-parse 'HEAD^{tree}')"
+          mvn -B -ntp -Dtest=AttoAllocGuestTest -DfailIfNoTests=true test
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as E
+          files = glob.glob("target/surefire-reports/TEST-*AttoAllocGuestTest.xml")
+          if len(files) != 1:
+              raise SystemExit(f"expected one AttoAllocGuestTest JUnit receipt, found {files}")
+          root = E.parse(files[0]).getroot()
+          tests = int(root.attrib.get("tests", 0))
+          if tests != 5 or any(int(root.attrib.get(k, 0)) != 0 for k in ("errors", "failures", "skipped")):
+              raise SystemExit("missing/failed/skipped Atto alloc guest tests")
+          print("ATTO_ALLOC_JAVA_GUEST_PASS tests=5")
+          PY
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Preserve material JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atto-alloc-guest-java
+          path: target/surefire-reports/*AttoAllocGuestTest*
+          if-no-files-found: warn
