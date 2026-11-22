@@ -25,6 +25,7 @@ public final class ActorStateLoans implements AutoCloseable {
             Collections.newSetFromMap(new IdentityHashMap<>());
     private ExclusiveLoan active;
     private long nextEpoch;
+    private boolean epochExhausted;
     private boolean closed;
     private boolean publishing;
 
@@ -39,6 +40,10 @@ public final class ActorStateLoans implements AutoCloseable {
 
     public int activeCount() {
         synchronized (monitor) { return active == null ? 0 : 1; }
+    }
+
+    boolean epochExhausted() {
+        synchronized (monitor) { return epochExhausted; }
     }
 
     /**
@@ -80,6 +85,10 @@ public final class ActorStateLoans implements AutoCloseable {
         Objects.requireNonNull(handlerIdentity, "handlerIdentity");
         synchronized (monitor) {
             if (closed) return OresFuture.failed(new IllegalStateException("actor state loans closed"));
+            if (epochExhausted) {
+                return OresFuture.failed(new IllegalStateException(
+                        "actor state loan epochs exhausted"));
+            }
             if (!owners.add(handlerIdentity)) {
                 return OresFuture.failed(new IllegalStateException(
                         "handler already holds or awaits a state loan"));
@@ -109,12 +118,24 @@ public final class ActorStateLoans implements AutoCloseable {
     }
 
     private ExclusiveLoan createLocked(Object owner) {
-        if (nextEpoch == Long.MAX_VALUE) {
+        if (epochExhausted || nextEpoch == Long.MAX_VALUE) {
+            epochExhausted = true;
             throw new IllegalStateException("actor state loan epochs exhausted");
         }
         ExclusiveLoan loan = new ExclusiveLoan(owner, ++nextEpoch);
         active = loan;
+        if (nextEpoch == Long.MAX_VALUE) epochExhausted = true;
         return loan;
+    }
+
+    private void failPendingForEpochExhaustionLocked() {
+        if (!epochExhausted) return;
+        while (!pending.isEmpty()) {
+            Pending waiter = pending.removeFirst();
+            owners.remove(waiter.owner);
+            completions.addLast(() -> waiter.future.failFromRuntime(
+                    new IllegalStateException("actor state loan epochs exhausted")));
+        }
     }
 
     private void promoteLocked() {
@@ -165,6 +186,10 @@ public final class ActorStateLoans implements AutoCloseable {
                 // A cancellation after dequeue also loses the grant.
                 if (!waiter.future.completeFromRuntime(loan)) loan.close();
             });
+            // The last representable epoch belongs to this exact active
+            // handler. No future handler can be issued safely, so fail every
+            // remaining waiter now without revoking the active loan.
+            failPendingForEpochExhaustionLocked();
             return;
         }
     }

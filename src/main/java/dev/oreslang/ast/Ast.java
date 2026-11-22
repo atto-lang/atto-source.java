@@ -771,17 +771,33 @@ public final class Ast {
         }
     }
 
+    /** Lexical protocol identity survives parsing, linking and ABI hashing. */
+    public enum InterfaceKind { INTERFACE, TRAIT, CONTRACT }
+
     public record InterfaceDecl(
             String name,
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            InterfaceKind declarationKind) implements Decl {
         public InterfaceDecl {
+            java.util.Objects.requireNonNull(declarationKind, "protocol declaration kind");
+            if (moduleContract != (declarationKind == InterfaceKind.CONTRACT)) {
+                throw new IllegalArgumentException(
+                        "protocol declaration kind and module-contract authority mismatch");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
+        }
+        /** Compatibility for older source/interface clients; parser sets TRAIT explicitly. */
+        public InterfaceDecl(String name, Visibility visibility,
+                List<String> genericParameters, List<TypeRef> parents,
+                List<InterfaceMember> members, boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members,
+                    moduleContract, moduleContract ? InterfaceKind.CONTRACT : InterfaceKind.INTERFACE);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
             this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
@@ -2422,8 +2438,13 @@ public final class Ast {
         }
     }
 
-    /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
-    public record TrapExpr(Expr expression) implements Expr { }
+    /** Caller-side failure capture. Historical bare trap is Option<T>; canonical
+     *  trap! is a distinct Result<T,Error> target. Preserve this spelling
+     *  distinction all the way to type admission so unsupported Result
+     *  lowering cannot silently execute an Option-producing guest node. */
+    public record TrapExpr(Expr expression, boolean canonicalBangResult) implements Expr {
+        public TrapExpr(Expr expression) { this(expression, false); }
+    }
 
     public record ChannelOpExpr(
             ChannelOperation operation,

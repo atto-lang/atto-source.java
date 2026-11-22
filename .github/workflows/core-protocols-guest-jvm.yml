@@ -1,0 +1,58 @@
+name: Atto core protocols and runtime safety exact-head JVM
+on:
+  pull_request:
+    paths:
+      - 'src/main/resources/dev/oreslang/core/protocols.atto'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/compiler/ImportGraph.java'
+      - 'src/test/java/dev/oreslang/CoreProtocolsGuestTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ChannelRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/ChannelRuntimeTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresFutureTerminalAdmissionRetentionTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorReadinessLifecycleTest.java'
+      - 'tests/fixtures/core-protocols-v1/**'
+      - '.github/workflows/core-protocols-guest-jvm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compiler-and-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout immutable triggering HEAD
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact SHA/tree and clean checkout
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code
+          echo "CORE_PROTOCOLS_EXACT_HEAD=$EXPECTED_HEAD"
+          echo "CORE_PROTOCOLS_EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Setup GraalVM 25 / Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile real parser/typechecker and execute Atto guest fixtures
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest,ChannelRuntimeTest,OresFutureTerminalAdmissionRetentionTest,ActorReadinessLifecycleTest -DfailIfNoTests=true test
+          echo 'CORE_PROTOCOLS_JAVA_GUEST_JUNIT=EXECUTED'
+      - name: Preserve evidence boundary
+        if: always()
+        run: |
+          echo 'This workflow is Java JVM guest only, not Graal Native Image/LLVM/Wasm/Forge/.NET parity.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A queued/zero-step/runner-admission failure is NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"

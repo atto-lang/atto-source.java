@@ -85,6 +85,10 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    // Ownership must agree with the typed nominal HasFuture<T> projection:
+    // awaiting a capability yields T, not the move-only wrapper object.
+    private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
+    private final Set<String> ambiguousInterfaces = new HashSet<>();
     /** Imported layouts are type-only metadata; their private fields remain inaccessible. */
     private final Set<Ast.ClassDecl> linkedClassLayouts =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -262,6 +266,7 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.InterfaceDecl iface) index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
             }
         }
     }
@@ -662,6 +667,11 @@ public final class OwnershipChecker {
                 if (borrowMirAudit != null && ret.value() instanceof Ast.NameExpr named
                         && scope.lookup(named.name()) == null) {
                     borrowMirAudit.unsupported("return refers to an untracked global or module");
+                }
+                if (returnType != null && returnType.name().equals("Map")
+                        && returnType.arguments().size() == 2
+                        && ret.value() instanceof Ast.NameExpr) {
+                    throw error("returning a named affine Map<K,V> requires explicit rt take");
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
                 if (containsMutexGuardType(returned.type)) {
@@ -1093,6 +1103,14 @@ public final class OwnershipChecker {
             scope.define(binding.name(), placeholder);
         }
 
+        if (binding.initializer() instanceof Ast.NameExpr sourceName) {
+            VarState source = scope.lookup(sourceName.name());
+            if (source != null && source.type != null
+                    && !source.type.isBorrow() && source.type.name().equals("Map")
+                    && source.type.arguments().size() == 2) {
+                throw error("affine Map<K,V> aliases require explicit rt take");
+            }
+        }
         ValueInfo value;
         if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
                 && runtime.operation().equals("borrow")) {
@@ -1931,10 +1949,22 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
-            ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            // HasFuture.get_future() is a synchronous immutable receiver loan,
+            // not an implicit ownership transfer of the capability object.
+            // Preserve reusability of named capabilities across two awaits.
+            // Unknown expressions keep the existing conservative move rule.
+            Ast.TypeRef operandType = syntacticType(awaited.expression(), scope);
+            boolean borrowCapability = hasFutureResult(
+                    operandType, new LinkedHashSet<>()) != null;
+            ValueInfo awaitedValue = checkExpr(
+                    awaited.expression(), scope, borrowCapability ? false : consuming);
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
+            }
+            Ast.TypeRef projected = hasFutureResult(awaitedValue.type, new LinkedHashSet<>());
+            if (projected != null) {
+                return new ValueInfo(projected, kindOfType(projected), null);
             }
             return awaitedValue;
         }
@@ -2934,24 +2964,38 @@ public final class OwnershipChecker {
                                 Ast.TypeRef.simple("NioReader"), Ast.TypeRef.simple("NioWriter"))),
                         ValueKind.MOVE_ONLY, null);
             }
-            // Typed Map lookups only READ their key: a move-only Bytes key is
-            // borrowed, never consumed. Map.set still moves key and value in.
+            // Direct guest Map methods share indexed-assignment's exclusive
+            // receiver proof. Never fall through to an unchecked Java method.
             if (concreteReceiver != null
                     && concreteReceiver.name().equals("Map")
                     && concreteReceiver.arguments().size() == 2
                     && findClass("Map") == null
-                    && call.arguments().size() == 1
-                    && (member.member().equals("get_optional")
-                            || member.member().equals("delete"))) {
-                checkExpr(call.arguments().getFirst(), scope, false);
-                if (member.member().equals("delete")) {
-                    return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
-                }
+                    && Set.of("get_optional", "delete", "put", "set").contains(member.member())) {
                 Ast.TypeRef mapValue = concreteReceiver.arguments().get(1);
-                return new ValueInfo(
-                        new Ast.TypeRef("Option", List.of(mapValue), false),
-                        isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY,
-                        null);
+                boolean mutating = !member.member().equals("get_optional");
+                int expected = member.member().equals("put") || member.member().equals("set") ? 2 : 1;
+                if (call.arguments().size() != expected) {
+                    throw error("Map." + member.member() + " requires " + expected + " argument(s)");
+                }
+                if (mutating) {
+                    ensureMapMutationReceiver(member.receiver(), scope);
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    // Lookup/delete borrow a key; put/set transfer the new
+                    // scalar key/value. Do not consume a Bytes key on lookup.
+                    ValueInfo checked = checkExpr(argument, scope,
+                            member.member().equals("put") || member.member().equals("set"));
+                    if (isBorrowValue(checked) || containsBorrowType(checked.type)) {
+                        throw error("Map keys and values must be owned; borrowed payloads cannot escape");
+                    }
+                }
+                return switch (member.member()) {
+                    case "set" -> new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                    case "delete" -> new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    default -> new ValueInfo(
+                            new Ast.TypeRef("Option", List.of(mapValue), false),
+                            isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+                };
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
@@ -3731,6 +3775,12 @@ public final class OwnershipChecker {
             Scope scope,
             String callable,
             int position) {
+        if (!param.type().isBorrow() && param.type().name().equals("Map")
+                && param.type().arguments().size() == 2
+                && arg instanceof Ast.NameExpr) {
+            throw error(callable + " argument " + position
+                    + " must explicitly rt take an affine Map<K,V> owner");
+        }
         if (param.type().isBorrow() && arg instanceof Ast.CaptureExpr capture) {
             checkExpr(capture, scope, false);
             arg = new Ast.NameExpr(capture.name());
@@ -3856,11 +3906,39 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.IndexExpr indexed) {
-            ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            Ast.TypeRef receiver = receiverType(indexed.receiver(), scope);
+            if (receiver != null && receiver.name().equals("Map")
+                    && receiver.arguments().size() == 2
+                    && findClass("Map") == null) {
+                ensureMapMutationReceiver(indexed.receiver(), scope);
+            } else {
+                ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            }
             checkExpr(indexed.index(), scope, false);
             return;
         }
         throw error("unsupported assignment target");
+    }
+
+    /** Actor-owned Map fields are mutable within their own mailbox turn,
+     * but never become actor-sendable or freely mutable projected aliases.
+     * Local owners and scoped exclusive loans use ordinary borrow admission. */
+    private void ensureMapMutationReceiver(Ast.Expr receiver, Scope scope) {
+        if (receiver instanceof Ast.MemberExpr field
+                && field.receiver() instanceof Ast.NameExpr owner
+                && owner.name().equals("self")) {
+            Ast.ClassDecl klass = classOfReceiver(field.receiver(), scope);
+            if (klass != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                Ast.FieldDecl target = findField(
+                        klass, field.member(), new LinkedHashSet<>());
+                if (target == null || target.bindingKind() != Ast.BindingKind.LET) {
+                    throw error("actor Map field mutation needs an owned writable let field");
+                }
+                checkExpr(field.receiver(), scope, false);
+                return;
+            }
+        }
+        ensureMutableReceiver(receiver, scope, "Map indexed/put mutation");
     }
 
     private void ensureMutableReceiver(Ast.Expr receiver, Scope scope, String what) {
@@ -5395,6 +5473,68 @@ public final class OwnershipChecker {
     private Ast.ClassDecl findClass(String name) {
         if (ambiguousClasses.contains(name)) return null;
         return classes.get(name);
+    }
+
+    private Ast.InterfaceDecl findInterface(String name) {
+        if (ambiguousInterfaces.contains(name)) return null;
+        return interfaces.get(name);
+    }
+
+    /**
+     * Ownership-side mirror of the semantic HasFuture<T> result.
+     * Do not treat a merely named get_future method as a capability.
+     * Preserve nominal specialization along inherited class/trait edges.
+     */
+    private Ast.TypeRef hasFutureResult(Ast.TypeRef type, Set<String> seen) {
+        if (type == null || type.isBorrow() || type.inferArguments()) return null;
+        // Path-local nominal identities, not instantiated TypeRef.toString().
+        // Otherwise A<T> -> A<Array<T>> evades the recursion guard forever.
+        // Removing names on exit keeps separate diamond edges observable.
+        if (!seen.add(type.name())) {
+            throw error("cyclic HasFuture<T> ownership inheritance involving " + type.name());
+        }
+        try {
+            Ast.InterfaceDecl iface = findInterface(type.name());
+            if (iface != null && iface.name().equals("HasFuture")
+                    && !iface.moduleContract() && type.arguments().size() == 1) {
+                return type.arguments().getFirst();
+            }
+            Ast.TypeRef result = null;
+            if (iface != null && !iface.moduleContract()) {
+                Map<String, Ast.TypeRef> bindings =
+                        genericBindings(iface.genericParameters(), type.arguments());
+                for (Ast.TypeRef parent : iface.parents()) {
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(parent, bindings), seen));
+                }
+            }
+            Ast.ClassDecl klass = findClass(type.name());
+            if (klass != null) {
+                Map<String, Ast.TypeRef> bindings =
+                        genericBindings(klass.genericParameters(), type.arguments());
+                for (Ast.TypeRef contract : klass.interfaces()) {
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(contract, bindings), seen));
+                }
+                for (Ast.TypeRef parent : klass.parents()) {
+                    if (findClass(parent.name()) == null) continue;
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(parent, bindings), seen));
+                }
+            }
+            return result;
+        } finally {
+            seen.remove(type.name());
+        }
+    }
+
+    private Ast.TypeRef mergeHasFutureOwnershipResult(Ast.TypeRef previous, Ast.TypeRef next) {
+        if (next == null) return previous;
+        if (previous != null && !previous.equals(next)) {
+            throw error("ambiguous HasFuture<T> ownership projection: "
+                    + previous + " and " + next);
+        }
+        return next;
     }
 
     private VarState ownershipRoot(VarState state) {

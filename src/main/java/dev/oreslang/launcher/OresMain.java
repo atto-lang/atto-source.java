@@ -84,6 +84,9 @@ public final class OresMain {
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("test")) {
+            return ConcurrencyTestCommand.run(java.util.Arrays.copyOfRange(args, 1, args.length));
+        }
         // Explicit on-device LLVM AOT build path. Never interpret "build" as a source file.
         // This is intentionally limited to LLVM's currently supported host subset.
         if (args.length > 0 && args[0].equals("build")) {

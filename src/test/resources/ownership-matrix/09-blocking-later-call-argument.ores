@@ -1,0 +1,5 @@
+define class Box as
+ pub let int value = 7;
+end
+fnc read(borrow Box b, int n): int { return b.value+n; } suspends fnc wait_blocking(): int { rt cooperate; return 1; }
+async fnc bad(): void { val Box box = new Box(); read(rt borrow box, wait_blocking()); return; }

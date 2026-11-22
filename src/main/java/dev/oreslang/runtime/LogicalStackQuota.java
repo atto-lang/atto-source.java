@@ -154,6 +154,111 @@ public final class LogicalStackQuota {
         if (segment.depth > segment.peak) segment.peak = segment.depth;
     }
 
+    /**
+     * Heap-held guest frames (spec ch. 25, ch. 27 rule 8). A call to a
+     * potentially suspending callee, recursive call cycles included, runs as
+     * a source continuation instead of a host frame. Its frame is still part
+     * of the caller's logical stack, so it is charged here: the callee's turn
+     * starts from the depth it was launched at, and a launch past the heap
+     * frame quota fails with {@link LogicalStackOverflowException} exactly like
+     * a host-frame overflow. Without this, unbounded recursion on the
+     * continuation path grows the heap until the process runs out of memory.
+     *
+     * <p>Heap frames cost no host stack, so their quota is larger than the
+     * host-frame segment quota: {@link #heapFrames()}, by default 16 times
+     * {@link #segmentFrames()} ({@code ores.stack.heapFrames}). A call in tail
+     * position ({@code return f(...)} with no pending defer) inherits its
+     * caller's depth.</p>
+     */
+    public static final class HeapTurn {
+        private final int depth;
+        private final int maxFrames;
+        private final int syncBase;
+        private final HeapTurn previous;
+        private boolean tailPending;
+
+        private HeapTurn(int depth, int maxFrames, int syncBase, HeapTurn previous) {
+            this.depth = depth;
+            this.maxFrames = maxFrames;
+            this.syncBase = syncBase;
+            this.previous = previous;
+        }
+    }
+
+    private static final int HEAP_FRAMES =
+            boundedProperty("ores.stack.heapFrames", SEGMENT_FRAMES * 16, 16, 1 << 24);
+    private static final ThreadLocal<HeapTurn> HEAP_TURN = new ThreadLocal<>();
+    private static final ThreadLocal<boolean[]> ROOT_TAIL = ThreadLocal.withInitial(() -> new boolean[1]);
+
+    /** Heap-held frames one logical stack may hold. */
+    public static int heapFrames() { return HEAP_FRAMES; }
+
+    /** The next {@link #chargeHeapCall()} on this thread is a tail call. */
+    public static void markTailCall() {
+        HeapTurn turn = HEAP_TURN.get();
+        if (turn != null) turn.tailPending = true;
+        else ROOT_TAIL.get()[0] = true;
+    }
+
+    public static void clearTailCall() {
+        HeapTurn turn = HEAP_TURN.get();
+        if (turn != null) turn.tailPending = false;
+        else ROOT_TAIL.get()[0] = false;
+    }
+
+    /**
+     * Charge the heap-held frame of a source call being launched now and
+     * return its logical depth: every frame of the chain, this one included.
+     * The callee's own synchronous invocation frame is already on the carrier.
+     */
+    public static int chargeHeapCall() {
+        Carrier carrier = CARRIER.get();
+        HeapTurn turn = HEAP_TURN.get();
+        int synchronous = Math.max(carrier.depth - (turn == null ? 0 : turn.syncBase), 1);
+        int base = turn == null ? 0 : turn.depth;
+        boolean tail;
+        if (turn != null) {
+            tail = turn.tailPending;
+            turn.tailPending = false;
+        } else {
+            boolean[] rootTail = ROOT_TAIL.get();
+            tail = rootTail[0];
+            rootTail[0] = false;
+        }
+        int maxFrames = heapCallQuota();
+        int depth = Math.max(base + synchronous - (tail ? 1 : 0), 1);
+        if (depth > maxFrames) {
+            throw new LogicalStackOverflowException("source-call-chain", depth - 1, maxFrames, false);
+        }
+        return depth;
+    }
+
+    /**
+     * Run one turn of a heap-held call frame at {@code depth} (from
+     * {@link #chargeHeapCall()}, or 0 for a new Task's stack). Restore with
+     * {@link #exitHeapTurn} in a {@code finally} on the same thread.
+     */
+    public static HeapTurn enterHeapTurn(int depth, int maxFrames) {
+        if (depth < 0 || maxFrames < 1) throw new IllegalArgumentException("heap frame depth must be non-negative and the quota positive");
+        HeapTurn previous = HEAP_TURN.get();
+        HeapTurn turn = new HeapTurn(depth, maxFrames, CARRIER.get().depth, previous);
+        HEAP_TURN.set(turn);
+        return turn;
+    }
+
+    public static void exitHeapTurn(HeapTurn turn) {
+        Objects.requireNonNull(turn, "heap turn");
+        if (HEAP_TURN.get() != turn) throw new IllegalStateException("heap turns nest strictly");
+        if (turn.previous == null) HEAP_TURN.remove();
+        else HEAP_TURN.set(turn.previous);
+    }
+
+    /** The heap-frame quota a call launched now inherits. */
+    public static int heapCallQuota() {
+        HeapTurn turn = HEAP_TURN.get();
+        return turn != null ? turn.maxFrames : HEAP_FRAMES;
+    }
+
     /** Release one guest frame charged by {@link #pushFrame()}. */
     public static void popFrame() {
         Carrier carrier = CARRIER.get();

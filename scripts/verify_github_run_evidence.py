@@ -124,13 +124,20 @@ def check(evidence, *, expected_repo, expected_repo_id, expected_sha,
         require(isinstance(steps, list) and bool(steps),
                 "required job has zero executed steps: " + name)
         seen_steps = set()
+        last_step_number = 0
         for step in steps:
             require(isinstance(step, dict), "malformed job step")
             step_name = step.get("name")
             require(isinstance(step_name, str) and bool(step_name)
                     and step_name not in seen_steps, "missing/duplicate step name")
             seen_steps.add(step_name)
-            require(positive_int(step.get("number")), "missing step sequence number")
+            step_number = step.get("number")
+            # GitHub numbers steps in execution order. Duplicate or decreasing
+            # numbers make even a purported green required step ambiguous.
+            # Gaps are legitimate: do not require contiguous numbering.
+            require(positive_int(step_number) and step_number > last_step_number,
+                    "missing, duplicated, or out-of-order step sequence number")
+            last_step_number = step_number
             # A green job may hide continue-on-error failures. Never accept
             # explicit failing/pending steps as successful CI evidence.
             require(step.get("status") == "completed"

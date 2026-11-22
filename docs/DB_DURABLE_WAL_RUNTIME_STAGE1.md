@@ -1,5 +1,58 @@
 # Native DB durable WAL: Java/GraalVM physical host substrate
 
+## Stage 1.9 — deterministic maximum-frame/delete replay regressions
+
+`DbWalReplayV1Test.maximumPutAndDeleteTornTailDifferentialCorpus` adds a
+portable reference corpus shared byte-for-byte in construction rules with the
+LLVM test: tenant 7/generation 4, PUT(1,41,key=1,value=0), maximum
+PUT(2,42,key=64,value=1024), and DELETE(3,43,key=64,value=0).
+The 1,118-byte PUT checksum bytes MUST equal `42 1d 02 86`; the 94-byte
+DELETE checksum bytes MUST equal `23 1f df 0a` (independent golden values).
+Reopen scan expects exactly 3 records, 1,243 bytes, sequence 3 and operation
+43. All 1,117 nonempty incomplete maximum-frame prefixes retain the durable
+first record without an automatic truncate/ACK; complete corrupted checksum,
+illegal DELETE payload and 1,025-byte oversize value are rejected read-only.
+This is an authored host regression, not exact-tree JUnit/guest execution.
+
+
+
+## Stage 1.8 — partial WAL header validation (host-only)
+
+Recovery now checks every available prefix byte of ODB1 magic/version,
+tenant, generation and next sequence, and validates the complete kind,
+operation ID, key length and value length whenever each is present.
+A valid torn final frame is still reported as `incompleteTail`; a malformed
+short/header-only tail is a hard failure instead of a repair invitation.
+In particular, a full 26-byte header with the wrong owner or out-of-order
+operation can no longer become an apparently benign truncated payload.
+
+The read-only Java regression iterates all 30 valid truncated frame
+prefix lengths, exercises nine malformed truncated headers, and asserts
+that scanner failure never changes file length. This is **source-authored**;
+it requires executing exact HEAD JUnit, native compiler and crash recovery
+gates before promotion.
+
+
+## Parent-directory entry sync (stage 1.7, host-only)
+
+After taking the exclusive WAL file lock, `openHostOnly` now opens the
+same trusted parent directory without following a final-component symlink
+and requires `FileChannel.force(true)` on that directory before returning
+a writable WAL owner. A failure to open or force the directory closes the
+new file descriptor and propagates the error; the caller may NOT treat a
+failed open as a granted durable WAL authority. A newly created file name
+is not secured by forcing only the WAL contents. The host must support
+directory channels; unsupported hosts fail closed. The existing path-based
+open/force sequence is NOT a secure filesystem sandbox in an attacker-
+writable directory, nor a power-loss/persistent-device durability proof.
+
+Added host regression checks for symlinked parent refusal and directory
+force availability. These require an executing Maven/JUnit runner for
+exact-tree evidence. No native guest `Committed` path or directory-rename
+checkpoint publication is added.
+
+
+
 **Status:** host-only file primitive and internal actor-affine async adapter; no guest ABI, authenticated tenant/shard registry, or
 commit ACK or database engine.
 

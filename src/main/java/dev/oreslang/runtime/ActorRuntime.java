@@ -358,6 +358,85 @@ public final class ActorRuntime implements AutoCloseable {
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
+     * Semantic allocation domains used by compiler/runtime lowering.
+     *
+     * <p>These are logical ownership/allocation identities, never carrier-thread
+     * identities. Backends may map them to JVM accounting domains, native
+     * arenas, or hard isolates without changing source semantics.</p>
+     */
+    public enum AllocationDomainKind {
+        ROOT,
+        ACTOR_LOCAL,
+        ACTOR_PRIVATE,
+        UNTRUSTED_ISOLATE,
+        RUNTIME_SHARED
+    }
+
+    /**
+     * Opaque logical allocation-domain identity.
+     *
+     * <p>Actor-owned domains are keyed by ActorId so carrier migration does not
+     * change ownership. ROOT and RUNTIME_SHARED belong to the ActorRuntime as a
+     * whole and therefore have no actor id.</p>
+     */
+    public static final class AllocationDomain {
+        private final UUID runtimeId;
+        private final AllocationDomainKind kind;
+        private final ActorId actorId;
+
+        private AllocationDomain(
+                UUID runtimeId,
+                AllocationDomainKind kind,
+                ActorId actorId) {
+            this.runtimeId = Objects.requireNonNull(runtimeId, "runtimeId");
+            this.kind = Objects.requireNonNull(kind, "kind");
+            boolean actorOwned = switch (kind) {
+                case ACTOR_LOCAL, ACTOR_PRIVATE, UNTRUSTED_ISOLATE -> true;
+                case ROOT, RUNTIME_SHARED -> false;
+            };
+            if (actorOwned && actorId == null) {
+                throw new IllegalArgumentException(
+                        kind + " allocation domain requires an ActorId");
+            }
+            if (!actorOwned && actorId != null) {
+                throw new IllegalArgumentException(
+                        kind + " allocation domain cannot carry an ActorId");
+            }
+            this.actorId = actorId;
+        }
+
+        public UUID runtimeId() { return runtimeId; }
+        public AllocationDomainKind kind() { return kind; }
+        public ActorId actorId() { return actorId; }
+
+        public boolean actorOwned() {
+            return actorId != null;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof AllocationDomain domain)) return false;
+            return runtimeId.equals(domain.runtimeId)
+                    && kind == domain.kind
+                    && Objects.equals(actorId, domain.actorId);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(runtimeId, kind, actorId);
+        }
+
+        @Override
+        public String toString() {
+            return actorId == null
+                    ? "AllocationDomain[" + kind + ", runtime=" + runtimeId + "]"
+                    : "AllocationDomain[" + kind + ", runtime=" + runtimeId
+                            + ", actor=" + actorId + "]";
+        }
+    }
+
+    /**
      * Requested physical heap placement is a requirement, not an assertion of
      * physical isolation. VM_ISOLATE needs a verified external Graal supervisor.
      */
@@ -863,6 +942,11 @@ public final class ActorRuntime implements AutoCloseable {
             return value;
         }
 
+        /** Allocation provenance for this explicit runtime-shared value. */
+        public AllocationDomain allocationDomain() {
+            return runtimeSharedAllocationDomain();
+        }
+
         private boolean ownedBy(ActorRuntime runtime) {
             return ActorRuntime.this == runtime;
         }
@@ -877,6 +961,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private final UUID allocationRuntimeId = UUID.randomUUID();
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     /** Stable *runtime-local* WAL actor slot, never a persistent database identity. */
@@ -1189,6 +1274,59 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    /** Stable identity for every logical allocation domain owned by this runtime. */
+    public UUID allocationRuntimeId() { return allocationRuntimeId; }
+
+    /** Root/task allocation domain for code executing outside an actor turn. */
+    public AllocationDomain rootAllocationDomain() {
+        return new AllocationDomain(
+                allocationRuntimeId,
+                AllocationDomainKind.ROOT,
+                null);
+    }
+
+    /** Explicit process-local shared-memory domain owned by this ActorRuntime. */
+    public AllocationDomain runtimeSharedAllocationDomain() {
+        return new AllocationDomain(
+                allocationRuntimeId,
+                AllocationDomainKind.RUNTIME_SHARED,
+                null);
+    }
+
+    /**
+     * Allocation domain for the current semantic execution context.
+     *
+     * <p>This intentionally keys actor-local ownership by ActorId and never by
+     * the current carrier thread. Calling through a different ActorRuntime while
+     * an actor is executing fails closed instead of laundering ownership into a
+     * root domain. ActorGroup Mailman CONTROL callbacks are runtime plumbing,
+     * not guest allocation contexts, and also fail closed here.</p>
+     */
+    public AllocationDomain currentAllocationDomain() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current != null) {
+            if (current.runtime() != this) {
+                throw new SecurityException(
+                        "allocation-domain lookup crossed ActorRuntime boundary");
+            }
+            AllocationDomainKind kind = switch (current.kind()) {
+                case SHARED -> AllocationDomainKind.ACTOR_LOCAL;
+                case PRIVATE -> AllocationDomainKind.ACTOR_PRIVATE;
+                case UNTRUSTED -> AllocationDomainKind.UNTRUSTED_ISOLATE;
+            };
+            return new AllocationDomain(
+                    allocationRuntimeId,
+                    kind,
+                    current.actorId());
+        }
+        ActorGroupMailmanExecution mailman = CURRENT_ACTOR_GROUP_MAILMAN.get();
+        if (mailman != null) {
+            throw new SecurityException(
+                    "ActorGroup Mailman CONTROL execution has no guest allocation domain");
+        }
+        return rootAllocationDomain();
+    }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
@@ -1740,6 +1878,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        /** Closed with the owner slice; outstanding host leases defer payload drops. */
+        private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
         private final Set<PrivateLinearArena> linearArenas = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
@@ -1761,6 +1901,38 @@ public final class ActorRuntime implements AutoCloseable {
         public MemoryReservation reserveHeap(long bytes) {
             requireCurrentOwner();
             return reserve(bytes, "private actor heap");
+        }
+
+        /**
+         * Bounded host-managed graph with owner-checked handles and non-owning
+         * links. This is NOT source-heap lowering or physical GC isolation.
+         * Initially available only to PRIVATE and UNTRUSTED actors.
+         */
+        public <T extends AutoCloseable> ActorOwnedGraphArena<T> newGraphArena(
+                int maxNodes, int maxEdgesPerNode) {
+            requireCurrentOwner();
+            long metadataBytes = ActorOwnedGraphArena.estimatedMetadataBytes(
+                    maxNodes, maxEdgesPerNode);
+            synchronized (this) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap retired");
+                MemoryReservation reservation = reserve(metadataBytes, "actor graph metadata");
+                try {
+                    ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
+                            maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
+                            retired -> {
+                                ownedGraphs.remove(retired);
+                                // Once the slice is closed its bulk refund owns
+                                // the charge. release() itself is a synchronized
+                                // no-op after close; avoid a second refund.
+                                reservation.close();
+                            });
+                    ownedGraphs.add(graph);
+                    return graph;
+                } catch (RuntimeException | Error failure) {
+                    reservation.close();
+                    throw failure;
+                }
+            }
         }
 
         /**
@@ -1835,9 +2007,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            if (sliceClosed.get() || cell == null || !isPrivateKind(cell.kind)
+                    || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
-                        "private actor memory slice may only be reserved by its owning actor");
+                        "private actor memory slice may only be accessed by its live owning actor");
             }
         }
 
@@ -1857,14 +2030,58 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            for (PrivateLinearArena arena : List.copyOf(linearArenas)) arena.invalidateFromSlice();
-            linearArenas.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+        public void close() {
+            final List<ActorOwnedGraphArena<?>> graphs;
+            final List<PrivateMemoryBlock> ownedBlocks;
+            final List<PrivateLinearArena> ownedArenas;
+            final long bytes;
+            synchronized (this) {
+                if (!sliceClosed.compareAndSet(false, true)) return;
+                graphs = List.copyOf(ownedGraphs);
+                ownedGraphs.clear();
+                ownedBlocks = List.copyOf(blocks);
+                blocks.clear();
+                ownedArenas = List.copyOf(linearArenas);
+                linearArenas.clear();
+                bytes = usedBytes.getAndSet(0);
+            }
+            // Do not hold the slice monitor while invoking graph drop hooks:
+            // graph.close() can invoke a reservation refund through this slice.
+            Throwable failure = null;
+            for (ActorOwnedGraphArena<?> graph : graphs) {
+                try { graph.retireFromActor(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            for (PrivateMemoryBlock block : ownedBlocks) {
+                try { block.invalidateFromSlice(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            for (PrivateLinearArena arena : ownedArenas) {
+                try { arena.invalidateFromSlice(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            try {
+                if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            } catch (Throwable problem) {
+                failure = recordTeardownFailure(failure, problem);
+            }
+            if (failure instanceof Error fatal) throw fatal;
+            if (failure instanceof RuntimeException problem) throw problem;
+            if (failure != null) throw new IllegalStateException("actor slice retirement failed", failure);
+        }
+
+        private static Throwable recordTeardownFailure(Throwable previous, Throwable next) {
+            if (previous == null) return next;
+            boolean oldFatal = previous instanceof VirtualMachineError
+                    || previous instanceof ThreadDeath;
+            boolean newFatal = next instanceof VirtualMachineError
+                    || next instanceof ThreadDeath;
+            if (newFatal && !oldFatal) {
+                next.addSuppressed(previous);
+                return next;
+            }
+            if (previous != next) previous.addSuppressed(next);
+            return previous;
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -2440,6 +2657,11 @@ public final class ActorRuntime implements AutoCloseable {
             return cellClosed.get() || ActorRuntime.this.closed.get();
         }
 
+        /** Allocation provenance for this explicit synchronized shared value. */
+        public AllocationDomain allocationDomain() {
+            return runtimeSharedAllocationDomain();
+        }
+
         private boolean ownedBy(ActorRuntime runtime) {
             return ActorRuntime.this == runtime;
         }
@@ -2852,6 +3074,14 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /**
+         * Semantic allocation domain for this actor. The result is stable across
+         * carrier migration and scheduler suspension/resume.
+         */
+        default AllocationDomain allocationDomain() {
+            return runtime().currentAllocationDomain();
+        }
 
         /**
          * This actor incarnation's private 32-bit heap (spec chapter 27).
@@ -4031,9 +4261,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Unforgeable join authority for one ActorGroup. Capabilities may cross
-     * actor mailboxes but are runtime-affine and cannot be reconstructed from a
-     * group id.
+     * Unforgeable join authority for one ActorGroup. Raw capabilities are
+     * runtime-affine manager/CONTROL authority and are deliberately NOT
+     * Sendable through ordinary actor DATA mailboxes. A future target-bound,
+     * one-use invitation must use a distinct CONTROL-lane capability type.
      */
     public final class ActorGroupJoinCapability {
         private final ActorGroupId groupId;
@@ -8410,8 +8641,15 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)
-                || value instanceof ActorRuntime.ActorRef<?>
-                || value instanceof ActorRuntime.ActorGroupJoinCapability) return;
+                || value instanceof ActorRuntime.ActorRef<?>) return;
+        // Raw ActorGroup join authority belongs to the CONTROL plane. Keep
+        // this transport-specific walker fail-closed on its own so a future
+        // validation-order refactor cannot reopen DATA capability transport.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ChannelRuntime.Channel<?>
                 || value instanceof ChannelRuntime.ReadChannel<?>
                 || value instanceof ChannelRuntime.WriteChannel<?>
@@ -8486,6 +8724,14 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+
+        // SharedMutex payload inspection is an independent DATA authorization
+        // boundary. Do not rely on requireOwnedActorRefs() running later.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
@@ -8572,12 +8818,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) {
-            if (!capability.ownedBy(this)) {
-                throw new IllegalArgumentException(
-                        "ActorGroup capability belongs to a different ActorRuntime");
-            }
-            return;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
         }
         if (value instanceof Shared<?> shared) {
             requireOwnedActorRefs(shared.value(), visiting, depth + 1);
@@ -8628,12 +8872,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) {
-            if (!capability.ownedBy(this)) {
-                throw new IllegalArgumentException(
-                        "ActorGroup capability belongs to a different ActorRuntime");
-            }
-            return;
+        // Defense in depth: this walker is used only for SHARED transport,
+        // and must reject raw manager/CONTROL authority even if an upstream
+        // sender-ownership validation is later reordered or refactored.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
         }
         if (value instanceof Shared<?> shared) {
             if (!shared.ownedBy(this)) {
@@ -9058,7 +9303,11 @@ public final class ActorRuntime implements AutoCloseable {
             return shared;
         }
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -9148,7 +9397,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1, budget);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
@@ -9211,7 +9464,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -9279,7 +9536,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -9335,7 +9596,11 @@ public final class ActorRuntime implements AutoCloseable {
             return estimatePrivateTransportBytes(shared.value(), visiting, depth + 1, limit);
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
@@ -9462,7 +9727,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot be frozen as data; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {

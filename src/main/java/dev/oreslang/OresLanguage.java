@@ -6,6 +6,7 @@ import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.runtime.AttoCheckedI64Profile;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -177,11 +178,22 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
 
+        // Source profile selection precedes parsing, even for prechecked AST leases:
+        // a host may not quietly ignore a malformed or duplicated directive.
+        boolean checkedI64 = AttoCheckedI64Profile.select(text, codeUnitId);
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
         }
-        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
+        // No mixed-profile call graph: an unchecked imported callee could wrap
+        // inside a checked caller until the linker proves transitive profile
+        // compatibility over every source unit and pinned compiled interface.
+        if (checkedI64 && !program.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: imports require profile-checked linking");
+        }
+        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId, checkedI64)
+                .getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
 }
