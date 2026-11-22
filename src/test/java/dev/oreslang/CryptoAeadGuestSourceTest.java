@@ -71,6 +71,40 @@ final class CryptoAeadGuestSourceTest {
     }
 
     @Test
+    void refusesUseAfterExplicitKeyRetirement() {
+        PolyglotException error = assertThrows(PolyglotException.class,
+                () -> run("""
+                        pub routine main(): void {
+                          val key = crypto.aead_new_key(1);
+                          crypto.aead_close(key);
+                          val sealed = crypto.aead_seal(key, [], []);
+                          return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("key")
+                || error.getMessage().contains("move")
+                || error.getMessage().contains("taken"));
+    }
+
+    @Test
+    void deniesCryptoOperationsWithoutExplicitCryptoCapability() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .arguments(OresLanguage.ID, "--ores-capabilities=STDOUT")
+                .build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): void {
+                              val key = crypto.aead_new_key(1);
+                              return;
+                            }
+                            """));
+            assertTrue(failure.getMessage().contains("CRYPTO")
+                    || failure.getMessage().contains("capability"));
+        }
+    }
+
+    @Test
     void preventsOwnershipCopyOfOpaqueKey() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""
