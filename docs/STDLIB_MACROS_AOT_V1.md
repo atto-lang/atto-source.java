@@ -5,13 +5,13 @@ Compiler execution, complete JUnit and GraalVM Native Image guest execution are 
 
 ## Public compiler-only API
 
-- `stdlib/core/macros.atto`: `const_int!(const <closed int expression>)` and `splice_expr!(syntax expr <expression>)`.
-- `stdlib/std/macros.atto`: `const_retry_count!(const <closed int expression>)`, `const_timeout_ns!(const <closed int expression>)`.
-- `stdlib/alloc/macros.atto`: `const_capacity!(const <closed int expression>)`, `const_alignment!(const <closed int expression>)`.
+- `stdlib/core/macros.atto`: `expand! const_int(const <closed int expression>)` and `expand! splice_expr(syntax expr <expression>)`.
+- `stdlib/std/macros.atto`: `expand! const_retry_count(const <closed int expression>)`, `expand! const_timeout_ns(const <closed int expression>)`.
+- `stdlib/alloc/macros.atto`: `expand! const_capacity(const <closed int expression>)`, `expand! const_alignment(const <closed int expression>)`.
 
 Each file is owned by this compiler. These are **not** host-language implementations or shared
 runtime objects. The canonical declaration form is `define pub macro`; ordinary invocations
-use `name!(const ...)` or `name!(syntax expr ...)`. Import aliases and package ownership
+use `expand! name(const ...)` or `expand! name(syntax expr ...)`. Import aliases and package ownership
 must be resolved by the compiler's checked macro linker before library-qualified use:
 mere existence of these source files does not imply automatic stdlib registration.
 
