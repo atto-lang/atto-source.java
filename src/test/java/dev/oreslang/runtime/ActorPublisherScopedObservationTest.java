@@ -29,6 +29,9 @@ final class ActorPublisherScopedObservationTest {
             AtomicReference<Throwable> error = new AtomicReference<>();
             CountDownLatch joined = new CountDownLatch(2);
             CountDownLatch published = new CountDownLatch(2);
+            // Producers run on separate carriers: order A's publish before B's so the
+            // LATEST(capacity 1) wildcard deterministically retains B's value.
+            CountDownLatch firstPublished = new CountDownLatch(1);
             CountDownLatch subscribed = new CountDownLatch(1);
             CountDownLatch read = new CountDownLatch(1);
             CountDownLatch left = new CountDownLatch(1);
@@ -41,6 +44,7 @@ final class ActorPublisherScopedObservationTest {
                                 case "emit" -> {
                                     assertEquals(2, bus.publish("counts", 11).accepted());
                                     published.countDown();
+                                    firstPublished.countDown();
                                 }
                                 case "leave" -> { group.leaveCurrent(); left.countDown(); }
                                 default -> throw new AssertionError(message);
@@ -50,6 +54,7 @@ final class ActorPublisherScopedObservationTest {
                             joined.countDown();
                             published.countDown();
                             left.countDown();
+                            firstPublished.countDown();
                         }
                     });
             ActorRuntime.ActorRef<String> producerB = runtime.spawnShared(
@@ -119,6 +124,7 @@ final class ActorPublisherScopedObservationTest {
             // A system event never reaches any publisher-scoped subscription.
             assertEquals(1, bus.publishSystem("counts", 777).accepted());
             producerA.send("emit");
+            assertTrue(firstPublished.await(5, TimeUnit.SECONDS));
             producerB.send("emit");
             assertTrue(published.await(5, TimeUnit.SECONDS));
             assertNull(error.get());
@@ -234,7 +240,20 @@ final class ActorPublisherScopedObservationTest {
             assertTrue(producerA.awaitTermination(5, TimeUnit.SECONDS));
             assertFalse(runtime.isLiveActorAddress(address));
             assertTrue(scoped.get().closed());
-            assertEquals(0L, runtime.sharedMemoryBytes());
+
+            // Other actors are still live here. Their independently owned
+            // USER mailbox envelopes may account for shared memory even
+            // after this publisher's retained delivery has been refunded.
+            // Join every physical retirement before asserting zero bytes;
+            // never turn a still-live actor's mail into a false leak report.
+            observer.stop();
+            producerB.stop();
+            notJoined.stop();
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(producerB.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(notJoined.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "all publisher-scoped and independent actor mail must retire");
         }
     }
     @Test
@@ -293,7 +312,23 @@ final class ActorPublisherScopedObservationTest {
             observer.send(1);
             assertTrue(done.await(5, TimeUnit.SECONDS));
             assertNull(error.get());
-            assertEquals(0L, runtime.sharedMemoryBytes());
+            // done fires inside the actor callback before its envelope
+            // reservation has necessarily been released. Join processed-mail
+            // accounting before asserting physical shared-memory reclamation.
+            runtime.drain(observer).get(5, TimeUnit.SECONDS);
+
+            // Subscription quota credits are refunded inside the receive
+            // callback; other independently live actor mailbox envelopes
+            // are not leaked subscription state. Require physical retirement
+            // of all three actors before measuring total runtime bytes.
+            observer.stop();
+            a.stop();
+            b.stop();
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "all publisher-scoped subscriptions and actor mail must retire");
         }
     }
 

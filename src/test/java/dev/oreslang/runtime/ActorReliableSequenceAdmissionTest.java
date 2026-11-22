@@ -54,6 +54,10 @@ final class ActorReliableSequenceAdmissionTest {
             assertTrue(readDone.await(5, TimeUnit.SECONDS));
             assertNull(failed.get());
             assertEquals(java.util.List.of(1L, 2L), sequences);
+            // readDone fires inside onMessage, before the mailbox envelope
+            // and its heap reservations have necessarily been retired.
+            // Observe the processed-message barrier before testing reclamation.
+            runtime.drain(observer).get(5, TimeUnit.SECONDS);
             group.close();
             assertEquals(0L, runtime.sharedMemoryBytes());
         }

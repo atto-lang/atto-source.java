@@ -115,6 +115,51 @@ final class CoreProtocolsGuestTest {
     }
 
     @Test
+    void canonicalHashAndCloneTraitsExecuteRealLinkedAttoGuestCode() throws Exception {
+        // Positive compiler/guest tests: not merely parser acceptance and not
+        // reflection on Java-side implementations. Native .atto source owns
+        // both nominal trait implementations and method bodies.
+        for (String fixture : new String[]{
+                "hash-positive.atto", "clone-positive.atto"}) {
+            Path source = Path.of("tests", "fixtures",
+                    "core-protocols-java-execution", fixture);
+            assertTrue(Files.isRegularFile(source),
+                    "missing real .atto guest fixture " + fixture);
+            assertDoesNotThrow(() -> LinkedProgramRunner.validate(source, Map.of()), fixture);
+            var execution = LinkedProgramRunner.runWithExitStatus(
+                    source, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            assertEquals(42, execution.exitStatus(),
+                    "compiled Atto guest must invoke Hash/Clone methods: " + fixture);
+        }
+    }
+
+    @Test
+    void canonicalHashAndCloneTraitsRejectMissingOrMismatchedGuestMethods() {
+        // These are negative real-linker checks for nominal conformance:
+        // Hash has fixed arity zero and Clone<T> must substitute T=int.
+        // No interface may be satisfied by a similarly named wrong method.
+        for (String fixture : new String[]{
+                "hash-missing-negative.atto",
+                "hash-wrong-arity-negative.atto",
+                "clone-wrong-generic-return-negative.atto",
+                "clone-missing-negative.atto"}) {
+            Path source = Path.of("tests", "fixtures",
+                    "core-protocols-java-execution", fixture);
+            assertTrue(Files.isRegularFile(source),
+                    "missing negative .atto guest fixture " + fixture);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(source, Map.of()), fixture);
+            String trait = fixture.startsWith("hash-") ? "Hash" : "Clone";
+            String expected = "class 'Broken' does not implement interface '" + trait + "'";
+            assertTrue(failure.getMessage().contains(expected),
+                    () -> fixture + " must fail nominal conformance, not unrelated"
+                            + " parse/import/permission admission: " + failure.getMessage());
+        }
+    }
+
+    @Test
     void canonicalAttoNegativeFixturesRejectInvalidConformance() {
         for (String fixture : new String[]{
                 "eq-missing-negative.atto", "eq-wrong-signature-negative.atto",
@@ -231,6 +276,69 @@ final class CoreProtocolsGuestTest {
                 "Ord<int> must inherit Eq<int>, not accept Eq<String>");
     }
 
+
+
+    @Test
+    void parsedProtocolKindSurvivesTheAstAndRejectsForgedContractKind() {
+        var program = Parser.parse("""
+                define pub trait Signed as
+                    fnc verify(int value): bool;
+                end
+                define pub interface Shape as
+                    fnc area(): int;
+                end
+                """);
+        var declarations = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(dev.oreslang.ast.Ast.InterfaceDecl.class::isInstance)
+                .map(dev.oreslang.ast.Ast.InterfaceDecl.class::cast)
+                .toList();
+        assertEquals(2, declarations.size());
+        assertEquals(dev.oreslang.ast.Ast.InterfaceKind.TRAIT,
+                declarations.get(0).declarationKind());
+        assertEquals(dev.oreslang.ast.Ast.InterfaceKind.INTERFACE,
+                declarations.get(1).declarationKind());
+        assertThrows(IllegalArgumentException.class,
+                () -> new dev.oreslang.ast.Ast.InterfaceDecl(
+                        "Forged", dev.oreslang.ast.Ast.Visibility.PUBLIC,
+                        java.util.List.of(), java.util.List.of(),
+                        java.util.List.of(), true,
+                        dev.oreslang.ast.Ast.InterfaceKind.TRAIT));
+    }
+
+    @Test
+    void traitImportCannotMasqueradeAsInterfaceAndViceVersa() throws Exception {
+        Path definitions = temp.resolve("protocol-kinds.atto");
+        Files.writeString(definitions, """
+                define pub trait Signed as
+                    fnc verify(int value): bool;
+                end
+                define pub interface Shape as
+                    fnc area(): int;
+                end
+                """);
+        for (String invalid : new String[] {
+                "import trait Shape from './protocol-kinds.atto';",
+                "import interface Signed from './protocol-kinds.atto';",
+                "import interface Eq from 'ores.core/protocols';"
+        }) {
+            Path client = temp.resolve("mismatch.atto");
+            Files.writeString(client, invalid
+                    + "\npub fnc main(): void { return; }\n");
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(client, Map.of()), invalid);
+            assertTrue(rejected.getMessage().contains(
+                    "does not match an exported declaration"), rejected.toString());
+        }
+        Path accepted = temp.resolve("matched.atto");
+        Files.writeString(accepted, """
+                import trait Signed from './protocol-kinds.atto';
+                import interface Shape from './protocol-kinds.atto';
+                pub fnc main(): void { return; }
+                """);
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(accepted, Map.of()));
+    }
 
     @Test
     void allNineteenCoreTraitsRejectMissingNominalWitnesses() throws Exception {

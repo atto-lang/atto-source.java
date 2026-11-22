@@ -1,0 +1,74 @@
+# Oreslang pinned compiler syntax matrix v1
+# authority: ores-truffle-oreslang/oreslang-source.java @ ea43452cc563f5af463ba1a11fcbdd1cce7646ef
+# blob (lexer): a01f4cd90fecee17139a952a1325ceb16b11dac5
+# fields: id TAB utf8-hex(source) TAB comma-separated lexer Token.Type names (or !error-fragment or blank) TAB parser P|N|S TAB note
+# Lexical success is not parser or typechecker or runnable guest evidence.
+reserved-define	646566696e65	DEFINE	S	reserved lexer token
+future-isolated	69736f6c61746564	IDENT	S	target keyword but compiler identifier
+legacy-isoactor	69736f6163746f72	ISOACTOR	S	legacy reserved token
+future-critical	637269746963616c	IDENT	S	contextual target marker not reserved on compiler main
+reserved-suspends	73757370656e6473	SUSPENDS	S	compiler reserved
+future-gen	67656e	IDENT	S	target shorthand not compiler-reserved
+reserved-generator	67656e657261746f72	GENERATOR	S	compiler reserved
+reserved-fnc	666e63	FNC	S	compiler reserved
+reserved-routine	726f7574696e65	ROUTINE	S	compiler reserved
+actor-state	7374617465	IDENT	S	actor state currently identifier
+actor-handle-state	68616e646c655f7374617465	IDENT	S	actor state handler currently identifier
+comparison-eq	6571	EQ	S	reserved operator
+comparison-neq	6e6571	NEQ	S	reserved operator
+comparison-is	6973	IS	S	reserved operator
+legacy-null	6e756c6c	NULL	S	reserved token despite desired Option-only language
+reserved-panic	70616e6963	PANIC	S	reserved runtime control
+domain-cpu	637075	CPU	S	reserved domain
+domain-gpu	677075	GPU	S	reserved domain
+domain-quantum	7175616e74756d	QUANTUM	S	reserved domain
+legacy-percent	25	PERCENT	S	lexes removed target operator
+legacy-caret	5e	CARET	S	lexes removed target operator
+legacy-double-caret	5e5e	CARET,CARET	S	two caret tokens
+compound-nb-select	6e622d73656c656374	NB,SELECT	S	explicit lexer special case
+hyphen-critical-read	637269746963616c2d72656164	IDENT,MINUS,IDENT	S	parser contextual, not an atomic lexer token
+hyphen-critical-write	637269746963616c2d7772697465	IDENT,MINUS,IDENT	S	parser contextual, not atomic lexer token
+hyphen-transform-pipe	7472616e73666f726d2d70697065	IDENT,MINUS,IDENT	S	parser contextual, not atomic lexer token
+ownership-rt-mut-borrow	7274206d757420626f72726f77	RT,MUT,IDENT	S	compiler ownership lexing
+bools	747275652066616c7365	TRUE,FALSE	S	boolean literals
+runtime-controls	7265636f766572206465666572207468726f77207261697365	RECOVER,DEFER,THROW,RAISE	S	runtime global reserved tokens
+channels	7265616463682077726974656368	READCH,WRITECH	S	channels
+match-contextual	6d61746368206f766572206f6e207768656e	MATCH,OVER,IDENT,IDENT	S	on/when contextual identifiers
+select-case-default	73656c65637420636173652064656661756c74	SELECT,IDENT,DEFAULT	S	case contextual
+hash-simple	237265616479	SYMBOL_LITERAL	S	nominal Symbol literal
+hash-single-quoted	2327776974682073706163657327	SYMBOL_LITERAL	S	nominal Symbol with spaces
+hash-double-quoted	232271756f7465642076616c756522	SYMBOL_LITERAL	S	nominal Symbol with double quoted body
+nested-comment	2f2a206f75746572202f2a2072657475726e202a2f207265636f766572202a2f20707562	PUB	S	nested comments opaque
+line-comment	2f2f2072657475726e0a707562	PUB	S	line comment opaque
+string-opaque	226966207265636f76657222	STRING	S	ordinary string opaque
+template-opaque	606966207265636f76657260	TEMPLATE_LITERAL	S	template opaque
+unicode-identifier	636f6e737420636166c3a9203d2031	CONST,IDENT,EQUAL,INT	S	Unicode identifier
+unicode-string	636f6e73742073203d2022f09f998222	CONST,IDENT,EQUAL,STRING	S	emoji inside string
+numeric-separators	3132335f343536	INT	S	digit separators token
+numeric-hex-gap	30783241	INT,IDENT	S	current lexer lacks hex literal tokenization
+numeric-scientific	312e326533	FLOAT	S	floating scientific token
+arrow	61202d3e2062	IDENT,ARROW,IDENT	S	arrow
+pipe	61207c3e2062	IDENT,PIPE_FORWARD,IDENT	S	pipeline
+not-eq-bang	6120213d2062	IDENT,BANG_EQUAL,IDENT	S	comparison
+punctuation	28297b7d5b5d3b3a2c2e	LPAREN,RPAREN,LBRACE,RBRACE,LBRACKET,RBRACKET,SEMICOLON,COLON,COMMA,DOT	S	punctuation
+lex-unterminated-string	22756e7465726d696e61746564	!unterminated string	S	negative lexical oracle
+lex-unterminated-block	2f2a206f70656e	!unterminated block comment	S	negative lexical oracle
+lex-bare-hash	23	!expected Symbol name	S	negative lexical oracle
+lex-empty-symbol	232727	!Symbol name requires	S	negative lexical oracle
+lex-unterminated-template	60756e66696e6973686564	!unterminated template literal	S	negative lexical oracle
+lex-malformed-exponent	31652b	!malformed exponent	S	negative lexical oracle
+lex-double-dot	2e2e	!unexpected '..'	S	negative lexical oracle
+lex-invalid-symbol-escape	23276261645c7127	!invalid quoted Symbol escape	S	negative lexical oracle
+lex-invalid-unicode-string	225c754445414422	!unpaired Unicode surrogate	S	negative lexical oracle
+parse-empty-main	70756220666e63206d61696e28293a20766f6964207b2072657475726e3b207d		P	parser accepts minimal function
+parse-binding	70756220666e63206d61696e28293a20766f6964207b20636f6e73742078203d20313b2072657475726e3b207d		P	parser accepts ordinary binding
+parse-namespace	6e616d6573706163652064656d6f3b2070756220666e63206d61696e28293a20766f6964207b2072657475726e3b207d		P	parser supports namespace declaration
+parse-reserved-eq-binding	70756220666e63206d61696e28293a20766f6964207b206c6574206571203d20313b2072657475726e3b207d		N	eq cannot be declared as identifier
+parse-reserved-is-binding	70756220666e63206d61696e28293a20766f6964207b206c6574206973203d20313b2072657475726e3b207d		N	is cannot be declared as identifier
+parse-reserved-null-binding	70756220666e63206d61696e28293a20766f6964207b206c6574206e756c6c203d20313b2072657475726e3b207d		N	null cannot be declared as identifier
+parse-legacy-percent	70756220666e63206d61696e28293a20696e74207b2072657475726e2035202520323b207d		P	parser still accepts percent operator
+parse-removed-caret	70756220666e63206d61696e28293a20696e74207b2072657475726e2035205e20323b207d		N	current parser does not consume caret in arithmetic
+parse-legacy-isoactor	646566696e65206d6f64756c6520617070206173207075622069736f6163746f7220666e6320776f726b657228696e742076616c7565293a20696e74207b2072657475726e2076616c75653b207d20656e64		P	legacy actor form accepted in parser test
+parse-future-isolated-actor	646566696e652069736f6c61746564206163746f7220576f726b657220617320656e64		N	isolated is not recognized as actor marker in pinned parser
+parse-symbol-expression	70756220666e63206d61696e28293a20766f6964207b20636f6e73742073796d626f6c203d202372656164793b2072657475726e3b207d		P	parser symbol literal
+parse-template-expression	70756220666e63206d61696e28293a20766f6964207b20636f6e73742073203d206068656c6c6f603b2072657475726e3b207d		P	parser template literal

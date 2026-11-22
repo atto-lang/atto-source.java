@@ -1,17 +1,22 @@
-name: Atto core protocols exact-head JVM guest
+name: Atto core protocols and runtime safety exact-head JVM
 on:
   pull_request:
     paths:
       - 'src/main/resources/dev/oreslang/core/protocols.atto'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/compiler/ImportGraph.java'
       - 'src/test/java/dev/oreslang/CoreProtocolsGuestTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/main/java/dev/oreslang/runtime/ChannelRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/ChannelRuntimeTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresFutureTerminalAdmissionRetentionTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorReadinessLifecycleTest.java'
       - 'src/main/java/dev/oreslang/runtime/OresFuture.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRefIncarnationFenceTest.java'
       - 'src/test/java/dev/oreslang/runtime/DirectionalChannelCapabilityFenceTest.java'
       - 'tests/fixtures/core-protocols-v1/**'
+      - 'tests/fixtures/core-protocols-java-execution/**'
       - '.github/workflows/core-protocols-guest-jvm.yml'
   workflow_dispatch:
 
@@ -49,7 +54,17 @@ jobs:
       - name: Compile and execute real Atto guests plus actor reference, channel and Future hardening tests
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest,ActorRefIncarnationFenceTest,DirectionalChannelCapabilityFenceTest,ChannelRuntimeTest,ChannelPendingAdmissionTest,OresFutureTerminalNotificationRaceTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest,ChannelRuntimeTest,OresFutureTerminalAdmissionRetentionTest,ActorReadinessLifecycleTest,ActorRefIncarnationFenceTest,DirectionalChannelCapabilityFenceTest,ChannelPendingAdmissionTest,OresFutureTerminalNotificationRaceTest -DfailIfNoTests=true test
+          # A compiler invocation is not execution evidence unless Surefire
+          # actually discovers and completes the new guest test method.
+          report='target/surefire-reports/TEST-dev.oreslang.CoreProtocolsGuestTest.xml'
+          test -s "$report"
+          grep -F 'name="canonicalHashAndCloneTraitsExecuteRealLinkedAttoGuestCode"' "$report"
+          grep -F 'name="canonicalHashAndCloneTraitsRejectMissingOrMismatchedGuestMethods"' "$report"
+          # Require unskipped method testcase elements and zero suite failures.
+          grep -F 'skipped="0"' "$report"
+          grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
+          echo 'CORE_PROTOCOLS_JAVA_GUEST_JUNIT=EXECUTED'
           echo 'CORE_PROTOCOLS_ACTOR_CHANNEL_JAVA_JUNIT=EXECUTED'
       - name: Preserve evidence boundary
         if: always()
