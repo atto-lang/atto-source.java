@@ -35,8 +35,8 @@ final class NativeTimeStdlibTest {
                 CoreLibrarySources.fileName("std/time"), source);
         assertTrue(parsed.hasOresSource());
         assertFalse(parsed.hasJavaSource());
-        assertTrue(source.contains("pub define class Duration"));
-        assertTrue(source.contains("pub define class Timer"));
+        assertTrue(source.contains("define pub class Duration"));
+        assertTrue(source.contains("define pub class Timer"));
         assertFalse(source.contains("java:"));
         assertFalse(source.contains("Thread.sleep"));
         assertFalse(source.contains("java.util"));
@@ -73,6 +73,55 @@ final class NativeTimeStdlibTest {
                 "1000000000", "1000", "0", "1", "true", "true",
                 "2000000000"),
                 output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                () -> errors.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void compiledGuestExercisesManualClockDeadlineTimerAndInterval() throws Exception {
+        Path entry = temp.resolve("time_scheduler_values.atto");
+        Files.writeString(entry, """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val half = time.milliseconds(500).expect("half");
+                  val manual = time.manual_clock(9, 1000000000);
+                  stdio.println(manual.now().ticks_ns);
+                  stdio.println(manual.advance(half).expect("advance").ticks_ns);
+                  stdio.println(manual.advance(time.nanoseconds(0).expect("zero")).expect("still").ticks_ns);
+                  val start = time.instant(9, 1000000000);
+                  val later = manual.now();
+                  val due = time.deadline_after(start, half).expect("due");
+                  stdio.println(due.expired(start).expect("not due"));
+                  stdio.println(due.expired(later).expect("due"));
+                  stdio.println(due.expired(time.instant(10, 1500000000)).is_err());
+                  val timer = time.one_shot(due);
+                  stdio.println(timer.poll(start).expect("early"));
+                  stdio.println(timer.poll(later).expect("fire"));
+                  stdio.println(timer.poll(later).expect("once"));
+                  stdio.println(timer.did_fire());
+                  val every = time.interval(later, half);
+                  stdio.println(every.poll(later).expect("interval fire"));
+                  stdio.println(every.poll(later).expect("interval no double fire"));
+                  stdio.println(every.next_due().expect("interval next").ticks_ns);
+                  stdio.println(every.cancel());
+                  stdio.println(every.next_due().is_err());
+                  val at_limit = time.manual_clock(20, 9223372036854775807);
+                  stdio.println(at_limit.advance(time.nanoseconds(1).expect("one ns")).is_err());
+                  stdio.println(at_limit.now().ticks_ns);
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream errors = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(entry,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(), output, errors);
+        assertTrue(linked.units().containsKey("@std/time.atto"),
+                "expected compiled compiler-owned Atto module");
+        assertEquals(String.join("\\n",
+                "1000000000", "1500000000", "1500000000",
+                "false", "true", "true", "false", "true", "false",
+                "true", "true", "false", "2000000000",
+                "true", "true", "true", "9223372036854775807"),
+                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
                 () -> errors.toString(StandardCharsets.UTF_8));
     }
 
