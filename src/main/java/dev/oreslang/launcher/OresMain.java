@@ -153,11 +153,17 @@ public final class OresMain {
                 } else if (arg.startsWith("--permission-check=")) {
                     permissionCheckMode = PermissionCheckMode.parse(
                             arg.substring("--permission-check=".length()));
-                } else if (arg.equals("--allow-all")) {
+                } else if (arg.equals("--allow-all") || arg.equals("-A")) {
                     for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
                         permissionBuilder.allowAll(permission);
                         touchedPermissions.add(permission);
                     }
+                } else if (arg.equals("-R") || arg.startsWith("-R=")) {
+                    parseShortPermissionFlag(arg, "-R", RuntimePermissions.Permission.READ,
+                            permissionBuilder, touchedPermissions);
+                } else if (arg.equals("-W") || arg.startsWith("-W=")) {
+                    parseShortPermissionFlag(arg, "-W", RuntimePermissions.Permission.WRITE,
+                            permissionBuilder, touchedPermissions);
                 } else if (parsePermissionFlag(arg, permissionBuilder, touchedPermissions)) {
                     // handled by the scoped Deno-style permission parser
                 } else if (arg.startsWith("--define=")) {
@@ -196,7 +202,7 @@ public final class OresMain {
                     // before building a guest Graal Context.
                     dev.oreslang.runtime.SafeHostMemberManifest.className(raw);
                     allowedHostClasses.add(raw);
-                } else if (arg.startsWith("--")) {
+                } else if (arg.startsWith("-")) {
                     throw new UsageException("unknown option: " + arg);
                 } else if (filename == null) filename = arg;
                 else throw new UsageException("only one .atto, .ores, or .java source file may be supplied");
@@ -275,8 +281,15 @@ public final class OresMain {
 
         final RuntimePermissions permissions;
         if (touchedPermissions.isEmpty()) {
-            permissions = RuntimePermissions.fromCapabilities(policy.capabilities());
+            // Public compiler and executable entrypoints have no ambient guest
+            // host-I/O grants. Legacy --allow=CAP can expand a coarse isolate
+            // ceiling for compatibility, but does not authorize guest I/O.
+            // Only scoped Deno-style --allow-* grants authorize resources.
+            permissions = RuntimePermissions.denyAll();
         } else {
+            // Legacy coarse capabilities remain ceilings, not guest grants,
+            // including in categories not mentioned by a scoped permission flag.
+            // Never promote --allow=ENVIRONMENT into implicit --allow-env=*.
             permissions = permissionBuilder.build();
 
             // A Deno-style permission flag is the authority for its category.
@@ -406,6 +419,20 @@ public final class OresMain {
 
     private static final class UsageException extends IllegalArgumentException {
         UsageException(String message) { super(message); }
+    }
+
+    private static void parseShortPermissionFlag(
+            String arg, String prefix, RuntimePermissions.Permission permission,
+            RuntimePermissions.Builder builder,
+            EnumSet<RuntimePermissions.Permission> touched) {
+        if (arg.equals(prefix)) {
+            builder.allowAll(permission);
+        } else {
+            String scopes = arg.substring((prefix + "=").length());
+            requirePermissionScopes(arg, scopes);
+            builder.allowCsv(permission, scopes);
+        }
+        touched.add(permission);
     }
 
     private static boolean parsePermissionFlag(

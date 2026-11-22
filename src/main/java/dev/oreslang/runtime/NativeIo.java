@@ -483,7 +483,7 @@ public final class NativeIo {
         if (port < 1 || port > 65535) {
             throw new IllegalArgumentException("network.connect port must be 1..65535");
         }
-        String endpoint = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
+        String endpoint = RuntimePermissions.networkEndpoint(host, port);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.connect");
         // Resolve only once, pin the selected numeric address, and require a
         // second explicit permission for that address before opening a socket.

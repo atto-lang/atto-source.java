@@ -291,6 +291,25 @@ public final class RuntimePermissions {
         return rule.host().equals(target.host());
     }
 
+    /**
+     * Consistently format an actual connection or listener destination for a
+     * permission check: IPv6 literals are bracketed and every spelling uses the
+     * same canonical host identity as grants and denies. A destination the
+     * strict scope parser rejects keeps its raw spelling, which no scope can
+     * match, so it fails closed at the permission check.
+     */
+    public static String networkEndpoint(String host, int port) {
+        if (host == null || host.isBlank())
+            throw new IllegalArgumentException("network host cannot be blank");
+        String trimmed = host.trim();
+        String bracketed = trimmed.contains(":") && !trimmed.startsWith("[")
+                ? "[" + trimmed + "]" : trimmed;
+        NetworkScope scope = parseNetworkScope(bracketed + ":" + port, false);
+        return scope == null
+                ? trimmed.toLowerCase(Locale.ROOT) + ":" + port
+                : scope.canonical();
+    }
+
     private record NetworkScope(String host, Integer port) {
         String canonical() {
             return port == null ? host : host + ":" + port;
