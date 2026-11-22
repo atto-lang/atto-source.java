@@ -18,8 +18,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * This is a source-compiled Atto guest test, not a Java host model.
- * The runner must resolve four byte-preserved source units, then execute 37
- * checks inside the Atto guest before its success marker becomes observable.
+ * The runner must resolve four byte-preserved source units per entry, then
+ * execute 37 smoke or 109 boundary checks before emitting a guest marker.
  * CI results must be from a stepful run at the exact current PR head.
  */
 @Timeout(180)
@@ -30,7 +30,8 @@ final class AttoStdWebsocketQuicComputeGuestTest {
             "stdlib/std/websocket.atto",
             "stdlib/std/quic.atto",
             "stdlib/std/compute.atto",
-            "tests/stdlib/websocket_quic_compute_smoke.atto"
+            "tests/stdlib/websocket_quic_compute_smoke.atto",
+            "tests/stdlib/protocol_boundaries.atto"
     };
 
     @TempDir Path temp;
@@ -65,6 +66,44 @@ final class AttoStdWebsocketQuicComputeGuestTest {
         assertEquals(0, result.exitStatus(), "Atto guest must exit successfully");
         assertEquals("ATTO_STD_PROTOCOL_37_OK", out.toString(StandardCharsets.UTF_8),
                 "an early return, a skipped assertion, or a host-only simulation cannot pass");
+    }
+
+    @Test
+    void boundaryAttoGuestExecutes109CasesBeforeEmittingSuccess() throws Exception {
+        Path boundary = temp.resolve("tests/stdlib/protocol_boundaries.atto");
+        var validated = LinkedProgramRunner.validate(boundary, Map.of());
+        assertEquals(4, validated.units().size(),
+                "109-case fixture must compile with three imported .atto libraries");
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.runWithExitStatus(
+                boundary, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), out, err);
+        assertEquals(4, result.build().units().size());
+        assertEquals(0, result.exitStatus(), "109 native Atto boundary checks must all pass");
+        assertEquals("ATTO_STD_PROTOCOL_109_OK", out.toString(StandardCharsets.UTF_8),
+                "only a completed Atto guest may emit the boundary success marker");
+    }
+
+    @Test
+    void corruptedBoundaryAttoAssertionReturnsItsOwnNonzeroFailureCode() throws Exception {
+        Path boundary = temp.resolve("tests/stdlib/protocol_boundaries.atto");
+        String original = Files.readString(boundary, StandardCharsets.UTF_8);
+        String target = "compute_upload_admit(0, 1, 1, false, true)";
+        assertTrue(original.contains(target), "negative test must modify case 109");
+        assertEquals(original.indexOf(target), original.lastIndexOf(target),
+                "test must modify exactly one case");
+        Files.writeString(boundary, original.replace(target,
+                "compute_upload_admit(0, 1, 1, true, true)"), StandardCharsets.UTF_8);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.runWithExitStatus(
+                boundary, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), out, err);
+        assertEquals(109, result.exitStatus(),
+                "fault injection must fail at the final native Atto boundary assertion");
+        assertEquals("", out.toString(StandardCharsets.UTF_8),
+                "faulted guest must not forge the success marker");
     }
 
     @Test
