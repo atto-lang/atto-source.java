@@ -131,6 +131,12 @@ final class ActorProtocolNominalResolverV1Test {
                 "E_PROTOCOL_UNVERIFIED_MESSAGE");
     }
 
+    @Test void oneNominalMessageCannotChangePayloadSchemaBetweenStates() {
+        denied(SOURCE.replace("state Active as\n",
+                        "state Active as\n                on Connect(Topic) -> Active replies Ack\n"),
+                "E_PROTOCOL_MESSAGE_PAYLOAD");
+    }
+
     @Test void missingPayloadOrReplyTypesRejectBeforeRuntimeGate() {
         denied(SOURCE.replace("on Subscribe(Topic) ->", "on Subscribe(MissingType) ->"),
                 "E_PROTOCOL_UNVERIFIED_TYPE");
