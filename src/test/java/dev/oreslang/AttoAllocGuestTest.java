@@ -24,6 +24,7 @@ final class AttoAllocGuestTest {
             String canonical = "atto.alloc/" + name;
             String source = CoreLibrarySources.attoAllocSource(canonical);
             assertTrue(source.contains("use namespace atto_alloc_" + name + ";"), canonical);
+            assertFalse(source.contains("pub define"), "canonical declaration order is define pub: " + canonical);
             var parsed = Parser.parse(source);
             assertEquals("atto_alloc_" + name, parsed.namespace(), canonical);
             assertTrue(parsed.modules().stream().anyMatch(module ->
