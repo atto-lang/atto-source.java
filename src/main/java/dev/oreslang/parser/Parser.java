@@ -5968,6 +5968,8 @@ public final class Parser {
         boolean seenDefault = false;
 
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
+            java.util.Map<String, Ast.Expr> outerAliases = new java.util.HashMap<>(listPatternAliases);
+            try {
             boolean defaultArm = match(DEFAULT);
             if (!defaultArm) {
                 if (seenDefault) throw error(peek(), "default match arm must be last");
@@ -5983,7 +5985,17 @@ public final class Parser {
                 seenDefault = true;
             }
 
-            Ast.Pattern pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
+            listPatternGuard = null;
+            boolean outerListPatterns = listPatternsAllowed;
+            listPatternsAllowed = true;
+            Ast.Pattern pattern;
+            try {
+                pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
+            } finally {
+                listPatternsAllowed = outerListPatterns;
+            }
+            Ast.Expr structuralGuard = listPatternGuard;
+            listPatternGuard = null;
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
                 if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
@@ -5994,6 +6006,9 @@ public final class Parser {
                 } finally {
                     matchGuardStartToken = previousGuardStart;
                 }
+            }
+            if (structuralGuard != null) {
+                guard = guard == null ? structuralGuard : new Ast.BinaryExpr("&&", structuralGuard, guard);
             }
 
             if (check(FAT_ARROW)) {
@@ -6070,6 +6085,10 @@ public final class Parser {
                 throw error(peek(), "value match arm requires ';', 'on', 'default' or 'end' boundary");
             }
             valueArms.add(new Ast.MatchValueArm(pattern, guard, value));
+            } finally {
+                listPatternAliases.clear();
+                listPatternAliases.putAll(outerAliases);
+            }
         }
 
         if (braced) consume(RBRACE, "expected '}' to close braced value match");
@@ -6226,7 +6245,72 @@ public final class Parser {
                 bytes ? Ast.SequenceUnit.BYTE : Ast.SequenceUnit.BIT, elements, tail);
     }
 
+    /**
+     * `on List.of(p0, ..., ..._) when g -> e` in a value match lowers to a binding
+     * of the subject plus a guard: the length test, each element literal or `is T`
+     * test, then g. Element bindings read `$listN[i]` in the guard and arm body.
+     * Nested element patterns and a named rest fail closed.
+     */
+    private final java.util.Map<String, Ast.Expr> listPatternAliases = new java.util.HashMap<>();
+    private Ast.Expr listPatternGuard;
+    private boolean listPatternsAllowed;
+    private int listPatternCounter;
+
+    private Ast.Pattern parseListPattern() {
+        Token start = advance(); // List
+        advance(); advance(); // . of
+        consume(LPAREN, "expected '(' after List.of in a pattern");
+        if (!listPatternsAllowed) throw error(start, "List.of patterns are supported only in value match arms");
+        String subject = "$list" + (listPatternCounter++);
+        Ast.Expr list = new Ast.NameExpr(subject);
+        List<Ast.Expr> checks = new ArrayList<>();
+        int fixed = 0;
+        boolean rest = false;
+        if (!check(RPAREN)) {
+            do {
+                if (match(ELLIPSIS)) {
+                    Token tail = consume(IDENT, "expected '_' after '...' in a list pattern");
+                    if (!tail.lexeme().equals("_")) throw error(tail, "named list pattern rests are not supported yet; use ..._");
+                    rest = true;
+                    if (!check(RPAREN)) throw error(peek(), "a list pattern rest must be last");
+                    break;
+                }
+                Ast.Expr element = new Ast.IndexExpr(list, new Ast.LiteralExpr((long) fixed));
+                Ast.Pattern item = parsePattern();
+                if (item instanceof Ast.WildcardPattern) {
+                    // matches any element
+                } else if (item instanceof Ast.BindingPattern binding) {
+                    bindListAlias(start, binding.name(), element);
+                } else if (item instanceof Ast.LiteralPattern literal) {
+                    checks.add(new Ast.BinaryExpr("eq", element, new Ast.LiteralExpr(literal.value())));
+                } else if (item instanceof Ast.TypePattern typed && !typed.type().name().startsWith("$")) {
+                    checks.add(new Ast.TypeTestExpr(element, typed.type(), null));
+                    if (typed.binding() != null) bindListAlias(start, typed.binding(), element);
+                } else {
+                    throw error(start, "nested list element patterns are not supported yet");
+                }
+                fixed++;
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after list pattern");
+        Ast.Expr length = new Ast.BinaryExpr(rest ? ">=" : "eq",
+                new Ast.MemberExpr(list, "length"), new Ast.LiteralExpr((long) fixed));
+        Ast.Expr guard = length;
+        for (Ast.Expr item : checks) guard = new Ast.BinaryExpr("&&", guard, item);
+        listPatternGuard = guard;
+        return new Ast.BindingPattern(subject);
+    }
+
+    private void bindListAlias(Token at, String name, Ast.Expr element) {
+        if (listPatternAliases.put(name, element) != null) throw error(at, "duplicate list pattern binding " + name);
+    }
+
     private Ast.Pattern parsePattern() {
+        if (check(IDENT) && peek().lexeme().equals("List") && current + 3 < tokens.size()
+                && tokens.get(current + 1).type() == DOT && tokens.get(current + 2).lexeme().equals("of")
+                && tokens.get(current + 3).type() == LPAREN) {
+            return parseListPattern();
+        }
         if (match(BANG)) {
             // A negative type pattern is a complement of the runtime-reifiable
             // type test, not a cast to the excluded type.
@@ -6272,7 +6356,8 @@ public final class Parser {
         if (match(IS)) {
             Ast.TypeRef target = parseTypeRef();
             String binding = match(AS)
-                    ? consume(IDENT, "expected name after type pattern 'as'").lexeme()
+                    ? (match(VAL) ? consume(IDENT, "expected name after 'as val'").lexeme() // `as val x`: an immutable binding
+                        : consume(IDENT, "expected name after type pattern 'as'").lexeme())
                     : check(IDENT) && !peek().lexeme().equals("_")
                             && !peek().lexeme().equals("when") ? advance().lexeme() : null;
             return new Ast.TypePattern(target, binding);
@@ -7708,6 +7793,9 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        if (!listPatternAliases.isEmpty() && check(IDENT) && listPatternAliases.containsKey(peek().lexeme())) {
+            return listPatternAliases.get(advance().lexeme());
+        }
         if (handleStateAlias != null && check(IDENT) && peek().lexeme().equals(handleStateAlias)) {
             advance();
             return new Ast.NameExpr("self");
