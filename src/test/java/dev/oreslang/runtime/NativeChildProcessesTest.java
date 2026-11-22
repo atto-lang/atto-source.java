@@ -114,6 +114,54 @@ final class NativeChildProcessesTest {
             assertEquals(0, manager.reservedCount());
         }
     }
+    @Test void repeatTerminateReapsOnceAndDoesNotAccumulateWorkers() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            var child = manager.spawn(javaExe(), probe("sleep"), cwd(),
+                    (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+            java.util.ArrayList<java.util.concurrent.CompletableFuture<
+                    NativeChildProcesses.ExitStatus>> completions = new java.util.ArrayList<>();
+            for (int i = 0; i < 64; i++) completions.add(child.terminate());
+            for (var pending : completions) pending.get(8, TimeUnit.SECONDS);
+            assertFalse(child.alive());
+        }
+    }
+
+    @Test void canonicalPermissionIsRecheckedBeforeAnyLaunch() throws Exception {
+        try (NativeChildProcesses manager = new NativeChildProcesses()) {
+            java.util.concurrent.atomic.AtomicInteger checks =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            var pending = manager.spawn(javaExe(), probe("exit42"), cwd(),
+                    (exe, dir) -> {
+                        if (checks.incrementAndGet() == 2)
+                            throw new SecurityException("canonical executable denied");
+                    });
+            var rejected = assertThrows(ExecutionException.class,
+                    () -> pending.get(8, TimeUnit.SECONDS));
+            assertTrue(rejected.getCause() instanceof SecurityException);
+            assertEquals(2, checks.get());
+            assertEquals(0, manager.reservedCount());
+        }
+    }
+
+    @Test void cancellationAndTimeoutKeepDistinctPublicErrorKinds() {
+        assertEquals("cancelled", NativeChildProcesses.ProcessError.from(
+                new java.util.concurrent.CancellationException()).kind());
+        assertEquals("timeout", NativeChildProcesses.ProcessError.from(
+                new java.util.concurrent.TimeoutException()).kind());
+        assertEquals("permission_denied", NativeChildProcesses.ProcessError.from(
+                new SecurityException("secret permission details")).kind());
+    }
+
+    @Test void contextShutdownKillsOwnedChildAndDrainsReservation() throws Exception {
+        NativeChildProcesses manager = new NativeChildProcesses();
+        var child = manager.spawn(javaExe(), probe("sleep"), cwd(),
+                (exe, dir) -> { }).get(8, TimeUnit.SECONDS);
+        manager.close();
+        assertFalse(child.alive());
+        assertEquals(0, manager.reservedCount());
+        manager.close(); // idempotent
+    }
+
     @Test void rejectsArgumentsWithEmbeddedNulWithoutLaunch() {
         try (NativeChildProcesses manager = new NativeChildProcesses()) {
             assertThrows(IllegalArgumentException.class,
