@@ -92,6 +92,47 @@ final class StdPathSyncTelemetryGuestTest {
     }
 
     @Test
+    void all134SharedPolicyVectorsExecuteAndMutationChangesGuestExitStatus() throws Exception {
+        // A native linked Atto execution witness, NOT a source-only model:
+        // the same guest must return 0 for all 134 policy conditions, while
+        // an inverted real import call must return nonzero from main().
+        Path fixture = Path.of("tests", "fixtures", "atto_std_pure_policy_guest_v1.atto");
+        String originalSource = Files.readString(fixture, StandardCharsets.UTF_8);
+        assertEquals(134, originalSource.split("then return ", -1).length - 1,
+                "the pinned fixture must contain exactly 134 failure exits");
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+        var positive = LinkedProgramRunner.runWithExitStatus(fixture,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(), stdout, stderr);
+        for (String name : Set.of("path", "sync", "telemetry")) {
+            assertTrue(positive.build().units().containsKey("@std/" + name + ".atto"),
+                    "expected compiler-owned " + name + " unit in linked guest");
+        }
+        assertEquals(0, positive.exitStatus(),
+                () -> "shared policy parity failed; stderr=" +
+                        stderr.toString(StandardCharsets.UTF_8));
+        assertEquals("", stdout.toString(StandardCharsets.UTF_8).trim());
+        assertEquals("", stderr.toString(StandardCharsets.UTF_8).trim());
+
+        String correct = "if !path.is_separator(47, false) then return 1; fi";
+        String inverted = "if path.is_separator(47, false) then return 1; fi";
+        assertTrue(originalSource.contains(correct), "missing first policy witness");
+        Path negative = Files.createTempFile("atto-std-134-executed-negative-", ".atto");
+        try {
+            Files.writeString(negative, originalSource.replace(correct, inverted),
+                    StandardCharsets.UTF_8);
+            var changed = LinkedProgramRunner.runWithExitStatus(negative,
+                    IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            assertTrue(changed.build().units().containsKey("@std/path.atto"));
+            assertEquals(1, changed.exitStatus(),
+                    "mutated import must execute the opposite policy arm in the real guest");
+        } finally {
+            Files.deleteIfExists(negative);
+        }
+    }
+
+    @Test
     void applicationFilesCannotShadowTrustedStdModules() throws Exception {
         Path root = Files.createTempDirectory("atto-stdlib-shadow-");
         try {
