@@ -1,0 +1,7 @@
+# Source-owned AttoLang Java/GraalVM test-harness integration.
+# Used with the Rust atto-test.cli PR #11; this file does not ship a compiler.
+# The Maven process must really compile and execute this canonical .atto guest.
+# No shell invocation is performed by the Rust CLI.
+[native]
+files = ["examples/native-testing-regressions-40.atto"]
+command = ["mvn", "-q", "-B", "-ntp", "-DskipTests", "compile", "exec:java", "-Dexec.args={source}"]
