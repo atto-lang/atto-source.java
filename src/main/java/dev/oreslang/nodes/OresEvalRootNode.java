@@ -249,6 +249,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> hostFunctionImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
+        private boolean standardCryptoImported;
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
         private final Map<String, HostClassFacade> hostSymbols = new HashMap<>();
@@ -355,6 +356,7 @@ public final class OresEvalRootNode extends RootNode {
                     // Dedicated compiler-managed standard namespace. It is
                     // resolved by CryptoAeadFacade, never via host lookup or
                     // a user-supplied code-unit/file path.
+                    standardCryptoImported = true;
                     continue;
                 }
                 if (ImportRules.isJavaPath(imported.path())) {
@@ -9096,7 +9098,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
-                if (name.name().equals("crypto")) return new CryptoAeadFacade(context);
+                if (name.name().equals("crypto") && standardCryptoImported)
+                    return new CryptoAeadFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
