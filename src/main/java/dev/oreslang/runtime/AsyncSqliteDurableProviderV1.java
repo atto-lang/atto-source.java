@@ -129,7 +129,7 @@ public final class AsyncSqliteDurableProviderV1 {
             requireHostIoWorker();
             if (store != null) store.close();
             closedFuture.complete(null);
-        } catch (SQLException closeFailure) {
+        } catch (SQLException | RuntimeException closeFailure) {
             closedFuture.completeExceptionally(closeFailure);
         } finally {
             io.shutdown();
