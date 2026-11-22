@@ -1,0 +1,3 @@
+// Logical Layout must not masquerade as physical allocator authority.
+import class Allocator from "atto.alloc/allocator";
+pub fnc main(): void { return; }

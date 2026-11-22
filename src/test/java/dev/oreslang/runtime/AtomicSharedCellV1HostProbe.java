@@ -60,6 +60,7 @@ public final class AtomicSharedCellV1HostProbe {
                 x -> drops.incrementAndGet());
             int n = 8;
             CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch firstUpgrade = new CountDownLatch(1);
             java.util.concurrent.atomic.AtomicReference<Throwable> failure =
                     new java.util.concurrent.atomic.AtomicReference<>();
             Thread[] threads = new Thread[n];
@@ -70,7 +71,10 @@ public final class AtomicSharedCellV1HostProbe {
                         start.await();
                         for (int j = 0; j < 1000; j++) {
                             var promoted = weak.upgrade(7, 20);
-                            if (promoted != null) promoted.close();
+                            if (promoted != null) {
+                                firstUpgrade.countDown();
+                                promoted.close();
+                            }
                         }
                         weak.close();
                     } catch (Throwable ex) { failure.compareAndSet(null, ex); }
@@ -78,6 +82,9 @@ public final class AtomicSharedCellV1HostProbe {
                 threads[i].start();
             }
             start.countDown();
+            // Prove at least one genuine upgrade before final strong release.
+            // Otherwise scheduling could turn every run into a trivial failure test.
+            check(firstUpgrade.await(5, java.util.concurrent.TimeUnit.SECONDS));
             root.close();
             for (Thread thread : threads) thread.join();
             if (failure.get() != null) {

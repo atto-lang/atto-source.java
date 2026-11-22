@@ -1,0 +1,3 @@
+// Generic keys require compiler-checked coherent Hash and Eq.
+import class HashSet from "atto.alloc/set";
+pub fnc main(): void { return; }

@@ -86,4 +86,17 @@ final class AttoAllocGuestTest {
                 () -> LinkedProgramRunner.validate(bad, Map.of()),
                 "only real declarations may be imported from closed alloc units");
     }
+    @Test
+    void unsafeNominalAllocCapabilitiesMustNotBeForgedByImport() throws Exception {
+        for (String name : new String[]{
+                "arc-shared-owner-negative.atto",
+                "set-generic-hash-negative.atto",
+                "allocator-physical-handle-negative.atto"}) {
+            Path fixture = Path.of("tests", "fixtures", "alloc-java-guest", name);
+            assertTrue(Files.isRegularFile(fixture), "missing negative .atto: " + name);
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(fixture, Map.of()), name);
+        }
+    }
+
 }

@@ -33,3 +33,19 @@ and linked runtime outcomes **NOT_EXECUTED** until the workflow reports
 actual material job-step completion and the exact PR-head SHA.
 No AOT, multi-threaded Arc atomicity, native allocator or other-backend
 parity is claimed. Keep the PR Draft pending these gates.
+
+## Atomic host prototype and fail-closed type boundary
+
+A same-branch host prototype `AtomicSharedCellV1` now models an opaque,
+package-private strong/weak control block with CAS increments, domain and
+generation checks, and last-strong destructor invocation. It is **not**
+guest-accessible `Arc<T>`: freezing, compiler-inserted drop glue, isolate
+identity, actor delivery, and authentically typed allocation receipts are
+still missing. Its host acquisitions preallocate unpublished handles before
+reference increments so OOME cannot strand a count, and its stress probe
+surfaces worker failures and requires a successful pre-release upgrade.
+
+Negative guest fixtures explicitly reject fabricated `Arc<T>`,
+`HashSet<T>` and physical `Allocator` imports until those APIs have
+compiler-verified semantics. Keep these negatives in the linked guest gate;
+do not turn them into placeholder constructors.
