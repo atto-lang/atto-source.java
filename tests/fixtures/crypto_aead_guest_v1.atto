@@ -1,0 +1,19 @@
+// Proposed compiler guest fixture for Java's crypto AEAD intrinsic.
+// Hash/HMAC integration and actual std.crypto path registration remain separate.
+pub routine main(): void {
+  val key = crypto.aead_new_key(1);
+  val plaintext = [65, 66, 67];
+  val aad = [1];
+  val sealed = crypto.aead_seal(key, aad, plaintext);
+  val envelope = sealed.unwrap();
+  val recovered = crypto.aead_open(key, aad, envelope);
+  if recovered.is_err() then
+    rt fail("AEAD authenticated round-trip unexpectedly failed");
+  fi
+  val invalid = crypto.aead_open(key, [2], envelope);
+  if invalid.is_ok() then
+    rt fail("AEAD incorrectly accepted wrong additional data");
+  fi
+  crypto.aead_close(key);
+  return;
+}
