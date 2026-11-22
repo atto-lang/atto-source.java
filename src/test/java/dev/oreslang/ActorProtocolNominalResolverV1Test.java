@@ -105,6 +105,34 @@ final class ActorProtocolNominalResolverV1Test {
                 "E_PROTOCOL_CYCLE");
     }
 
+    @Test void repeatedDiamondInheritanceUsesOneConsistentMode() {
+        StringBuilder graph = new StringBuilder();
+        graph.append("define interface E0 extends StreamRequest<Event> as end\n");
+        graph.append("define interface E1 extends E0 as end\n");
+        for (int i = 2; i <= 12; i++)
+            graph.append("define interface E").append(i)
+                    .append(" extends E").append(i - 1)
+                    .append(", E").append(i - 2).append(" as end\n");
+        graph.append("define interface EventContract extends E12 as end");
+        String source = SOURCE.replace(
+                "define interface EventContract extends StreamRequest<Event> as end",
+                graph.toString());
+        assertEquals(ActorProtocolTypestateV1.Mode.STREAM,
+                resolve(source).messages().get("Subscribe").mode());
+    }
+
+    @Test void deeplyNestedInheritancesFailAtTheDeclaredBudget() {
+        StringBuilder graph = new StringBuilder();
+        graph.append("define interface E0 extends StreamRequest<Event> as end\n");
+        for (int i = 1; i <= 19; i++)
+            graph.append("define interface E").append(i)
+                    .append(" extends E").append(i - 1).append(" as end\n");
+        graph.append("define interface EventContract extends E19 as end");
+        denied(SOURCE.replace(
+                "define interface EventContract extends StreamRequest<Event> as end",
+                graph.toString()), "E_PROTOCOL_LIMIT");
+    }
+
     @Test void nestedOrTrailingProtocolCannotBeErasedFromSource() {
         denied("define class Prior as end\n" + SOURCE, "E_PROTOCOL_SCOPE");
         denied(SOURCE + "\ndefine protocol Late as initial Start "
