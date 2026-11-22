@@ -181,3 +181,18 @@ The compiler-linked guest candidate has **130** boolean assertions
 updated to require `130` printed true values. These tests are source
 staged, **NOT_EXECUTED** pending exact-head stepful CI. A queued or zero-step
 Actions run cannot be treated as passing.
+
+## Bounded-snapshot preflight (HTTP source audit)
+
+The native `.atto` method-token, header-name and header-value validators
+now enforce inexpensive String-length ceilings before allocating codepoint
+snapshots. Request targets, request lines, status lines and Content-Length
+strings receive the same preflight. Limits: methods 64 ASCII chars, header
+names 1024 ASCII chars, header values 65536 ASCII/HTAB chars, origin target
+8192 chars, status line 1024 chars, and Content-Length 20 digits. These are
+intentionally stricter application-layer limits than general RFC grammar.
+The HTTP transport must **also** check incoming raw byte quotas before
+decoding and must not rely solely on these pure string predicates.
+
+Added six boundary cases, bringing staged guest fixture to **136** cases.
+The fixture is NOT_EXECUTED until the actual linked guest runs stepfully.
