@@ -31,6 +31,27 @@ final class NativeAttoStdNamespaceImportTest {
         ImportRules.validate(shorthand);
     }
 
+
+    @Test
+    void selectiveModuleImportsRemainSeparateFromNamespaceImports() {
+        Ast.ImportDecl selected = Parser.parse(
+                "import module http, http3 from \"std.http\";\n" + BODY)
+                .imports().getFirst();
+        assertEquals(Ast.ImportKind.MODULE, selected.kind());
+        assertFalse(selected.wildcard());
+        assertEquals(java.util.List.of("http", "http3"), selected.names());
+        assertEquals(java.util.List.of("http", "http3"), ImportRules.exposedBindings(selected));
+        assertEquals("std.http", selected.path());
+        ImportRules.validate(selected);
+
+        Ast.ImportDecl all = Parser.parse(
+                "import * as web from \"std.http\";\n" + BODY)
+                .imports().getFirst();
+        assertTrue(all.wildcard());
+        assertEquals(Ast.ImportKind.ALL, all.kind());
+        assertEquals(java.util.List.of("web"), ImportRules.exposedBindings(all));
+    }
+
     @Test
     void namespaceHeaderAndAliasHaveDistinctStaticIdentities() {
         Ast.Program source = Parser.parse(
