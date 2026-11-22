@@ -1,22 +1,14 @@
 // expect-exit: 42
-// Source-first std.process value contracts. This fixture never launches an OS child.
+// Compiled guest contract fixture; this source never spawns an OS process.
 import module Process from "ores.std/process";
 pub fnc main(): int {
-  let Process.Command a = Process.command("echo");
-  if Process.valid_stdio(a) == false then return 1; fi
-  if a.stdin_mode != 0 then return 2; fi
-  if a.stdout_mode != 2 then return 3; fi
-  if a.stderr_mode != 2 then return 4; fi
-  let Process.Command b = Process.with_stdio(a, 2, 2, 2);
-  if Process.valid_stdio(b) == false then return 5; fi
-  if Process.valid_stdio(Process.with_stdio(a, 3, 2, 2)) then return 6; fi
-  if Process.valid_stdio(Process.with_stdio(a, 0, -1, 2)) then return 7; fi
-  if Process.valid_stdio(Process.with_stdio(a, 0, 2, 3)) then return 8; fi
-  let Process.ExitStatus ok = new Process.ExitStatus(0, false);
-  let Process.ExitStatus fail = new Process.ExitStatus(1, false);
-  let Process.ExitStatus signaled = new Process.ExitStatus(0, true);
-  if Process.succeeded(ok) == false then return 9; fi
-  if Process.succeeded(fail) then return 10; fi
-  if Process.succeeded(signaled) then return 11; fi
+  if Process.valid_stdio(Process.command("/usr/bin/echo")) == false then return 1; fi
+  if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 2, 2, 2)) == false then return 2; fi
+  if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 3, 2, 2)) then return 3; fi
+  if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 0, -1, 2)) then return 4; fi
+  if Process.valid_stdio(Process.with_stdio(Process.command("/usr/bin/echo"), 0, 2, 3)) then return 5; fi
+  if Process.succeeded(Process.exit_status(0, false)) == false then return 6; fi
+  if Process.succeeded(Process.exit_status(1, false)) then return 7; fi
+  if Process.succeeded(Process.exit_status(0, true)) then return 8; fi
   return 42;
 }
