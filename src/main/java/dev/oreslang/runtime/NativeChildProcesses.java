@@ -11,12 +11,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -157,10 +157,10 @@ public final class NativeChildProcesses implements AutoCloseable {
     private final Object guard = new Object();
     private final Set<Child> live = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final AtomicInteger reserved = new AtomicInteger();
-    private final ThreadPoolExecutor launches = new ThreadPoolExecutor(
-            4, 4, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(MAX_CHILDREN),
-            Thread.ofVirtual().name("atto-process-launch-", 0).factory(),
-            new ThreadPoolExecutor.AbortPolicy());
+    // Admission is explicitly bounded to MAX_CHILDREN before task scheduling.
+    // A virtual-thread-per-task executor avoids abandoned queued launch jobs
+    // and unreleased reservations during shutdownNow().
+    private final ExecutorService launches = Executors.newVirtualThreadPerTaskExecutor();
     private volatile boolean closed;
 
     public int reservedCount() { return reserved.get(); }
