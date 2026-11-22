@@ -29,3 +29,15 @@ This integration branch starts from the current **Atto Java main**, not from the
 4. Source-level tests and reference goldens do not satisfy guest AOT or parity. Require a stepful JDK 25 Maven/JUnit run on exact head/tree and real full guest Native Image execution (no runtime compilation), exact binary hash and actual negative cases.
 
 **Merge hold:** pending stepful exact-current-head CI, source security gate, all Ready-cycle governance, stale overlapping PR reconciliation and real compiled-guest evidence. No automatic merge or release.
+
+## IEEE ordered comparison hardening (2026-11-21)
+
+The current-main evaluator previously applied Java `Double.compare` to mixed or binary-float ordering, making NaN spuriously ordered, treating `-0.0` as less than `+0.0`, and potentially converting 64-bit integers beyond 2^53 to inaccurate doubles.
+
+- New `dev.oreslang.types.NumericValueOrdering` computes exact order for already-admitted `Byte/Short/Integer/Long`, `Float/Double`, `BigInteger` and `BigDecimal` carriers; either-NaN comparison is unordered (represented by `null`), and **all** guest `< <= > >=` predicates return false for unordered operands. Signed zeros have equal ordering.
+- Nonfinite binary values are distinguished from finite big integers; mixed finite comparisons use exact decimal reconstruction of the binary float's represented value, rather than conversion of the integer to binary64 or `BigDecimal.valueOf(double)`'s shortest display string. Unknown `Number` carriers fail closed.
+- Candidate host JUnit: `NumericValueOrderingTest`. Candidate actual guest JUnit: `NumericGuestOrderingV1Test`, including NaN, -0, infinity and the 2^53 boundary. The conformance repo's numeric guest manifest pins three companion positive `.atto` fixtures; this is source identity, not runtime evidence.
+- Independently authored standalone Java 21 version of the ordering helper compiled and passed **13 host-only assertions** in the local environment. This is **not** a build/test of the committed Java/Graal compiler, Maven suite, exact source blob or native image.
+- Older Java [#742](https://github.com/atto-lang/atto-source.java/pull/742) includes overlapping IEEE behavior but carries older evaluator/type-checker changes. Reconcile behavior by independent review; never merge it wholesale over the current-main Result/trap implementation.
+
+**Numerical precision remains deliberately incomplete:** the helper does not establish guest `bigint`, `decimal`, `f32` or sized/unsigned primitive runtime types. Unsupported primitive admission and full-AOT backend evidence are separate unresolved gates.
