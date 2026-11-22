@@ -23,8 +23,11 @@ final class CoreTypesGuestTest {
         String source = Files.readString(module);
         assertTrue(source.contains("use namespace types;"));
         assertFalse(source.contains("define pub module types as"));
-        assertEquals("types", Parser.parseStrictAtto(source).namespace());
-        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+        var parsed = Parser.parseStrictAtto(source);
+        assertEquals("types", parsed.namespace());
+        assertTrue(parsed.imports().isEmpty(), "namespace header is not an implicit import");
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(parsed),
+                "strict Atto AST must type-check; permissive legacy parse is not proof");
     }
 
     @Test
