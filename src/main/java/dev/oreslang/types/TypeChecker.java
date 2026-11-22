@@ -3703,6 +3703,13 @@ public final class TypeChecker {
                 }
                 return local.type();
             }
+            if (name.name().equals("crypto")) {
+                if (!importedNames.contains("crypto")) {
+                    throw new IllegalArgumentException(
+                            "crypto namespace requires explicit import * as crypto from \"std.crypto\"");
+                }
+                return new Named("crypto", List.of());
+            }
             if (name.name().equals("stdio")
                     || name.name().equals("std")
                     || name.name().equals("process")
@@ -3712,8 +3719,7 @@ public final class TypeChecker {
                     || name.name().equals("network")
                     || name.name().equals("net")
                     || name.name().equals("http")
-                    || name.name().equals("env")
-                    || name.name().equals("crypto")) {
+                    || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
