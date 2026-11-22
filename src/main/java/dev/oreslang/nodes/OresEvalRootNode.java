@@ -10486,6 +10486,9 @@ public final class OresEvalRootNode extends RootNode {
                     case "aead_seal" -> (Invokable) crypto::seal;
                     case "aead_open" -> (Invokable) crypto::open;
                     case "aead_close" -> (Invokable) crypto::close;
+                    case "authentication_failed" -> CryptoError.AUTHENTICATION_FAILED;
+                    case "invalid_input" -> CryptoError.INVALID_INPUT;
+                    case "key_exhausted" -> CryptoError.KEY_EXHAUSTED;
                     default -> {
                         if (StandardCryptoNamespace.hasPolicyMember(name)) {
                             yield (Invokable) arguments -> crypto.sourcePolicy(name, arguments);
@@ -14299,6 +14302,18 @@ public final class OresEvalRootNode extends RootNode {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
         @Override public String toString(){return CycleSafeDisplay.render(this);}
     }
+    // Nonforgeable, finite guest-facing error identities; provider exception
+    // messages and key material never become an Err payload.
+    private enum CryptoError {
+        AUTHENTICATION_FAILED,
+        INVALID_INPUT,
+        KEY_EXHAUSTED;
+
+        @Override public String toString() {
+            return "crypto." + name().toLowerCase(java.util.Locale.ROOT);
+        }
+    }
+
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){
             return value == null ? List.of() : List.of(value);
@@ -14632,17 +14647,18 @@ public final class OresEvalRootNode extends RootNode {
             return context.newCryptoKey(integer(arguments.getFirst(), "AEAD algorithm"));
         }
 
-        // Returns Result<List<int>,String> containing [12-byte nonce | ciphertext | 16-byte tag].
+        // Returns Result<List<int>,CryptoError> containing [nonce | ciphertext | full tag].
         private Object seal(List<Object> arguments) {
             if (arguments.size() != 3) throw new IllegalArgumentException(
                     "crypto.aead_seal expects key, aad, plaintext");
             AeadPrimitives.Key key = ownedKey(arguments.get(0), "crypto.aead_seal");
-            byte[] aad = byteList(arguments.get(1), AeadPrimitives.MAX_AAD_BYTES, "AEAD AAD");
+            byte[] aad = null;
             byte[] plaintext = null;
             byte[] nonce = null;
             byte[] ciphertext = null;
             byte[] envelope = null;
             try {
+                aad = byteList(arguments.get(1), AeadPrimitives.MAX_AAD_BYTES, "AEAD AAD");
                 plaintext = byteList(arguments.get(2), GUEST_MAX_BYTES, "AEAD plaintext");
                 AeadPrimitives.Sealed sealed = key.seal(aad, plaintext);
                 nonce = sealed.nonce();
@@ -14651,8 +14667,12 @@ public final class OresEvalRootNode extends RootNode {
                 System.arraycopy(nonce, 0, envelope, 0, nonce.length);
                 System.arraycopy(ciphertext, 0, envelope, nonce.length, ciphertext.length);
                 return new ResultValue(true, guestBytes(envelope));
+            } catch (AeadPrimitives.NonceExhaustedException exhausted) {
+                return new ResultValue(false, CryptoError.KEY_EXHAUSTED);
+            } catch (IllegalArgumentException malformed) {
+                return new ResultValue(false, CryptoError.INVALID_INPUT);
             } finally {
-                java.util.Arrays.fill(aad, (byte) 0);
+                if (aad != null) java.util.Arrays.fill(aad, (byte) 0);
                 if (plaintext != null) java.util.Arrays.fill(plaintext, (byte) 0);
                 if (nonce != null) java.util.Arrays.fill(nonce, (byte) 0);
                 if (ciphertext != null) java.util.Arrays.fill(ciphertext, (byte) 0);
@@ -14660,7 +14680,7 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        // Returns Result<List<int>,String>; malformed data and tampered tags
+        // Returns Result<List<int>,CryptoError>; malformed data and tampered tags
         // are indistinguishable to the caller. No unauthenticated plaintext leaks.
         private Object open(List<Object> arguments) {
             if (arguments.size() != 3) throw new IllegalArgumentException(
@@ -14676,18 +14696,18 @@ public final class OresEvalRootNode extends RootNode {
                 envelope = byteList(arguments.get(2),
                         GUEST_MAX_BYTES + NONCE_BYTES + TAG_BYTES, "AEAD envelope");
                 if (envelope.length < NONCE_BYTES + TAG_BYTES) {
-                    return new ResultValue(false, "authentication failed");
+                    return new ResultValue(false, CryptoError.AUTHENTICATION_FAILED);
                 }
                 nonce = java.util.Arrays.copyOfRange(envelope, 0, NONCE_BYTES);
                 ciphertext = java.util.Arrays.copyOfRange(envelope, NONCE_BYTES, envelope.length);
                 try {
                     plaintext = key.open(nonce, aad, ciphertext);
                 } catch (AeadPrimitives.AuthenticationException badTag) {
-                    return new ResultValue(false, "authentication failed");
+                    return new ResultValue(false, CryptoError.AUTHENTICATION_FAILED);
                 }
                 return new ResultValue(true, guestBytes(plaintext));
             } catch (IllegalArgumentException malformed) {
-                return new ResultValue(false, "authentication failed");
+                return new ResultValue(false, CryptoError.AUTHENTICATION_FAILED);
             } finally {
                 if (aad != null) java.util.Arrays.fill(aad, (byte) 0);
                 if (envelope != null) java.util.Arrays.fill(envelope, (byte) 0);
