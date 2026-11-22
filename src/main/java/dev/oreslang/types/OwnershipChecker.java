@@ -3208,7 +3208,7 @@ public final class OwnershipChecker {
         Ast.TypeRef bytes = new Ast.TypeRef(
                 "List", List.of(Ast.TypeRef.simple("int")), false);
         Ast.TypeRef resultType = new Ast.TypeRef(
-                "Result", List.of(bytes, Ast.TypeRef.simple("String")), false);
+                "Result", List.of(bytes, Ast.TypeRef.simple("CryptoError")), false);
         int arity;
         Ast.TypeRef returnType;
         switch (member) {
