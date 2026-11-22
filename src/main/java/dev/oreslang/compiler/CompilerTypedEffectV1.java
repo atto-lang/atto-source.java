@@ -147,7 +147,7 @@ public final class CompilerTypedEffectV1 {
         Map<String, Internal> rows = new TreeMap<>();
         int edges = 0;
         for (Ast.Decl declaration : module.declarations()) {
-            if (!(declaration instanceof Ast.FunctionDecl fn))
+            if (!(declaration instanceof Ast.FunctionDecl))
                 deny("E_EFFECT_UNKNOWN", "actors/classes/imported declarations not covered");
             Ast.FunctionDecl fn = (Ast.FunctionDecl) declaration;
             if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
@@ -203,11 +203,13 @@ public final class CompilerTypedEffectV1 {
         List<Row> result = new ArrayList<>();
         for (String name : rows.keySet()) {
             Set<String> effects = closure.get(name);
-            // Unknown is not equivalent to an empty effect row, even under PURE.
-            if (effects.contains("unknown"))
-                deny("E_EFFECT_UNKNOWN", "constructor/cleanup effect not authenticated: " + name);
+            // A confirmed allocation is independently disqualifying for
+            // no-alloc even when the constructor's other effects are unknown.
             if (profile == Profile.NO_ALLOC && effects.contains("alloc"))
                 deny("E_HARD_RT_ALLOCATION", "transitive runtime allocation at " + name);
+            // Unknown is never equivalent to the empty effect set.
+            if (effects.contains("unknown"))
+                deny("E_EFFECT_UNKNOWN", "constructor/cleanup effect not authenticated: " + name);
             if ((profile == Profile.PURE || profile == Profile.DETERMINISTIC)
                     && effects.stream().anyMatch(x -> Set.of(
                         "io", "nondet", "ffi", "state.read", "state.write", "spawns",
