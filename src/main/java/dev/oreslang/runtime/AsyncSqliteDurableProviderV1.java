@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -136,6 +137,11 @@ public final class AsyncSqliteDurableProviderV1 {
     public CompletionStage<Boolean> enqueueFenced(
             DurableActorStore.Address address, long epoch, DurableActorStore.Inbound inbound) {
         return submit(s -> s.enqueueFenced(address, epoch, inbound));
+    }
+
+    public CompletionStage<Optional<DurableActorStore.Snapshot>> committedDelivery(
+            DurableActorStore.Address address, long epoch, DurableActorStore.Inbound original) {
+        return submit(s -> s.committedDelivery(address, epoch, original));
     }
 
     public CompletionStage<Long> commitTurn(DurableActorStore.Turn turn) {
