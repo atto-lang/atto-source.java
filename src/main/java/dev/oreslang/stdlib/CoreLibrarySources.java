@@ -52,6 +52,41 @@ public final class CoreLibrarySources {
 
     private CoreLibrarySources() { }
 
+    /**
+     * The graph linker must never treat reserved library names as ordinary
+     * supplied source paths, or accept a caller-provided resolver mapping to an
+     * unrelated source unit. Only identities explicitly registered by this
+     * compiler can be bound. Null denotes a non-reserved import.
+     *
+     * This checks *identity*, not byte provenance: the runtime loader must
+     * still supply the content from this registry, rather than an untrusted
+     * caller's compilation-unit map.
+     */
+    public static String requiredRegisteredBuiltinUnitId(String importPath) {
+        Objects.requireNonNull(importPath, "importPath");
+        if (isStdImport(importPath)) {
+            String relative = canonicalStdRelativePath(importPath);
+            if (!STD_SOURCES.contains(relative)) {
+                throw new IllegalArgumentException(
+                        "unregistered compiler-owned std import: " + importPath);
+            }
+            return unitId(importPath);
+        }
+        if (isOresCoreImport(importPath)) {
+            String relative = canonicalCoreRelativePath(importPath);
+            if (!CORE_SOURCES.contains(relative)) {
+                throw new IllegalArgumentException(
+                        "unregistered compiler-owned core import: " + importPath);
+            }
+            return oresCoreUnitId(importPath);
+        }
+        if (isReservedOresLibraryImport(importPath)) {
+            throw new IllegalArgumentException(
+                    "unregistered reserved compiler-library identity: " + importPath);
+        }
+        return null;
+    }
+
     /** Canonical freestanding library namespace. */
     public static boolean isOresCoreImport(String importPath) {
         if (importPath == null) return false;
