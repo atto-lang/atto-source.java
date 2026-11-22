@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Experimental persistence port for future durable actors. No implementation is
@@ -131,6 +132,19 @@ public interface DurableActorStore {
      */
     default void requireActive(Address address, long epoch, long stateVersion) {
         throw new UnsupportedOperationException("durable activation read fence is unsupported");
+    }
+
+    /**
+     * Lookup the ORIGINAL committed receipt for the exact original inbound
+     * bytes, under the current epoch fence. Empty means no committed result
+     * exists yet (including an admitted-but-unprocessed delivery).
+     * A conflicting reused ID must throw rather than return another result.
+     * Providers without atomic receipt storage MUST fail closed.
+     */
+    default Optional<Snapshot> committedDelivery(
+            Address address, long epoch, Inbound original) {
+        throw new UnsupportedOperationException(
+                "transactional durable command receipts are unsupported");
     }
 
     /**
