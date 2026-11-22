@@ -29,9 +29,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Prove exact source head and tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "STD_PROCESS_EXACT_HEAD=$EXPECTED_HEAD"
+          echo "STD_PROCESS_EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -39,18 +52,37 @@ jobs:
       - name: Verify Java host process and namespace tests
         run: bash tests/host/run-std-process-smoke.sh
 
-  guest-jdk21:
-    name: guest-jdk21-process-bridge
+  guest-graalvm25:
+    name: guest-graalvm25-process-bridge
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-java@v4
+      - name: Prove exact source head and tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "STD_PROCESS_EXACT_HEAD=$EXPECTED_HEAD"
+          echo "STD_PROCESS_EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up the project's supported GraalVM toolchain
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
-          distribution: temurin
-          java-version: '21'
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
           cache: maven
+      - name: Print compiler toolchain
+        run: |
+          java --version
+          mvn --version
       - name: Compile and execute real child-process JVM and guest tests
         run: mvn --batch-mode -Dtest=NativeChildProcessesTest,AttoChildProcessGuestTest test
