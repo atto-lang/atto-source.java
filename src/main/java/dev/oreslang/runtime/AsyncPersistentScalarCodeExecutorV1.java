@@ -250,7 +250,9 @@ public final class AsyncPersistentScalarCodeExecutorV1
                 throw new IllegalStateException("persistent state version exhausted");
             if (id.isBlank() || id.length() > 256)
                 throw new IllegalArgumentException("invalid durable delivery ID");
-            long next = Math.addExact(before, amount);
+            // Admission precedes checked arithmetic. An overflowing command
+            // remains durably pending for explicit supervisor recovery, exactly
+            // as in the original synchronous scalar actor contract.
             var original = new DurableActorStore.Inbound(
                     id, plan.encode_increment_message(amount));
             CompletionStage<Outcome> committed = io.enqueueFenced(address, epoch, original)
@@ -265,6 +267,7 @@ public final class AsyncPersistentScalarCodeExecutorV1
                                                 plan.decode(receipt));
                                     });
                         }
+                        long next = Math.addExact(before, amount);
                         var snapshot = plan.snapshot(expectedVersion + 1, next);
                         var turn = new DurableActorStore.Turn(address, epoch, expectedVersion,
                                 id, snapshot, List.of());
