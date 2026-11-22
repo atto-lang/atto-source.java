@@ -240,7 +240,7 @@ public final class CoreTypeRegistry {
         // an allocator; compilation must separately admit the alloc profile.
         // This backend already exposes String as an immutable scalar/view.
         // Keep its canonical identity distinct from a future owned alloc::String.
-        add(out, "String", "core/primitive", Scope.CORE, Kind.TYPE, 0, 0,
+        addCanonical(out, "String", "core/primitive/string-view", Scope.CORE, Kind.TYPE, 0, 0,
                 Ownership.COPY, Allocation.NONE, DropPolicy.NONE,
                 SendPolicy.ALWAYS, LoweringStatus.JAVA_LEGACY_SCALAR);
         add(out, "List", "alloc/list", Scope.ALLOC, Kind.TYPE, 1, 1,
@@ -281,6 +281,17 @@ public final class CoreTypeRegistry {
                 SendPolicy.ALWAYS, javaStatus);
         if (out.putIfAbsent(name, scalar) != null) {
             throw new IllegalStateException("duplicate core scalar identity: " + name);
+        }
+    }
+
+    private static void addCanonical(Map<String, TypeInfo> out, String name, String canonical,
+                                      Scope scope, Kind kind, int minArity, int maxArity,
+                                      Ownership ownership, Allocation allocation, DropPolicy drop,
+                                      SendPolicy send, LoweringStatus javaStatus) {
+        TypeInfo info = new TypeInfo(name, canonical, scope, kind, minArity, maxArity,
+                ownership, allocation, drop, send, javaStatus);
+        if (out.putIfAbsent(name, info) != null) {
+            throw new IllegalStateException("duplicate core registry identity: " + name);
         }
     }
 
