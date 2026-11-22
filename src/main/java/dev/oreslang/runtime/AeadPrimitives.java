@@ -26,6 +26,8 @@ public final class AeadPrimitives {
     public static final int TAG_BYTES = 16;
     public static final int MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
     public static final int MAX_AAD_BYTES = 64 * 1024;
+    // Conservative per-key AEAD invocation cap. Rotate keys before exhaustion.
+    public static final long MAX_ENCRYPTIONS_PER_KEY = 1L << 32;
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -105,10 +107,11 @@ public final class AeadPrimitives {
         }
 
         private byte[] reserveNonce() {
-            if (exhausted) throw new IllegalStateException("AEAD nonce space exhausted");
-            long n = nextCounter;
-            if (n == -1L) exhausted = true;
-            else nextCounter++;
+            if (exhausted || nextCounter >= MAX_ENCRYPTIONS_PER_KEY) {
+                throw new IllegalStateException("AEAD per-key invocation limit exhausted");
+            }
+            long n = nextCounter++;
+            if (nextCounter >= MAX_ENCRYPTIONS_PER_KEY) exhausted = true;
             byte[] nonce = new byte[NONCE_BYTES];
             System.arraycopy(prefix, 0, nonce, 0, prefix.length);
             for (int i = 0; i < 8; i++) {
