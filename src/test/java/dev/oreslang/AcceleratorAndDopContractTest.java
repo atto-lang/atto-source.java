@@ -24,7 +24,8 @@ final class AcceleratorAndDopContractTest {
             }) {
                 RuntimeException failure = assertThrows(RuntimeException.class, () -> Parser.parse(declaration),
                         declaration);
-                assertTrue(failure.getMessage().contains("implicit CPU fallback is forbidden"),
+                assertTrue(failure.getMessage().contains("implicit CPU fallback is forbidden")
+                        || failure.getMessage().contains("no implicit CPU fallback"),
                         failure.getMessage());
             }
         }
@@ -98,5 +99,39 @@ final class AcceleratorAndDopContractTest {
                 () -> new DataOrientedLayout.Plan(Kind.AOSOA, 3, 2, 4, 16, 3));
         assertThrows(IllegalArgumentException.class,
                 () -> new DataOrientedLayout.Plan(Kind.SOA, 3, 2, 4, 16, 4));
+    }
+
+    @Test
+    void maximumNativeCompatibleTileAndTailKeepStableCheckedCoordinates() {
+        // Host-side reference for the .NET AOT profiled-shard proposal:
+        // profile hints choose a NEW layout, never reinterpret existing rows.
+        // Java/GraalVM may use a JIT, but physical geometry remains immutable.
+        var tiled = new DataOrientedLayout.Plan(Kind.AOSOA, 1025, 2, 8, 8, 1024);
+        assertEquals(32_768L, tiled.byteLength(),
+                "one extra row requires a second fully reserved tile");
+        assertEquals(8_184L, tiled.byteOffset(1023, 0));
+        assertEquals(16_384L, tiled.byteOffset(1024, 0));
+        assertEquals(24_576L, tiled.byteOffset(1024, 1));
+        assertNotEquals(tiled.byteOffset(1023, 0), tiled.byteOffset(1024, 0));
+        assertThrows(IndexOutOfBoundsException.class, () -> tiled.byteOffset(1025, 0));
+        assertThrows(IndexOutOfBoundsException.class, () -> tiled.byteOffset(-1, 0));
+        assertThrows(IndexOutOfBoundsException.class, () -> tiled.byteOffset(1024, 2));
+
+        var aos = new DataOrientedLayout.Plan(Kind.AOS, 1025, 2, 8, 8, 1);
+        var soa = new DataOrientedLayout.Plan(Kind.SOA, 1025, 2, 8, 8, 1);
+        assertEquals(16_400L, aos.byteLength());
+        assertEquals(16_400L, soa.byteLength());
+        assertEquals(16_384L, aos.byteOffset(1024, 0));
+        assertEquals(8_192L, soa.byteOffset(1024, 0));
+        assertEquals(16_392L, soa.byteOffset(1024, 1));
+        // A workload hint cannot change byteOffset for an existing plan.
+        assertEquals(16_384L, tiled.byteOffset(1024, 0));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new DataOrientedLayout.Plan(Kind.AOSOA, 1025, 2, 8, 8, 2048));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DataOrientedLayout.Plan(Kind.AOSOA, 1025, 2, 8, 8, 1023));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DataOrientedLayout.Plan(Kind.SOA, 1025, 2, 8, 8, 1024));
     }
 }

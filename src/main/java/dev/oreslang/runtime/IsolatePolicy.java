@@ -70,14 +70,32 @@ public record IsolatePolicy(
                 && !capabilities.contains(Capability.JAVA_INTEROP)) {
             throw new IllegalArgumentException("JAVA_SOURCE_INTEROP requires JAVA_INTEROP");
         }
-        if (adversarial && capabilities.contains(Capability.THREAD_CREATE)) {
-            throw new IllegalArgumentException("adversarial isolates cannot grant THREAD_CREATE");
-        }
-        if (adversarial && capabilities.contains(Capability.JAVA_INTEROP)) {
-            throw new IllegalArgumentException("adversarial isolates cannot grant JAVA_INTEROP");
-        }
-        if (adversarial && capabilities.contains(Capability.JAVA_SOURCE_INTEROP)) {
-            throw new IllegalArgumentException("adversarial isolates cannot grant JAVA_SOURCE_INTEROP");
+        // An untrusted/hostile VM isolate must never acquire an authority
+        // that can escape Oreslang's scoped permission checks. In particular,
+        // FFI and subprocess capabilities are not sandboxed by a guest-level
+        // allow-read/allow-net policy and cannot be delegated to this tier.
+        if (adversarial) {
+            for (Capability forbidden : new Capability[] {
+                    Capability.THREAD_CREATE,
+                    Capability.JAVA_INTEROP,
+                    Capability.JAVA_SOURCE_INTEROP,
+                    Capability.FFI,
+                    Capability.NATIVE,
+                    Capability.REFLECTION,
+                    Capability.POLYGLOT,
+                    Capability.CHILD_PROCESS,
+                    Capability.PROCESS_EXIT,
+                    Capability.GC_CONTROL,
+                    Capability.SHARED_MEMORY,
+                    Capability.ACTOR_SHARE_READONLY,
+                    Capability.GPU,
+                    Capability.HOT_CODE_LOAD
+            }) {
+                if (capabilities.contains(forbidden)) {
+                    throw new IllegalArgumentException(
+                            "adversarial isolates cannot grant " + forbidden);
+                }
+            }
         }
     }
 

@@ -1,0 +1,38 @@
+// Native Oreslang tensor-view *metadata*, not a buffer or access authority.
+// This module intentionally contains no Java/host interop, device driver calls,
+// implicit transfers or actor access. Runtime-owned buffers and loans must be
+// validated separately before dereferencing any described view.
+define module tensor as
+
+  pub define class TensorSpan as
+    pub val int backing_elements;
+    pub val int start_element;
+    pub val int element_count;
+    pub val int element_stride;
+  end
+
+  // All fields are signed i64. Check bounds before arithmetic. The
+  // division-based last-index bound cannot overflow even for i64::MAX.
+  // The empty view may start at backing_elements, never beyond it, and
+  // every span (even empty) requires a positive stride.
+  pub fnc valid_tensor_span(&TensorSpan span): bool {
+    if span.backing_elements < 0 || span.start_element < 0; do
+      return false;
+    fi
+    if span.element_count < 0 || span.element_stride <= 0; do
+      return false;
+    fi
+    if span.start_element > span.backing_elements; do
+      return false;
+    fi
+    if span.element_count == 0; do
+      return true;
+    fi
+    if span.start_element == span.backing_elements; do
+      return false;
+    fi
+    return (span.element_count - 1) <=
+      ((span.backing_elements - 1 - span.start_element) / span.element_stride);
+  }
+
+end

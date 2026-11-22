@@ -1,14 +1,16 @@
 //! A conservative source-level gate for packaged native Oreslang stdlib modules.
 //! This does NOT replace compiler admission, sandboxing, or runtime capability checks.
-use std::{env, fs, path::Path, process};
+use std::{collections::HashSet, env, fs, path::Path, process};
 
-const MAX_FILE: u64 = 2 * 1024 * 1024;
+// Match CoreLibrarySources.MAX_SOURCE_BYTES (1 MiB), including the boundary.
+const MAX_FILE: u64 = 1024 * 1024;
 const MAX_FILES: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Kind {
     Name,
     Literal,
+    TemplateLiteral,
     Symbol(char),
 }
 #[derive(Clone, Debug)]
@@ -90,7 +92,9 @@ fn lex(s: &str) -> Result<Vec<Token>, String> {
                     ));
                 }
                 out.push(Token {
-                    kind: Kind::Literal,
+                    // Template syntax may be valid in expressions but cannot
+                    // be a compiler-owned library import path.
+                    kind: if quote == 96 { Kind::TemplateLiteral } else { Kind::Literal },
                     text: value.into(),
                     line: initial,
                 });
@@ -121,7 +125,38 @@ fn lex(s: &str) -> Result<Vec<Token>, String> {
     Ok(out)
 }
 
+fn is_safe_library_import(name: &str, allowed_root: &str) -> bool {
+    let Some(relative) = name.strip_prefix(allowed_root) else {
+        return false;
+    };
+    // Java bounds the FULL path including std/ or ores.core/, not just the suffix.
+    if relative.is_empty() || name.len() > 4096 || relative.contains("..") {
+        return false;
+    }
+    let segments: Vec<_> = relative.split('/').collect();
+    if segments.len() > 32 {
+        return false;
+    }
+    segments.into_iter().all(|segment| {
+        let bytes = segment.as_bytes();
+        bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+            && bytes.iter().all(|b| {
+                b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-' || *b == b'.'
+            })
+            && !segment.ends_with(".atto.ores")
+            && !segment.ends_with(".ores.atto")
+    })
+}
+
 fn inspect(source: &str) -> Result<(), String> {
+    inspect_with_root(source, "std/")
+}
+
+fn inspect_core(source: &str) -> Result<(), String> {
+    inspect_with_root(source, "ores.core/")
+}
+
+fn inspect_with_root(source: &str, allowed_root: &str) -> Result<(), String> {
     let tokens = lex(source)?;
     for (i, t) in tokens.iter().enumerate() {
         if t.name("java")
@@ -144,22 +179,22 @@ fn inspect(source: &str) -> Result<(), String> {
                 return Err(format!("line {}: oversized import", t.line));
             }
             let statement = &rest[..size];
+            // A source import must have exactly one, unspliced literal path.
+            // The compiler still owns the final syntax and type decision.
+            let mut source_at = None;
             for (j, part) in statement.iter().enumerate() {
                 if part.name("from") {
-                    let src = &statement[j + 1..];
-                    if src.is_empty() {
-                        return Err(format!("line {}: missing import source", part.line));
-                    }
-                    let name = src.iter().map(|t| t.text.as_str()).collect::<String>();
-                    if !name.starts_with("std/")
-                        || name.contains("..")
-                        || name.starts_with('/')
-                        || name.contains(':')
-                        || name.contains('\\')
-                    {
-                        return Err(format!("line {}: unsafe stdlib import source", part.line));
+                    if source_at.replace(j).is_some() {
+                        return Err(format!("line {}: multiple import sources", t.line));
                     }
                 }
+            }
+            let at = source_at.ok_or_else(|| format!("line {}: import without from", t.line))?;
+            if at + 2 != statement.len() || statement[at + 1].kind != Kind::Literal {
+                return Err(format!("line {}: import must have one literal source", t.line));
+            }
+            if !is_safe_library_import(&statement[at + 1].text, allowed_root) {
+                return Err(format!("line {}: unsafe stdlib import source", t.line));
             }
         }
     }
@@ -167,6 +202,14 @@ fn inspect(source: &str) -> Result<(), String> {
 }
 
 fn scan(root: &Path) -> Result<usize, String> {
+    scan_with_root(root, false)
+}
+
+fn scan_core(root: &Path) -> Result<usize, String> {
+    scan_with_root(root, true)
+}
+
+fn scan_with_root(root: &Path, core: bool) -> Result<usize, String> {
     if fs::symlink_metadata(root)
         .map_err(|e| e.to_string())?
         .file_type()
@@ -176,6 +219,7 @@ fn scan(root: &Path) -> Result<usize, String> {
     }
     let mut pending = vec![(root.to_path_buf(), 0)];
     let mut count = 0;
+    let mut stems = HashSet::new();
     while let Some((dir, depth)) = pending.pop() {
         if depth > 16 {
             return Err("stdlib nesting exceeds limit".into());
@@ -193,32 +237,41 @@ fn scan(root: &Path) -> Result<usize, String> {
             if !meta.is_file() {
                 return Err(format!("{}: unsupported entry", path.display()));
             }
-            if path.extension().is_none_or(|e| e != "ores") {
+            if path.extension().is_none_or(|e| e != "ores" && e != "atto") {
                 continue;
+            }
+            if !stems.insert(path.with_extension("")) {
+                return Err(format!("{}: duplicate .atto/.ores module stem", path.display()));
             }
             count += 1;
             if count > MAX_FILES || meta.len() > MAX_FILE {
                 return Err(format!("{}: resource budget exceeded", path.display()));
             }
             let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            inspect(&source).map_err(|e| format!("{}: {e}", path.display()))?;
+            (if core { inspect_core(&source) } else { inspect(&source) })
+                .map_err(|e| format!("{}: {e}", path.display()))?;
         }
     }
     if count == 0 {
-        return Err("stdlib contains no .ores files".into());
+        return Err("stdlib contains no .atto or .ores files".into());
     }
     Ok(count)
 }
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.len() > 1 || args.first().is_some_and(|s| s.starts_with('-')) {
-        eprintln!("usage: oreslang-stdlib-boundary-audit [stdlib-directory]");
+    if args.len() > 2 || args.iter().any(|s| s.starts_with('-')) {
+        eprintln!("usage: oreslang-stdlib-boundary-audit [stdlib-directory] [core-directory]");
         process::exit(2);
     }
     let root = args.first().map(String::as_str).unwrap_or("stdlib");
-    match scan(Path::new(root)) {
-        Ok(n) => println!("verified {n} native Oreslang stdlib source file(s)"),
+    let result = scan(Path::new(root)).and_then(|std_count| {
+        if let Some(core_root) = args.get(1) {
+            scan_core(Path::new(core_root)).map(|core_count| std_count + core_count)
+        } else { Ok(std_count) }
+    });
+    match result {
+        Ok(n) => println!("verified {n} native AttoLang library source file(s)"),
         Err(e) => {
             eprintln!("stdlib boundary audit failed: {e}");
             process::exit(1);
@@ -229,6 +282,100 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scan_includes_atto_and_rejects_host_interop_and_legacy_collision() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = env::temp_dir().join(format!("atto-stdlib-audit-{}-{stamp}", process::id()));
+        fs::create_dir(&root).unwrap();
+        let source = "define module bounds as pub fnc valid(): bool { return true; } end";
+        fs::write(root.join("bounds.atto"), source).unwrap();
+        assert_eq!(scan(&root).unwrap(), 1);
+
+        fs::write(root.join("host.atto"), "do java { System.exit(0); }").unwrap();
+        assert!(scan(&root).is_err(), ".atto modules must not bypass host-interop gate");
+        fs::remove_file(root.join("host.atto")).unwrap();
+
+        fs::write(root.join("bounds.ores"), source).unwrap();
+        assert!(scan(&root).is_err(), "parallel .atto/.ores sources must be denied");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn freestanding_core_import_boundary() {
+        assert!(inspect_core("import module n from 'ores.core/numeric';").is_ok());
+        assert!(inspect_core("import module n from 'std/core';").is_err());
+        assert!(inspect_core("import module n from 'ores.std/core';").is_err());
+        assert!(inspect_core("do java { System.exit(0); }").is_err());
+        assert!(inspect_core("import class Runtime from 'java:java.lang.Runtime';").is_err());
+        assert!(inspect_core("// java {}\nfnc f(): void {}").is_ok());
+    }
+
+    #[test]
+    fn freestanding_core_scanner_refuses_source_alias_collision() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = env::temp_dir().join(format!("atto-core-audit-{}-{stamp}", process::id()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("numeric.atto"), "define module numeric as end").unwrap();
+        assert_eq!(scan_core(&root).unwrap(), 1);
+        fs::write(root.join("numeric.ores"), "define module numeric as end").unwrap();
+        assert!(scan_core(&root).is_err());
+        fs::remove_file(root.join("numeric.ores")).unwrap();
+        fs::write(root.join("numeric.atto"),
+            "import module A from 'std/core';\ndefine module numeric as end").unwrap();
+        assert!(scan_core(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn import_sources_must_be_single_unambiguous_literals() {
+        assert!(inspect("import module core from 'std/core';").is_ok());
+        assert!(inspect_core("import module n from 'ores.core/numeric.atto';").is_ok());
+        for invalid in [
+            "import module core;",
+            "import module core from;",
+            "import module core from 'std/core' + 'extra';",
+            "import module core from `std/core`;",
+            "import module core from 'std/core' from 'std/assert';",
+            "import module core from 'std//core';",
+            "import module core from 'std/%2e%2e/core';",
+            "import module core from 'std/core.atto.ores';",
+            "import module core from 'std/../core';",
+            "import module core from 'ores.core/numeric';",
+        ] {
+            assert!(inspect(invalid).is_err(), "{invalid}");
+        }
+        assert!(inspect_core("import module n from 'std/core';").is_err());
+        assert!(inspect_core("import module n from 'ores.core//numeric';").is_err());
+    }
+
+    #[test]
+    fn full_path_limit_matches_java_and_templates_cannot_name_libraries() {
+        let admitted = format!("std/{}", "a".repeat(4096 - "std/".len()));
+        let oversized = format!("std/{}", "a".repeat(4097 - "std/".len()));
+        assert_eq!(admitted.len(), 4096);
+        assert_eq!(oversized.len(), 4097);
+        assert!(is_safe_library_import(&admitted, "std/"));
+        assert!(!is_safe_library_import(&oversized, "std/"));
+        assert!(inspect("let x = `std/core`;").is_ok());
+        assert!(inspect("import module core from `std/core`;").is_err());
+    }
+
+    #[test]
+    fn packaged_source_budget_matches_java_classpath_admission() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = env::temp_dir().join(format!("atto-source-quota-{}-{stamp}", process::id()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("numeric.atto");
+        fs::write(&path, "a".repeat(MAX_FILE as usize)).unwrap();
+        assert_eq!(scan_core(&root).unwrap(), 1, "exactly 1 MiB is permitted");
+        fs::write(&path, "a".repeat(MAX_FILE as usize + 1)).unwrap();
+        assert!(scan_core(&root).is_err(), "oversized guest source must be rejected");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn normal_module() {
         assert!(

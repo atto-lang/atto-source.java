@@ -22,8 +22,60 @@ public final class OresCompiler {
         return ProtectedScalarMirV1.lower(Parser.parse(source));
     }
 
+    /**
+     * Opt-in source-AST -> actor-owned scalar state MIR. Only the verified
+     * single-field/single-critical-method subset may construct the executor.
+     * This is NOT general critical lowering, a runnable guest main(), or AOT.
+     */
+    public static dev.oreslang.runtime.SealedActorScalarMirV1.Plan
+            compileSealedActorScalarI64(String source) {
+        return dev.oreslang.runtime.SealedActorScalarMirV1.lower(source);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
+    }
+
+    /**
+     * Inspect member-selection syntax only after normal type/ownership admission.
+     * No physical layout or performance conclusion is implied.
+     */
+    public static TypedLayoutAccessEvidence.Report inspectLayoutAccesses(String source) {
+        return TypedLayoutAccessEvidence.inspectSource(source);
+    }
+
+    /**
+     * Check real AttoLang source (syntax, types and ownership) before
+     * inspecting call-site-specialized Option/Result callback effects.
+     *
+     * V1 is a fail-closed, partial analysis report, NOT source-language pure
+     * admission and NOT a generated guest/native executable.
+     */
+    public static FunctionalCallbackEffectAnalysisV1.Report analyzeFunctionalCallbacksV1(
+            String source) {
+        return FunctionalCallbackEffectAnalysisV1.analyzeChecked(
+                parseAndTypeCheck(source));
+    }
+
+    /**
+     * Explicit, opt-in Atto v1/v2 callable-body admission through the REAL
+     * parser, strict TypeChecker and OwnershipChecker. Never change the
+     * unversioned JVM/Truffle source default or accept an unverified import
+     * graph under a local-only language-version selection.
+     *
+     * This returns a checked AST for a trusted one-shot Truffle guest lease;
+     * it does not claim general actor/suspension or native-AOT parity.
+     */
+    public static Ast.Program parseAndTypeCheckVersionedAtto(String source, int version) {
+        Ast.Program program = Parser.parseVersionedAtto(source, version);
+        if (!program.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "ATTO_LANGUAGE_VERSION_IMPORT_GRAPH_UNVERIFIED: imported units must be checked under the same version");
+        }
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(program, true);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
     }
 
     /**
@@ -95,6 +147,63 @@ public final class OresCompiler {
         return checked.program();
     }
 
+    /**
+     * Minted only by OresCompiler after Oreslang type and ownership admission.
+     * Unlike AnalysisResult (a presentation value), this class has no public
+     * constructor and must not be decoded or synthesized from cache contents.
+     *
+     * Currently local-only: a cross-file admitted snapshot must instead be
+     * constructed by the future trusted SCC linker after linked resolution.
+     */
+    public static final class CheckedProgram {
+        private final Ast.Program program;
+        private final java.util.Map<String, TypeChecker.PublicNominalOrigin> nominalOrigins;
+        private final java.util.List<String> warnings;
+
+        private CheckedProgram(TypeChecker.CheckedPublicNominals verified) {
+            this.program = verified.program();
+            this.nominalOrigins = java.util.Map.copyOf(verified.resolvedNames());
+            this.warnings = java.util.List.copyOf(verified.warnings());
+        }
+
+        public Ast.Program program() { return program; }
+        public java.util.Map<String, TypeChecker.PublicNominalOrigin> nominalOrigins() {
+            return nominalOrigins;
+        }
+        public java.util.List<String> warnings() { return warnings; }
+    }
+
+    /** Local, no-import front-end admission with an unforgeable checked token. */
+    public static CheckedProgram admitLocal(Ast.Program program) {
+        return new CheckedProgram(TypeChecker.checkTypesAndSnapshotPublicNominals(program));
+    }
+
+    public static CheckedProgram parseAndAdmitLocal(String source) {
+        return admitLocal(Parser.parse(source));
+    }
+
+    /**
+     * Trusted source-text entry point for the restricted VerifiedScc v0
+     * semantic checker. Parsing is deliberately done inside the compiler,
+     * before immutable AST preflight, declaration staging and all-unit
+     * type/ownership verification. This does not perform runtime linking
+     * or grant permission to reuse native compiled objects.
+     */
+    public static VerifiedSccAdmission.VerifiedGraph parseAndVerifySccSources(
+            java.util.Map<String, String> sources,
+            java.util.Map<String, ExportInterfaceCodec.Header> environments,
+            java.util.Map<String, java.util.Map<String, String>> importOverrides) {
+        java.util.Objects.requireNonNull(sources, "source text map");
+        java.util.Map<String, String> frozen =
+                java.util.Map.copyOf(sources);
+        java.util.Map<String, Ast.Program> parsed = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, String> source : frozen.entrySet()) {
+            parsed.put(source.getKey(), Parser.parse(source.getValue()));
+        }
+        return VerifiedSccAdmission.verifyGraph(
+                parsed, environments, importOverrides);
+    }
+
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
     public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
         public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
@@ -106,8 +215,11 @@ public final class OresCompiler {
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
-        return new AnalysisResult(checked.program(), checked.warnings());
+        OwnershipChecker.OwnershipCheckResult owned =
+                OwnershipChecker.checkWithDiagnostics(checked.program(), checked.shortInferredAliases());
+        java.util.List<String> warnings = new java.util.ArrayList<>(checked.warnings());
+        warnings.addAll(owned.warnings());
+        return new AnalysisResult(checked.program(), warnings);
     }
 
     /**
@@ -122,6 +234,108 @@ public final class OresCompiler {
             throws java.io.IOException {
         Ast.Program checked = parseAndTypeCheck(source);
         return RealtimePrimitiveCompiler.compile(checked, entry, arity, budget, outputDirectory);
+    }
+
+    /**
+     * Opt-in compiler-only AOT metadata closure for explicit, public,
+     * non-actor, non-generic source classes and closed scalar public fields.
+     *
+     * Runs the regular parser, type checker and ownership checker first.
+     * Returns immutable descriptor bytes, NOT an AttoLang guest value,
+     * executable code, GraalVM image, or type_of<T>() intrinsic.
+     *
+     * Unsupported type shapes, private roots and missing symbols reject.
+     */
+    public static byte[] compileAotReflectionTableV1(
+            String source, String packageIdentityClaim,
+            java.util.List<String> explicitQualifiedRoots) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return AotReflectionSourceRootsV1.lowerChecked(
+                checked, packageIdentityClaim, explicitQualifiedRoots).bytes();
+    }
+
+    /**
+     * Immutable compiler-side result of an independently parsed, closed
+     * type_of<Nominal>() query. No guest runtime lookup or invocation is exposed.
+     */
+    public record StaticTypeOfQueryV1(
+            String qualifiedType, String typeIdHex, byte[] descriptorTable) {
+        public StaticTypeOfQueryV1 {
+            java.util.Objects.requireNonNull(qualifiedType, "qualified type");
+            java.util.Objects.requireNonNull(typeIdHex, "type ID");
+            descriptorTable = java.util.Objects.requireNonNull(
+                    descriptorTable, "descriptor table").clone();
+        }
+        @Override public byte[] descriptorTable() { return descriptorTable.clone(); }
+    }
+
+    /**
+     * Opt-in static type_of<Nominal>() compiler metadata bootstrap.
+     *
+     * This method checks real source declarations with the production Parser,
+     * TypeChecker and OwnershipChecker. The standalone query is parsed as a
+     * real generic CallExpr, then bound to a single public class from that
+     * checked program through AotReflectionSourceRootsV1. Its name cannot be
+     * shadowed by a user-declared same-name callable.
+     *
+     * The caller's package identity is a CLAIM, not authenticated provenance.
+     * A separate build admission gate must bind it to a reviewed manifest,
+     * exact source tree and compiler artifact before any parity promotion.
+     *
+     * THIS DOES NOT make type_of<T>() valid inside an AttoLang guest function,
+     * lower guest bytecode, or prove native execution. Those are separate gates.
+     */
+    public static StaticTypeOfQueryV1 compileStaticTypeOfQueryV1(
+            String sourceDeclarations, String packageIdentityClaim,
+            String staticQuery) {
+        Ast.Program checked = parseAndTypeCheck(sourceDeclarations);
+        for (Ast.ModuleDecl module : checked.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function
+                        && function.name().equals("type_of")) {
+                    throw new IllegalArgumentException(
+                            "static type_of intrinsic conflicts with a user-declared function");
+                }
+            }
+        }
+        Ast.TypeRef nominal = Parser.parseStaticTypeOfQueryV1(staticQuery);
+        String qualified = "__root__." + nominal.name();
+        byte[] encoded = AotReflectionSourceRootsV1.lowerChecked(
+                checked, packageIdentityClaim, java.util.List.of(qualified)).bytes();
+        AotReflectionTableV1Reader.Table table = AotReflectionTableV1Reader.decode(encoded);
+        if (table.types().size() != 1 ||
+                !table.types().getFirst().resolvedSymbol().equals(qualified)) {
+            throw new IllegalStateException("static type_of descriptor identity mismatch");
+        }
+        return new StaticTypeOfQueryV1(
+                qualified, table.types().getFirst().typeIdHex(), encoded);
+    }
+
+    /**
+     * Compiler-only typed MIR from the strict single-return descriptor subset.
+     * This does not admit type_of<T>() in ordinary guest compilation and does
+     * not emit JVM bytecode, native objects or runnable AttoLang binaries.
+     */
+    public static AotReflectionTypedMirV1.Plan lowerAotReflectionTypedMirV1(
+            String guestSource, String packageIdentityClaim) {
+        return AotReflectionTypedMirV1.lowerSource(guestSource, packageIdentityClaim);
+    }
+
+    /**
+     * Compile a bounded JSON/MessagePack scalar decoding schema from the same
+     * explicit, source-checked nominal descriptor used by static type_of.
+     *
+     * Decoding returns immutable scalar slots only: it does NOT construct
+     * guest objects, reflect on host classes, or prove Native Image execution.
+     * Field aliases/defaults/nested values are rejected until a versioned
+     * compiler-generated schema and constructor ABI exist.
+     */
+    public static AotScalarWireV1.Schema compileAotScalarWireSchemaV1(
+            String sourceDeclarations, String packageIdentityClaim,
+            String staticTypeQuery) {
+        return AotScalarWireV1.fromCheckedQuery(
+                compileStaticTypeOfQueryV1(
+                        sourceDeclarations, packageIdentityClaim, staticTypeQuery));
     }
 
     /**

@@ -124,6 +124,25 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void attoImportsArePreferredAndExplicitLegacyPathsDoNotAlias() throws Exception {
+        Path importer = temp.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main(): void { return; }");
+        Path atto = temp.resolve("replay_stream.atto");
+        Path legacy = temp.resolve("replay_stream.ores");
+        Files.writeString(atto, "pub fnc current(): int { return 2; }");
+        Files.writeString(legacy, "pub fnc legacy(): int { return 1; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(atto.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream").orElseThrow());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream.ores").orElseThrow());
+        Files.delete(atto);
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./replay_stream").orElseThrow());
+        assertTrue(config.resolveImport(importer, "./replay_stream.atto").isEmpty());
+    }
+
+    @Test
     void canonicalAttoImportsWinWithoutBreakingExplicitLegacyImports() throws Exception {
         Path src = temp.resolve("atto-src");
         Path pkg = src.resolve("pkg");

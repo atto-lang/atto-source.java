@@ -1,5 +1,21 @@
 # Expression `trap` and `unwrap()` — shared source contract
 
+> **Normative update (2026-11-17, owner decision): `trap` yields `Result`, not `Option`.**
+> - `trap e` with `e: T` has type `Result<T, Error>`. Success is `Ok(v)`. A caught ordinary
+>   failure is `Err(Error)`, a sanitized value: a bounded type name and message, with no host
+>   exception, cause chain or stack.
+> - A `Result` is never wrapped again. With `e: Result<T, E>`, `trap e` has type
+>   `Result<T, E | Error>`, or just `Result<T, E>` when `E` already accepts `Error`. The
+>   value's own `Err(E)` passes through, and a caught failure becomes `Err(Error)`.
+> - Calls to `trap fnc f(): T` have the same type. Async and suspending trap boundaries
+>   settle their Future with it: `Future<Result<T, Error>>`.
+> - `trap await f` spans the suspension. A completed or suspended Future that fails yields
+>   `Err(Error)` (the #2690 decision).
+> - `panic`, `raise`, cancellation, forced termination and VM-fatal failures still bypass
+>   `trap`. `unwrap()` on an `Err` is still a panic.
+>
+> Sections below that mention `Option`, `Some` or `None` describe the previous contract.
+
 **Status:** Java/GraalVM main represents expression-level `trap` in its
 parser, type checker and evaluator, alongside callable `trap`. LLVM still
 reserves and rejects the unsupported syntax. This reconciliation preserves
