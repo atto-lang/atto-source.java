@@ -94,12 +94,22 @@ public final class ActorProtocolNominalResolverV1 {
 
         Map<String, ActorProtocolTypestateV1.NominalMessage> validated =
                 new LinkedHashMap<>();
+        // One nominal message class has one payload schema even when multiple
+        // protocol states admit it. A state-dependent payload would require
+        // a different nominal message kind or an explicitly checked ADT.
+        Map<String, String> messagePayloads = new LinkedHashMap<>();
         for (ActorProtocolTypestateV1.Protocol protocol : catalog.protocols()) {
             if (nodes.containsKey(protocol.name()) || aliases.contains(protocol.name())
                     || MARKERS.contains(protocol.name()))
                 throw error("E_PROTOCOL_AMBIGUOUS_TYPE",
                         "protocol name collides with nominal type " + protocol.name());
             for (ActorProtocolTypestateV1.Transition transition : protocol.transitions()) {
+                if (messagePayloads.containsKey(transition.message())
+                        && !Objects.equals(messagePayloads.get(transition.message()),
+                                transition.parameterType()))
+                    throw error("E_PROTOCOL_MESSAGE_PAYLOAD",
+                            "same message has incompatible payload schemas in protocol states");
+                messagePayloads.put(transition.message(), transition.parameterType());
                 checkConcreteType(transition.parameterType(), nodes, aliases, true);
                 checkConcreteType(transition.responseType(), nodes, aliases, false);
                 Nominal node = nodes.get(transition.message());
