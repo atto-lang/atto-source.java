@@ -77,6 +77,30 @@ final class DbDurableWalFileTest {
                 () -> DbDurableWalFile.openHostOnly(root, "hardlink", 1));
     }
 
+    @Test void rejectsSymlinkedParentBeforeCreatingWal() throws Exception {
+        Path physical = Files.createDirectory(root.resolve("private"));
+        Path alias = root.resolve("alias");
+        Files.createSymbolicLink(alias, physical);
+        assertThrows(SecurityException.class,
+                () -> DbDurableWalFile.openHostOnly(alias, "wal.odb", 1));
+        assertFalse(Files.exists(physical.resolve("wal.odb")),
+                "untrusted directory alias must not create a WAL");
+    }
+
+    @Test void directoryForceIsAvailableOnThisTestHost() throws Exception {
+        // The production open path now makes this a mandatory operation;
+        // an unsupported target must reject open instead of claiming sync.
+        try (var dir = java.nio.channels.FileChannel.open(root,
+                java.util.Set.of(java.nio.file.StandardOpenOption.READ,
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS))) {
+            dir.force(true);
+        }
+        try (var wal = DbDurableWalFile.openHostOnly(root, "new.odb", 1)) {
+            assertEquals(0, wal.size());
+        }
+        assertTrue(Files.isRegularFile(root.resolve("new.odb")));
+    }
+
     @Test void cannotUseClosedHandle() throws Exception {
         var wal = DbDurableWalFile.openHostOnly(root, "wal.odb", 1);
         wal.close();
