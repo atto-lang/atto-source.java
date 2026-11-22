@@ -73,6 +73,15 @@ final class ActorProtocolTypestateV1Test {
                 .getMessage().contains("E_PROTOCOL_RESPONSE_MODE"));
     }
 
+    @Test void stateUnionRejectsMixedRequestPayloadTypes() {
+        String altered = SOURCE.replaceFirst("on Close -> Closed replies ClosedAck",
+                "on Close(Topic) -> Closed replies ClosedAck");
+        var catalog = ActorProtocolTypestateV1.parseSource(altered);
+        assertTrue(assertThrows(IllegalArgumentException.class, () ->
+                catalog.checkSend("ConnectionProtocol", List.of("Disconnected", "Connected"), "Close"))
+                .getMessage().contains("E_PROTOCOL_MESSAGE_PAYLOAD"));
+    }
+
     @Test void malformedProtocolsFailClosedWithSpecificErrors() {
         assertTrue(assertThrows(IllegalArgumentException.class, () ->
                 ActorProtocolTypestateV1.parseSource(SOURCE.replace("-> Connected replies QueryReply", "-> Missing replies QueryReply")))
