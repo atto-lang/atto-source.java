@@ -9,6 +9,8 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
+    // Bound hostile source while scanning, not only after constructing a name.
+    private static final int MAX_QUOTED_SYMBOL_UNITS = 1_024;
 
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
@@ -202,6 +204,9 @@ public final class Lexer {
                 };
             }
             value.append(ch);
+            if (value.length() > MAX_QUOTED_SYMBOL_UNITS) {
+                throw error("quoted Symbol name exceeds normalization budget");
+            }
         }
         if (isAtEnd()) throw error("unterminated quoted Symbol literal");
         advance();
