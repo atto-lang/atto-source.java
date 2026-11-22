@@ -1,0 +1,60 @@
+name: Durable typed scalar state and receipts exact-head JVM
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/DurableScalarSchemaV1.java'
+      - 'src/main/java/dev/oreslang/compiler/PersistentScalarMirV1.java'
+      - 'src/main/java/dev/oreslang/runtime/AsyncSqliteDurableProviderV1.java'
+      - 'src/main/java/dev/oreslang/runtime/SqliteDurableActorStore.java'
+      - 'src/main/java/dev/oreslang/runtime/DurableActorStore.java'
+      - 'src/main/java/dev/oreslang/runtime/PersistentScalarActorV1.java'
+      - 'src/test/java/dev/oreslang/runtime/DurableTypedScalarAotTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SqliteDurableActorStoreTest.java'
+      - 'src/test/java/dev/oreslang/runtime/PersistentScalarActorV1Test.java'
+      - '.github/workflows/durable-typed-scalar-exact-head.yml'
+  push:
+    branches: ['feature/persistent-actor-runtime-fence-20261110']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scalar-durable-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact submitted head
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up JDK 25
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Verify source commit identity
+        shell: bash
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          echo "DURABLE_TYPED_SCALAR_HEAD=$EXPECTED TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Execute real SQLite and compiler scalar JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=DurableTypedScalarAotTest,SqliteDurableActorStoreTest,PersistentScalarActorV1Test,PersistentScalarActorRuntimeBridgeTest -DfailIfNoTests=true test
+          for name in DurableTypedScalarAotTest SqliteDurableActorStoreTest PersistentScalarActorV1Test PersistentScalarActorRuntimeBridgeTest; do
+            test -s "target/surefire-reports/TEST-dev.oreslang.runtime.$name.xml"
+          done
+          echo "JVM_HOST_ONLY: not guest AOT, schema V2 migration or cross-backend parity"
+      - name: Retain exact-head JUnit XML
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: durable-typed-scalar-junit
+          path: target/surefire-reports/TEST-dev.oreslang.runtime.*.xml
+          retention-days: 7
+          if-no-files-found: warn
