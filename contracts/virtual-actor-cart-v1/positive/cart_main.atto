@@ -1,0 +1,16 @@
+// Compiler-backed guest semantics candidate for a Cart virtual actor.
+// This program is NOT a define virtual actor runtime yet.
+import fnc cart_step from "./cart_ops";
+
+pub fnc main(): void {
+  val int first = cart_step(0, 2);
+  val int second = cart_step(first, 5);
+  val int third = cart_step(second, -2);
+  stdio.stdout.write("cart|");
+  stdio.stdout.write(first);
+  stdio.stdout.write("|");
+  stdio.stdout.write(second);
+  stdio.stdout.write("|");
+  stdio.stdout.write(third);
+  return;
+}

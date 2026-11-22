@@ -9,13 +9,15 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
+    // Bound hostile source while scanning, not only after constructing a name.
+    private static final int MAX_QUOTED_SYMBOL_UNITS = 1_024;
 
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
-        KEYWORDS.put("import", IMPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
+        KEYWORDS.put("import", IMPORT); KEYWORDS.put("export", EXPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
         KEYWORDS.put("extends", EXTENDS); KEYWORDS.put("implements", IMPLEMENTS);
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
-        KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("guard", GUARD); KEYWORDS.put("do", DO);
+        KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("ifnot", IFNOT); KEYWORDS.put("unless", UNLESS); KEYWORDS.put("guard", GUARD); KEYWORDS.put("do", DO);
         KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("spawn", SPAWN); KEYWORDS.put("stop", STOP); KEYWORDS.put("done", DONE); KEYWORDS.put("gpu", GPU); KEYWORDS.put("quantum", QUANTUM);
         KEYWORDS.put("await", AWAIT); KEYWORDS.put("rt", RT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("suspends", SUSPENDS); KEYWORDS.put("generator", GENERATOR); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("trap", TRAP); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("isoactor", ISOACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
         KEYWORDS.put("while", WHILE); KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("loop", LOOP); KEYWORDS.put("block", BLOCK); KEYWORDS.put("break", BREAK); KEYWORDS.put("continue", CONTINUE); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("elif", ELSEIF); KEYWORDS.put("switch", SWITCH); KEYWORDS.put("over", OVER); KEYWORDS.put("match", MATCH); KEYWORDS.put("matches", MATCHES); KEYWORDS.put("is", IS); KEYWORDS.put("default", DEFAULT);
@@ -48,16 +50,60 @@ public final class Lexer {
     public Lexer(String source) { this.source = source == null ? "" : source; }
 
     public List<Token> scan() {
+        // A scan must not reuse tokens or cursors from an earlier pass.
+        // This also resets partially emitted tokens after a parser-facing error.
+        tokens.clear();
+        start = 0;
+        current = 0;
+        line = 1;
+        column = 1;
+        startColumn = 1;
         // Validate ignored comments and string contents as well as tokens.
         // Embedders can pass malformed UTF-16 without a UTF-8 file decoder.
+        // Track UTF-16 code-unit positions using the same CRLF semantics as
+        // scanToken(). This preflight must report a location even for bytes
+        // concealed in comments, strings or raw template contents.
+        int sourceLine = 1;
+        int sourceColumn = 1;
         for (int i = 0; i < source.length(); i++) {
             char c = source.charAt(i);
-            if (c == '\0') throw new IllegalArgumentException("source contains NUL byte");
+            if (c == '\0') {
+                throw sourceAdmissionError(sourceLine, sourceColumn, "source contains NUL byte");
+            }
+            // Reject controls in raw source (including comments, templates and
+            // string literals) before any tokenization or trivia elision. Do
+            // not include attacker-controlled text in diagnostics.
+            if (c == 0x061c || c == 0x200e || c == 0x200f ||
+                    (c >= 0x202a && c <= 0x202e) ||
+                    (c >= 0x2066 && c <= 0x2069)) {
+                throw sourceAdmissionError(sourceLine, sourceColumn,
+                        "source contains bidirectional Unicode control");
+            }
+            if (c == 0x0085 || c == 0x2028 || c == 0x2029) {
+                throw sourceAdmissionError(sourceLine, sourceColumn,
+                        "source contains Unicode line separator");
+            }
+            if (c == 0x001b || c == 0x007f) {
+                throw sourceAdmissionError(sourceLine, sourceColumn,
+                        "source contains terminal control");
+            }
             if (Character.isHighSurrogate(c)) {
-                if (++i >= source.length() || !Character.isLowSurrogate(source.charAt(i)))
-                    throw new IllegalArgumentException("source contains invalid UTF-16");
+                if (i + 1 >= source.length() || !Character.isLowSurrogate(source.charAt(i + 1))) {
+                    throw sourceAdmissionError(sourceLine, sourceColumn, "source contains invalid UTF-16");
+                }
+                i++; // A valid supplementary character occupies two UTF-16 columns.
+                sourceColumn += 2;
             } else if (Character.isLowSurrogate(c)) {
-                throw new IllegalArgumentException("source contains invalid UTF-16");
+                throw sourceAdmissionError(sourceLine, sourceColumn, "source contains invalid UTF-16");
+            } else if (c == '\r') {
+                if (i + 1 < source.length() && source.charAt(i + 1) == '\n') i++;
+                sourceLine++;
+                sourceColumn = 1;
+            } else if (c == '\n') {
+                sourceLine++;
+                sourceColumn = 1;
+            } else {
+                sourceColumn++;
             }
         }
         while (!isAtEnd()) {
@@ -80,13 +126,26 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
-            case '^' -> add(CARET); case '~' -> add(TILDE);
+            case '^' -> add(CARET); case '~' -> add(TILDE); case '•' -> add(BULLET);
             case '-' -> add(match('>') ? ARROW : MINUS);
-            case '!' -> add(match('=') ? BANG_EQUAL : BANG);
+            // AttoLang !eq is a single contiguous inequality token. Use the
+            // canonical NEQ token kind so precedence and typed backend lowering
+            // are identical to the word 'neq', without a runtime rewrite.
+            // A following identifier character prevents prefix tokenization.
+            case '!' -> {
+                if (match('=')) add(BANG_EQUAL); // .ores legacy != remains valid
+                else if (source.startsWith("eq", current)
+                        && (current + 2 == source.length()
+                            || !isIdentPart(source.charAt(current + 2)))) {
+                    advance();
+                    advance();
+                    add(NEQ);
+                } else add(BANG);
+            }
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
-            case '<' -> add(match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
+            case '<' -> add(match('|') ? PIPE_REVERSE : match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
             case '/' -> {
                 if (match('/')) while (peek() != '\n' && peek() != '\r' && !isAtEnd()) advance();
                 else if (match('*')) blockComment();
@@ -145,6 +204,9 @@ public final class Lexer {
                 };
             }
             value.append(ch);
+            if (value.length() > MAX_QUOTED_SYMBOL_UNITS) {
+                throw error("quoted Symbol name exceeds normalization budget");
+            }
         }
         if (isAtEnd()) throw error("unterminated quoted Symbol literal");
         advance();
@@ -292,7 +354,17 @@ public final class Lexer {
             tokens.add(new Token(SELECT, "select", line, keywordColumn));
             return;
         }
-        add(KEYWORDS.getOrDefault(text, IDENT));
+        Token.Type type = KEYWORDS.getOrDefault(text, IDENT);
+        // Bang-suffixed exceptional control is a single contiguous keyword.
+        // Preserve != and !eq, and do not consume an unrelated logical-not.
+        if ((type == TRAP || type == THROW || type == RAISE || type == PANIC)
+                && peek() == '!' && peekNext() != '='
+                && !(source.startsWith("!eq", current)
+                    && (current + 3 == source.length()
+                        || !isIdentPart(source.charAt(current + 3))))) {
+            advance();
+        }
+        add(type);
     }
 
     private boolean isAtEnd() { return current >= source.length(); }
@@ -308,6 +380,12 @@ public final class Lexer {
     private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
     private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
     private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
+    private static IllegalArgumentException sourceAdmissionError(
+            int line, int column, String message) {
+        return new IllegalArgumentException(
+                "Oreslang lexer error at " + line + ":" + column + ": " + message);
+    }
+
     private IllegalArgumentException error(String message) {
         return new IllegalArgumentException("Oreslang lexer error at " + line + ":" + startColumn + ": " + message);
     }

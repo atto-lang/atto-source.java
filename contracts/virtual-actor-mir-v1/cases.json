@@ -1,0 +1,48 @@
+{
+  "schema": "atto.virtual-actor-protected-mir.v1",
+  "stage": "static-checked-prelowering-only",
+  "runtime_executable": false,
+  "reference_type": "VirtualActorRef[Cart]",
+  "physical_binding": "not-implemented",
+  "acceptedShape": {
+    "state": "int quantity = 0",
+    "method": "add(int n) -> void",
+    "operation": "critical-write checked i64 add",
+    "guestSource": "contracts/virtual-actor-mir-v1/positive/cart_checked_contract.atto",
+    "git_blob": "5f2656e04d6b127d511992d1ddd87f93668ae8b6"
+  },
+  "negative": [
+    {
+      "source": "contracts/virtual-actor-mir-v1/negative/unfenced_cart.atto",
+      "git_blob": "5c573bb9fac32b6ee4642e0e5a1cb109d755c8af",
+      "expect": "VIRTUAL_ACTOR_MIR_UNSUPPORTED; VIRTUAL_ACTOR_MIR_V1_REJECTED"
+    },
+    {
+      "source": "contracts/virtual-actor-mir-v1/negative/escaped_state_cart.atto",
+      "git_blob": "777cb7d90bf53e1b313c077b7bfe7d9eb9493af9",
+      "expect": "VIRTUAL_ACTOR_MIR_UNSUPPORTED; VIRTUAL_ACTOR_MIR_V1_REJECTED"
+    },
+    {
+      "source": "contracts/virtual-actor-mir-v1/negative/suspending_cart.atto",
+      "git_blob": "6c9a60d5dff7987aed62ee830a633298adcfde55",
+      "expect": "VIRTUAL_ACTOR_MIR_UNSUPPORTED; VIRTUAL_ACTOR_MIR_V1_REJECTED"
+    }
+  ],
+  "runtimeRequired": [
+    "compiler_owned_actor_memory_region",
+    "lifetime_proven_critical_write_loan",
+    "no_guest_state_escape",
+    "typed_call_abi_and_mailbox",
+    "generation_fenced_lazy_activation",
+    "supervisor_control_and_terminal_receipt",
+    "restore_before_publish_and_storage_epoch_cas"
+  ],
+  "receipts": {
+    "java_jvm": "NOT_EXECUTED",
+    "native_image": "NOT_EXECUTED",
+    "llvm": "NOT_EXECUTED",
+    "dotnet": "NOT_EXECUTED",
+    "wasm": "NOT_EXECUTED",
+    "forge": "NOT_EXECUTED"
+  }
+}

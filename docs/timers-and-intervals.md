@@ -1,6 +1,8 @@
 # Oreslang timers, sleeps, intervals and deadlines — cross-backend contract
 
 Status: **proposed source API** with initial host-runtime primitives (2026-10-14).
+
+For owned actor timer heaps, CONTROL-lane delivery, observer timeout cancellation, and teardown fences, see [the timer ownership contract](actor-timer-ownership-and-timeout-contract.md). This describes a staged contract rather than confirmed guest bindings.
 These snippets are **target syntax**, not evidence that both compilers accept them.
 
 ## Public API (proposed)

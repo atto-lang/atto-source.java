@@ -36,6 +36,18 @@ final class ActorContinuationLedger {
     }
 
     synchronized Admission admit(Lane lane, Runnable callback) {
+        return admit(lane, callback, null);
+    }
+
+    /**
+     * Trusted-code image continuation receipt. The passed lease is transferred
+     * to this ledger only on successful admission. A rejected admission leaves
+     * its lease owned by the caller, which must close it in a finally block.
+     * Queued STOP/discard, normal return, and exceptional callback completion
+     * all release the same exact-image lease after physical callback exit.
+     */
+    synchronized Admission admit(Lane lane, Runnable callback,
+            AutoCloseable codeLease) {
         Objects.requireNonNull(lane, "lane");
         Objects.requireNonNull(callback, "callback");
         if (allSealed || (lane == Lane.ORDINARY && ordinarySealed)) {
@@ -45,10 +57,22 @@ final class ActorContinuationLedger {
             throw new IllegalStateException("actor continuation ledger at capacity");
         }
         long sequence = Math.addExact(lastSequence, 1L);
-        Admission receipt = new Admission(lane, generation, sequence, callback);
+        Admission receipt = new Admission(lane, generation, sequence, callback, codeLease);
         lastSequence = sequence;
         live.put(receipt, Boolean.TRUE);
         return receipt;
+    }
+
+    /** External host-resource release happens after dropping this ledger monitor. */
+    private static void releaseTerminal(AutoCloseable resource) {
+        if (resource == null) return;
+        try {
+            resource.close();
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalStateException("owned continuation resource release failed", failure);
+        }
     }
 
     /** STOP revokes only ordinary callbacks. Pre-admitted lexical cleanup survives. */
@@ -88,14 +112,18 @@ final class ActorContinuationLedger {
         // clear its closure at terminal transition to avoid pinning actor
         // state long after the callback's execution lifetime has ended.
         private Runnable callback;
+        // Exact physical code image pinned before publication. Never release
+        // while RUNNING even if a foreign cancellation closes this receipt.
+        private AutoCloseable codeLease;
         private State state = State.QUEUED;
 
         private Admission(Lane lane, long admittedGeneration, long sequence,
-                Runnable callback) {
+                Runnable callback, AutoCloseable codeLease) {
             this.lane = lane;
             this.admittedGeneration = admittedGeneration;
             this.sequence = sequence;
             this.callback = callback;
+            this.codeLease = codeLease;
         }
 
         long sequence() { return sequence; }
@@ -105,6 +133,7 @@ final class ActorContinuationLedger {
         @Override
         public void run() {
             final Runnable admittedCallback;
+            final AutoCloseable discardedCodeLease;
             synchronized (ActorContinuationLedger.this) {
                 if (state != State.QUEUED) {
                     throw new IllegalStateException("actor continuation receipt replay: " + sequence);
@@ -114,35 +143,68 @@ final class ActorContinuationLedger {
                     callback = null;
                     state = State.DISCARDED;
                     live.remove(this);
-                    return;
+                    discardedCodeLease = codeLease;
+                    codeLease = null;
+                    admittedCallback = null;
+                } else {
+                    admittedCallback = callback;
+                    // The executing stack is the sole callback owner from now on.
+                    // A foreign close() cannot retire this RUNNING receipt.
+                    callback = null;
+                    state = State.RUNNING;
+                    discardedCodeLease = null;
                 }
-                admittedCallback = callback;
-                // The executing stack is the sole callback owner from now on.
-                // A foreign close() cannot retire this RUNNING receipt.
-                callback = null;
-                state = State.RUNNING;
             }
+            // Never acquire the code-loader monitor while holding the actor
+            // ledger monitor. A STOP-vs-cleanup race must not deadlock.
+            if (admittedCallback == null) {
+                if (discardedCodeLease != null) releaseTerminal(discardedCodeLease);
+                return;
+            }
+            Throwable callbackFailure = null;
             try {
                 admittedCallback.run();
+            } catch (RuntimeException | Error failure) {
+                callbackFailure = failure;
+                throw failure;
             } finally {
+                final AutoCloseable completedCodeLease;
                 synchronized (ActorContinuationLedger.this) {
                     state = State.RETIRED;
                     live.remove(this);
+                    completedCodeLease = codeLease;
+                    codeLease = null;
+                }
+                // Preserve the exact guest callback failure as primary; a
+                // failed owned-resource drop must remain visible as suppressed
+                // evidence instead of replacing that failure on unwind.
+                try {
+                    releaseTerminal(completedCodeLease);
+                } catch (RuntimeException | Error releaseFailure) {
+                    if (callbackFailure == null) throw releaseFailure;
+                    if (callbackFailure != releaseFailure)
+                        callbackFailure.addSuppressed(releaseFailure);
                 }
             }
         }
 
         @Override
         public void close() {
+            final AutoCloseable discardedCodeLease;
             synchronized (ActorContinuationLedger.this) {
                 if (state == State.QUEUED) {
                     callback = null;
                     state = State.DISCARDED;
                     live.remove(this);
+                    discardedCodeLease = codeLease;
+                    codeLease = null;
+                } else {
+                    // A RUNNING receipt is physically in flight and may only
+                    // be retired by run()'s finally, never foreign cancellation.
+                    discardedCodeLease = null;
                 }
-                // A RUNNING receipt is physically in flight and may only be
-                // retired by run()'s finally, never by a foreign cancellation.
             }
+            if (discardedCodeLease != null) releaseTerminal(discardedCodeLease);
         }
     }
 }

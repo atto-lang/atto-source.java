@@ -32,6 +32,19 @@ final class CompilerCheckModeTest {
     }
 
     @Test
+    void attoSourceCompilesThroughTheLinkedCheckPath() throws Exception {
+        Path source = Files.createTempFile("atto-check-", ".atto");
+        Files.writeString(source, """
+                pub fnc main(): void {
+                    return;
+                }
+                """);
+        IncrementalCompiler.BuildResult result = LinkedProgramRunner.validate(source);
+        assertEquals(1, result.units().size());
+        assertTrue(result.units().containsKey(source.toAbsolutePath().normalize().toString().replace('\\', '/')));
+    }
+
+    @Test
     void conditionalDoDeprecationUsesEditorDiagnosticShape() {
         Path source = Path.of("demo.ores");
         var warnings = OresMain.formatSyntaxWarnings(source, """
