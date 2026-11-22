@@ -50,9 +50,13 @@ define module Process as
   // Child stdin is closed and stdout/stderr are bounded captured outputs.
   // Actor-owned launches, alternate stdio modes and process detachment remain
   // unsupported until their ownership and cleanup contracts are enforced.
-  pub async fnc spawn(
-      String executable, Array<String> arguments, String cwd): Result<ChildProcess, ProcessError> {
-    return await process.spawn(executable, arguments, cwd);
+  // Returns an awaitable Future directly, without making a second async
+  // task/ownership domain. ChildProcess is affine and cannot cross an
+  // independent async task boundary by implicit copying.
+  pub fnc spawn(
+      String executable, Array<String> arguments, String cwd):
+      Future<Result<ChildProcess, ProcessError>> {
+    return process.spawn(executable, arguments, cwd);
   }
 
   pub fnc exit_status(int code, bool signaled): ExitStatus {
