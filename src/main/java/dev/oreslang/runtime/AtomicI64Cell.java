@@ -10,7 +10,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * integer semantics, so overflow fails without publishing a wrapped value.
  * Instances may be shared only through a compiler-verified, authorized shared
  * allocation domain; Java references must not become guest actor-heap pointers.
- * All accesses use AtomicLong's volatile/CAS synchronization semantics.</p>
+ * Default accessors use AtomicLong's sequentially consistent
+ * volatile/CAS synchronization. Explicitly ordered load/store overloads
+ * use Java opaque/acquire/release access where appropriate; RMWs and strong
+ * compare-exchange conservatively strengthen requests to seq_cst.</p>
  */
 public final class AtomicI64Cell {
     private final AtomicLong value;
