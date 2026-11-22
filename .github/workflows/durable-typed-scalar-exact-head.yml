@@ -4,11 +4,14 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/compiler/DurableScalarSchemaV1.java'
       - 'src/main/java/dev/oreslang/compiler/PersistentScalarMirV1.java'
+      - 'src/main/java/dev/oreslang/runtime/AsyncPersistentScalarCodeExecutorV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/main/java/dev/oreslang/runtime/AsyncSqliteDurableProviderV1.java'
       - 'src/main/java/dev/oreslang/runtime/SqliteDurableActorStore.java'
       - 'src/main/java/dev/oreslang/runtime/DurableActorStore.java'
       - 'src/main/java/dev/oreslang/runtime/PersistentScalarActorV1.java'
       - 'src/test/java/dev/oreslang/runtime/DurableTypedScalarAotTest.java'
+      - 'src/test/java/dev/oreslang/runtime/AsyncPersistentScalarActorRuntimeTest.java'
       - 'src/test/java/dev/oreslang/runtime/SqliteDurableActorStoreTest.java'
       - 'src/test/java/dev/oreslang/runtime/PersistentScalarActorV1Test.java'
       - '.github/workflows/durable-typed-scalar-exact-head.yml'
@@ -45,8 +48,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=DurableTypedScalarAotTest,SqliteDurableActorStoreTest,PersistentScalarActorV1Test,PersistentScalarActorRuntimeBridgeTest -DfailIfNoTests=true test
-          for name in DurableTypedScalarAotTest SqliteDurableActorStoreTest PersistentScalarActorV1Test PersistentScalarActorRuntimeBridgeTest; do
+          mvn -B -ntp -Dtest=DurableTypedScalarAotTest,SqliteDurableActorStoreTest,PersistentScalarActorV1Test,PersistentScalarActorRuntimeBridgeTest,AsyncPersistentScalarActorRuntimeTest -DfailIfNoTests=true test
+          for name in DurableTypedScalarAotTest SqliteDurableActorStoreTest PersistentScalarActorV1Test PersistentScalarActorRuntimeBridgeTest AsyncPersistentScalarActorRuntimeTest; do
             test -s "target/surefire-reports/TEST-dev.oreslang.runtime.$name.xml"
           done
           echo "JVM_HOST_ONLY: not guest AOT, schema V2 migration or cross-backend parity"
