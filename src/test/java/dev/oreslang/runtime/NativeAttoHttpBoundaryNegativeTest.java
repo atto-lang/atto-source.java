@@ -13,24 +13,44 @@ import static org.junit.jupiter.api.Assertions.*;
  * is also required: rejecting all imports is never considered a green result.
  */
 final class NativeAttoHttpBoundaryNegativeTest {
-    private static void expectNoOutputAndNoLinkedGuest(String fixture) throws Exception {
+    private static String expectNoOutputAndNoLinkedGuest(String fixture) throws Exception {
         Path path = Path.of("src/test/resources/stdlib-parity/" + fixture);
         assertTrue(Files.isRegularFile(path), "test fixture must exist: " + path);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
-        assertThrows(Exception.class, () -> LinkedProgramRunner.run(
+        Exception failure = assertThrows(Exception.class, () -> LinkedProgramRunner.run(
                 path, IsolatePolicy.developer(), ExecutionProfile.serverJit(), out, err));
         assertEquals("", out.toString(StandardCharsets.UTF_8),
                 "no guest side effect may happen before rejecting an import");
+
+        // Distinguish a genuine visibility/import failure from an unrelated
+        // parser, compiler or runtime crash. Generic assertThrows would make
+        // a broken build produce a misleading green negative gate.
+        StringBuilder diagnostics = new StringBuilder();
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < 12; depth++) {
+            diagnostics.append(current.getMessage()).append(' ');
+            if (current.getCause() == current) break;
+            current = current.getCause();
+        }
+        return diagnostics.toString();
     }
 
     @Test
     void wildcardHttpNamespaceMustNotExportPrivateHelpers() throws Exception {
-        expectNoOutputAndNoLinkedGuest("http-private-negative.atto");
+        String diagnostic = expectNoOutputAndNoLinkedGuest("http-private-negative.atto");
+        assertTrue(diagnostic.contains("is_token_char"), diagnostic);
+        assertTrue(diagnostic.contains("export") || diagnostic.contains("private")
+                        || diagnostic.contains("public") || diagnostic.contains("unresolved")
+                        || diagnostic.contains("unknown member"),
+                "expected a private-export denial, not an unrelated exception: " + diagnostic);
     }
 
     @Test
     void missingReservedBuiltinMustNotResolveViaFilesystem() throws Exception {
-        expectNoOutputAndNoLinkedGuest("http-unregistered-negative.atto");
+        String diagnostic = expectNoOutputAndNoLinkedGuest("http-unregistered-negative.atto");
+        assertTrue(diagnostic.contains("std.unregistered"), diagnostic);
+        assertTrue(diagnostic.contains("reserved") || diagnostic.contains("unregistered"),
+                "expected reserved-library rejection, not an unrelated exception: " + diagnostic);
     }
 }
