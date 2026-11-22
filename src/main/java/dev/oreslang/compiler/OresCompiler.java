@@ -22,6 +22,16 @@ public final class OresCompiler {
         return ProtectedScalarMirV1.lower(Parser.parse(source));
     }
 
+    /**
+     * Opt-in source-AST -> actor-owned scalar state MIR. Only the verified
+     * single-field/single-critical-method subset may construct the executor.
+     * This is NOT general critical lowering, a runnable guest main(), or AOT.
+     */
+    public static dev.oreslang.runtime.SealedActorScalarMirV1.Plan
+            compileSealedActorScalarI64(String source) {
+        return dev.oreslang.runtime.SealedActorScalarMirV1.lower(source);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }
