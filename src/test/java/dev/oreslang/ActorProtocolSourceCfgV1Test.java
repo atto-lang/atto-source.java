@@ -155,6 +155,36 @@ final class ActorProtocolSourceCfgV1Test {
                 ""","invalid","E_PROTOCOL_SOURCE_UNREACHABLE");
     }
 
+    @Test void branchesCanJoinAfterBothSidesCancelTheirOwnLease() {
+        var result = analyze("""
+                define fnc safe_branch(ProtocolHandle<Connection> handle, Connect msg, bool flag): void {
+                  if flag {
+                    const UnaryLease<Ack> first = handle.request(msg);
+                    first.cancel();
+                  } else {
+                    const UnaryLease<Ack> second = handle.request(msg);
+                    second.cancel();
+                  }
+                  return;
+                }
+                """, "safe_branch", Map.of("handle","Connection"));
+        assertEquals(4, result.proof().verifiedBlocks());
+    }
+
+    @Test void unmatchedBranchLeaseFailsAtJoin() {
+        denied("""
+                define fnc invalid(ProtocolHandle<Connection> handle, Connect msg, bool flag): void {
+                  if flag {
+                    const UnaryLease<Ack> first = handle.request(msg);
+                    first.cancel();
+                  } else {
+                    const UnaryLease<Ack> second = handle.request(msg);
+                  }
+                  return;
+                }
+                """, "invalid", "E_PROTOCOL_LEASE_JOIN");
+    }
+
     @Test void declarationCannotSpoofCompilerOwnedProtocolHandles() {
         String forged = "define class ProtocolHandle as end\n" + PRELUDE + "\n"
                 + """
