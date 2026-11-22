@@ -3,6 +3,7 @@ package dev.oreslang.types;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.compiler.LinkedFunctionContract;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
@@ -358,6 +359,146 @@ public final class TypeChecker {
         checker.validate(program);
         CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+    }
+
+    /**
+     * Checked compiler-owned snapshot of public nominal symbol origins.
+     *
+     * These are the declarations actually installed in TypeChecker's
+     * symbol tables, not a separately guessed set of AST names. Short names
+     * that resolve ambiguously across classes and interfaces are removed.
+     * Type aliases are intentionally not nominal declarations: their
+     * canonical expansion must be handled by a separate checked alias pass.
+     */
+    public record PublicNominalOrigin(String module, String symbol, boolean isInterface) { }
+
+    /**
+     * A verified public-symbol snapshot can only be created by this checker,
+     * after its semantic and ownership passes. A public record constructor
+     * would allow unverified clients to fabricate an allegedly checked result.
+     */
+    public static final class CheckedPublicNominals {
+        private final Ast.Program program;
+        private final Map<String, PublicNominalOrigin> resolvedNames;
+        private final List<String> warnings;
+
+        private CheckedPublicNominals(
+                Ast.Program program, Map<String, PublicNominalOrigin> resolvedNames,
+                List<String> warnings) {
+            this.program = java.util.Objects.requireNonNull(program, "checked program");
+            this.resolvedNames = Map.copyOf(resolvedNames);
+            this.warnings = List.copyOf(warnings);
+        }
+
+        public Ast.Program program() { return program; }
+        public Map<String, PublicNominalOrigin> resolvedNames() { return resolvedNames; }
+        public List<String> warnings() { return warnings; }
+    }
+
+    /**
+     * Like the standard compiler type pass, but retains the resolved nominal
+     * symbol table after full semantic validation and ownership admission.
+     * Imported nominal/linker proofs are not accepted by this local-only API.
+     */
+    public static CheckedPublicNominals checkTypesAndSnapshotPublicNominals(Ast.Program program) {
+        if (!program.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "local nominal snapshot requires a fully linked import environment");
+        }
+        program = AnnotationExpander.expand(program);
+        ReturnCleanupChecker.check(program);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collect(program);
+        checker.validate(program);
+        OwnershipChecker.check(program);
+
+        Map<String, PublicNominalOrigin> known = new LinkedHashMap<>();
+        Set<String> conflicts = new HashSet<>();
+        for (Map.Entry<String, Ast.ClassDecl> entry : checker.classes.entrySet()) {
+            Ast.ClassDecl klass = entry.getValue();
+            if (klass.visibility() != Ast.Visibility.PUBLIC
+                    || !checker.classOwners.containsKey(klass)) continue;
+            PublicNominalOrigin origin = new PublicNominalOrigin(
+                    checker.classOwners.get(klass), klass.name(), false);
+            insertNominalOrigin(known, conflicts, entry.getKey(), origin);
+        }
+        for (Map.Entry<String, Ast.InterfaceDecl> entry : checker.interfaces.entrySet()) {
+            Ast.InterfaceDecl iface = entry.getValue();
+            if (iface.visibility() != Ast.Visibility.PUBLIC
+                    || !checker.interfaceOwners.containsKey(iface)) continue;
+            PublicNominalOrigin origin = new PublicNominalOrigin(
+                    checker.interfaceOwners.get(iface), iface.name(), true);
+            insertNominalOrigin(known, conflicts, entry.getKey(), origin);
+        }
+        return new CheckedPublicNominals(program, known, checker.warnings);
+    }
+
+    private static void insertNominalOrigin(
+            Map<String, PublicNominalOrigin> known,
+            Set<String> conflicts, String key, PublicNominalOrigin origin) {
+        if (conflicts.contains(key)) return;
+        PublicNominalOrigin previous = known.putIfAbsent(key, origin);
+        if (previous != null && !previous.equals(origin)) {
+            known.remove(key);
+            conflicts.add(key);
+        }
+    }
+
+    /**
+     * Restricted but real cross-file function type checking.
+     *
+     * The trusted linker must resolve exactly one public, ordinary,
+     * non-generic, non-actor function per imported name before invoking this
+     * method. The checker then uses those resolved signatures, not its
+     * legacy Unknown import placeholder, to check direct calls and returns.
+     * Other import kinds are explicitly unsupported by this admission path.
+     */
+    public static Ast.Program checkTypesWithLinkedFunctions(
+            Ast.Program source, Map<String, Ast.FunctionDecl> linkedFunctions) {
+        java.util.Objects.requireNonNull(source, "source");
+        java.util.Objects.requireNonNull(linkedFunctions, "linkedFunctions");
+        source = AnnotationExpander.expand(source);
+        ReturnCleanupChecker.check(source);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(source);
+        checker.collect(source);
+
+        Set<String> expected = new HashSet<>();
+        for (Ast.ImportDecl imported : source.imports()) {
+            if (imported.kind() != Ast.ImportKind.FUNCTION || imported.wildcard()) {
+                throw new IllegalArgumentException(
+                        "linked function checker admits explicit function imports only");
+            }
+            for (String name : imported.names()) {
+                String local = ImportRules.localName(imported, name);
+                if (!expected.add(local)) {
+                    throw new IllegalArgumentException("duplicate linked callable name");
+                }
+            }
+        }
+        if (!expected.equals(linkedFunctions.keySet())) {
+            throw new IllegalArgumentException(
+                    "resolved linked functions must match imported callable bindings exactly");
+        }
+
+        for (Map.Entry<String, Ast.FunctionDecl> entry : linkedFunctions.entrySet()) {
+            String local = entry.getKey();
+            Ast.FunctionDecl fn = entry.getValue();
+            LinkedFunctionContract.requirePrimitiveContract(fn);
+            // Local declarations cannot override imported bindings. The
+            // standard checker already diagnoses those conflicts, but assert
+            // it again before adding foreign declarations to the lookup map.
+            if (checker.functions.containsKey(local)
+                    || checker.ambiguousFunctions.contains(local)) {
+                throw new IllegalArgumentException("imported callable conflicts with local function");
+            }
+            checker.importedValues.remove(local);
+            checker.putFunctionSlot(local, fn);
+        }
+        checker.validate(source);
+        OwnershipChecker.check(source);
+        return source;
     }
 
     /**
