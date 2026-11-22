@@ -72,16 +72,24 @@ public final class AsyncNioUdp {
         }
 
         public OresFuture<Integer> sendTo(int peerPort, List<?> octets) {
-            Objects.requireNonNull(octets, "UDP bytes");
-            if (octets.size() > UdpDatagramKernel.MAX_PAYLOAD) {
-                return OresFuture.failed(new IllegalArgumentException("UDP payload too large"));
-            }
-            byte[] data = new byte[octets.size()];
-            // Snapshot the guest-owned list completely before asynchronous IO.
-            // Never allow a post-call mutation or cross-turn list alias to
-            // change an in-flight datagram.
+            // Validate authority *before* observing even the length of guest
+            // storage. A malicious List implementation can make size()/get()
+            // observable, and must not be probed for a denied destination.
+            final byte[] data;
             try {
                 checkLive("udp.send_to");
+                if (peerPort < 1 || peerPort > 65535) {
+                    throw new IllegalArgumentException("invalid UDP destination port");
+                }
+                context.requirePermission(RuntimePermissions.Permission.NET,
+                        "127.0.0.1:" + peerPort, "udp.send_to");
+                Objects.requireNonNull(octets, "UDP bytes");
+                if (octets.size() > UdpDatagramKernel.MAX_PAYLOAD) {
+                    throw new IllegalArgumentException("UDP payload too large");
+                }
+                data = new byte[octets.size()];
+                // Copy inside the checked authority boundary. The kernel
+                // reauthorizes the destination at actual physical send.
                 for (int i = 0; i < data.length; i++) {
                     Object value = octets.get(i);
                     if (!(value instanceof Number n)
@@ -130,20 +138,35 @@ public final class AsyncNioUdp {
                         "concurrent UDP socket operation is forbidden"));
             }
             AtomicBoolean finished = new AtomicBoolean();
+            // Physical completion and observer cancellation are distinct.
+            // Cancellation may occur while a readiness worker is inside a
+            // permission check or kernel tryReceive/trySend. Keep the socket
+            // lease until that physical step has actually returned.
+            AtomicBoolean stepping = new AtomicBoolean();
+            AtomicBoolean retryRequested = new AtomicBoolean();
             AtomicReference<OresFuture<Integer>> watch = new AtomicReference<>();
             return OresFuture.fromCallback(callback -> {
                 final class Retry {
                     void complete(T value, Throwable failure) {
                         if (!finished.compareAndSet(false, true)) return;
-                        operating.set(false);
+                        if (!stepping.get()) operating.set(false);
                         if (failure != null) callback.reject(failure);
                         else callback.resolve(value);
                     }
                     void tick() {
                         if (finished.get()) return;
+                        if (!stepping.compareAndSet(false, true)) {
+                            // An immediately completed readiness watch can
+                            // notify before initial registration unwinds.
+                            // Retry once the current physical step retires.
+                            retryRequested.set(true);
+                            return;
+                        }
                         try {
+                            if (finished.get()) return;
                             checkLive("udp.io");
                             T value = attempt.tryOnce();
+                            if (finished.get()) return;
                             if (value != null) {
                                 complete(value, null);
                                 return;
@@ -165,17 +188,24 @@ public final class AsyncNioUdp {
                             });
                         } catch (IOException | RuntimeException failure) {
                             complete(null, failure);
+                        } finally {
+                            stepping.set(false);
+                            if (finished.get()) {
+                                operating.set(false);
+                            } else if (retryRequested.getAndSet(false)) {
+                                tick();
+                            }
                         }
                     }
                 }
                 new Retry().tick();
             }, () -> {
-                // On Future cancellation the one-shot readiness watch is
-                // revoked. This does not close the unrelated socket itself.
                 if (finished.compareAndSet(false, true)) {
                     OresFuture<Integer> pending = watch.get();
                     if (pending != null) pending.cancel(false);
-                    operating.set(false);
+                    // Never free the operation slot while physical I/O may
+                    // still be running. Its finally block owns retirement.
+                    if (!stepping.get()) operating.set(false);
                 }
             });
         }
