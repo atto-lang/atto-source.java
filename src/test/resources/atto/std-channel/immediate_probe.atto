@@ -1,7 +1,7 @@
 // expect-stdout: accepted:full:2:1
 import module channel from "std/channel";
 
-pub routine main(): void {
+pub async routine main(): void {
   val Channel<int> ch = channel.bounded<int>(1);
   val TryWriteResult<int> first = channel.try_send<int>(ch, 1);
   val TryWriteResult<int> second = channel.try_send<int>(ch, 2);
@@ -19,7 +19,7 @@ pub routine main(): void {
     on Closed(value) -> { stdio.stdout.write("unexpected-second-closed"); }
   end
   stdio.stdout.write(":");
-  stdio.stdout.write(channel.receive<int>(ch));
+  stdio.stdout.write(await channel.receive<int>(ch));
   channel.close<int>(ch);
   return;
 }
