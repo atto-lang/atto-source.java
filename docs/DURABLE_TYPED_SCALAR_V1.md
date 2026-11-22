@@ -78,10 +78,25 @@ real SQLite JUnit). Tests include:
 - `PersistentScalarActorRuntimeBridgeTest`: actual ActorRuntime mailbox
   integration and cold-process recovery as an existing source test.
 
-**Evidence boundary:** zero-step source Actions are `NOT_EXECUTED`, not
-compiler failures and not passes. The independent SQLite DDL/transaction
-probe is *HOST SQL MODEL* evidence only. No private cross-repository source
-mirror is authorized by the current export gate
+**Evidence boundary (2026-11-21):** The exact
+`DurableScalarSchemaV1.java` Git blob
+`e97f8cf3ca2fead79db8ecb2db500af0d312b133` compiled under local
+JDK 21 with `javac -Xlint:all -Werror`, and standalone typed wire
+roundtrip/version/fingerprint rejection checks passed. The exact
+`AsyncSqliteDurableProviderV1.java` Git blob
+`612ab1f882a0e03c2f48d9140f669912140a0ed8` compiled under local
+JDK 21 against *stand-in DurableActorStore/SqliteDurableActorStore classes*;
+the stubbed worker-isolation, completion and close checks passed. These
+are **exact-blob component tests, not source-tree JUnit**. The independent
+SQLite DDL/transaction probe passed *HOST SQL MODEL* checks for duplicate
+identity, rollback atomicity, state/outbox/receipt commit. Shared golden
+wire vectors are verified by Node host tests at `atto-platform-conformance#66`
+(2/2, source and fixture Git blob SHAs matched). No compiler-backed runtime
+schema migration, full SQLite/JUnit, Native Image or guest AOT is verified.
+
+GitHub Actions exact-current-head jobs failed with **zero executed steps**:
+`NOT_EXECUTED`, not compiler failures and not passes. No private
+cross-repository source mirror is authorized by the current export gate
 (`docs/PRIVATE_CI_MIRRORS.md` / `.github/private-ci-carrier-contracts.json`)
 for this PR. It must not be bypassed.
 
