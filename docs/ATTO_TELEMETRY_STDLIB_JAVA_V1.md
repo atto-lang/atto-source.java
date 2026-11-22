@@ -26,6 +26,18 @@ pub fnc handle_request(): void {
 
 This `using` form is a **compiler-owned intrinsic** as specified in [atto-spec#167](https://github.com/atto-lang/atto-spec/pull/167). No guest-defined `Telemetry.span` or `SpanScope.close_scope` is supplied here: doing so would permit provider impersonation. Current Java work [#1661](https://github.com/atto-lang/atto-source.java/pull/1661) and continuation work [#1662](https://github.com/atto-lang/atto-source.java/pull/1662) must be reconciled before enabling the import. The syntax above is a **target example**, not verified working code.
 
+## Closed stdlib import registration
+
+`CoreLibrarySources.STD_SOURCES` now explicitly registers `telemetry.atto`
+without a legacy `.ores` alias. Maven already copies `stdlib/**/*.atto`
+into the trusted `dev/oreslang/std` resource namespace, and the existing
+loader rejects duplicate resources on the classpath. The guest module can
+be imported as `import module Telemetry from "std/telemetry";` once
+the linked source tests have actually executed. A new canonical-source
+integrity test checks the exact resource bytes, canonical alias and rejection
+of unapproved `.ores` spellings. Packaging correctness remains **unverified**
+until that exact-head test runs.
+
 ## Mainline compiler-owned observer integration
 
 This draft also extends the **existing** Java/Graal trusted `UsingTelemetrySpanStmt`
@@ -60,6 +72,6 @@ mechanisms. The two facilities do not manufacture authority for each other.
 5. Source tree SHA, nonzero CI runner steps, independent review and cross-backend receipts. **No exact-head compiler-backed pass is claimed for this draft.**
 
 ### Compatibility / overlap disposition
-This branch now adds runtime/API integration on **current mainline**: it modifies `TelemetrySpanScope`, the existing type and ownership checkers, and the evaluator's already-present native-span dispatch. It **does not** replace the older overlapping Java #1661/#1662 proposals or their distinct compiler/continuation changes. The 5 newly authored JUnit methods (1 runtime-host, 3 compiled-guest scopes, 1 linked Atto stdlib source) are intentionally material gates but are NOT YET EXECUTED. The staged 18-assertion .atto fixture is also unexecuted.
+This branch now adds runtime/API integration on **current mainline**: it modifies `TelemetrySpanScope`, the existing type and ownership checkers, and the evaluator's already-present native-span dispatch. It **does not** replace the older overlapping Java #1661/#1662 proposals or their distinct compiler/continuation changes. The 6 newly authored JUnit methods (1 runtime-host, 3 compiled-guest scopes, 1 linked Atto stdlib source, 1 closed-registry source-integrity) are intentionally material gates but are NOT YET EXECUTED. The staged 18-assertion .atto fixture is also unexecuted.
 
 Nearby work: [Java #1660](https://github.com/atto-lang/atto-source.java/pull/1660) supplies broader native instrumentation/OTLP candidate code; [Java #1682](https://github.com/atto-lang/atto-source.java/pull/1682) explores auto-call spans; [Java #1687](https://github.com/atto-lang/atto-source.java/pull/1687) explores JIT generation retirement; [Java #1760](https://github.com/atto-lang/atto-source.java/pull/1760) independently adds `perf.atto`. This PR does not claim merge readiness or replace those implementation lanes. Resolve overlapping runtime changes before any merge.
