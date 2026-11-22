@@ -1,0 +1,87 @@
+name: Cross-file actor mtd exact-head Java JUnit
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/ActorReceiverBinder.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/test/java/dev/oreslang/NamespaceActorHeaderAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
+      - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
+      - 'src/test/java/dev/oreslang/ExternalActorReceiverAstAdmissionTest.java'
+      - 'contracts/cross-file-actor-mtd-v1/**'
+      - '.github/workflows/cross-file-actor-mtd-junit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-file-actor-mtd-junit:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact same-repo PR head without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact source head and immutable tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          printf 'RECEIPT source_head=%s\n' "$EXPECTED_HEAD"
+          printf 'RECEIPT source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
+          for file in \
+              contracts/cross-file-actor-mtd-v1/file1.atto \
+              contracts/cross-file-actor-mtd-v1/file2.atto; do
+            test -s "$file"
+            printf 'RECEIPT fixture_sha256='
+            sha256sum "$file"
+          done
+
+      - name: Install GraalVM JDK 25 for real compiler/JUnit tests
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned v1
+        with:
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Run exact-head parser and actor binding JUnit suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -Dtest=NamespaceActorHeaderAdmissionTest,CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+
+      - name: Verify real unskipped Surefire evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in \
+              NamespaceActorHeaderAdmissionTest \
+              CrossFileActorReceiverBindingTest \
+              ActorReceiverBinderTest \
+              ExternalActorReceiverAstAdmissionTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            test -s "$report"
+            grep -q '<testcase ' "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then
+              echo "::error::${suite} has failed, errored, or skipped tests" >&2
+              exit 1
+            fi
+            printf 'RECEIPT junit_suite=%s report=%s\n' "$suite" "$report"
+          done
+          echo 'RECEIPT actor_mtd_junit=EXECUTED'

@@ -967,6 +967,11 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         rejectUnsupportedAcceleratorSyntax();
+        // Allow 'pub mtd (Actor self) method(...)' without a redundant
+        // 'define'. Bare 'mtd' stays contextual, not a new global keyword.
+        if (modifiers.visibilitySeen && isExternalActorMethodHead()) {
+            return parseExternalActorMethod(annotations, modifiers);
+        }
         if (isLegacyFnSpelling()) {
             throw error(peek(), "functions are declared with 'fnc', not 'fn'");
         }
@@ -1255,12 +1260,14 @@ public final class Parser {
         }
     }
 
-    /** Contextual mtd only counts as a source receiver declaration in a define head. */
+    /** Contextual mtd accepts both receiver-first and name-first declarations. */
     private boolean isExternalActorMethodHead() {
         return isContextualIdentifier("mtd")
-                && current + 2 < tokens.size()
-                && tokens.get(current + 1).type() == IDENT
-                && tokens.get(current + 2).type() == LPAREN;
+                && current + 1 < tokens.size()
+                && (tokens.get(current + 1).type() == LPAREN
+                    || (current + 2 < tokens.size()
+                        && tokens.get(current + 1).type() == IDENT
+                        && tokens.get(current + 2).type() == LPAREN));
     }
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
@@ -1269,11 +1276,12 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
         consumeContextualIdentifier("mtd", "expected external receiver method declaration");
-        String name = consumeCallableName("expected external actor method name");
-        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
-                "on_recover").contains(name)) {
-            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
-        }
+        // The canonical form is 'define mtd (Worker w) update(...): void'.
+        // Keep the earlier 'define mtd update(Worker w)(...): void' as
+        // a compatibility spelling; both produce one identical typed AST.
+        boolean receiverFirst = check(LPAREN);
+        String name = receiverFirst ? null
+                : consumeCallableName("expected external actor method name");
         consume(LPAREN, "external receiver method requires '(Actor receiver)'");
         Ast.TypeRef receiverType = parseTypeRef();
         if (receiverType.inferArguments() || !receiverType.arguments().isEmpty()
@@ -1282,6 +1290,13 @@ public final class Parser {
         }
         String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
         consume(RPAREN, "expected ')' after external actor receiver");
+        if (receiverFirst) {
+            name = consumeCallableName("expected external actor method name after receiver");
+        }
+        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
+                "on_recover").contains(name)) {
+            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
+        }
         consume(LPAREN, "expected '(' before external receiver method parameters");
         List<Ast.Param> parameters = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after external receiver method parameters");
@@ -1889,6 +1904,21 @@ public final class Parser {
                     + "' may extend at most one actor superclass");
         }
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        // A nominal, semicolon-terminated actor may name contract obligations
+        // without defining an implicit runtime actor, empty class or alias.
+        // Actual actor-contract conformance remains a separate checked gate.
+        if (check(SEMICOLON)) {
+            if (!generics.isEmpty() || !parents.isEmpty()
+                    || actorKind != Ast.ActorKind.SHARED
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                throw error(peek(), "semicolon actor declarations require a plain "
+                        + "non-generic actor without transport or inheritance modifiers");
+            }
+            advance();
+            return new Ast.StandaloneActorDecl(
+                    name, null, visibility, actorKind, interfaces);
+        }
 
         // Standalone actor declaration: retain the receiver-binding name in
         // its own AST node. Never synthesize an empty class, dispatch table,

@@ -22,6 +22,7 @@ top_level_item  = annotated_module_decl
                 | contract_decl
                 | actor_decl
                 | actor_callable_decl
+                | external_actor_method_decl
                 | callable_decl
                 | generator_decl
                 | class_decl
@@ -37,6 +38,7 @@ annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type
 module_member   = contract_decl
                 | actor_decl
                 | actor_callable_decl
+                | external_actor_method_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
@@ -66,6 +68,16 @@ actor_callable_decl
                 = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
+
+(* External actor receiver methods are parsed and statically indexed only.
+   Until actor-context/ownership lowering exists, TypeChecker rejects their
+   execution. Canonical receiver-first and legacy name-first spellings have
+   the same AST identity. Neither grants runtime receiver authority. *)
+external_actor_method_decl
+                = "define" visibility "mtd"
+                  ( "(" type_ref IDENT ")" callable_name
+                  | callable_name "(" type_ref IDENT ")" )
+                  "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]

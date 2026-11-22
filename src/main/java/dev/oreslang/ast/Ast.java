@@ -170,19 +170,38 @@ public final class Ast {
      * declaration, it must not be turned into an empty actor class.
      */
     public record StandaloneActorDecl(
-            String name, String receiverName, Visibility visibility, ActorKind actorKind)
-            implements Decl {
+            String name, String receiverName, Visibility visibility, ActorKind actorKind,
+            List<TypeRef> implementedContracts) implements Decl {
         public StandaloneActorDecl {
-            if (name == null || name.isBlank() || receiverName == null
-                    || receiverName.isBlank() || name.equals(receiverName)) {
+            // A semicolon-only declaration has no source-level receiver alias.
+            // Receiver authority is never created by an absent alias.
+            if (name == null || name.isBlank()
+                    || (receiverName != null
+                        && (receiverName.isBlank() || name.equals(receiverName)))) {
                 throw new IllegalArgumentException(
-                        "standalone actor requires distinct nominal type and receiver binding names");
+                        "standalone actor requires a nominal type and an optional distinct receiver name");
             }
             java.util.Objects.requireNonNull(visibility, "standalone actor visibility");
             if (actorKind != ActorKind.SHARED) {
                 throw new IllegalArgumentException(
                         "standalone actor AST currently supports only generic shared actors");
             }
+            implementedContracts = List.copyOf(implementedContracts);
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (TypeRef contract : implementedContracts) {
+                if (contract == null || contract.name() == null || contract.name().isBlank()
+                        || contract.isBorrow() || contract.inferArguments()
+                        || !contract.arguments().isEmpty()
+                        || !names.add(contract.name())) {
+                    throw new IllegalArgumentException(
+                            "standalone actor requires distinct nominal non-generic contract references");
+                }
+            }
+        }
+        /** Compatibility for the earlier 'as receiver;' declaration form. */
+        public StandaloneActorDecl(
+                String name, String receiverName, Visibility visibility, ActorKind actorKind) {
+            this(name, receiverName, visibility, actorKind, List.of());
         }
     }
 
