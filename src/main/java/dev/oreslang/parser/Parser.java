@@ -110,6 +110,15 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        // Parse protocol declarations through the bounded typed-IR preflight.
+        // The guest runtime has no proven affine protocol/stream ABI yet:
+        // never erase the declaration or manufacture an executable actor.
+        if (ActorProtocolTypestateV1.containsProtocol(tokens)) {
+            ActorProtocolTypestateV1.parseTokens(tokens);
+            throw new IllegalArgumentException("E_UNSUPPORTED_PROTOCOL_LOWERING: "
+                    + "state-aware unary/stream actor protocols require verified affine "
+                    + "borrow checking, generation-fenced replies and native guest lowering");
+        }
         // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
         // execution regions and quantum fail-closed, but allow canonical task
         // forms (plus legacy nb aliases) to reach typed lowering. GPU task is
