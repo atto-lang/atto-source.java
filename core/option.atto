@@ -1,6 +1,7 @@
 // AttoLang core/option (Java/Graal): source-owned, no host interop.
 // The compiler owns nominal Option<T>, Some/None and active-variant drops.
 // These helpers consume their Option operand, never clone an affine payload.
+use namespace core;
 define module option as
   pub fnc flatten<T>(Option<Option<T>> nested): Option<T> {
     return match nested over
