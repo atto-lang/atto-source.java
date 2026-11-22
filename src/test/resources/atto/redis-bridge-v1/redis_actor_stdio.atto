@@ -1,0 +1,126 @@
+// Executable Atto Redis actor-owned Map variant, behind the M1 TCP bridge.
+// Ephemeral: no WAL/fsync or persistent storage. Commands are serialized by
+// the single trusted stdin driver, which sends one token stream at a time.
+// Actor owns the actual map and applies SET / GET / DEL exclusively.
+// TODO: migrate legacy fields to sealed state{} + critical handle_state once
+// the exact compiler/runtime branch executes that contract.
+define actor RedisKvActor as
+  let Map<string,string> values;
+  let string operation = "";
+  let string key = "";
+  let int phase = 0;
+
+  on_start(): void {
+    self.values = ~map<string,string>();
+    return;
+  }
+
+  receive(ActorMail<string> mail): void {
+    if self.phase == 0; do
+      if mail.value == "STOP"; do
+        self.end();
+        return;
+      fi
+      if mail.value == "GET" || mail.value == "SET" || mail.value == "DEL"; do
+        self.operation = mail.value;
+        self.phase = 1;
+        return;
+      fi
+      self.send("ERR");
+      return;
+    fi
+
+    if self.phase == 1; do
+      self.key = mail.value;
+      if self.operation == "SET"; do
+        self.phase = 2;
+        return;
+      fi
+      self.phase = 0;
+      if self.operation == "GET"; do
+        val found = self.values.get_optional(self.key);
+        if found.is_none(); do
+          self.send("NIL");
+          return;
+        fi
+        self.send("VALUE");
+        self.send(found.unwrap());
+        return;
+      fi
+      if self.operation == "DEL"; do
+        if self.values.delete(self.key); do
+          self.send("ONE");
+        else
+          self.send("ZERO");
+        fi
+        return;
+      fi
+      self.send("ERR");
+      return;
+    fi
+
+    if self.phase == 2; do
+      self.values.set(self.key, mail.value);
+      self.phase = 0;
+      self.send("OK");
+      return;
+    fi
+
+    self.send("ERR");
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn RedisKvActor();
+  await worker.get_ready();
+  stdio.println("READY");
+
+  loop {
+    val Option<string> incoming = stdio.stdin.read_line();
+    if incoming.is_none(); do
+      worker.send("STOP");
+      await worker.get_done();
+      return;
+    fi
+    val string op = incoming.unwrap();
+    if op == "SET"; do
+      val Option<string> key = stdio.stdin.read_line();
+      if key.is_none(); do
+        worker.send("STOP");
+        await worker.get_done();
+        return;
+      fi
+      val Option<string> value = stdio.stdin.read_line();
+      if value.is_none(); do
+        worker.send("STOP");
+        await worker.get_done();
+        return;
+      fi
+      worker.send("SET");
+      worker.send(key.unwrap());
+      worker.send(value.unwrap());
+    elseif op == "GET" || op == "DEL"; do
+      val Option<string> key = stdio.stdin.read_line();
+      if key.is_none(); do
+        worker.send("STOP");
+        await worker.get_done();
+        return;
+      fi
+      worker.send(op);
+      worker.send(key.unwrap());
+    else
+      stdio.println("ERR");
+      worker.send("STOP");
+      await worker.get_done();
+      return;
+    fi
+
+    val output = (await worker.outputs.next()).value.unwrap();
+    stdio.println(output.value);
+    if output.value == "VALUE"; do
+      val payload = (await worker.outputs.next()).value.unwrap();
+      stdio.println(payload.value);
+    fi
+  }
+}

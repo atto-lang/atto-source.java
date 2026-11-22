@@ -182,7 +182,10 @@ final class ThreadSafetyTraitsCoreTest {
         // regardless of any nested generic argument being harmless.
         ThreadSafetyTraits.NominalProof permissive = (type, trait) -> true;
         for (String name : List.of(
-                "Arc", "Weak", "Rc", "RefCell", "Cell", "RwLock",
+                "Atomic", "AtomicRef", "AtomicBool", "AtomicInt", "AtomicLong",
+                "AtomicI8", "AtomicI16", "AtomicI32", "AtomicI64",
+                "AtomicU8", "AtomicU16", "AtomicU32", "AtomicU64",
+                "Box", "Arc", "Weak", "Rc", "RefCell", "Cell", "RwLock",
                 "RwLockReadGuard", "RwLockWriteGuard",
                 "Ref", "TRef", "EtsTable", "TableId",
                 "Task", "TaskHandle", "TaskScope", "TaskCancellation",

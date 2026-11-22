@@ -1,0 +1,8 @@
+import class DecodeAttempt from "./decode.atto";
+import fnc hidden_decode from "./decode.atto";
+
+pub fnc main(): void {
+  val DecodeAttempt value = hidden_decode(41);
+  stdio.stdout.write(value.status);
+  return;
+}
