@@ -100,7 +100,7 @@ final class ArithmeticOverflowGuestErrorTest {
         String guest = """
                 pub fnc main():int{
                   val result = trap Math.abs(-9223372036854775808);
-                  return result.is_none() ? 42 : 1;
+                  return result.is_err() ? 42 : 1;
                 }
                 """;
         try (Context context = Context.newBuilder(OresLanguage.ID)
