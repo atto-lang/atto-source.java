@@ -432,7 +432,9 @@ public final class NativeIo {
     public static String envGet(OresContext context, String name) {
         validateEnvName(name);
         context.requirePermission(RuntimePermissions.Permission.ENV, name, "env.get");
-        String value = System.getenv(name);
+        // Query the Truffle context environment, never JVM-global getenv.
+        // EnvironmentAccess.NONE exposes only explicitly injected host values.
+        String value = context.env().getEnvironment().get(name);
         validateEnvValue(value);
         return value;
     }
@@ -440,9 +442,9 @@ public final class NativeIo {
     public static boolean envHas(OresContext context, String name) {
         validateEnvName(name);
         context.requirePermission(RuntimePermissions.Permission.ENV, name, "env.has");
-        // Never enumerate or copy the entire host environment for an existence
-        // probe. A present empty string must still report true.
-        return System.getenv(name) != null;
+        // Query only the explicitly injected context environment. An empty
+        // present value is still present, and denial was checked above.
+        return context.env().getEnvironment().containsKey(name);
     }
 
     public static String httpGetText(OresContext context, String rawUri) {
