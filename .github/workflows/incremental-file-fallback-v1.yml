@@ -59,7 +59,7 @@ jobs:
             echo "::error::Required suite contained failures/errors/skips"
             exit 1
           fi
-          test "$(grep -c '<testcase' "$report")" -ge 9
+          test "$(grep -c '<testcase' "$report")" -ge 10
           for case_name in \
             twoFilesWithNoNamespaceReparseAndRecheckIndependently \
             publicApiChangesRecheckImportersButNotUnrelatedFiles \
@@ -68,11 +68,12 @@ jobs:
             emptySnapshotEvictsCheckedAndParsedSources \
             strictAndLegacyProfilesNeverShareTypedOrParsedEntries \
             addingOrRemovingNamespaceHeaderChangesOnlyOwningFile \
+            changedImportedSymbolWithSameProviderInvalidatesDependents \
             publicParameterRenameInvalidatesNamedArgumentImporters \
             publicDeclarationReorderIsNotAnApiChange; do
             grep -Fq "name=\"$case_name\"" "$report"
           done
-          echo 'RECEIPT java_incremental_file_fallback_suite=EXECUTED cases=9'
+          echo 'RECEIPT java_incremental_file_fallback_suite=EXECUTED cases=10'
           echo 'RECEIPT native_image_guest=NOT_EXECUTED'
           echo 'RECEIPT namespace_package_codegen=NOT_IMPLEMENTED'
       - name: Preserve focused JUnit evidence
