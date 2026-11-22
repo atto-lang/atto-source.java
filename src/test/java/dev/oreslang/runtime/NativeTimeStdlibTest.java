@@ -116,12 +116,12 @@ final class NativeTimeStdlibTest {
                 IsolatePolicy.developer(), ExecutionProfile.serverJit(), output, errors);
         assertTrue(linked.units().containsKey("@std/time.atto"),
                 "expected compiled compiler-owned Atto module");
-        assertEquals(String.join("\\n",
+        assertEquals(String.join("\n",
                 "1000000000", "1500000000", "1500000000",
                 "false", "true", "true", "false", "true", "false",
                 "true", "true", "false", "2000000000",
                 "true", "true", "true", "9223372036854775807"),
-                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                 () -> errors.toString(StandardCharsets.UTF_8));
     }
 
