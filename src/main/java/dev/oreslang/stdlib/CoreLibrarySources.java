@@ -31,6 +31,13 @@ public final class CoreLibrarySources {
     private static final String STD_UNIT_PREFIX = "@std/";
     private static final String STD_RESOURCE_PREFIX = "dev/oreslang/std/";
 
+    private static final String ALLOC_IMPORT_PREFIX = "atto.alloc/";
+    private static final String LEGACY_ALLOC_IMPORT_PREFIX = "alloc/";
+    private static final String ALLOC_UNIT_PREFIX = "@atto.alloc/";
+    private static final String ALLOC_RESOURCE_PREFIX = "dev/oreslang/alloc/";
+    private static final Set<String> ALLOC_SOURCES = Set.of(
+            "stats.atto", "aligned.atto", "secure.atto");
+
     private static final int MAX_SOURCE_BYTES = 1024 * 1024;
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
@@ -81,6 +88,10 @@ public final class CoreLibrarySources {
         String normalized = importPath.replace('\\', '/');
         return normalized.equals("ores.core")
                 || normalized.equals("ores.std")
+                || normalized.equals("atto.alloc")
+                || normalized.equals("alloc")
+                || normalized.startsWith(ALLOC_IMPORT_PREFIX)
+                || normalized.startsWith(LEGACY_ALLOC_IMPORT_PREFIX)
                 || normalized.startsWith(CORE_IMPORT_PREFIX)
                 || normalized.startsWith(STD_IMPORT_PREFIX);
     }
@@ -106,6 +117,28 @@ public final class CoreLibrarySources {
                     "unknown compiler-owned ores.core module: " + importPath);
         }
         return readPackagedSource(CORE_RESOURCE_PREFIX + relative, importPath);
+    }
+
+    public static Set<String> packagedAllocPaths() { return ALLOC_SOURCES; }
+
+    public static boolean isAllocImport(String path) {
+        if (path == null) return false;
+        String normalized = path.replace('\\', '/');
+        return normalized.startsWith(ALLOC_IMPORT_PREFIX)
+                || normalized.startsWith(LEGACY_ALLOC_IMPORT_PREFIX);
+    }
+
+    public static String allocUnitId(String path) {
+        return ALLOC_UNIT_PREFIX + canonicalAllocRelativePath(path);
+    }
+
+    public static String allocFileName(String path) {
+        return fileNameFromRelative(canonicalAllocRelativePath(path));
+    }
+
+    public static String allocSource(String path) throws IOException {
+        return readPackagedSource(
+                ALLOC_RESOURCE_PREFIX + canonicalAllocRelativePath(path), path);
     }
 
     public static Set<String> packagedSourcePaths() {
@@ -151,6 +184,23 @@ public final class CoreLibrarySources {
         String relative = canonicalPathBody(importPath, CORE_IMPORT_PREFIX, CORE_SOURCES);
         if (relative.equals("numeric.ores")) return "numeric.atto";
         if (relative.equals("protocols.ores")) return "protocols.atto";
+        return relative;
+    }
+
+    private static String canonicalAllocRelativePath(String importPath) {
+        Objects.requireNonNull(importPath, "importPath");
+        String prefix;
+        if (importPath.startsWith(ALLOC_IMPORT_PREFIX)) {
+            prefix = ALLOC_IMPORT_PREFIX;
+        } else if (importPath.startsWith(LEGACY_ALLOC_IMPORT_PREFIX)) {
+            prefix = LEGACY_ALLOC_IMPORT_PREFIX;
+        } else {
+            throw new IllegalArgumentException("alloc import requires 'atto.alloc/': " + importPath);
+        }
+        String relative = canonicalPathBody(importPath, prefix, ALLOC_SOURCES);
+        if (!ALLOC_SOURCES.contains(relative)) {
+            throw new IllegalArgumentException("unknown compiler-owned alloc module: " + importPath);
+        }
         return relative;
     }
 

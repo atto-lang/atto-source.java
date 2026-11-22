@@ -74,6 +74,12 @@
           <include>**/*.atto</include>
           <include>**/*.ores</include>
         </includes>
+        <excludes><exclude>alloc/**</exclude></excludes>
+      </resource>
+      <resource>
+        <directory>stdlib/alloc</directory>
+        <targetPath>dev/oreslang/alloc</targetPath>
+        <includes><include>**/*.atto</include></includes>
       </resource>
     </resources>
     <plugins>

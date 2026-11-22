@@ -71,6 +71,7 @@ final class NativeCoreLibraryTest {
         try (var stream = Files.walk(root)) {
             List<Path> modules = stream
                     .filter(Files::isRegularFile)
+                    .filter(path -> !path.startsWith(root.resolve("alloc")))
                     .filter(path -> path.toString().endsWith(".ores") || path.toString().endsWith(".atto"))
                     .sorted()
                     .toList();

@@ -473,6 +473,13 @@ public final class LinkedProgramRunner {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
 
+            if (CoreLibrarySources.isAllocImport(imported.path())) {
+                String targetId = CoreLibrarySources.allocUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAllocImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
             if (CoreLibrarySources.isStdImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
@@ -520,6 +527,55 @@ public final class LinkedProgramRunner {
         }
     }
 
+
+    /**
+     * Compiler-owned alloc tier: no Java, hosted std or ambient project imports.
+     */
+    private static void collectAllocImportClosure(
+            String importPath, Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget, int depth) throws IOException {
+        String id = CoreLibrarySources.allocUnitId(importPath);
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+        String source = CoreLibrarySources.allocSource(importPath);
+        budget.admit(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id, CoreLibrarySources.allocFileName(importPath), source);
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException("alloc module contains Java source: " + importPath);
+        }
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException("alloc cannot import Java: "
+                        + importPath + " -> " + imported.path());
+            }
+            if (CoreLibrarySources.isAllocImport(imported.path())) {
+                CoreLibrarySources.allocUnitId(imported.path());
+            } else if (CoreLibrarySources.isOresCoreImport(imported.path())) {
+                CoreLibrarySources.oresCoreUnitId(imported.path());
+            } else {
+                throw new IllegalArgumentException("alloc cannot import hosted std or project code: "
+                        + importPath + " -> " + imported.path());
+            }
+        }
+        units.put(id, mixed);
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (CoreLibrarySources.isAllocImport(imported.path())) {
+                String targetId = CoreLibrarySources.allocUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAllocImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            } else {
+                String targetId = CoreLibrarySources.oresCoreUnitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectOresCoreImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+            }
+        }
+    }
 
     /**
      * Collects compiler-owned hosted source under ores.std/* (and the temporary
