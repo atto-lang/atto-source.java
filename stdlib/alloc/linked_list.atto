@@ -3,7 +3,7 @@
 // remain private so there are no external stale handles or escaping borrows.
 // Allocation is on append; remove/pop reuse nodes without allocating.
 define module linked_list as
-  pub define class LinkedList as
+  pub define class IntLinkedList as
     let mut Array<int> values = new Array<int>();
     let mut Array<int> next = new Array<int>();
     let mut Array<int> prev = new Array<int>();
@@ -158,7 +158,7 @@ define module linked_list as
     }
   end
 
-  pub fnc new_linked_list(): LinkedList {
-    return new LinkedList();
+  pub fnc new_linked_list(): IntLinkedList {
+    return new IntLinkedList();
   }
 end
