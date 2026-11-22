@@ -20,8 +20,20 @@ final class SoftLaneSelector {
     static int select(int preferred, int preferredQueued,
                       AtomicIntegerArray queued, int sampleSeed) {
         Objects.requireNonNull(queued, "queued");
-        final int lanes = queued.length();
-        if (lanes < 1 || preferred < 0 || preferred >= lanes || preferredQueued < 0) {
+        return select(preferred, preferredQueued, queued, 1, queued.length(), sampleSeed);
+    }
+
+    /**
+     * Same as {@link #select(int, int, AtomicIntegerArray, int)} over the first
+     * {@code lanes} lanes of a padded counter column: lane {@code i}'s depth is
+     * at index {@code i * stride} (padding keeps lane counters on separate
+     * cache lines).
+     */
+    static int select(int preferred, int preferredQueued,
+                      AtomicIntegerArray queued, int stride, int lanes, int sampleSeed) {
+        Objects.requireNonNull(queued, "queued");
+        if (stride < 1 || lanes < 1 || (long) (lanes - 1) * stride >= queued.length()
+                || preferred < 0 || preferred >= lanes || preferredQueued < 0) {
             throw new IllegalArgumentException("invalid soft lane sampling state");
         }
         int best = preferred;
@@ -31,7 +43,7 @@ final class SoftLaneSelector {
         int cursor = Math.floorMod(sampleSeed, lanes);
         for (int checked = 0; checked < limit;) {
             if (cursor != preferred) {
-                final int depth = queued.get(cursor);
+                final int depth = queued.get(cursor * stride);
                 if (depth < 0) throw new IllegalStateException("negative lane queue depth");
                 if (depth < minimum) {
                     minimum = depth;

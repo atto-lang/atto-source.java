@@ -366,7 +366,15 @@ final class ScopedTaskReadRuntimeTest {
             read.close();
             scope.seal();
             release.countDown();
-            assertNull(scope.getDone().get(5, TimeUnit.SECONDS));
+            // The failed post-quiescence retirement hook means the scope has not
+            // proved its loans were reclaimed: getDone() fails closed (#2748).
+            var poisoned = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> scope.getDone().get(5, TimeUnit.SECONDS));
+            var cleanup = assertInstanceOf(
+                    TaskOwnedLeases.CleanupFailure.class, poisoned.getCause());
+            assertTrue(cleanup.failures().stream().anyMatch(failure ->
+                            String.valueOf(failure.getMessage()).contains("more than once")),
+                    cleanup.failures()::toString);
 
             var retained = assertInstanceOf(
                     TaskHandle.Failed.class,

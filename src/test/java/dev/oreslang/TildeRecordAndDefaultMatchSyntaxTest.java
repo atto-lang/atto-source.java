@@ -10,11 +10,9 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Frontend stage-1 tests for PR #254 syntax.
- *
- * Map literals and tilde record-field patterns deliberately fail closed until
- * their typed AST, borrow admission and runtime codegen are implemented.
- * Parser/AST tests are not backend AOT or guest-execution evidence.
+ * Migration of old PR #254 tilde construction syntax to canonical Type.of.
+ * Structural field patterns remain an independent parser/type-checker feature.
+ * Parser/AST tests do not establish backend AOT or guest execution.
  */
 final class TildeRecordAndDefaultMatchSyntaxTest {
     private static Ast.FunctionDecl function(String source) {
@@ -31,62 +29,44 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     }
 
     @Test
-    void shortAndExplicitTildeRecordsReuseReadonlyRecordType() {
+    void formerShortAndExplicitTildeRecordConstructorsFailClosed() {
         for (String source : List.of(
                 "~(foo: 42, ready: true)",
                 "~record(foo: 42, ready: true)",
                 "~record(foo: 42, ready: true, )",
-                "~(\"first name\": 42)")) {
-            Ast.ObjectExpr value = assertInstanceOf(Ast.ObjectExpr.class, initializer(source), source);
-            assertEquals(Ast.ObjectKind.RECORD, value.kind(), source);
-            assertTrue(value.structuralRecord());
-            assertFalse(value.inferredStruct());
+                "~(\"first name\": 42)",
+                "~record()",
+                "~record(foo: 42)[\"foo\"]",
+                "~record(...base, bar: 42)")) {
+            assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
         }
-        Ast.FunctionDecl typed = function(
-                "fnc f(): void { const Map<string,int> value = ~map(); return; }");
-        Ast.TypedEmptyAggregateExpr map = assertInstanceOf(Ast.TypedEmptyAggregateExpr.class,
-                ((Ast.BindingStmt) typed.body().getFirst()).initializer(),
-                "typed binding must resolve contextual ~map() to a compiler-owned Map type");
-        assertEquals("Map", map.aggregateType().name());
-        assertEquals(2, map.aggregateType().arguments().size());
-        assertThrows(IllegalArgumentException.class, () -> initializer("~map()"),
-                "untyped map() must fail at the parser boundary");
-        Ast.ObjectExpr empty = assertInstanceOf(Ast.ObjectExpr.class, initializer("~record()"));
-        assertTrue(empty.fields().isEmpty());
-        assertEquals(Ast.ObjectKind.RECORD, empty.kind());
+        // Construction has one canonical owner; parsing is not runtime proof.
+        assertDoesNotThrow(() -> initializer("Record.of()"));
     }
 
     @Test
-    void sourceOrderedRecordSpreadDoesNotBecomeDynamicMap() {
-        Ast.FunctionDecl f = function("""
+    void formerlyAcceptedTildeRecordSpreadsCannotEvadeSyntaxGate() {
+        assertThrows(IllegalArgumentException.class, () -> function("""
                 fnc f(): void {
                     const base = record{foo: 1};
                     const row = ~record(...base, bar: 42);
                     return;
                 }
-                """);
-        Ast.ObjectExpr row = assertInstanceOf(
-                Ast.ObjectExpr.class, ((Ast.BindingStmt) f.body().get(1)).initializer());
-        assertEquals(Ast.ObjectKind.RECORD, row.kind());
-        assertEquals(2, row.fields().size());
-        assertTrue(row.fields().getFirst().spread());
-        assertFalse(row.fields().get(1).spread());
-        assertEquals("bar", row.fields().get(1).name());
+                """));
+        // Legacy record{...} is an independent literal, not ~record(...).
+        Ast.ObjectExpr record = assertInstanceOf(Ast.ObjectExpr.class,
+                initializer("record{foo: 42}"));
+        assertEquals(Ast.ObjectKind.RECORD, record.kind());
     }
 
     @Test
-    void tildeRecordsKeepPostfixMemberAndIndexedAccess() {
-        Ast.FunctionDecl f = function("""
-                fnc f(): int {
-                    const x = ~(foo: 42).foo;
-                    const y = ~record(foo: 42)["foo"];
-                    return x + y;
-                }
-                """);
-        assertInstanceOf(Ast.MemberExpr.class,
-                ((Ast.BindingStmt) f.body().getFirst()).initializer());
-        assertInstanceOf(Ast.IndexExpr.class,
-                ((Ast.BindingStmt) f.body().get(1)).initializer());
+    void recordPostfixDoesNotResurrectRemovedTildeConstructors() {
+        for (String source : List.of(
+                "~(foo: 42).foo",
+                "~record(foo: 42)[\"foo\"]",
+                "~record().size")) {
+            assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
+        }
     }
 
     @Test
@@ -97,26 +77,14 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     }
 
     @Test
-    void typedMapsParseButUnprovenOrMixedKindsFailClosed() {
-        Ast.MapLiteralExpr typed = assertInstanceOf(
-                Ast.MapLiteralExpr.class, initializer("~map<String,bool>(\"ready\" => true)"));
-        assertEquals(1, typed.entries().size());
-        assertNotNull(typed.mapType());
-
-        assertThrows(IllegalArgumentException.class,
-                () -> initializer("~map(\"ready\" => true)"),
-                "untyped explicit ~map(...) requires a directly declared Map<K,V>");
+    void formerTypedAndShorthandMapConstructorsFailClosed() {
         for (String source : List.of(
+                "~map<String,bool>(\"ready\" => true)",
+                "~map(\"ready\" => true)",
+                "~map()",
+                "~<Map<string,int>>()",
                 "~(\"ready\" => true)",
-                "~(ready => true)")) {
-            // The shorthand has no complete Map<K,V> witness in an inferred
-            // binding. It must fail before guest construction, not silently
-            // promote into an untyped host dictionary.
-            assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
-            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
-                    "fnc f(): void { const v = " + source + "; return; }"), source);
-        }
-        for (String source : List.of(
+                "~(ready => true)",
                 "~()",
                 "~record(\"ready\" => true)",
                 "~(foo: 1, foo: 2)",
@@ -124,6 +92,7 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
                 "~record(foo: 1, \"x\" => true)")) {
             assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
         }
+        assertDoesNotThrow(() -> initializer("Map.of()"));
     }
 
     @Test

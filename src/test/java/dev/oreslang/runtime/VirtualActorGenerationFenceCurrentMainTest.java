@@ -196,7 +196,7 @@ final class VirtualActorGenerationFenceCurrentMainTest {
             first.stop();
             var error = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> first.getDone().get(5, TimeUnit.SECONDS));
-            assertInstanceOf(IllegalStateException.class, error.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, error.getCause());
             assertFalse(group.isCurrentVirtualActorTerminal(ID, 1L, first.id()),
                     "no terminal decision may use a failed physical retirement gate");
             assertThrows(IllegalStateException.class,

@@ -209,7 +209,9 @@ public final class TelemetrySpanScope implements AutoCloseable {
                 || lower.contains("credential") || lower.contains("api_key")
                 || lower.contains("apikey") || lower.contains("private_key")
                 || lower.contains("access_key") || lower.contains("session")
-                || lower.contains("headers") || lower.contains("bearer")) {
+                || lower.contains("headers") || lower.contains("bearer")
+                || lower.contains("file.path") || lower.contains("url.query")
+                || lower.contains("query.parameters") || lower.contains("baggage")) {
             throw new SecurityException("sensitive attribute keys are not allowed");
         }
         // Do not invoke an arbitrary Number.toString() on an actor carrier.

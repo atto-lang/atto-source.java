@@ -14,6 +14,14 @@ on:
         description: "Approved 40-hex Git tree of the source_commit"
         required: true
         type: string
+      suite:
+        description: "Approved test profile on the explicitly pinned private source tree"
+        required: true
+        type: choice
+        default: baseline
+        options:
+          - baseline
+          - durable_manifest
 
 permissions:
   contents: read
@@ -31,7 +39,9 @@ jobs:
        || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == ''
        || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == ''
        || inputs.source_commit != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA
-       || inputs.source_tree != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
+       || inputs.source_tree != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE
+       || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE == ''
+       || inputs.suite != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -50,7 +60,9 @@ jobs:
        && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != ''
        && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != ''
        && inputs.source_commit == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA
-       && inputs.source_tree == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
+       && inputs.source_tree == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE
+       && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE != ''
+       && inputs.suite == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE }}
     # Runner groups must be admin-restricted to this private source repo;
     # labels alone are not an isolation or runner-ownership boundary.
     runs-on:
@@ -58,6 +70,16 @@ jobs:
       labels: [self-hosted, linux, x64, oreslang-private-ephemeral]
     timeout-minutes: 45
     steps:
+      - name: Prove approved suite and selected profile before checkout
+        shell: bash
+        env:
+          APPROVED_SUITE: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE }}
+          SELECTED_SUITE: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+          case "$APPROVED_SUITE" in baseline|durable_manifest) ;; *) echo "::error::Unapproved suite"; exit 1;; esac
+          test "$SELECTED_SUITE" = "$APPROVED_SUITE"
+          echo "APPROVED_PRIVATE_SUITE=$SELECTED_SUITE"
       - name: Validate approved immutable refs before any source checkout
         shell: bash
         env:
@@ -100,10 +122,55 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-      - name: Execute actual linked filesystem .atto guest test suites
+      - name: Execute baseline approved filesystem guest test suites
+        if: ${{ inputs.suite == 'baseline' }}
         shell: bash
         run: |
+          set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=native -Dtest=dev.oreslang.runtime.AsyncFilesystemAtomicLanguageTest,dev.oreslang.runtime.BoundedFilesystemReadLanguageTest test
+      - name: Execute approved durability guest and process-kill profile
+        if: ${{ inputs.suite == 'durable_manifest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # An ephemeral workspace is required, but ensure no stale XML can
+          # masquerade as fresh executed guest-test evidence even if reused.
+          rm -rf target/surefire-reports
+          mvn -B -ntp -Dores.runtime.carriers=native -Dores.private.fs.guest.approved=true -Dsurefire.failIfNoSpecifiedTests=true -Dtest=dev.oreslang.runtime.AttoBinaryFileGuestTest,dev.oreslang.runtime.AttoDurableAtomicFilesystemLanguageTest,dev.oreslang.runtime.AttoDurableManifestProcessKillTest test
+          python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          reports = pathlib.Path("target/surefire-reports")
+          suites = {
+              "AttoBinaryFileGuestTest": None,
+              "AttoDurableAtomicFilesystemLanguageTest": None,
+              "AttoDurableManifestProcessKillTest":
+                  "aCompletedAttoDurableManifestWriteSurvivesSigkillAndFreshGuestReplay",
+          }
+          for suite, required_case in suites.items():
+              path = reports / ("TEST-dev.oreslang.runtime." + suite + ".xml")
+              if not path.is_file():
+                  raise SystemExit("Missing executed guest suite: " + str(path))
+              root = ET.parse(path).getroot()
+              if root.tag != "testsuite":
+                  raise SystemExit("Unexpected JUnit XML root for " + suite)
+              observed = root.findall(".//testcase")
+              totals = {key: int(root.attrib.get(key, "-1"))
+                        for key in ("tests", "errors", "failures", "skipped")}
+              if (totals["tests"] < 1 or len(observed) != totals["tests"]
+                      or any(totals[k] != 0 for k in ("errors", "failures", "skipped"))):
+                  raise SystemExit(f"Unexecuted, skipped, or failed guest suite {suite}: {totals}")
+              for case in observed:
+                  if any(case.find(tag) is not None
+                         for tag in ("failure", "error", "skipped")):
+                      raise SystemExit("Failed/skipped guest case " + str(case.attrib))
+              if required_case and not any(case.attrib.get("name") == required_case
+                                           for case in observed):
+                  raise SystemExit(f"Missing required real SIGKILL guest test: {required_case}")
+              print(f"APPROVED_DURABLE_GUEST_SUITE_PASSED={suite} tests={totals['tests']}")
+          print("ATTO_GUEST_PROCESS_KILL_REPLAY_SUITE_EXECUTED")
+          PY
       - name: Execute existing native filesystem regression tests
         shell: bash
         run: |
@@ -111,5 +178,6 @@ jobs:
       - name: Report limited test scope
         shell: bash
         run: |
-          echo "FS_GUEST_EXECUTED: linked .atto filesystem JUnit suites on source-local GraalVM runner"
-          echo "NOT_EXECUTED: cross-backend parity, full native-image AOT and REST HTTP integration"
+          echo "FS_GUEST_PROFILE=${{ inputs.suite }}"
+          echo "FS_GUEST_EXECUTED: exact-source-checkout linked .atto filesystem JUnit suites on approved private runner"
+          echo "NOT_EXECUTED: cross-backend parity, full native-image AOT, broker AMQP durability and REST HTTP integration"
