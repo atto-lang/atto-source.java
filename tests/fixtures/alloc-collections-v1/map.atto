@@ -1,5 +1,5 @@
 // expect-exit: 42
-import module map from "../../../stdlib/alloc/map.atto";
+import module map from "./map.atto";
 
 pub fnc main(): int {
   let mut table = map.new_map(4);
