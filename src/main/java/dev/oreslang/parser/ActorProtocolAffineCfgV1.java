@@ -146,6 +146,19 @@ public final class ActorProtocolAffineCfgV1 {
     }
 
     /**
+     * Prefer this link from production source analysis: it rechecks that all
+     * declarations have a real nominal unary/stream message proof. The CFG
+     * operation/event provenance must STILL come from typed MIR; this method
+     * does not authorize guest lowering or runtime-issued handle creation.
+     */
+    public static Proof verifyNominallyResolved(
+            ActorProtocolNominalResolverV1.ResolvedDeclarations declarations, Program program) {
+        Objects.requireNonNull(declarations, "nominal declarations");
+        declarations.protocol().verifyResolvedMessages(declarations.messages());
+        return verify(declarations.protocol(), program);
+    }
+
+    /**
      * This is a proof of only the *submitted* source-derived CFG. Every edge,
      * init provenance, source operation and authenticated terminal event must
      * be independently matched to typed compiler IR and eventual runtime ABI.
