@@ -120,6 +120,14 @@ final class CoreSliceErrorGuestTest {
                   values.add(20);
                   values.add(30);
                   values.add(40);
+                  if slice.valid_index(-1, 4); do return 24; fi
+                  if !slice.valid_index(3, 4); do return 25; fi
+                  if !slice.valid_signed_index(-1, 4); do return 26; fi
+                  if slice.valid_signed_index(-5, 4); do return 27; fi
+                  if !slice.is_empty(0); do return 28; fi
+                  if slice.is_empty(-1); do return 29; fi
+                  if !slice.can_split_at(4, 4); do return 30; fi
+                  if slice.can_split_at(4, 5); do return 31; fi
                   if !slice.valid_range(1, 3, 4); do return 1; fi
                   if slice.valid_range(3, 2, 4); do return 2; fi
                   if !slice.valid_endpoints(1, 4, 4); do return 3; fi
