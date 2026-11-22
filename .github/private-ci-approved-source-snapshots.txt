@@ -1,0 +1,7 @@
+# Immutable private source snapshots authorized for external private-only CI.
+# Empty by default: no source revision is approved for transfer.
+# Each active entry requires independent security authorization through the
+# exact-head review-pinned external-admission policy.
+# Format: <40-hex source commit> <40-hex source root tree> <numeric destination repo ID>
+# Destination approval alone never authorizes an arbitrary snapshot.
+37e2e31d957f563681b6793d2a76d2827fe076ad 0e77ebdd16179440bb6c678207796aa3536116b8 1357615104
