@@ -150,6 +150,13 @@ public final class ActorProtocolAffineCfgV1Smoke {
                 b(0,List.of(init(),close(1,10),new AwaitUnary(10,2)),1,2,3,4),
                 b(1,List.of(stream(2,11),new AwaitStreamStep(11,3)),5,6,7,8),
                 ret(2),ret(3),ret(4),ret(5),ret(6),ret(7),ret(8)));
+        var manyPlaces = new java.util.ArrayList<Op>();
+        manyPlaces.add(init());
+        for (int place = 1; place <= MAX_HANDLES; place++)
+            manyPlaces.add(new Take(place, place + 1));
+        manyPlaces.add(new Return());
+        fails("moved handles still count against bounded proof budget", "E_PROTOCOL_HANDLE_BUDGET",
+                p(false,b(0,manyPlaces)));
         System.out.println("ATTO_PROTOCOL_AFFINE_CFG_SOURCE_ONLY=PASS|cases="+passed);
         System.out.println("ATTO_PROTOCOL_GUEST_EXECUTION=NOT_EXECUTED");
     }
