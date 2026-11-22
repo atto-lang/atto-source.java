@@ -35,7 +35,13 @@ public final class CoreLibrarySources {
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
 
-    private static final Set<String> CORE_SOURCES = Set.of("numeric.atto", "protocols.atto", "collections.atto");
+    private static final Set<String> CORE_SOURCES = Set.of(
+            "numeric.atto",
+            "protocols.atto",
+            "collections.atto",
+            "math.atto",
+            "hash.atto",
+            "cell.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
@@ -48,13 +54,22 @@ public final class CoreLibrarySources {
     private static final Set<String> STD_SOURCES = Set.of(
             "core.atto", "testing.ores", "assert.atto", "trace.atto", "telemetry.atto",
             "http_wire.atto", "compute.atto", "db_pool.atto",
-            "actor_persistence.atto", "data_pool.ores", "otp/supervisor.ores",
-            "bounds.atto", "text.atto",
-            "layout_policy.atto", "region_policy.atto", "dense_index.atto",
-            "actor_result_policy.atto", "task_parallel_policy.atto",
-            "cpu_budget_policy.atto", "source_budget_policy.atto",
-            "cooperation_policy.atto", "http_response_phase_policy.atto",
-            "admission_deadline_policy.atto");
+            "actor_persistence.atto",
+            "data_pool.ores",
+            "otp/supervisor.ores",
+            "bounds.atto",
+            "text.atto",
+            "layout_policy.atto",
+            "region_policy.atto",
+            "dense_index.atto",
+            "actor_result_policy.atto",
+            "task_parallel_policy.atto",
+            "cpu_budget_policy.atto",
+            "source_budget_policy.atto",
+            "cooperation_policy.atto",
+            "http_response_phase_policy.atto",
+            "admission_deadline_policy.atto",
+            "env.atto");
 
     private CoreLibrarySources() { }
 
@@ -121,7 +136,28 @@ public final class CoreLibrarySources {
         if (selected == null) return false;
         if (selected.v1Root()) return true;
         String stem = v1Stem(selected.rest());
-        return stem != null && V1_UNITS.get(selected.layer()).contains(stem);
+        if (stem == null || !V1_UNITS.get(selected.layer()).contains(stem)) return false;
+        // A module that already exists in the legacy registry keeps winning
+        // on the shared legacy roots, so existing ores.core/std modules with a
+        // v1 name are never shadowed.
+        Set<String> legacy = selected.layer() == Layer.CORE ? CORE_SOURCES : STD_SOURCES;
+        return !legacy.contains(stem + ".atto") && !legacy.contains(stem + ".ores");
+    }
+
+    /**
+     * True when the import names compiler-owned canonical .atto source (a
+     * layered unit or a legacy ores.core/std module stored as .atto). Such
+     * units run under the same checked-i64 profile as a .atto importer.
+     */
+    public static boolean isCompilerOwnedAttoImport(String importPath) {
+        if (isLayeredLibraryImport(importPath)) return true;
+        try {
+            if (isOresCoreImport(importPath)) return canonicalCoreRelativePath(importPath).endsWith(".atto");
+            if (isStdImport(importPath)) return canonicalStdRelativePath(importPath).endsWith(".atto");
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+        return false;
     }
 
     /** Resolve a layered selector or throw a fail-closed diagnostic. */
