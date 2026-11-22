@@ -3878,7 +3878,8 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "log", env)) {
+            if (isBuiltinStdoutCall(call, "log", env) || isBuiltinStdoutCall(call, "log_blocking", env)
+                    || isBuiltinStdoutCall(call, "log_async", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -3889,9 +3890,11 @@ public final class TypeChecker {
                         typeOf(argument, env, generics, self);
                     }
                 }
-                return Primitive.VOID;
+                return isBuiltinStdoutCall(call, "log_async", env)
+                        ? new Named("Future", List.of(Primitive.VOID)) : Primitive.VOID;
             }
-            if (isBuiltinStdoutCall(call, "logList", env)) {
+            if (isBuiltinStdoutCall(call, "logList", env)
+                    || isBuiltinStdoutCall(call, "logList_async", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.logList does not accept call-site type arguments");
                 }
@@ -3899,7 +3902,8 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("stdio.stdout.logList expects exactly one array/list/tuple argument");
                 }
                 requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
-                return Primitive.VOID;
+                return isBuiltinStdoutCall(call, "logList_async", env)
+                        ? new Named("Future", List.of(Primitive.VOID)) : Primitive.VOID;
             }
             // An actor's receive method is scheduler-owned ingress, not an
             // implicitly callable self method. Check the enclosing actor
@@ -5431,7 +5435,13 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
-                if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                if (member.member().equals("print") || member.member().equals("print_blocking")
+                        || member.member().equals("println") || member.member().equals("println_blocking"))
+                    return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                if (member.member().equals("println_async"))
+                    return new Function(List.of(Unknown.INSTANCE), new Named("Future", List.of(Primitive.VOID)));
+                if (member.member().equals("flush_async_logs"))
+                    return new Function(List.of(), new Named("Future", List.of(Primitive.VOID)));
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
@@ -5636,10 +5646,16 @@ public final class TypeChecker {
 
             receiver = receiverDispatchType(unwrapMutexGuard(deref(receiver)));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout")) {
-                if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
+                if (member.member().equals("write") || member.member().equals("write_blocking")
+                        || member.member().equals("println") || member.member().equals("println_blocking")
+                        || member.member().equals("logList")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 }
-                if (member.member().equals("log")) {
+                if (member.member().equals("println_async") || member.member().equals("logList_async")) {
+                    return new Function(List.of(Unknown.INSTANCE), new Named("Future", List.of(Primitive.VOID)));
+                }
+                if (member.member().equals("log") || member.member().equals("log_blocking")
+                        || member.member().equals("log_async")) {
                     throw new IllegalArgumentException(
                             "variadic stdio.stdout.log is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
                 }

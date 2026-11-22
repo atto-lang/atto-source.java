@@ -35,6 +35,7 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
+    private final AsyncStdioLogs asyncStdio;
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
@@ -126,6 +127,7 @@ public final class OresContext implements AutoCloseable {
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in(), StandardCharsets.UTF_8));
         this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
+        this.asyncStdio = new AsyncStdioLogs(this.output);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         // No host workflow service may enter an adversarial VM context.
         // Consume a one-shot provision even when forbidden so it cannot leak
@@ -189,6 +191,7 @@ public final class OresContext implements AutoCloseable {
                 try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            try { asyncStdio.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
         CorePerf.end(CorePerf.CONTEXT_STARTUP, contextPerf);
@@ -202,6 +205,7 @@ public final class OresContext implements AutoCloseable {
     public TruffleLanguage.Env env() { return env; }
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
+    public AsyncStdioLogs asyncStdio() { return asyncStdio; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
     public SourceActorPubSub actorPubSub() { return actorPubSub; }
@@ -550,6 +554,9 @@ public final class OresContext implements AutoCloseable {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+        // Do not seal stdout yet: actor stop hooks and physical native-I/O
+        // retirement can still emit final telemetry. The bounded record queue
+        // remains live until all producer shutdown phases have completed.
         guestTimers.close();
         // Revoke workflow admission and drain callbacks before JNI teardown.
         // On timeout, retain the context rather than freeing live host state.
@@ -564,7 +571,12 @@ public final class OresContext implements AutoCloseable {
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
-            output.flush();
+            // Physical retirement is incomplete: reject new output without
+            // waiting for (or re-entering) the potentially blocked sink.
+            // Quarantine retains the context, native I/O, actors, and worker.
+            asyncStdio.sealAdmission();
+            // A blocked async writer owns PrintWriter's monitor; do not re-enter
+            // that lock on an already-failed physical retirement path.
             throw new IllegalStateException(
                     "Oreslang context cleanup incomplete; physical state quarantined",
                     incomplete);
@@ -581,6 +593,17 @@ public final class OresContext implements AutoCloseable {
             if (failure == null) failure = asyncFailure;
             else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
         }
+        // Both actor/native-I/O joins completed, and all auxiliary producers
+        // were asked to stop. Only now close stdout admission and drain the
+        // accepted records. The seal and timed join never acquire writer locks.
+        // On a stalled sink, preserve the context quarantine.
+        asyncStdio.sealAdmission();
+        try {
+            asyncStdio.close();
+        } catch (RuntimeException stdioFailure) {
+            if (failure == null) failure = stdioFailure;
+            else if (failure != stdioFailure) failure.addSuppressed(stdioFailure);
+        }
         try {
             vm.close();
         } catch (RuntimeException vmFailure) {
@@ -588,7 +611,7 @@ public final class OresContext implements AutoCloseable {
             else if (failure != vmFailure) failure.addSuppressed(vmFailure);
         }
         if (failure != null) {
-            output.flush();
+            // Never attempt synchronous reflush after a failed bounded drain.
             throw new IllegalStateException(
                     "Oreslang context auxiliary shutdown incomplete; context quarantined",
                     failure);
@@ -601,7 +624,9 @@ public final class OresContext implements AutoCloseable {
         }
         actorPubSub.close();
         garbageCollector.close();
-        output.flush();
+        // The final PrintWriter flush was performed on the bounded daemon
+        // drain, including when no async record was ever admitted. Never
+        // reenter the host sink monitor on the closing actor/carrier thread.
         QUARANTINED_CONTEXTS.remove(this);
     }
 }
