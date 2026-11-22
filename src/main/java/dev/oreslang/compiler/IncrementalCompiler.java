@@ -36,8 +36,12 @@ public final class IncrementalCompiler {
     // Strict-Atto and legacy parsing must never share cache entries.
     private final Map<String, ParsedUnit> parsedCache = new LinkedHashMap<>();
     private final Map<String, ParsedUnit> strictAttoParsedCache = new LinkedHashMap<>();
-    private final Map<String, List<String>> importBindingCache = new LinkedHashMap<>();
-    private final Map<String, List<String>> strictAttoImportBindingCache = new LinkedHashMap<>();
+    // Include the imported declaration identity, not only resolved source IDs:
+    // swapping {left} for {right} within the same provider also invalidates
+    // re-exports and all downstream typed assumptions.
+    private final Map<String, List<ImportBinding>> importBindingCache = new LinkedHashMap<>();
+    private final Map<String, List<ImportBinding>> strictAttoImportBindingCache = new LinkedHashMap<>();
+    private record ImportBinding(Ast.ImportDecl declaration, String resolvedTarget) { }
 
     // Raw AST is the input to semantic analysis (which expands annotations
     // itself). The expanded AST is used for graph linking and ABI indexing.
@@ -80,7 +84,7 @@ public final class IncrementalCompiler {
         Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
         Map<String, ParsedUnit> selectedParsedCache =
                 strictAtto ? strictAttoParsedCache : parsedCache;
-        Map<String, List<String>> selectedBindingCache =
+        Map<String, List<ImportBinding>> selectedBindingCache =
                 strictAtto ? strictAttoImportBindingCache : importBindingCache;
         if (sources.isEmpty()) {
             // The input map is a complete source snapshot, including removals.
@@ -166,11 +170,11 @@ public final class IncrementalCompiler {
         // A dependency SET is not sufficient: swapping the binding of two
         // imports can retain exactly the same set of target source IDs.
         // Resolve every declaration again against this complete snapshot.
-        Map<String, List<String>> resolvedBindings = new LinkedHashMap<>();
+        Map<String, List<ImportBinding>> resolvedBindings = new LinkedHashMap<>();
         LinkedHashSet<String> unversioned = new LinkedHashSet<>();
         for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
             String id = entry.getKey();
-            ArrayList<String> targets = new ArrayList<>();
+            ArrayList<ImportBinding> targets = new ArrayList<>();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
                 String target = ImportGraph.resolveImportUnitId(
                         id, imported, parsed.keySet(), normalizedImportResolutions);
@@ -178,9 +182,9 @@ public final class IncrementalCompiler {
                     // Unknown host/package interface: never keep an unchecked
                     // cached type result across builds without version proof.
                     unversioned.add(id);
-                    targets.add("external:" + imported.path());
+                    targets.add(new ImportBinding(imported, null));
                 } else {
-                    targets.add(target);
+                    targets.add(new ImportBinding(imported, target));
                 }
             }
             resolvedBindings.put(id, List.copyOf(targets));
