@@ -127,4 +127,35 @@ define module Telemetry as
   pub fnc batch(int capacity): SpanBatch {
     return new SpanBatch(capacity);
   }
+
+  fnc lower_hex(int scalar): bool {
+    return (scalar >= 48 && scalar <= 57) ||
+           (scalar >= 97 && scalar <= 102);
+  }
+
+  // Complete, strictly lowercase W3C traceparent version 00 grammar:
+  // 00-{32 hex trace-id}-{16 hex parent-id}-{2 hex flags}.
+  // Denies all-zero IDs, controls, mixed case, trailing bytes and extensions.
+  // The result is solely a validity check; it creates NO trusted context.
+  pub fnc traceparent_v00_header_valid(String header): bool {
+    let points = header.codepoints();
+    if points.size != 55 then return false; fi
+    if points.get(0) != 48 || points.get(1) != 48 then return false; fi
+    if points.get(2) != 45 || points.get(35) != 45 ||
+       points.get(52) != 45 then return false; fi
+    let bool trace_nonzero = false;
+    let bool parent_nonzero = false;
+    for (let int i = 3; i <= 54; i = i + 1) {
+      if i != 35 && i != 52; do
+        let int scalar = points.get(i);
+        if !lower_hex(scalar) then return false; fi
+        if scalar != 48; do
+          if i >= 3 && i <= 34 then trace_nonzero = true; fi
+          if i >= 36 && i <= 51 then parent_nonzero = true; fi
+        fi
+      fi
+    }
+    return trace_nonzero && parent_nonzero;
+  }
+
 end
