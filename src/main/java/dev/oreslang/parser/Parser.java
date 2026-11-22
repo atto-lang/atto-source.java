@@ -688,6 +688,12 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        // A module is a file-level container. Its direct children may declare
+        // types, but may not introduce another module scope.
+        if (check(MODULE)) {
+            throw error(peek(), "nested modules are not permitted; declare modules at file scope");
+        }
+
         if (isContextualIdentifier("declare")) {
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
@@ -729,6 +735,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (check(MODULE)) {
+                throw error(peek(), "nested modules are not permitted; declare modules at file scope");
+            }
             if (isExternalActorMethodHead()) {
                 return parseExternalActorMethod(annotations, modifiers);
             }
