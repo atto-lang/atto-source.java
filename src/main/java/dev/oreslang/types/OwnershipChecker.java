@@ -2533,12 +2533,19 @@ public final class OwnershipChecker {
                 requireUsable(handle, spanName.name(), false);
                 Ast.TypeRef result;
                 switch (spanCall.member()) {
-                    case "attribute" -> {
+                    case "attribute", "set_attribute" -> {
                         if (call.arguments().size() != 2) {
                             throw error("telemetry span attribute requires exactly two arguments");
                         }
                         checkExpr(call.arguments().get(0), scope, true);
                         checkExpr(call.arguments().get(1), scope, true);
+                        result = Ast.TypeRef.simple("void");
+                    }
+                    case "add_event" -> {
+                        if (call.arguments().size() != 1) {
+                            throw error("span.add_event requires exactly one string argument");
+                        }
+                        checkExpr(call.arguments().get(0), scope, true);
                         result = Ast.TypeRef.simple("void");
                     }
                     case "recording" -> {
