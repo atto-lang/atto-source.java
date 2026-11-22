@@ -123,15 +123,20 @@ RFC 5869 HKDF on source blob
 
 The token-free, source-owned host smoke runner is
 `sh tests/crypto-host-v1.sh` (Java 21; **not** the Atto guest compiler).
-Equivalent isolated host vectors passed, but this exact newly
-committed shell runner has **not** yet been executed by GitHub Actions.
+The exact shell runner, blob
+`f59a2e72a1d65a982b6ee39152a1cba793d70d4e`, was
+**executed locally** under Java 21 against the matching exact committed
+provider source blobs and printed `ATTO_CRYPTO_JAVA_HOST_V1_PASS`.
+It has **not** executed inside GitHub Actions.
 Maven/JUnit, strict Atto namespace guest tests, GraalVM AOT, and
 cross-backend live interoperability remain **NOT_EXECUTED**.
 
 A private alternate organization `22-factor-apps/atto-ci`
-(repo ID 1459040433) has confirmed **source-free stepful Actions**
-capacity from run 45050079712 (2026-11-22; six completed steps).
-This does **not** authorize moving private Atto source there.
+(repo ID 1459040433) has a **stepful private carrier Actions success**
+from run 45050079712 (2026-11-22; six completed steps for an unrelated carrier
+workflow, not an Atto crypto run). This is evidence of recent
+runner admission, not a fresh source-free probe or a billing guarantee.
+It does **not** authorize moving private Atto source there.
 `.github/private-ci-approved-repositories.txt` currently has
 no active destination entries, and
 `.github/private-ci-approved-source-snapshots.txt` does not pin
