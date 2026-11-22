@@ -46,6 +46,17 @@ public final class SharedCodeImageStore implements AutoCloseable {
 
         public String codeUnitId() { return codeUnitId; }
         public Ast.Program program() { return program; }
+        /**
+         * JVM-local source-layout generation. Only a live runtime-issued
+         * code image may supply this positive epoch to the structural
+         * projection verifier. It is not a transferable authority token.
+         */
+        public long checkedLayoutGeneration() {
+            if (!identity.isActive()) {
+                throw new IllegalStateException("retired code image cannot issue shape witnesses");
+            }
+            return identity.generation();
+        }
         CodeImageIdentity identity() { return identity; }
 
         @Override
