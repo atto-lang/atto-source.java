@@ -1,0 +1,68 @@
+name: Atto std metrics/json/zorde exact-head guest (JDK25)
+on:
+  pull_request:
+    paths:
+      - 'stdlib/metrics.atto'
+      - 'stdlib/json.atto'
+      - 'stdlib/zorde.atto'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/test/resources/stdlib-parity/metrics-json-zorde/**'
+      - 'src/test/java/dev/oreslang/runtime/NativeAttoMetricsJsonZordeTest.java'
+      - 'tests/std-metrics-json-zorde-source-contract.test.mjs'
+      - '.github/workflows/atto-metrics-json-zorde-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-and-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout immutable triggering SHA
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify actual immutable head and capture tree SHA
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "ATTO_STDLIB_HEAD=$(git rev-parse HEAD)"
+          echo "ATTO_STDLIB_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Run source-only audit (NOT guest proof)
+        run: |
+          set -euo pipefail
+          node --test tests/std-metrics-json-zorde-source-contract.test.mjs
+          echo 'ATTO_STDLIB_SOURCE_AUDIT=PASS'
+      - name: Setup Java 25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile and execute real Atto guest fixtures
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=NativeAttoMetricsJsonZordeTest -DfailIfNoTests=true test
+          report=target/surefire-reports/TEST-dev.oreslang.runtime.NativeAttoMetricsJsonZordeTest.xml
+          test -s "$report"
+          grep -F 'name="modulesAreClosedSourceOnlyImports"' "$report"
+          grep -F 'name="metricsGuestRejectsOverflowAndBucketsSamples"' "$report"
+          grep -F 'name="jsonGuestRejectsAmbiguousAndMalformedText"' "$report"
+          grep -F 'name="zordeGuestRoundtripsDeterministicFrame"' "$report"
+          grep -F 'skipped="0"' "$report"
+          grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
+          echo 'ATTO_STDLIB_JAVA_GUEST=EXECUTED'
+      - name: Record evidence limits
+        if: always()
+        run: |
+          echo 'JVM guest success, if achieved, is not Native Image or LLVM parity.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No runner steps or an absent receipt means NOT_EXECUTED, never PASS.' >> "$GITHUB_STEP_SUMMARY"
