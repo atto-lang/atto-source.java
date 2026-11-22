@@ -7,6 +7,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.stdlib.CoreLibrarySources;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
@@ -11714,6 +11715,25 @@ public final class OresEvalRootNode extends RootNode {
 
         private String resolveImportUnitId(String rawPath) {
             String hostResolved = context.resolvedLinkedImport(codeUnitId, rawPath);
+
+            // Runtime defense in depth: even a direct or legacy single-unit
+            // evaluation must not resolve compiler-owned std/core/alloc names
+            // through ambient files, package roots or an attacker-selected
+            // linked source ID. The authenticated loader must bind them to
+            // exactly the compiler's closed registry identity.
+            String expectedBuiltin =
+                    CoreLibrarySources.requiredRegisteredBuiltinUnitId(rawPath);
+            if (expectedBuiltin != null) {
+                if (hostResolved == null) {
+                    throw new SecurityException(
+                            "compiler-owned import has no linked registered source: " + rawPath);
+                }
+                if (!expectedBuiltin.equals(normalizeUnitId(hostResolved))) {
+                    throw new SecurityException(
+                            "compiler-owned import identity mismatch: " + rawPath);
+                }
+                return expectedBuiltin;
+            }
             if (hostResolved != null) return hostResolved;
 
             String raw = rawPath.replace('\\', '/');
