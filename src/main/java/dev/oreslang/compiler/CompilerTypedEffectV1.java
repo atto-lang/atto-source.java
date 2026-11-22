@@ -82,8 +82,8 @@ public final class CompilerTypedEffectV1 {
             if (expr instanceof Ast.LiteralExpr literal) {
                 Object v = literal.value();
                 if (!(v instanceof Boolean || v instanceof Integer || v instanceof Long ||
-                        v instanceof BigInteger))
-                    deny("E_EFFECT_UNKNOWN", "non-scalar literal runtime");
+                        (v instanceof BigInteger big && big.bitLength() < 63)))
+                    deny("E_EFFECT_UNKNOWN", "non-scalar or unbounded literal runtime");
             } else if (expr instanceof Ast.NameExpr name) {
                 if (!locals.contains(name.name())) deny("E_EFFECT_UNKNOWN", "unresolved variable");
             } else if (expr instanceof Ast.UnaryExpr unary) {
