@@ -1000,8 +1000,17 @@ public final class Parser {
         return false;
     }
 
+    // 'expand!' is contextual: plain 'expand' remains a legal identifier.
+    // The sigil must be adjacent, just like the ownership operators.
+    private boolean isExpandBangHead() {
+        return isContextualIdentifier("expand")
+                && checkNext(BANG)
+                && adjacent(peek(), tokens.get(current + 1));
+    }
+
     private boolean looksLikeMacroInvocationDeclaration() {
-        int i = current;
+        boolean canonical = isExpandBangHead();
+        int i = current + (canonical ? 2 : 0);
         if (i >= tokens.size() || tokens.get(i).type() != IDENT) return false;
         i++;
         while (i + 1 < tokens.size()
@@ -1009,24 +1018,31 @@ public final class Parser {
                 && tokens.get(i + 1).type() == IDENT) {
             i += 2;
         }
-        return i + 1 < tokens.size()
-                && tokens.get(i).type() == BANG
-                && tokens.get(i + 1).type() == LPAREN;
+        // Keep legacy 'name!(...)' temporarily while fixtures migrate.
+        return canonical
+                ? i < tokens.size() && tokens.get(i).type() == LPAREN
+                : i + 1 < tokens.size()
+                    && tokens.get(i).type() == BANG
+                    && tokens.get(i + 1).type() == LPAREN;
     }
 
     private Ast.MacroInvocationDecl parseMacroInvocationDeclaration() {
+        boolean canonical = isExpandBangHead();
+        Token start = canonical ? advance() : null;
+        if (canonical) consume(BANG, "expected '!' immediately after expand");
         Token first = consume(IDENT, "expected macro name");
         StringBuilder name = new StringBuilder(first.lexeme());
         while (match(DOT, DOUBLE_COLON)) {
             name.append('.').append(consume(IDENT, "expected macro name after namespace qualifier").lexeme());
         }
-        consume(BANG, "macro invocation requires '!'");
-        consume(LPAREN, "macro invocation requires '(' after '!'");
+        if (!canonical) consume(BANG, "legacy macro invocation requires '!'");
+        consume(LPAREN, "macro invocation requires '(' after its name");
         List<Ast.MacroArgument> arguments = parseMacroInvocationArguments();
         consume(RPAREN, "expected ')' after macro arguments");
         consume(SEMICOLON, "declaration-position macro invocation must end with ';'");
+        Token site = canonical ? start : first;
         return new Ast.MacroInvocationDecl(
-                name.toString(), arguments, new Ast.SourceSite(first.line(), first.column()));
+                name.toString(), arguments, new Ast.SourceSite(site.line(), site.column()));
     }
 
     private List<Ast.MacroArgument> parseMacroInvocationArguments() {
@@ -6048,6 +6064,23 @@ public final class Parser {
             throw error(previous(), "~" + kind
                     + "(...) requires reviewed compiler-owned aggregate lowering; "
                     + "no host fallback is allowed");
+        }
+        // Canonical typed macro expansion is 'expand! namespace.name(args)'.
+        // Parse it directly as a compiler-only AST node, never a runtime call.
+        if (isExpandBangHead()) {
+            Token site = advance(); // contextual expand
+            consume(BANG, "expected '!' immediately after expand");
+            Token first = consume(IDENT, "expected macro name after expand!");
+            StringBuilder name = new StringBuilder(first.lexeme());
+            while (match(DOT, DOUBLE_COLON)) {
+                name.append('.').append(consume(IDENT,
+                        "expected statically qualified macro name").lexeme());
+            }
+            consume(LPAREN, "expected '(' after expand! macro name");
+            List<Ast.MacroArgument> arguments = parseMacroInvocationArguments();
+            consume(RPAREN, "expected ')' after expand! macro arguments");
+            return new Ast.MacroInvocationExpr(name.toString(), arguments,
+                    new Ast.SourceSite(site.line(), site.column()));
         }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));

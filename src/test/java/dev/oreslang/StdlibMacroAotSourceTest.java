@@ -50,13 +50,13 @@ final class StdlibMacroAotSourceTest {
     @Test
     void allSixPublicMacroEntriesExpandToClosedAotScalarCode() {
         for (String expression : List.of(
-                "const_int!(const 6 * 7)",
-                "splice_expr!(syntax expr 42)",
-                "const_retry_count!(const 40 + 2)",
-                "const_timeout_ns!(const 21 * 2)",
-                "const_capacity!(const 40 + 2)",
-                "const_alignment!(const 6 * 7)",
-                "splice_expr!(syntax expr const_int!(const 6 * 7))")) {
+                "expand! const_int(const 6 * 7)",
+                "expand! splice_expr(syntax expr 42)",
+                "expand! const_retry_count(const 40 + 2)",
+                "expand! const_timeout_ns(const 21 * 2)",
+                "expand! const_capacity(const 40 + 2)",
+                "expand! const_alignment(const 6 * 7)",
+                "expand! splice_expr(syntax expr expand! const_int(const 6 * 7))")) {
             returnsLiteral42(expression);
         }
     }
@@ -65,7 +65,7 @@ final class StdlibMacroAotSourceTest {
     void runtimeValuesDoNotBecomeConstants() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> expand("pub fnc main(int input) -> int { "
-                        + "return const_capacity!(const input); }"));
+                        + "return expand! const_capacity(const input); }"));
         assertTrue(failure.getMessage().contains("not a closed compile-time expression"),
                 failure::toString);
     }
@@ -83,7 +83,7 @@ final class StdlibMacroAotSourceTest {
     void CompileTimeIntegerOverflowRejectsBeforeCodegen() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> expand("pub fnc main() -> int { "
-                        + "return const_retry_count!(const 9223372036854775807 + 1); }"));
+                        + "return expand! const_retry_count(const 9223372036854775807 + 1); }"));
         assertTrue(failure.getMessage().contains("compile-time integer + overflow"),
                 failure::toString);
     }

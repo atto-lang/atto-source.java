@@ -40,3 +40,12 @@ GraalVM Native Image build and guest execution; verify no macro runtime symbols 
 source parser in the binary; test qualified cross-file import with module provenance;
 review import hygiene, cycle limits, deterministic keys and source export policy.
 Keep macro integration PR #1398 and this dependent PR unmerged until material evidence.
+
+## Canonical invocation syntax (2026-11-22)
+
+Use `expand! macro_name(const ...)` or `expand! namespace.macro_name(syntax expr ...)`.
+`expand!` is contextual (adjacent `!` required), not an ownership operation;
+`take!`, `share!` and `borrow!` remain distinct ownership forms. Legacy
+`name!(...)` remains provisionally parseable for existing test sources until
+migration, but is not the documented spelling. Expression and declaration
+macro ASTs are still erased before AOT; no runtime fallback is allowed.

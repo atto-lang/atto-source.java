@@ -19,6 +19,91 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class MacroInvocationPlannerTest {
     @Test
+    void canonicalExpandBangParsesTypedExpressionAndDeclarationMacros() {
+        Ast.Program declarations = Parser.parse("""
+                define macro emit(Type target) -> SyntaxList<Decl> {
+                    return generated(target);
+                }
+                expand! emit(type User);
+                """);
+        Ast.MacroInvocationDecl decl = assertInstanceOf(
+                Ast.MacroInvocationDecl.class,
+                declarations.modules().getFirst().declarations().get(1));
+        assertEquals("emit", decl.name());
+        assertInstanceOf(Ast.MacroTypeArgument.class, decl.arguments().getFirst());
+
+        Ast.Program expressions = Parser.parse("""
+                define macro literal(Const<int> value) -> Syntax<Expr> {
+                    return quote(value);
+                }
+                fnc main() -> int {
+                    return expand! literal(const 6 * 7);
+                }
+                """);
+        Ast.FunctionDecl main = assertInstanceOf(Ast.FunctionDecl.class,
+                expressions.modules().getFirst().declarations().get(1));
+        Ast.ReturnStmt returned = assertInstanceOf(Ast.ReturnStmt.class, main.body().getFirst());
+        Ast.MacroInvocationExpr expanded = assertInstanceOf(
+                Ast.MacroInvocationExpr.class, returned.value());
+        assertEquals("literal", expanded.name());
+        assertInstanceOf(Ast.MacroConstArgument.class, expanded.arguments().getFirst());
+
+        Ast.Program qualified = Parser.parse("""
+                fnc main() -> int {
+                    return expand! lib.literal(const 42);
+                }
+                """);
+        Ast.FunctionDecl qualifiedMain = assertInstanceOf(Ast.FunctionDecl.class,
+                qualified.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt result = assertInstanceOf(Ast.ReturnStmt.class,
+                qualifiedMain.body().getFirst());
+        assertEquals("lib.literal", assertInstanceOf(
+                Ast.MacroInvocationExpr.class, result.value()).name());
+    }
+
+    @Test
+    void canonicalExpandBangEnforcesCompileTimeClosureAndRejectsWrongKinds() {
+        Ast.Program success = assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define macro literal(Const<int> value) -> Syntax<Expr> {
+                    return quote(value);
+                }
+                pub fnc main() -> int {
+                    return expand! literal(const 40 + 2);
+                }
+                """));
+        Ast.FunctionDecl main = success.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("main"))
+                .findFirst().orElseThrow();
+        Ast.ReturnStmt returned = assertInstanceOf(Ast.ReturnStmt.class, main.body().getFirst());
+        assertEquals(42L, assertInstanceOf(Ast.LiteralExpr.class, returned.value()).value());
+
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        pub fnc main() -> int {
+                            return expand! literal(syntax expr 42);
+                        }
+                        """));
+        assertTrue(wrong.getMessage().contains("macro"), wrong::toString);
+
+        IllegalArgumentException dynamic = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        pub fnc main(int value) -> int {
+                            return expand! literal(const value);
+                        }
+                        """));
+        assertTrue(dynamic.getMessage().contains("compile-time"), dynamic::toString);
+    }
+
+    @Test
     void parsesDeclarationAndExpressionMacroInvocationsAsCompilerSyntax() {
         Ast.Program declarationProgram = Parser.parse("""
                 define macro emit(Type target) -> SyntaxList<Decl> {
