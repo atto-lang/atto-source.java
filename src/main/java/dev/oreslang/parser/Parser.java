@@ -6107,6 +6107,9 @@ public final class Parser {
     private Ast.Expr parseMultiplicative() {
         Ast.Expr expr = parseWithUpdate();
         while (match(STAR, SLASH, PERCENT)) {
+            if (previous().type() == PERCENT) {
+                throw error(previous(), "noncanonical '%' source operator; use named Integer.rem/mod");
+            }
             if (previous().type() == PERCENT) throw error(previous(),
                     "'%' is reserved and is not AttoLang source syntax; use Integer.rem(a, b) or Integer.mod(a, b)");
             String op = previous().lexeme();
