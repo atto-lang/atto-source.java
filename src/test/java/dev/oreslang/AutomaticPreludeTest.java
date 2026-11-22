@@ -22,7 +22,7 @@ final class AutomaticPreludeTest {
             assertTrue(binding.isPresent(), "missing core prelude " + name);
             assertTrue(binding.get().canonical().startsWith("core/"));
         }
-        for (String name : new String[]{"String", "List", "Map", "Set", "Vec", "Box"}) {
+        for (String name : new String[]{"List", "Map", "Set", "Vec", "Box"}) {
             assertTrue(AutomaticPrelude.lookup(name, AutomaticPrelude.Profile.CORE).isEmpty(), name);
             assertEquals(AutomaticPrelude.Scope.ALLOC,
                     AutomaticPrelude.lookup(name, AutomaticPrelude.Profile.HOSTED)
@@ -92,9 +92,13 @@ final class AutomaticPreludeTest {
         assertEquals(CoreTypeRegistry.DropPolicy.OWNED_STORAGE, map.dropPolicy());
 
         var string = CoreTypeRegistry.lookup("String").orElseThrow();
+        assertEquals(CoreTypeRegistry.Scope.CORE, string.scope());
+        assertEquals(CoreTypeRegistry.Ownership.COPY, string.ownership());
         assertEquals(CoreTypeRegistry.LoweringStatus.JAVA_LEGACY_SCALAR, string.javaStatus());
-        assertEquals(CoreTypeRegistry.Allocation.ALLOCATOR_REQUIRED, string.allocation(),
-                "legacy String scalar support must not imply owned alloc::String");
+        assertEquals(CoreTypeRegistry.Allocation.NONE, string.allocation(),
+                "Java String remains the immutable scalar/view, not allocator-owned alloc::String");
+        assertTrue(AutomaticPrelude.lookup("String", AutomaticPrelude.Profile.CORE).isPresent());
+        assertTrue(AutomaticPrelude.lookup("String", AutomaticPrelude.Profile.ALLOC).isPresent());
 
         assertTrue(CoreTypeRegistry.lookup("HashMap").orElseThrow().scope()
                 == CoreTypeRegistry.Scope.EXPLICIT);
