@@ -6,24 +6,24 @@ and deterministic cleanup all execute on the current compiler head.
 
 ## API and safety contracts
 
-- `alloc_box.OwnedBox<T>`: single-slot unique heap object, `boxed`,
+- `alloc_box.OwnedBox<T>`: single-slot unique heap object, consuming target `take! T` formals, `boxed`,
   `empty`, `replace`, `take_value`, `is_full`, `is_empty`.
   There is **no alias-copy constructor**. This deliberately does not declare
   compiler-reserved intrinsic `Box<T>`; mapping to `Box<T>` requires verified
   unique-ownership and drop lowering.
 - `alloc_vec.Vec<T>`: `new_vec`, `push` (ownership transfer), `len`,
-  `is_empty`, `get_copy` (only proven Copy payloads), `clear`,
+  `is_empty`, `push_copy` (only proven Copy payloads), `get_copy` (only proven Copy payloads), `clear`,
   `into_array` and overflow-safe `next_capacity`. `next_capacity` is a
   planning function, **not** an allocation/reserve operation. No unsafe
   `pop`, mutable slice, raw pointer exposure or silent clone is defined.
 - `alloc_string.Utf8String`: heap-backed byte vector, Unicode scalar encoder,
   strict UTF-8 validator, character count, character-boundary check and
-  checked scalar append. `String` conversion requires a separate trusted
-  strict codec. `append_scalar` is not transactional on allocator OOM.
+  staged, receiver-transactional scalar append. `String` conversion requires a separate trusted
+  strict codec. If allocation fails, the staged buffer must unwind and be\n  dropped; full OOM-transactionality and deterministic cleanup need guest proof.
 
 Required backend proof: resolve `atto.alloc/*` imports, execute the positive
 fixture with real guest code, reject the use-after-take negative fixture,
-prove no copied mutable aliases and exact-once drop across replace, clear,
+prove consuming generic formals (`take! T`) and no copied mutable aliases and exact-once drop across replace, clear,
 return, throw/raise/panic and cancellation, validate OOM behavior and
 sanitizer-backed storage bounds. Preserve existing backend-specific
 allocators and arenas; do not couple these sources to atto-common-source.
