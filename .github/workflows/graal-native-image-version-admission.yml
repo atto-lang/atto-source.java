@@ -1,0 +1,53 @@
+name: GraalVM Native Image exact component admission
+
+on:
+  pull_request:
+    paths:
+      - pom.xml
+      - scripts/verify-native-image-component-version.sh
+      - scripts/test-native-image-component-version.sh
+      - .github/workflows/graal-native-image-version-admission.yml
+      - src/main/java/dev/oreslang/runtime/ActorRuntime.java
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-image-exact-version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Negative and positive Native Image version admission tests
+        run: bash scripts/test-native-image-component-version.sh
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Exact Native Image to Graal/Truffle component version check
+        run: |
+          java --version
+          native-image --version
+          bash scripts/verify-native-image-component-version.sh pom.xml
+      - name: Build actual Oreslang Native AOT executable
+        run: mvn -B -ntp -Pnative-aot -Dmaven.test.skip=true package
+      - name: Execute Native AOT CLI entrypoint
+        run: |
+          set -euo pipefail
+          test -x target/ores-aot
+          target/ores-aot --build-info > target/native-build-info.json
+          grep -q '"build_mode":"aot"' target/native-build-info.json
+      - name: Retain toolchain and boot evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: graal-native-image-version-admission
+          path: |
+            target/native-build-info.json
+            target/native/
+          if-no-files-found: ignore

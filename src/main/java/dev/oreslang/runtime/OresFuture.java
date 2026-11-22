@@ -1,5 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayList;
+import java.lang.ref.WeakReference;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -47,6 +50,14 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public interface Callback<T> {
         void resolve(T value);
+        /**
+         * Atomically publish a resource-bearing result. False means consumer
+         * cancellation won and caller must retire the unpublished resource.
+         */
+        default boolean tryResolve(T value) {
+            resolve(value);
+            return true;
+        }
         void reject(Throwable failure);
         void cancel();
         boolean isDone();
@@ -106,8 +117,44 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private volatile BooleanSupplier cancelAdmission;
     /** One-shot release after terminal subscribers complete; never retain owners afterwards. */
     private volatile Runnable onNotificationDrained;
+    /**
+     * The owning source task's control authority travels with this Future.
+     * A Future/TaskHandle reference cycle is GC-collectible when neither is
+     * externally reachable; a process-static weak-key map with a strong
+     * TaskHandle value is not (the handle points back to this Future).
+     *
+     * Ordinary I/O/channel/timer Futures never acquire this capability.
+     */
+    private volatile TaskHandle<?> sourceTaskHandle;
+
+    /** Runtime-only, one-shot binding; no guest-visible way to forge authority. */
+    synchronized void bindSourceTaskHandle(TaskHandle<?> handle) {
+        Objects.requireNonNull(handle, "handle");
+        if (handle.result() != this) {
+            throw new IllegalArgumentException("task handle does not own this Future");
+        }
+        if (sourceTaskHandle != null) {
+            throw new IllegalStateException("source task handle already bound");
+        }
+        sourceTaskHandle = handle;
+    }
+
+    /** Null for a borrowed (non-task-created) Future. */
+    TaskHandle<?> sourceTaskHandle() {
+        return sourceTaskHandle;
+    }
+    /**
+     * Runtime subscribers may finish after the terminal state CAS. Actor arena
+     * owners therefore need a receipt for the winning settlement's complete
+     * notification drain, not merely isDone() or an early waiter callback.
+     */
+    private final Object notificationDrainLock = new Object();
+    private List<Runnable> notificationDrainListeners;
+    private boolean notificationDrainComplete;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
+    /** Runtime-owned physical resource revocation failures are never a clean release receipt. */
+    private final AtomicReference<Throwable> cancelHookFailure = new AtomicReference<>();
     /**
      * A subscriber registering after the cancellation CAS must not run its
      * callback before the internal revoker. Deferring such a subscriber to
@@ -115,6 +162,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * a cancellation hook registers another waiter on its own Future.
      */
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
+    // Only scheduler-owned cleanup-aware Task Futures use deferred cancellation.
+    // An observer's cancel() requests the runtime to unwind without exposing
+    // a false terminal state while guest defer/finally and arena loans remain.
+    private final boolean deferredCancellation;
+    // Only short terminal-admission arbitration is synchronized. Neither
+    // revocation nor subscribers may execute while this lock is held.
+    private final Object deferredAdmissionLock = new Object();
+    private final AtomicReference<CancellationException> requestedCancellation =
+            new AtomicReference<>();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
@@ -145,6 +201,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
             Runnable onNotificationDrained) {
+        this(cancelAdmission, cancelHook, onNotificationDrained, false);
+    }
+
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            Runnable onNotificationDrained, boolean deferredCancellation) {
+        this.deferredCancellation = deferredCancellation;
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
@@ -174,39 +236,65 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> fromCallback(
             Consumer<? super Callback<T>> registrar) {
+        return fromCallback(registrar, () -> { });
+    }
+
+    /**
+     * External async operation adapter with an exact-once physical
+     * cancellation hook. A NIO socket operation closes the owning channel
+     * when its future is cancelled, rather than leaving a dangling read/write.
+     * Late completion is ignored by the same single-shot callback gate.
+     */
+    public static <T> OresFuture<T> fromCallback(
+            Consumer<? super Callback<T>> registrar, Runnable cancelHook) {
         Objects.requireNonNull(registrar, "registrar");
-        OresFuture<T> future = new OresFuture<>();
+        Objects.requireNonNull(cancelHook, "cancelHook");
+        OresFuture<T> future = new OresFuture<>(cancelHook);
         AtomicBoolean callbackClaimed = new AtomicBoolean();
 
+        // The registrar may keep this capability forever, even when the
+        // Oreslang observer is cancelled and abandoned. Do not let that
+        // foreign registration pin the Future or its actor/task owner graph.
+        // The caller holding the returned Future keeps it strongly live.
+        WeakReference<OresFuture<T>> observerRef = new WeakReference<>(future);
         Callback<T> completion = new Callback<>() {
-            private boolean claim(String operation) {
+            private OresFuture<T> claim(String operation) {
                 if (!callbackClaimed.compareAndSet(false, true)) {
                     throw new AlreadySettledException(
                             "callback Future already settled; duplicate " + operation);
                 }
 
-                // Consumer cancellation may legitimately win before a foreign
-                // callback arrives. The first late producer callback is then a
-                // no-op rather than an exception escaping onto the producer's
-                // thread. Marking the callback claimed still diagnoses any
-                // subsequent duplicate callback invocation.
-                return !future.isCancelled();
+                // Claim exactly once even if the Future was cancelled or
+                // collected. A first late invocation becomes a no-op, but a
+                // subsequent invocation still fails as a duplicate. Retain
+                // the observer strongly on this stack only while settling.
+                OresFuture<T> observer = observerRef.get();
+                return observer == null || observer.isCancelled() ? null : observer;
             }
 
             @Override
             public void resolve(T value) {
-                if (!claim("resolve")) return;
-                if (!future.completeFromRuntime(value) && !future.isCancelled()) {
+                tryResolve(value);
+            }
+
+            @Override
+            public boolean tryResolve(T value) {
+                OresFuture<T> observer = claim("resolve");
+                if (observer == null) return false;
+                boolean accepted = observer.completeFromRuntime(value);
+                if (!accepted && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before resolve");
                 }
+                return accepted;
             }
 
             @Override
             public void reject(Throwable failure) {
                 Objects.requireNonNull(failure, "failure");
-                if (!claim("reject")) return;
-                if (!future.failFromRuntime(failure) && !future.isCancelled()) {
+                OresFuture<T> observer = claim("reject");
+                if (observer == null) return;
+                if (!observer.failFromRuntime(failure) && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before reject");
                 }
@@ -214,8 +302,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
             @Override
             public void cancel() {
-                if (!claim("cancel")) return;
-                if (!future.cancel(false) && !future.isCancelled()) {
+                OresFuture<T> observer = claim("cancel");
+                if (observer == null) return;
+                if (!observer.cancel(false) && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before cancel");
                 }
@@ -223,23 +312,26 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
             @Override
             public boolean isDone() {
-                return callbackClaimed.get() || future.isDone();
+                OresFuture<T> observer = observerRef.get();
+                return callbackClaimed.get() || observer == null || observer.isDone();
             }
         };
 
         try {
             registrar.accept(completion);
         } catch (Throwable failure) {
-            // Promise-style constructor semantics: a registrar failure rejects
-            // only if the callback has not already won the single-shot race.
+            // VM-fatal failures must escape regardless of whether the foreign
+            // registrar has already settled the Future. Turning an unhandled
+            // VM/linkage failure into an ordinary rejected Future is unsafe.
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+
+            // A normal registrar failure rejects only if the callback has not
+            // already won the single-shot race. A late benign exception must
+            // never overwrite a result the registrar already published.
             if (callbackClaimed.compareAndSet(false, true)) {
                 future.failFromRuntime(failure);
-            } else if (failure instanceof VirtualMachineError fatal) {
-                throw fatal;
-            } else if (failure instanceof ThreadDeath fatal) {
-                throw fatal;
-            } else if (failure instanceof LinkageError fatal) {
-                throw fatal;
             }
         }
         return future;
@@ -261,27 +353,69 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> from(CompletionStage<? extends T> stage) {
         Objects.requireNonNull(stage, "stage");
-        Runnable cancelHook = stage instanceof Future<?> cancellable
-                ? () -> cancellable.cancel(true)
-                : () -> { };
-        OresFuture<T> result = new OresFuture<>(cancelHook);
-        stage.whenComplete((value, failure) -> {
-            if (failure == null) {
-                result.completeFromRuntime(value);
-                return;
-            }
+        // CompletionStage is a borrowed producer. Cancelling this adapter
+        // revokes only the observer, never the host stage or its own consumers.
+        // An explicitly owned Task/operation must cancel through its separate
+        // owner capability; observing a CompletionStage grants no authority.
+        OresFuture<T> result = new OresFuture<>();
+        // A foreign CompletionStage has no general unsubscribe API.
+        // Some host stages retain completion callbacks indefinitely while
+        // pending. Capture this observer weakly so cancelling/dropping the
+        // adapted Future cannot pin its actor/task state through the host.
+        WeakReference<OresFuture<T>> observerRef = new WeakReference<>(result);
+        try {
+            stage.whenComplete((value, failure) -> {
+                OresFuture<T> observer = observerRef.get();
+                if (observer == null || observer.isDone()) return;
+                if (failure == null) {
+                    observer.completeFromRuntime(value);
+                    return;
+                }
 
-            Throwable terminalFailure = unwrap(failure);
-            boolean cancelled = stage instanceof Future<?> hostFuture
-                    ? hostFuture.isCancelled()
-                    : terminalFailure instanceof CancellationException;
+                Throwable terminalFailure = unwrap(failure);
+                final boolean cancelled;
+                try {
+                    // Always consult the host's cancellation probe so an
+                    // inconsistent host that throws from it fails this
+                    // adapter instead of stranding it (main's contract).
+                    // A CancellationException delivered directly as this
+                    // stage's own outcome is cancellation, even when the
+                    // host flag is inconsistent. A CancellationException
+                    // merely propagated from a dependency (wrapped in a
+                    // CompletionException) counts only if the host also
+                    // reports cancellation, and a spurious host flag never
+                    // turns an ordinary failure into cancellation. This is
+                    // still only a HOST signal, not an Oreslang-owned
+                    // cancellation capability.
+                    boolean hostCancelled = stage instanceof Future<?> hostFuture
+                            && hostFuture.isCancelled();
+                    cancelled = failure instanceof CancellationException
+                            || (hostCancelled
+                                    && terminalFailure instanceof CancellationException);
+                } catch (Throwable observationFailure) {
+                    if (observationFailure instanceof VirtualMachineError fatal) throw fatal;
+                    if (observationFailure instanceof ThreadDeath fatal) throw fatal;
+                    if (observationFailure instanceof LinkageError fatal) throw fatal;
+                    observer.failFromRuntime(unwrap(observationFailure));
+                    return;
+                }
 
-            if (cancelled) {
-                result.cancel(false);
-            } else {
-                result.failFromRuntime(terminalFailure);
-            }
-        });
+                if (cancelled) {
+                    observer.cancel(false);
+                } else {
+                    observer.failFromRuntime(terminalFailure);
+                }
+            });
+        } catch (Throwable failure) {
+            // An untrusted host CompletionStage can fail while registering the
+            // completion observer. Never strand the Ores Future in PENDING or
+            // replace a result which raced registration failure. VM-fatal
+            // exceptions retain their normal host failure semantics.
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+            result.failFromRuntime(unwrap(failure));
+        }
         return result;
     }
 
@@ -449,6 +583,27 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return waiter;
     }
 
+    /**
+     * Host/runtime-only, exactly once after the winning terminal settlement
+     * has drained its registered callbacks and its own drain hook. Registration
+     * linearizes with draining, even if terminal state is already visible.
+     * This is a physical host-notification receipt, not a guest continuation.
+     */
+    void whenNotificationsDrainedRuntime(Runnable receipt) {
+        Objects.requireNonNull(receipt, "receipt");
+        boolean alreadyDrained;
+        synchronized (notificationDrainLock) {
+            alreadyDrained = notificationDrainComplete;
+            if (!alreadyDrained) {
+                if (notificationDrainListeners == null) {
+                    notificationDrainListeners = new ArrayList<>();
+                }
+                notificationDrainListeners.add(receipt);
+            }
+        }
+        if (alreadyDrained) receipt.run();
+    }
+
     int pendingRuntimeWaiterCount() {
         return waiters.size();
     }
@@ -463,11 +618,46 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
+        if (deferredCancellation) {
+            // This request is not terminal. The owner must dispatch its
+            // authenticated unwind continuation before publication.
+            synchronized (deferredAdmissionLock) {
+                if (state.get() != PENDING || requestedCancellation.get() != null) {
+                    return false;
+                }
+                requestedCancellation.set(cancelled);
+            }
+            invokeCancelHook();
+            return true;
+        }
         // Revoke the owning operation BEFORE any synchronous subscriber can
         // block terminal notification. isCancelled() becomes visible at the
         // successful state CAS; guest/producer authority must then be removed
         // before ordinary host completion callbacks are entered.
         return settle(new Cancelled(cancelled), this::invokeCancelHook);
+    }
+
+    /** Trusted scheduler-only observation of a pending terminal-unwind request. */
+    CancellationException deferredCancellationCause() {
+        return requestedCancellation.get();
+    }
+
+    /** Settle cancelled ONLY after the cleanup continuation physically exits. */
+    boolean completeDeferredCancellationFromRuntime() {
+        CancellationException cause = requestedCancellation.get();
+        if (!deferredCancellation || cause == null) {
+            throw new IllegalStateException("no deferred cancellation to complete");
+        }
+        return settle(new Cancelled(cause), () -> { }, true);
+    }
+
+    /** Cleanup lane unavailable: terminal error is not a safe cleanup receipt. */
+    boolean failDeferredCleanupFromRuntime(Throwable failure) {
+        if (!deferredCancellation || requestedCancellation.get() == null) {
+            throw new IllegalStateException("no deferred cancellation to fail");
+        }
+        return settle(new Failure(Objects.requireNonNull(failure, "failure")),
+                () -> { }, true);
     }
 
     @Override
@@ -608,12 +798,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
                 hook.run();
-            } catch (RuntimeException | Error ignored) {
-                // Cancellation is already authoritative. Neither a
-                // misbehaving host hook nor arbitrary Future subscribers
-                // may restore the operation or prevent waiter delivery.
+            } catch (RuntimeException | Error failure) {
+                // The terminal cancellation remains authoritative and other
+                // subscribers must still be notified. Preserve the physical
+                // revoker failure for actor arena-retirement/quarantine checks.
+                cancelHookFailure.compareAndSet(null, failure);
             }
         }
+    }
+
+    /** Host-only inspection after a terminal notification-drain receipt. */
+    Throwable cancellationHookFailureFromRuntime() {
+        return cancelHookFailure.get();
     }
 
     private boolean settle(Object terminal) {
@@ -621,7 +817,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private boolean settle(Object terminal, Runnable afterStateClaimed) {
-        if (!state.compareAndSet(PENDING, terminal)) return false;
+        return settle(terminal, afterStateClaimed, false);
+    }
+
+    private boolean settle(Object terminal, Runnable afterStateClaimed,
+            boolean cleanupAuthority) {
+        if (deferredCancellation) {
+            synchronized (deferredAdmissionLock) {
+                // Once cancellation was requested, only its authenticated
+                // cleanup terminator may settle the result. A concurrent
+                // ordinary success/failure must not silently defeat unwind.
+                if (requestedCancellation.get() != null && !cleanupAuthority) return false;
+                if (!state.compareAndSet(PENDING, terminal)) return false;
+            }
+        } else if (!state.compareAndSet(PENDING, terminal)) return false;
 
         // The operation has irrevocably settled. The admission predicate may
         // capture a SelectRegistration, its cases, channels and write values;
@@ -661,8 +870,28 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             Runnable drained = onNotificationDrained;
             onNotificationDrained = null;
             // There is exactly one winning terminal CAS, hence one release.
-            // Keep the callback live until every synchronous waiter returns.
-            if (drained != null) drained.run();
+            // Run the existing scheduler receipt before publishing the general
+            // host-notification drain receipt used by actor resource owners.
+            try {
+                if (drained != null) drained.run();
+            } finally {
+                List<Runnable> receipts;
+                synchronized (notificationDrainLock) {
+                    notificationDrainComplete = true;
+                    receipts = notificationDrainListeners;
+                    notificationDrainListeners = null;
+                }
+                if (receipts != null) {
+                    for (Runnable receipt : receipts) {
+                        try {
+                            receipt.run();
+                        } catch (RuntimeException | Error ignored) {
+                            // One broken runtime observer cannot suppress the
+                            // remaining physical notification-drain receipts.
+                        }
+                    }
+                }
+            }
         }
     }
 

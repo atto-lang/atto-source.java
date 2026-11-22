@@ -1,6 +1,10 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
-# Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
-# Proposed narrow private carrier for v3 exact-tree tests; requires CODEOWNER review and protected merge.
+# Changes must receive independent @ORESoftware review and be enforced by protected main or V3 exact review attestation.
+# Format: exact owner/repo ONE SPACE immutable numeric GitHub repository ID (e.g. trusted/ci 1234567).
+# Slug or numeric-ID changes require a new exact independent review.
+# Proposed narrow private carrier for v3 exact-tree tests; requires exact independent review before merge.
 # Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+
+# Unreviewed destination proposal from PR #2137 was deactivated.
+# See Git history and PR #2137 for immutable candidate details; no live grant.

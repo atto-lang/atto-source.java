@@ -1,0 +1,27 @@
+name: Real-time resource admission regressions
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/RealtimeActorSourceEffects.java'
+      - 'src/main/java/dev/oreslang/compiler/RealtimeRegionEffectModel.java'
+      - 'src/test/java/dev/oreslang/compiler/RealtimeResourceBoundsSelfTest.java'
+      - '.github/workflows/rt-resource-admission.yml'
+permissions:
+  contents: read
+jobs:
+  bounds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile and run resource bounds
+        run: |
+          mkdir -p target/rt-bounds
+          javac --release 21 -d target/rt-bounds src/main/java/dev/oreslang/ast/Ast.java src/main/java/dev/oreslang/compiler/RealtimeActorSourceEffects.java src/main/java/dev/oreslang/compiler/RealtimeRegionEffectModel.java src/test/java/dev/oreslang/compiler/RealtimeResourceBoundsSelfTest.java
+          java -ea -cp target/rt-bounds dev.oreslang.compiler.RealtimeResourceBoundsSelfTest

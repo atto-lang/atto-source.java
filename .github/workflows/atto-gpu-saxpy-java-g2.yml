@@ -1,0 +1,45 @@
+name: AttoLang Java G2 restricted SAXPY device-source lowering
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/atto/compiler/gpu/GpuSaxpySubsetCompiler.java'
+      - 'tests/gpu-saxpy-g2/**'
+      - 'scripts/verify-gpu-saxpy-java-g2.sh'
+      - '.github/workflows/atto-gpu-saxpy-java-g2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-source-java-opencl-ir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout immutable PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Run Java compiler and independently verify SPIR64 output
+        shell: bash
+        env:
+          ATTO_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bash scripts/verify-gpu-saxpy-java-g2.sh | tee "$RUNNER_TEMP/atto-gpu-java-g2-receipt.txt"
+
+      - name: Upload device-source-only receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-gpu-java-g2-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/atto-gpu-java-g2-receipt.txt
+          if-no-files-found: warn
+          retention-days: 7
