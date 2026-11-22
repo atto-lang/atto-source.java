@@ -156,3 +156,28 @@ is invented.
 
 This is a source and test update, not proof of linked guest execution. Tests
 remain NOT_EXECUTED until a current-head stepful runner receipt is available.
+ 
+## Audit hardening: strict request framing and header/route limits
+
+The independently authored native Atto implementation now provides
+`request_framing_fields_allowed(content_length_fields, transfer_encoding_fields,
+final_chunked, unsupported_transfer_coding)` as a fail-closed policy for
+ambiguous HTTP/1.1 framing. It denies duplicate Content-Length, duplicate
+Transfer-Encoding, any TE+CL combination, non-final chunked, and unsupported
+codings. The transport must derive the booleans/counts from **original wire
+headers**; the function never authenticates a request.
+
+`body_chunk_allowed(accumulated_bytes, next_chunk_bytes, max_body_bytes)`
+uses subtraction-first bounds checks and prohibits negative inputs and a
+budget greater than 1 GiB. `header_line_valid` now caps the budget at
+65536 bytes to match the public HeaderField constructor; the checked factory
+returns `Err` rather than calling a constructor that would raise. Route
+patterns reject star-metacharacters anywhere in a segment and colons embedded
+in literal segments, not just a standalone `*`. These intentionally strict
+subset rules do not implement complete HTTP RFC grammar.
+
+The compiler-linked guest candidate has **130** boolean assertions
+(105 prior plus 25 adversarial cases); the JUnit wrapper is
+updated to require `130` printed true values. These tests are source
+staged, **NOT_EXECUTED** pending exact-head stepful CI. A queued or zero-step
+Actions run cannot be treated as passing.
