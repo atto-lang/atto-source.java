@@ -1,0 +1,79 @@
+name: Strict Atto i32 program-specific guest Native Image (no interpreter)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/**'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/types/**'
+      - 'tools/ci/AttoStrictI32NativeGuestBuild.java'
+      - 'tools/ci/AttoStrictI32NativeGuestEntry.java'
+      - '.github/workflows/typed-effects-v1-strict-i32-guest-aot.yml'
+      - 'pom.xml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compiled-guest-native-aot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Prove original source HEAD and tree before compilation
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          git diff --quiet HEAD --
+          echo "ORIGINAL_SOURCE_HEAD=$EXPECTED_SOURCE_SHA"
+          echo "ORIGINAL_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Compile original Atto compiler as a BUILD-TIME tool only
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          native-image --version
+          mvn -B -ntp -U -Dmaven.test.skip=true package
+          mvn -B -ntp -U dependency:build-classpath -Dmdep.outputFile=target/strict-i32-aot-deps.cp
+          test -s target/strict-i32-aot-deps.cp
+      - name: Strictly typecheck source, emit classfile, and reject forbidden source
+        shell: bash
+        run: |
+          set -euo pipefail
+          GUEST="$RUNNER_TEMP/atto-strict-i32-guest"
+          GENERATOR="$RUNNER_TEMP/atto-buildtime-compiler-driver"
+          mkdir -p "$GUEST" "$GENERATOR"
+          HOST_CP="target/classes:$(cat target/strict-i32-aot-deps.cp)"
+          javac --release 21 -cp "$HOST_CP" -d "$GENERATOR" tools/ci/AttoStrictI32NativeGuestBuild.java
+          java -cp "$GENERATOR:$HOST_CP" AttoStrictI32NativeGuestBuild "$GUEST"
+          test -f "$GUEST/RtPrimitiveModule.class"
+          javac --release 21 -cp "$GUEST" -d "$GUEST" tools/ci/AttoStrictI32NativeGuestEntry.java
+          test "$(find "$GUEST" -maxdepth 1 -name '*.class' | wc -l)" -eq 2
+          echo 'GUEST_RUNTIME_CLASSPATH=ONLY_TWO_BUILD_TIME_GENERATED_CLASSES'
+      - name: Native link only generated guest + static entry; execute exit 42
+        shell: bash
+        run: |
+          set -euo pipefail
+          GUEST="$RUNNER_TEMP/atto-strict-i32-guest"
+          native-image --no-fallback \
+            --initialize-at-build-time=RtPrimitiveModule,AttoStrictI32NativeGuestEntry \
+            -cp "$GUEST" AttoStrictI32NativeGuestEntry -o "$GUEST/atto-native"
+          test -x "$GUEST/atto-native"
+          file "$GUEST/atto-native" | grep -F 'ELF 64-bit'
+          set +e
+          "$GUEST/atto-native"
+          EXIT_CODE=$?
+          set -e
+          test "$EXIT_CODE" -eq 42
+          echo "STATIC_ATTO_I32_GUEST_NATIVE_AOT_EXECUTED_EXIT=$EXIT_CODE"
+          echo 'PROOF_SCOPE=STRICT_CLOSED_WORLD_I32_ONLY'
+          echo 'NOT_PROVEN=GENERAL_ACTORS_FFI_ALLOCATION_TYPED_EFFECT_PARITY_WCET'
