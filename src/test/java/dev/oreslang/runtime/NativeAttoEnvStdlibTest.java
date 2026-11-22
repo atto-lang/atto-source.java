@@ -141,6 +141,30 @@ final class NativeAttoEnvStdlibTest {
     }
 
     @Test
+    void contextSnapshotEnforcesAggregateAndKeyCountBudgets() {
+        var policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.ENVIRONMENT);
+        var permissions = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.ENV);
+
+        java.util.Map<String, String> overBytes = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < 65; ++i)
+            overBytes.put("ATTO_ENV_VALUE_" + i, "x".repeat(16384));
+        IllegalArgumentException bytes = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.admittedGuestEnvironment(
+                        policy, permissions, overBytes));
+        assertEquals("environment snapshot byte budget exceeded", bytes.getMessage());
+
+        java.util.Map<String, String> overKeys = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < 513; ++i)
+            overKeys.put("ATTO_ENV_KEY_" + i, "");
+        IllegalArgumentException keys = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.admittedGuestEnvironment(
+                        policy, permissions, overKeys));
+        assertEquals("environment snapshot key limit exceeded", keys.getMessage());
+    }
+
+    @Test
     void projectCannotShadowCompilerOwnedStdEnv() throws Exception {
         Path localStd = Files.createDirectories(temp.resolve("std"));
         Files.writeString(localStd.resolve("env.atto"), """
