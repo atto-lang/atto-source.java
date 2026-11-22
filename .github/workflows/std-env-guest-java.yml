@@ -1,0 +1,79 @@
+name: Atto std/env real Java guest (exact head)
+
+on:
+  pull_request:
+    paths:
+      - 'stdlib/env.atto'
+      - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeAttoEnvStdlibTest.java'
+      - 'src/test/resources/stdlib-parity/env.atto'
+      - '.github/workflows/std-env-guest-java.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'stdlib/env.atto'
+      - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeAttoEnvStdlibTest.java'
+      - 'src/test/resources/stdlib-parity/env.atto'
+      - '.github/workflows/std-env-guest-java.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-guest:
+    name: std/env source->typed linker->guest JVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact source HEAD without credential persistence
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record immutable commit and tree identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          printf 'RECEIPT source_sha=%s tree_sha=%s\n' "$EXPECTED_HEAD" "$(git rev-parse HEAD^{tree})"
+      - name: Setup GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile and execute exact .atto guest env tests
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -DfailIfNoTests=true -Dtest=NativeAttoEnvStdlibTest clean test
+      - name: Require actual unskipped guest tests
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=target/surefire-reports/TEST-dev.oreslang.runtime.NativeAttoEnvStdlibTest.xml
+          test -s "$report"
+          grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+          ! grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"
+          ! grep -Eq '<skipped([ >])' "$report"
+          for case_name in \
+            envModuleUsesClosedCanonicalAttoRegistry \
+            linkedGuestExecutesStdEnvFallbackAndMissingSemantics \
+            projectCannotShadowCompilerOwnedStdEnv \
+            scopedDenyPrecedesHostEnvironmentLookup \
+            keyScopedDenyOverridesBroadAllowAndFallback \
+            invalidKeyIsNotRecastAsAbsence \
+            portableKeyGrammarIsBoundedAndFailClosed \
+            hostEnvironmentValuesEnforceUtf8ByteQuotaWithoutEchoingSecrets; do
+            grep -Fq "name=\"$case_name\"" "$report"
+            printf 'RECEIPT executed=%s\n' "$case_name"
+          done
+          echo 'RECEIPT std_env_guest_exact_head=PASS'
