@@ -11656,6 +11656,12 @@ public final class OresEvalRootNode extends RootNode {
                 return structuralRecordMatches(value, target);
             }
             String name = target.name();
+            if (value instanceof NumericGuestError error && findClass(name) == null) {
+                return name.equals("Error") || name.equals(error.guestTypeName());
+            }
+            if (value instanceof TrapError error && findClass(name) == null) {
+                return name.equals("Error") || name.equals(error.type());
+            }
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
                     || name.equals("i64") || name.equals("u8") || name.equals("u16")
                     || name.equals("u32") || name.equals("u64") || name.equals("uint")
@@ -11700,6 +11706,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String oresRuntimeTypeName(Object value) {
+            if (value instanceof NumericGuestError error) return error.guestTypeName();
+            if (value instanceof TrapError error) return error.type();
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -11969,13 +11977,29 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
-            boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
+            boolean integral = isIntegral(a) && isIntegral(b);
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
-                // An implicit VM fast-throw exception may have suppression disabled,
-                // which would discard source-boundary diagnostics after warm-up.
-                if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
-                return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+                // Check mathematical signed-i64 operations before publication,
+                // including MIN/-1 (which the JVM would silently wrap).
+                if ((op == '/' || op == '%') && y == 0L) {
+                    throw new DivisionByZeroError("checked signed i64 " + op);
+                }
+                if (op == '/' && x == Long.MIN_VALUE && y == -1L) {
+                    throw new ArithmeticOverflowError("checked signed i64 /");
+                }
+                try {
+                    return switch (op) {
+                        case '+' -> Math.addExact(x, y);
+                        case '-' -> Math.subtractExact(x, y);
+                        case '*' -> Math.multiplyExact(x, y);
+                        case '/' -> x / y;
+                        case '%' -> x % y;
+                        default -> throw new IllegalArgumentException("bad numeric operator");
+                    };
+                } catch (ArithmeticException overflow) {
+                    throw new ArithmeticOverflowError("checked signed i64 " + op);
+                }
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -11998,7 +12022,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+                try {
+                    return Math.negateExact(((Number) value).longValue());
+                } catch (ArithmeticException overflow) {
+                    throw new ArithmeticOverflowError("checked signed i64 unary minus");
+                }
+            }
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
@@ -13208,6 +13238,10 @@ public final class OresEvalRootNode extends RootNode {
     private record TrapError(String type, String message) {
         private static final int MAX_TEXT = 256;
         static TrapError of(Throwable failure) {
+            if (failure instanceof NumericGuestError guest) {
+                return new TrapError(guest.guestTypeName(),
+                        bounded(guest.getMessage() == null ? "" : guest.getMessage()));
+            }
             return new TrapError(bounded(failure.getClass().getSimpleName()),
                     bounded(failure.getMessage() == null ? "" : failure.getMessage()));
         }
@@ -13232,6 +13266,31 @@ public final class OresEvalRootNode extends RootNode {
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
+    /** Guest numeric throws are typed; host ArithmeticException never crosses this boundary. */
+    private static class NumericGuestError extends RuntimeException {
+        private final String guestTypeName;
+        private final int abiCode;
+        private NumericGuestError(String type, int code, String message) {
+            super(type + ": " + message, null, true, false);
+            guestTypeName = type;
+            abiCode = code;
+        }
+        private String guestTypeName() { return guestTypeName; }
+        @SuppressWarnings("unused") private int abiCode() { return abiCode; }
+    }
+
+    private static final class ArithmeticOverflowError extends NumericGuestError {
+        private ArithmeticOverflowError(String message) {
+            super("ArithmeticOverflowError", 65537, message);
+        }
+    }
+
+    private static final class DivisionByZeroError extends NumericGuestError {
+        private DivisionByZeroError(String message) {
+            super("DivisionByZeroError", 65538, message);
+        }
+    }
+
     private static final class OresPanic extends RuntimeException
             implements dev.oreslang.runtime.UntrappableTaskFailure {
         private OresPanic(String message) { super(message, null, true, false); }
