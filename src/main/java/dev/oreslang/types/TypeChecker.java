@@ -3781,7 +3781,18 @@ public final class TypeChecker {
                 }
                 Type receiver = receiverDispatchType(deref(receiverSource));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                if (receiver instanceof Record record) {
+                if (receiver instanceof Named map
+                        && map.name().equals("Map") && map.arguments().size() == 2
+                        && findClass("Map") == null) {
+                    if (!closedScalarMapDomains(map)) {
+                        throw new IllegalArgumentException(
+                                "Map indexed assignment requires a closed, proven key/value domain");
+                    }
+                    // Identical mutable authority gate for map[key] = value and map.put(key,value).
+                    requireMapMutablePlace(indexed.receiver(), env, "put");
+                    requireAssignable(index, map.arguments().get(0), "typed Map index key");
+                    targetType = map.arguments().get(1);
+                } else if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
                     Map<String, Type> indexableMembers = indexableRecordMembers(record);
                     if (record.kind() == AggregateKind.CONTRACT) {
@@ -5355,8 +5366,9 @@ public final class TypeChecker {
                     }
                     if (receiver instanceof Named map && map.name().equals("Map")
                             && (member.member().equals("set")
+                                    || member.member().equals("put")
                                     || member.member().equals("delete"))) {
-                        requireMapMutablePlace(member.receiver(), env, member.member());
+                        requireMapMutablePlace(member.receiver(), env, "put");
                     }
                     if (!(collectionBuiltin instanceof Function builtin)) {
                         throw new IllegalArgumentException(
@@ -5979,7 +5991,8 @@ public final class TypeChecker {
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (collectionMember != null
                     && sumReceiver instanceof Named map && map.name().equals("Map")
-                    && (member.member().equals("set") || member.member().equals("delete")
+                    && (member.member().equals("set") || member.member().equals("put")
+                            || member.member().equals("delete")
                             || member.member().equals("get_optional"))) {
                 throw new IllegalArgumentException(
                         "Map." + member.member() + " is direct-call-only: "
@@ -8642,6 +8655,10 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
+        if (named.name().equals("Map")) {
+            throw new IllegalArgumentException(
+                    where + " cannot transfer affine Map<K,V> through actor mail in V1");
+        }
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("HttpClientResponse") || named.name().equals("HttpClientBody")
@@ -10551,7 +10568,8 @@ public final class TypeChecker {
     private void requireMapMutablePlace(Ast.Expr target, Env env, String operation) {
         if (target instanceof Ast.NameExpr variable) {
             Env.Binding binding = env.lookup(variable.name());
-            if (binding != null && binding.kind() == Ast.BindingKind.LET) return;
+            if (binding != null && (binding.kind() == Ast.BindingKind.LET
+                    || binding.type() instanceof Borrow loan && loan.mutable())) return;
         } else if (target instanceof Ast.MemberExpr field
                 && field.receiver() instanceof Ast.NameExpr selfName
                 && selfName.name().equals("self")
@@ -10564,8 +10582,8 @@ public final class TypeChecker {
         }
         throw new IllegalArgumentException(
                 "Map." + operation + " requires a directly owned writable let binding "
-                        + "or a writable actor self field; mutable Map receiver "
-                        + "loans, const/val and captured method values are not admitted");
+                        + "or a proven exclusive Map loan or writable actor self field; "
+                        + "const/readonly owners and captured method values are denied");
     }
 
     private Type builtinCollectionMember(Type receiver, String member) {
@@ -10584,6 +10602,9 @@ public final class TypeChecker {
                 case "set" -> new Function(
                         List.of(named.arguments().get(0), named.arguments().get(1)),
                         Primitive.VOID);
+                case "put" -> new Function(
+                        List.of(named.arguments().get(0), named.arguments().get(1)),
+                        new Named("Option", List.of(named.arguments().get(1))));
                 case "delete" -> new Function(
                         List.of(named.arguments().get(0)), Primitive.BOOL);
                 case "get_optional" -> new Function(
