@@ -97,6 +97,23 @@ final class AttoAllocCollectionsGuestTest {
     }
 
     @Test
+    void canonicalAndLegacyAllocAliasesLinkOnePhysicalUnit() throws Exception {
+        Path guest = temp.resolve("aliases.atto");
+        Files.writeString(guest, """
+                import module map as canonical from "atto.alloc/map";
+                import module map as legacy from "alloc/map";
+                pub fnc main(): int { return 42; }
+                """);
+        var build = LinkedProgramRunner.validate(guest, Map.of());
+        assertEquals(2, build.units().size(),
+                "both spellings must share one compiler-owned module identity");
+        var execution = LinkedProgramRunner.runWithExitStatus(
+                guest, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(42, execution.exitStatus(), "canonical/legacy alias must link once");
+    }
+
+    @Test
     void unknownReservedAllocModuleCannotFallBackToProjectFilesystem() throws Exception {
         Path project = temp.resolve("alloc");
         Files.createDirectories(project);
