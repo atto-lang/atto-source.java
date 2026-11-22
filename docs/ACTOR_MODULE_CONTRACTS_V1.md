@@ -328,3 +328,24 @@ validates module-local declarations in one compilation unit only.
 Tests: 25 new Java JUnit methods, six portable .atto fixtures, plus two
 updated predecessor tests. **Not executed** until an exact-head, stepful
 source-local or independently authorized private CI run exists.
+
+## Stage 7 audit hardening — inherited dispatch and mailbox ownership
+
+The local nominal binder now **rejects external methods on actor classes
+with parents** until a separate hierarchy-aware coherence checker can prove
+that no inherited instance slot is overridden or shadowed. It also refuses
+borrowed and closed-structural `ActorMail<T>` payload shapes at the static
+hook layer; full sendability checks remain required in executable lowering.
+New negative `.atto` fixtures cover each case.
+
+A targeted source-local exact-head workflow,
+`.github/workflows/atto-actor-receiver-binder-exact-head.yml`, requests
+real JUnit suites and verifies nonempty Surefire reports. A `runner_id=0`
+or zero-step failure is an admission failure, **not** a Java test outcome.
+
+Cross-organization testing must not sidestep source protection or approved
+carrier plans. The current `.github/private-ci-carrier-contracts.json`
+does not authorize this PR on an alternate carrier, and source `main`
+was observed unprotected at audit time. A synthetic runner-only Java test
+cannot establish source-code compilation. No private source was exported
+as part of this hardening stage.

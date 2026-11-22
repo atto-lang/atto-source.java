@@ -26,3 +26,15 @@ fail closed.
 
 These test cases are *authored but not executed*. No Java guest execution,
 NativeAOT run or five-backend parity is claimed.
+
+## Hardening-stage negative additions
+
+- `reject_inherited_actor.atto`: external method on a subclass is rejected
+  until inherited receiver slots can be resolved and proven collision-free.
+- `reject_borrowed_receive.atto`: borrowed mailbox payloads must not gain
+  transport/ownership authority through a binder-only type shape.
+- `reject_structural_receive.atto`: structural record payloads cannot be
+  mistaken for a validated sendable nominal mailbox payload.
+
+These are static, *non-executable* checks. Passing the binder is not evidence
+of sendability, lifecycle safety, or AOT parity.

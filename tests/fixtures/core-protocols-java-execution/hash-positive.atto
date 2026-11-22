@@ -1,0 +1,15 @@
+import trait Hash from "ores.core/protocols";
+
+define pub class Counter implements Hash as
+  pub val int value;
+  pub constructor(int initial) { self.value = initial; }
+  pub hash_value(): int { return self.value; }
+end
+
+fnc check_hash(Hash candidate): int {
+  return candidate.hash_value();
+}
+
+pub fnc main(): int {
+  return check_hash(new Counter(42));
+}

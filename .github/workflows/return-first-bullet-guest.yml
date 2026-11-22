@@ -1,0 +1,39 @@
+name: Return-first bullet/arrow Java compiler + guest execution
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/parser/Lexer.java'
+      - 'src/test/java/dev/oreslang/ReturnFirstBulletBodyParityTest.java'
+      - '.github/workflows/return-first-bullet-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-java-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Fail closed on checkout tree mismatch
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          bash scripts/verify-source-tree.sh "$EXPECTED_HEAD"
+          printf 'head=%s tree=%s\n' "$EXPECTED_HEAD" "$(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Compile, parse negatives, typecheck and execute actual Graal guest
+        run: |
+          mvn -B -ntp -Dtest=ReturnFirstBulletBodyParityTest test
