@@ -78,3 +78,8 @@ The shared *data-only* contract is pinned by exact Git blob `3d9e9d5308a4cd0a99d
 `.github/workflows/atto-std-134-source-model.yml` requires the exact checkout SHA, source blob identities, pinned contract hash, source model tests and a negative check that `ATTO_REQUIRE_NATIVE_GUEST=1` must fail. The previously existing backend-specific guest fixture and tests remain unchanged. Java/GraalVM native linking/execution (JDK 25/GraalVM Native Image or .NET CIL/NativeAOT, respectively) remains **NOT_EXECUTED** and is not implied by this source-model alignment.
 
 No private source was copied into another GitHub organization. Source-local CI admission and independently approved private carrier remain release blockers. Keep PR draft.
+
+
+## Full 134-case JVM linked-guest execution gate
+
+The exact-head JVM workflow now requires JUnit `all134SharedPolicyVectorsExecuteAndMutationChangesGuestExitStatus`. It executes the full 134-check `.atto` candidate through `LinkedProgramRunner.runWithExitStatus`, verifies three compiler-owned linked units and zero exit status, then inverts the first import predicate and requires exit code 1. This guards against no-op execution, skipped fixtures or source-only checks masquerading as linked-guest success. At this checkpoint the stepful JVM run is still **NOT_EXECUTED**; no Graal Native Image parity is claimed.
