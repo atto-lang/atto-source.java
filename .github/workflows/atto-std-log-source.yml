@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'stdlib/log.atto'
+      - 'stdlib/log_sink.atto'
+      - 'tests/log_sink_contract.test.mjs'
       - 'examples/log-namespace-guest-smoke.atto'
       - 'tests/log_module_contract.test.mjs'
       - 'docs/ATTO_STD_LOG.md'
@@ -10,6 +12,8 @@ on:
   push:
     paths:
       - 'stdlib/log.atto'
+      - 'stdlib/log_sink.atto'
+      - 'tests/log_sink_contract.test.mjs'
       - 'tests/log_module_contract.test.mjs'
       - 'docs/ATTO_STD_LOG.md'
       - '.github/workflows/atto-std-log-source.yml'
@@ -44,7 +48,7 @@ jobs:
         with:
           node-version: '22'
       - name: Test source-extracted severity and queue guards
-        run: node --test tests/log_module_contract.test.mjs
+        run: node --test tests/log_module_contract.test.mjs tests/log_sink_contract.test.mjs
       - name: State evidence boundary
         if: always()
         run: |
