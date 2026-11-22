@@ -1,11 +1,7 @@
-// AttoLang core/option: allocation-free sum-value adapters.
-// Source-owned, compiler-specific. This module does not redefine Option<T>,
-// Some(T), or None, which remain sealed compiler-provided discriminated values.
-// Conversions consume their input sum; the compiler must insert active-variant
-// cleanup and reject unsafe affine/borrow escape. No host interop or I/O.
+// AttoLang core/option (Java/Graal): source-owned, no host interop.
+// The compiler owns nominal Option<T>, Some/None and active-variant drops.
+// These helpers consume their Option operand, never clone an affine payload.
 define module option as
-
-  // Preserve the inner optional's tag; do not turn Some(None) into Some(_).
   pub fnc flatten<T>(Option<Option<T>> nested): Option<T> {
     return match nested over
       on Some(inner) -> inner,
@@ -13,32 +9,79 @@ define module option as
     end;
   }
 
-  // Eager conversion: the error expression was evaluated before this call.
-  // The unused error must be dropped when value is Some.
-  pub fnc to_result<T, E>(Option<T> value, E error): Result<T, E> {
-    return match value over
-      on Some(payload) -> Ok(payload),
-      on None -> Err(error),
+  pub fnc map<T, U>(Option<T> input, Fnc<U(T)> transform): Option<U> {
+    return match input over
+      on Some(value) -> Some(transform(value)),
+      on None -> None,
     end;
   }
 
-  // Discard Err's *active* error payload with deterministic cleanup.
-  pub fnc from_result<T, E>(Result<T, E> value): Option<T> {
-    return match value over
-      on Ok(payload) -> Some(payload),
-      on Err(_) -> None,
+  pub fnc and_then<T, U>(Option<T> input, Fnc<Option<U>(T)> next): Option<U> {
+    return match input over
+      on Some(value) -> next(value),
+      on None -> None,
     end;
   }
 
-  // Option<Result<T,E>> -> Result<Option<T>,E>, with no erased Err.
-  pub fnc transpose<T, E>(Option<Result<T, E>> value): Result<Option<T>, E> {
-    return match value over
-      on None -> Ok(None),
-      on Some(inner) -> match inner over
-        on Ok(payload) -> Ok(Some(payload)),
-        on Err(error) -> Err(error),
+  // Lazy fallback runs exactly once ONLY for None.
+  pub fnc or_else<T>(Option<T> input, Fnc<Option<T>()> alternative): Option<T> {
+    return match input over
+      on Some(value) -> Some(value),
+      on None -> alternative(),
+    end;
+  }
+
+  pub fnc unwrap_or_else<T>(Option<T> input, Fnc<T()> alternative): T {
+    return match input over
+      on Some(value) -> value,
+      on None -> alternative(),
+    end;
+  }
+
+  // Unlike to_result, the error factory is invoked only for None.
+  pub fnc ok_or_else<T, E>(Option<T> input, Fnc<E()> make_error): Result<T, E> {
+    return match input over
+      on Some(value) -> Ok(value),
+      on None -> Err(make_error()),
+    end;
+  }
+
+  // Both operands are consumed; the inactive payload is dropped.
+  pub fnc zip_with<T, U, V>(
+    Option<T> left, Option<U> right, Fnc<V(T, U)> combine
+  ): Option<V> {
+    return match left over
+      on None -> None,
+      on Some(first) -> match right over
+        on None -> None,
+        on Some(second) -> Some(combine(first, second)),
       end,
     end;
   }
 
+  pub fnc to_result<T, E>(Option<T> input, E eager_error): Result<T, E> {
+    return match input over
+      on Some(value) -> Ok(value),
+      on None -> Err(eager_error),
+    end;
+  }
+
+  pub fnc from_result<T, E>(Result<T, E> input): Option<T> {
+    return match input over
+      on Ok(value) -> Some(value),
+      on Err(_) -> None,
+    end;
+  }
+
+  pub fnc transpose<T, E>(
+    Option<Result<T, E>> input
+  ): Result<Option<T>, E> {
+    return match input over
+      on None -> Ok(None),
+      on Some(inner) -> match inner over
+        on Ok(value) -> Ok(Some(value)),
+        on Err(error) -> Err(error),
+      end,
+    end;
+  }
 end
