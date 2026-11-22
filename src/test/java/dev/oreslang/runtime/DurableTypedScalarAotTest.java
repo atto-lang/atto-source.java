@@ -38,6 +38,10 @@ final class DurableTypedScalarAotTest {
         assertEquals("atto.actor.Counter.state", plan.state_schema().schemaId());
         byte[] encoded = plan.encode_increment_message(42);
         assertEquals(48, encoded.length);
+        assertEquals("4154544f0000000121071b660fb0521c2e822fc966ba000d"
+                + "801c601539bfca908891c5c5e5fca0e4000000000000002a",
+                java.util.HexFormat.of().formatHex(encoded),
+                "shared atto-platform-conformance golden wire");
         assertEquals(42, plan.decode_increment_message(encoded));
         assertEquals(42, plan.decode_increment_message(plan.encode(42)),
                 "explicit pre-versioned v0 i64 compatibility");
