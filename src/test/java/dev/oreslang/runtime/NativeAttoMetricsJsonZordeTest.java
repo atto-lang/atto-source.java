@@ -63,6 +63,7 @@ final class NativeAttoMetricsJsonZordeTest {
     @Test
     void jsonGuestRejectsAmbiguousAndMalformedText() throws Exception {
         assertGuest("json", "true", "6", "true", "true", "true",
+                "true", "true", "true", "true", "true", "true",
                 "true", "true", "true", "2147483647",
                 "true", "true", "true");
     }
@@ -70,6 +71,7 @@ final class NativeAttoMetricsJsonZordeTest {
     @Test
     void zordeGuestRoundtripsDeterministicFrame() throws Exception {
         assertGuest("zorde", "true", "true", "7", "1", "2",
-                "255", "true", "90", "79");
+                "255", "true", "90", "79", "true", "2",
+                "300", "0", "true", "1");
     }
 }
