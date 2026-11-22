@@ -43,7 +43,7 @@ define module Process as
     return value.stderr_mode >= 0 && value.stderr_mode <= 2;
   }
 
-  pub fnc succeeded(ExitStatus status): bool {
+  pub fnc exit_status(int code, bool signaled): ExitStatus {\n    return new ExitStatus(code, signaled);\n  }\n\n  pub fnc succeeded(ExitStatus status): bool {
     return status.code == 0 && status.signaled == false;
   }
 
