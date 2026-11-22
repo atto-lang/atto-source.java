@@ -52,6 +52,18 @@ final class CryptoImportAdmissionTest {
     }
 
     @Test
+    void cryptoNamespaceRequiresExplicitImport() {
+        String message = reject("""
+                pub routine main(): void {
+                  val digest = crypto.sha256([97, 98, 99]);
+                  return;
+                }
+                """);
+        assertTrue(message.contains("explicit import")
+                || message.contains("crypto namespace"));
+    }
+
+    @Test
     void duplicateCryptoImportsAreRejected() {
         String message = reject("""
                 import * as crypto from "std.crypto";
