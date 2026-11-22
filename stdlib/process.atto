@@ -2,7 +2,7 @@
 // This module deliberately performs no OS calls. The trusted process provider
 // must revalidate permissions, command identity, quotas and ownership on spawn.
 // See docs/STD_PROCESS_PLAN_V1.md for the pending guest/runtime bridge.
-define module Process as
+define module process as
 
   // A launch-request value. Its Array remains mutable; it is not a sealed
   // capability. Argument vector elements are NOT shell syntax.
@@ -56,7 +56,7 @@ define module Process as
   pub fnc spawn(
       String executable, Array<String> arguments, String cwd):
       Future<Result<ChildProcess, ProcessError>> {
-    return process.spawn(executable, arguments, cwd);
+    return std.process.spawn(executable, arguments, cwd);
   }
 
   pub fnc exit_status(int code, bool signaled): ExitStatus {
