@@ -2,7 +2,7 @@
 // Ok/Err are values; callbacks cannot silently catch throw/raise/panic.
 // Result operations consume their receiver; compiler must prove exact drops.
 use namespace core;
-define module result as
+define pub module result as
   pub fnc flatten<T, E>(
     Result<Result<T, E>, E> input
   ): Result<T, E> {
