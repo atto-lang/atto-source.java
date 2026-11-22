@@ -350,6 +350,12 @@ public final class OresEvalRootNode extends RootNode {
         private void indexImports() {
             for (Ast.ImportDecl imported : program.imports()) {
                 ImportRules.validate(imported);
+                if (ImportRules.isStandardCryptoImport(imported)) {
+                    // Dedicated compiler-managed standard namespace. It is
+                    // resolved by CryptoAeadFacade, never via host lookup or
+                    // a user-supplied code-unit/file path.
+                    continue;
+                }
                 if (ImportRules.isJavaPath(imported.path())) {
                     indexHostImport(imported);
                     continue;
