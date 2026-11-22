@@ -55,9 +55,12 @@ final class NativeAttoMetricsJsonZordeTest {
 
     @Test
     void metricsGuestRejectsOverflowAndBucketsSamples() throws Exception {
-        assertGuest("metrics", "true", "false", "true", "false", "1",
-                "false", "true", "-1", "true", "true", "true", "false",
-                "3", "23", "1", "1", "1", "1");
+        assertGuest("metrics",
+                "true", "false", "true", "false", "1", "false", "true",
+                "-1", "true", "true", "true", "false", "3", "23",
+                "1", "1", "1", "1", "1", "2", "3",
+                "23", "1", "5", "true", "true", "3", "1",
+                "4", "2");
     }
 
     @Test
