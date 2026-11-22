@@ -46,6 +46,9 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    // Root-owned OS subprocesses, closed before native worker retirement.
+    private final NativeChildProcesses childProcesses = new NativeChildProcesses();
+    public NativeChildProcesses childProcesses() { return childProcesses; }
     // Host-provisioned at context creation; default is DENY with no service.
     private final WorkflowHostServiceRegistry workflowHostServices;
     public AsyncNativeIo nativeIo() { return nativeIo; }
@@ -560,6 +563,14 @@ public final class OresContext implements AutoCloseable {
         guestTimers.close();
         // Revoke workflow admission and drain callbacks before JNI teardown.
         // On timeout, retain the context rather than freeing live host state.
+        try {
+            childProcesses.close();
+        } catch (RuntimeException incomplete) {
+            output.flush();
+            throw new IllegalStateException(
+                    "child OS process retirement incomplete; context quarantined",
+                    incomplete);
+        }
         try {
             workflowHostServices.close();
         } catch (RuntimeException incomplete) {
