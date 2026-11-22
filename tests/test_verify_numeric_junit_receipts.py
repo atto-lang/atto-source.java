@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -31,7 +33,11 @@ class NumericReceiptVerifierTest(unittest.TestCase):
 
     def test_all_eight_unique_nonempty_suites_accepted(self):
         self.assertEqual(verify_module.verify(self.dir), 8)
-        self.assertEqual(verify_module.main([str(self.dir)]), 0)
+        # A synthetic receipt must never emit a production PASS marker into
+        # CI logs where it could be mistaken for executed AttoLang guest tests.
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            self.assertEqual(verify_module.main([str(self.dir)]), 0)
+        self.assertIn("NUMERIC_JVM_JUNIT_RECEIPT=PASS", captured.getvalue())
 
     def test_missing_report_denied(self):
         (self.dir / ("TEST-dev.oreslang." + verify_module.REQUIRED[0] + ".xml")).unlink()
