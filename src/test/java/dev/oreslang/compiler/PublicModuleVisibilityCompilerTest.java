@@ -23,6 +23,17 @@ final class PublicModuleVisibilityCompilerTest {
             """;
 
     @Test
+    void moduleDeclarationUsesCanonicalDefinePubVisibility() {
+        var canonical = dev.oreslang.parser.Parser.parse(PUBLIC).modules().getFirst();
+        var legacy = dev.oreslang.parser.Parser.parse(PUBLIC.replace("define pub module", "pub define module"))
+                .modules().getFirst();
+        var privateModule = dev.oreslang.parser.Parser.parse(PRIVATE).modules().getFirst();
+        assertEquals(dev.oreslang.ast.Ast.Visibility.PUBLIC, canonical.visibility());
+        assertEquals(canonical, legacy, "legacy pub define must lower identically");
+        assertEquals(dev.oreslang.ast.Ast.Visibility.PRIVATE, privateModule.visibility());
+    }
+
+    @Test
     void moduleVisibilityChangesTheIncrementalExportAbi() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var first = compiler.compile(Map.of("lib.atto", PRIVATE));
