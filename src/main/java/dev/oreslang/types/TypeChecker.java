@@ -2773,12 +2773,10 @@ public final class TypeChecker {
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
                 case "-", "*", "%" -> numericJoin(left, right, binary.operator());
                 case "/" -> {
-                    // OresEvalRootNode.numeric evaluates real division as a Double,
-                    // even for int/int. The result cannot be assigned to int without
-                    // an explicit conversion. Complex/decimal joins retain their
-                    // existing representation pending dedicated numeric contracts.
-                    Type result = numericJoin(left, right, "/");
-                    yield result == Primitive.INT ? Primitive.FLOAT : result;
+                    // Numerical semantics v1: int/i64 division truncates toward zero
+                    // with an int/i64 result. A float operand still uses IEEE binary64.
+                    // The evaluator checks zero divisors and MIN / -1 separately.
+                    yield numericJoin(left, right, "/");
                 }
                 default -> Unknown.INSTANCE;
             };
