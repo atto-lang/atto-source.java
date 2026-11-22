@@ -100,7 +100,7 @@ final class StdPathSyncTelemetryGuestTest {
             assertTrue(build.units().containsKey("@std/path.atto"));
             assertTrue(build.units().containsKey("@std/sync.atto"));
             assertTrue(build.units().containsKey("@std/telemetry.atto"));
-            assertEquals("2\\nfalse\\nfalse".replace("\\n", "\n"),
+            assertEquals(String.join("\n", "2", "false", "false"),
                     stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> stderr.toString(StandardCharsets.UTF_8));
         } finally {
