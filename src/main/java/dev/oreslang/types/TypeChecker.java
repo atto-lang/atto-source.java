@@ -12912,6 +12912,31 @@ public final class TypeChecker {
         throw new IllegalArgumentException("E_TYPE_QUERY_UNBOUND: " + binding);
     }
 
+    /**
+     * Generic arity for compiler-owned core names is read from CoreTypeRegistry.
+     * This is deliberately limited to explicit ordinary type arguments: array
+     * shape dimensions and named collection layout metadata are separate syntax
+     * channels and must be validated by their dedicated rules.
+     */
+    private static void validateRegisteredCoreTypeArity(Ast.TypeRef ref) {
+        CoreTypeRegistry.TypeInfo info = CoreTypeRegistry.lookup(ref.name()).orElse(null);
+        if (info == null || info.kind() != CoreTypeRegistry.Kind.TYPE
+                || ref.inferArguments()) return;
+        if (ref.arguments().stream().anyMatch(Ast.TypeRef::isSequenceShape)
+                || ref.arguments().stream().anyMatch(Ast.TypeRef::isNamedParameter)) return;
+        int arity = ref.arguments().size();
+        // Option and Result require exact explicit generic arguments; most
+        // existing collection syntax also has contextual inference forms.
+        if (arity == 0 && !Set.of("Option", "Result").contains(ref.name())) return;
+        if (!info.acceptsArity(arity)) {
+            String expected = info.minGenericArity() == info.maxGenericArity()
+                    ? Integer.toString(info.minGenericArity())
+                    : info.minGenericArity() + ".." + info.maxGenericArity();
+            throw new IllegalArgumentException("E_CORE_TYPE_ARITY: " + info.canonicalIdentity()
+                    + " requires generic arity " + expected + ", found " + arity);
+        }
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
         return resolve(ref, generics, self, false);
     }
@@ -13380,6 +13405,8 @@ public final class TypeChecker {
                 resolvingAliases.remove(alias);
             }
         }
+
+        validateRegisteredCoreTypeArity(ref);
 
         // Primitive and scalar built-in types do not accept higher-kinded
         // application. Previously e.g. int<string> silently resolved to int.
