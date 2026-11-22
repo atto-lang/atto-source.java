@@ -4,7 +4,8 @@
 // See docs/STD_PROCESS_PLAN_V1.md for the pending guest/runtime bridge.
 define module Process as
 
-  // A launch-request value. Its Array remains mutable; it is not a sealed\n  // capability. Argument vector elements are NOT shell syntax.
+  // A launch-request value. Its Array remains mutable; it is not a sealed
+  // capability. Argument vector elements are NOT shell syntax.
   // The host takes an owned snapshot of arguments and validates UTF-8 bytes,
   // embedded NUL, command grants, executable identity, cwd and environment.
   pub define class Command as
@@ -43,7 +44,11 @@ define module Process as
     return value.stderr_mode >= 0 && value.stderr_mode <= 2;
   }
 
-  pub fnc exit_status(int code, bool signaled): ExitStatus {\n    return new ExitStatus(code, signaled);\n  }\n\n  pub fnc succeeded(ExitStatus status): bool {
+  pub fnc exit_status(int code, bool signaled): ExitStatus {
+    return new ExitStatus(code, signaled);
+  }
+
+  pub fnc succeeded(ExitStatus status): bool {
     return status.code == 0 && status.signaled == false;
   }
 
