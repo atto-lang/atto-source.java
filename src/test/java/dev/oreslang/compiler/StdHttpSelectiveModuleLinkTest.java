@@ -31,10 +31,10 @@ final class StdHttpSelectiveModuleLinkTest {
     @Test
     void explicitlyDeclaredModulesCanBeImportedByName() {
         Ast.Program library = Parser.parse("""
-                define module http as
+                define pub module http as
                   pub fnc status(): int { return 200; }
                 end
-                define module http3 as
+                define pub module http3 as
                   pub fnc version(): int { return 3; }
                 end
                 """);
@@ -43,6 +43,28 @@ final class StdHttpSelectiveModuleLinkTest {
                         + "pub fnc main(): void { return; }");
         assertDoesNotThrow(() -> ImportGraph.validateLinkedImports(
                 Map.of(LIB_ID, library, APP_ID, importer), RESOLUTIONS));
+    }
+
+    @Test
+    void privateModuleCannotBeImportedAcrossUnits() {
+        Ast.Program library = Parser.parse("""
+                define module http as
+                  pub fnc status(): int { return 200; }
+                end
+                define pub module http3 as
+                  pub fnc version(): int { return 3; }
+                end
+                """);
+        assertEquals(Ast.Visibility.PRIVATE, library.modules().get(0).visibility());
+        assertEquals(Ast.Visibility.PUBLIC, library.modules().get(1).visibility());
+        Ast.Program importer = Parser.parse(
+                "import module http from \"std.http\";\n"
+                        + "pub fnc main(): void { return; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ImportGraph.validateLinkedImports(
+                        Map.of(LIB_ID, library, APP_ID, importer), RESOLUTIONS));
+        assertTrue(error.getMessage().contains("does not match an exported declaration"),
+                error.getMessage());
     }
 
     @Test
