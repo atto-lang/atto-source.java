@@ -144,4 +144,40 @@ final class UdpDatagramKernelTest {
         }
     }
 
+
+    @Test void receivePermissionDeniesSourceBeforePublishingOwnedPacket() throws Exception {
+        try (var allowedSender = bind(); var receiverSender = bind()) {
+            int deniedSource = allowedSender.localPort();
+            UdpDatagramKernel.PermissionGate gated = (endpoint, operation) -> {
+                if ("udp.recv_from".equals(operation) &&
+                        endpoint.equals("127.0.0.1:" + deniedSource)) {
+                    throw new SecurityException("revoked source endpoint");
+                }
+            };
+            try (var receiver = UdpDatagramKernel.bindLoopback(0, gated)) {
+                allowedSender.trySendTo(receiver.localPort(), new byte[]{7});
+                boolean denied = false;
+                for (int i=0; i<1000; i++) {
+                    try {
+                        var packet = receiver.tryReceiveFrom(8);
+                        if (packet != null) fail("revoked packet escaped receive gate");
+                    } catch (SecurityException expected) {
+                        denied = true;
+                        break;
+                    }
+                    Thread.sleep(1);
+                }
+                assertTrue(denied, "receiver must reject datagrams from revoked port");
+                receiverSender.trySendTo(receiver.localPort(), new byte[]{9});
+                assertArrayEquals(new byte[]{9}, poll(receiver, 8).bytes());
+                assertEquals(receiverSender.localPort(), pollSourceOnly(receiverSender, receiver));
+            }
+        }
+    }
+
+    private static int pollSourceOnly(UdpDatagramKernel sender, UdpDatagramKernel receiver) throws Exception {
+        sender.trySendTo(receiver.localPort(), new byte[]{5});
+        return poll(receiver, 8).sourcePort();
+    }
+
 }
