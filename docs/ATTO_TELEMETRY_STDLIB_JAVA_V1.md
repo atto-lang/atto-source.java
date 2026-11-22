@@ -26,6 +26,29 @@ pub fnc handle_request(): void {
 
 This `using` form is a **compiler-owned intrinsic** as specified in [atto-spec#167](https://github.com/atto-lang/atto-spec/pull/167). No guest-defined `Telemetry.span` or `SpanScope.close_scope` is supplied here: doing so would permit provider impersonation. Current Java work [#1661](https://github.com/atto-lang/atto-source.java/pull/1661) and continuation work [#1662](https://github.com/atto-lang/atto-source.java/pull/1662) must be reconciled before enabling the import. The syntax above is a **target example**, not verified working code.
 
+## Mainline compiler-owned observer integration
+
+This draft also extends the **existing** Java/Graal trusted `UsingTelemetrySpanStmt`
+lowering. The guest scope now admits both the original `span.attribute(key, value)`
+and canonical `span.set_attribute(key, value)`, plus
+`span.add_event(event_name)`. These are direct, ownership-checked calls,
+not a user-defined `SpanScope`. Runtime event names must be 1..80 safe ASCII
+characters; each recording span keeps at most 16 name-only events. Overflow
+drops names without growing the collection. Disabled span scopes ignore the
+observer payload, retain incoming trace context, and do not export.
+
+The host-only `TelemetrySpanScope.eventsSnapshot()` returns an immutable
+copy; no guest API exposes event storage. There is still no actual OTLP export,
+full suspension/cancellation guest proof, or authorized live JIT patching.
+
+The correct mainline compiled-guest syntax currently works **without** a
+`use std.telemetry` import because `telemetry.span` is a contextual compiler
+intrinsic. The canonical `use std.telemetry as telemetry` spelling shown above
+still requires a separately verified trusted import resolver. The .atto
+data-policy module is imported separately using
+`import module Telemetry from "std/telemetry";` in existing source import
+mechanisms. The two facilities do not manufacture authority for each other.
+
 ## Test and security gates
 
 1. Compiler-backed positive/negative tests for the pure Atto helpers and batch overflow/drop saturation; alias/capability forgery rejection; no source-defined `span` accepted as a trusted provider.
