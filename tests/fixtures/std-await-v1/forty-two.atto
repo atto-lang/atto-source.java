@@ -1,0 +1,14 @@
+// Executable guest source: unary std.await forwards one Future<int> through
+// the existing checked await. This adapter does not create a second task.
+async fnc answer(): int {
+    rt cooperate;
+    return 41;
+}
+fnc transform_result(int value): int {
+    return value + 1;
+}
+pub fnc main(): void {
+    val int result = answer() |> std.await |> transform_result;
+    stdio.stdout.write(result);
+    return;
+}

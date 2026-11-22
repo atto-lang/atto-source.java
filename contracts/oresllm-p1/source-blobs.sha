@@ -1,0 +1,9 @@
+9f6a9a93edcc4d4d499d3f597be3cdcd28f67ee4  contracts/oresllm-p1/tensor/src/tensor2.ores
+16733c825c906cb0942c709fb732fc20b5080945  contracts/oresllm-p1/tensor/tests/native-tensor2-smoke.ores
+17873c575f23e35812949e85d56a50ad4a470f06  contracts/oresllm-p1/autograd/src/affine2_grad.ores
+62e9c7c28d0329c506730a2f9df08eb1bb0bdf9d  contracts/oresllm-p1/autograd/tests/native-affine2-grad-smoke.ores
+9ffc29a7ad27391130b6d0df47e8cc3140a9825a  contracts/oresllm-p1/nn/src/tiny_mlp.ores
+69902ed7f418d17b3aa9937fc71f5daf8a8a945e  contracts/oresllm-p1/nn/tests/native-tiny-mlp-smoke.ores
+375e4ce5d066075aaa1d18a0ba0b0b3aae2bbc8d  contracts/oresllm-p1/optim/src/scalar_sgd.ores
+ae4c014ad6b6db918df6d88f0511d1da5303e722  contracts/oresllm-p1/optim/tests/native-scalar-sgd-smoke.ores
+69c8e7d0d2f91d48c99f06990fbe3ba69ac5245b  contracts/oresllm-p1/example/examples/native-sgd-neuron.ores

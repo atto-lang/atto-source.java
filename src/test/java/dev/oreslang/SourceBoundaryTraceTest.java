@@ -16,7 +16,7 @@ final class SourceBoundaryTraceTest {
                     async fnc leaf(): int {
                       rt cooperate;
                       val int zero = 0; // Integer remainder by zero raises during resumed evaluation.
-                      return 1 % zero;
+                      return Integer.rem(1, zero);
                     }
                     async fnc middle(): int {
                       val int result = await leaf();
@@ -37,7 +37,7 @@ final class SourceBoundaryTraceTest {
     }
 
     @Test
-    void actorFailureKeepsReceiveAndAwaitingSupervisorFrames() {
+    void awaitingAnActorFailureKeepsOwnFramesButNotTheFailedActorsInternals() {
         for (String kind : new String[] {"actor", "isoactor"}) {
             try (var context = Context.newBuilder("ores").allowAllAccess(true).build()) {
                 var error = assertThrows(PolyglotException.class, () -> context.eval("ores", """
@@ -59,8 +59,11 @@ final class SourceBoundaryTraceTest {
                         """.formatted(kind)));
                 var text = new StringWriter();
                 error.printStackTrace(new PrintWriter(text));
-                assertTrue(text.toString().contains("source task receive"), text.toString());
+                // #1223: the awaiting task sees the failure snapshot with its own
+                // frames; the failed actor's receive frames stay with that actor.
                 assertTrue(text.toString().contains("source task main"), text.toString());
+                assertTrue(text.toString().contains("terminated: FAILURE"), text.toString());
+                assertFalse(text.toString().contains("source task receive"), text.toString());
             }
         }
     }
@@ -75,4 +78,30 @@ final class SourceBoundaryTraceTest {
         assertEquals("native failure", cause.getMessage());
         assertEquals(0, cause.getSuppressed()[0].getStackTrace().length);
     }
+
+    @Test
+    void sourceMetadataIsBoundedAndCannotForgeStackTraceLines() {
+        var cause = new IllegalStateException("original cause");
+        String malicious = "orders.ores\\nFORGED-PANIC\\u001b[31m\\u202e"
+                .replace("\\n", "\n")
+                .replace("\\u001b", "\u001b")
+                .replace("\\u202e", "\u202e")
+                + "x".repeat(5000);
+        for (int i = 0; i < 1000; i++) {
+            assertSame(cause, SourceBoundaryTrace.record(
+                    cause, malicious, "leaf", "resumed source task"));
+        }
+
+        assertEquals(64, cause.getSuppressed().length);
+        String label = cause.getSuppressed()[0].getMessage();
+        assertTrue(label.length() <= 350, label);
+        assertFalse(label.contains("\n"), label);
+        assertFalse(label.contains("\r"), label);
+        assertFalse(label.contains("\u001b"), label);
+        assertFalse(label.contains("\u202e"), label);
+        assertEquals("original cause", cause.getMessage());
+        assertEquals(0, cause.getSuppressed()[0].getStackTrace().length);
+        assertNotNull(SourceBoundaryTrace.record(cause, null, null, null));
+    }
+
 }

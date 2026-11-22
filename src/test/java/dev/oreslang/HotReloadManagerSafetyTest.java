@@ -1,9 +1,14 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.HotReloadManager;
 import dev.oreslang.runtime.IsolatePolicy;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.HexFormat;
+import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -59,7 +64,15 @@ final class HotReloadManagerSafetyTest {
 
     @Test
     void adversarialSupervisorCannotRemoveAdversarialModeInChild() {
-        IsolatePolicy parent = IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.HOT_CODE_LOAD);
+        // The adversarial permission ceiling forbids HOT_CODE_LOAD outright,
+        // so an adversarial supervisor can no longer even hold hot-reload
+        // authority, let alone hand a non-adversarial child to a guest.
+        IllegalArgumentException ceiling = assertThrows(IllegalArgumentException.class,
+                () -> IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.HOT_CODE_LOAD));
+        assertTrue(ceiling.getMessage().contains("adversarial isolates cannot grant HOT_CODE_LOAD"),
+                ceiling.getMessage());
+
+        IsolatePolicy parent = IsolatePolicy.strictFaas();
         IsolatePolicy weakerGuest = new IsolatePolicy(
                 Set.of(IsolatePolicy.Capability.STDOUT),
                 32L * 1024 * 1024,
@@ -135,6 +148,75 @@ final class HotReloadManagerSafetyTest {
             assertEquals(1, manager.liveGenerations());
             // Atomic activation/rollback is tracked separately in issue #475.
             // Never treat the manager's current active pointer as a serving route.
+        }
+    }
+
+    private static IncrementalCompiler.CompiledUnit compiledGood() {
+        return new IncrementalCompiler().compile(Map.of("service.ores", GOOD))
+                .units().get("service.ores");
+    }
+
+    private static IncrementalCompiler.CompiledUnit withSource(
+            IncrementalCompiler.CompiledUnit original, String source, String hash) {
+        return new IncrementalCompiler.CompiledUnit(
+                original.unitId(), original.packageId(), original.namespace(),
+                hash, original.abiDigest(), original.dependencies(), source, original.program());
+    }
+
+    private static String sha256(String source) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(source.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+    }
+
+    @Test
+    void compiledHotLoadAcceptsVerifiedIndependentSource() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var checked = compiledGood();
+            var generation = manager.load(checked);
+            assertEquals(sha256(GOOD), generation.sha256());
+            assertEquals(1, manager.liveGenerations());
+        }
+    }
+
+    @Test
+    void compiledHotLoadRejectsDigestMismatchBeforePublication() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var checked = compiledGood();
+            var forged = withSource(checked, "not the checked source", checked.sourceDigest());
+            assertThrows(SecurityException.class, () -> manager.load(forged));
+            assertNull(manager.active());
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
+    void compiledHotLoadRechecksSourceEvenWithCorrectForgeryDigest() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var checked = compiledGood();
+            // Forged AST remains GOOD; the executable source is malformed.
+            String invalid = "pub routine main(): void {";
+            var forged = withSource(checked, invalid, sha256(invalid));
+            assertThrows(RuntimeException.class, () -> manager.load(forged));
+            assertNull(manager.active());
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
+
+    @Test
+    void compiledHotLoadRejectsUnverifiedDependencyClosure() {
+        try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
+            var checked = compiledGood();
+            var unsound = new IncrementalCompiler.CompiledUnit(
+                    checked.unitId(), checked.packageId(), checked.namespace(),
+                    checked.sourceDigest(), checked.abiDigest(), Set.of("missing.ores"),
+                    checked.sourceText(), checked.program());
+            assertThrows(SecurityException.class, () -> manager.load(unsound));
+            assertNull(manager.active());
+            assertEquals(0, manager.liveGenerations());
         }
     }
 }

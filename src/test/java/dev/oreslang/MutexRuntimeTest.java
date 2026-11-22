@@ -347,6 +347,57 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void sharedGuardDoesNotConferOwnerActorAuthorityToAnotherActor() throws Exception {
+        var shared = OresMutex.shared(new int[]{0});
+        var held = new AtomicReference<OresMutex.Guard<int[]>>();
+        var acquired = new CountDownLatch(1);
+        var checked = new CountDownLatch(1);
+        var released = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        // The owner callback deliberately stays live while a different actor
+        // attempts access, so the guard can be legitimately closed by the
+        // ORIGINAL actor in the same physical dispatch.
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 1);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var owner = runtime.<OresMutex.Shared<int[]>>spawnShared(() -> (mutex, context) -> {
+                try {
+                    var guard = mutex.lockAsync().join();
+                    held.set(guard);
+                    acquired.countDown();
+                    assertTrue(checked.await(3, TimeUnit.SECONDS));
+                    guard.value()[0] = 24;
+                    guard.release();
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                } finally {
+                    released.countDown();
+                }
+            });
+            var other = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    assertNotNull(held.get());
+                    assertThrows(OresMutex.WrongMutexDomainException.class,
+                            () -> held.get().value());
+                    assertThrows(OresMutex.WrongMutexDomainException.class,
+                            () -> held.get().release());
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                } finally {
+                    checked.countDown();
+                }
+            });
+            owner.send(shared);
+            assertTrue(acquired.await(3, TimeUnit.SECONDS));
+            other.send("try");
+            assertTrue(checked.await(3, TimeUnit.SECONDS));
+            assertTrue(released.await(3, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertFalse(shared.isPoisoned());
+            assertEquals(24, shared.withLock(value -> value[0]).intValue());
+        }
+    }
+
+    @Test
     void actorCanRecoverPoisonedSharedMutexWithoutBlocking() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var shared = OresMutex.shared(new int[]{0});
@@ -830,7 +881,12 @@ final class MutexRuntimeTest {
 
     @Test
     void sharedGuardCannotBeReleasedFromAnotherActorDomain() throws Exception {
-        try (ActorRuntime runtime = new ActorRuntime()) {
+        // The owner deliberately blocks its physical carrier until the
+        // intruder attempts a cross-domain release. With only one shared
+        // worker, the barrier deadlocks before the authorization assertion.
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8))) {
             var shared = OresMutex.shared(new int[]{0});
             AtomicReference<OresMutex.Guard<int[]>> guardRef = new AtomicReference<>();
             AtomicReference<Throwable> observed = new AtomicReference<>();

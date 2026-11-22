@@ -35,6 +35,29 @@ final class CheckedOptionDepthMetadataTest {
     }
 
     @Test
+    void checkedDepthCanBeTransferredToARewrittenCall() {
+        Ast.CallExpr source = unwrapCall();
+        Ast.CallExpr rewritten = unwrapCall();
+
+        Ast.CheckedOptionDepth.record(source, 4);
+        Ast.CheckedOptionDepth.copy(source, rewritten);
+
+        assertEquals(4, Ast.CheckedOptionDepth.require(source));
+        assertEquals(4, Ast.CheckedOptionDepth.require(rewritten));
+    }
+
+    @Test
+    void copyingAnUncheckedCallDoesNotAuthorizeTheTarget() {
+        Ast.CallExpr source = unwrapCall();
+        Ast.CallExpr rewritten = unwrapCall();
+
+        Ast.CheckedOptionDepth.copy(source, rewritten);
+
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedOptionDepth.require(rewritten));
+    }
+
+    @Test
     void checkedDepthIsWriteOnceAndMustBePositive() {
         Ast.CallExpr call = unwrapCall();
         assertThrows(IllegalArgumentException.class,

@@ -1,9 +1,25 @@
 # Expression `trap` and `unwrap()` — shared source contract
 
-**Status:** Approved language-design target / **not implemented** as expression syntax.
-The Java/GraalVM frontend currently implements synchronous **callable** `trap`,
-not `trap expression`. The LLVM frontend reserves `trap` and rejects the
-unsupported syntax. This file does not claim executable cross-backend parity.
+> **Normative update (2026-11-17, owner decision): `trap` yields `Result`, not `Option`.**
+> - `trap e` with `e: T` has type `Result<T, Error>`. Success is `Ok(v)`. A caught ordinary
+>   failure is `Err(Error)`, a sanitized value: a bounded type name and message, with no host
+>   exception, cause chain or stack.
+> - A `Result` is never wrapped again. With `e: Result<T, E>`, `trap e` has type
+>   `Result<T, E | Error>`, or just `Result<T, E>` when `E` already accepts `Error`. The
+>   value's own `Err(E)` passes through, and a caught failure becomes `Err(Error)`.
+> - Calls to `trap fnc f(): T` have the same type. Async and suspending trap boundaries
+>   settle their Future with it: `Future<Result<T, Error>>`.
+> - `trap await f` spans the suspension. A completed or suspended Future that fails yields
+>   `Err(Error)` (the #2690 decision).
+> - `panic`, `raise`, cancellation, forced termination and VM-fatal failures still bypass
+>   `trap`. `unwrap()` on an `Err` is still a panic.
+>
+> Sections below that mention `Option`, `Some` or `None` describe the previous contract.
+
+**Status:** Java/GraalVM main represents expression-level `trap` in its
+parser, type checker and evaluator, alongside callable `trap`. LLVM still
+reserves and rejects the unsupported syntax. This reconciliation preserves
+the Java implementation; it does not establish executable backend parity.
 
 ## One rule: catch ordinary `throw`, never panic
 
@@ -106,3 +122,24 @@ conversion of panic to throw; no global host exception catch.
 
 Also see the Java/GraalVM `docs/TRAP.md` callable-trap contract and
 `docs/LANGUAGE.md` Option/Result semantics.
+
+## Current-main cleanup reconciliation (2026-10-20)
+
+A trap boundary does not roll back writes or I/O. Successful guard values remain
+owned Option payloads and require explicit extraction before use.
+
+The Java runtime retains the shared `TrapFailurePolicy`: explicit guest
+catch and trap have distinct admission rules, including bounded inspection
+of wrapped/suppressed failures. This integration does not replace that policy
+with the older cast-only catch rule. Terminal panic, cancellation and process
+exit precedence remains the current-main policy.
+
+Each resumed expression delivers a terminal completion at most once. A failure
+thrown by its consumer is not delivered to the same consumer again. The block
+statement walker finalizes its environment once. Cleanup diagnostics are capped
+at 64 suppressed entries with an atomic check/add under the primary failure
+monitor. Existing process-exit precedence and newer match/select lowering remain.
+
+The reconciled snapshot requires exact-head Maven/GraalVM execution, including
+trap-expression, failure-policy and process-exit suites. Historical checks on
+the earlier branch are not validation of this integration.

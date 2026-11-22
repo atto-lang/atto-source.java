@@ -1,0 +1,15 @@
+import class SgdPolicy from '../src/scalar_sgd';
+import fnc valid_policy, clip_gradient, update_scalar from '../src/scalar_sgd';
+
+pub routine main(): void {
+  val SgdPolicy policy = new SgdPolicy(0.25, 4.0);
+  val SgdPolicy bad = new SgdPolicy(0.0, 4.0);
+  if !valid_policy(&policy); do rt fail("valid SGD policy rejected"); fi
+  if valid_policy(&bad); do rt fail("zero learning rate admitted"); fi
+  if clip_gradient(10.0, 4.0) != 4.0; do rt fail("positive gradient clip"); fi
+  if clip_gradient(-10.0, 4.0) != -4.0; do rt fail("negative gradient clip"); fi
+  if update_scalar(2.0, 3.0, &policy) != 1.25; do rt fail("SGD update"); fi
+  if update_scalar(2.0, 10.0, &policy) != 1.0; do rt fail("clipped SGD update"); fi
+  stdio.stdout.println("ORES-SCALAR-SGD-NATIVE-PASS");
+  return;
+}

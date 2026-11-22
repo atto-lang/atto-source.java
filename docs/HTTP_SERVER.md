@@ -1,5 +1,12 @@
 # Native HTTP server capabilities
 
+> **Current lower-level implementation.** The proposed Fetch-inspired
+> `HttpResponse` unary actor return is separately specified in
+> [HTTP_RESPONSE_FETCH_API_V1.md](HTTP_RESPONSE_FETCH_API_V1.md) and is
+> **not yet implemented or compiler-verified** on this backend. The API below
+> remains the existing `http.claim`/`HttpExchange` path; this document does
+> not claim that a `run(HttpMessage): HttpResponse` actor can already serve requests.
+
 `http.listen(host, port, capacity, body_limit_bytes, deadline_ms)` creates an
 HTTP/1.1 server under the supervisor's scoped NET permission. Port zero selects
 an ephemeral port. The native backend uses `jdk.httpserver`; Java socket,
@@ -94,6 +101,43 @@ properties override them. These protect parser/connection work before Spin's
 per-listener admission check. Embedders that initialize another JDK HTTP server
 first must set the properties before that initialization; the backend cannot
 retroactively reconfigure JDK static limits. See NativeHttp.configureTransportDefaults.
+
+Quota provenance is **typed**: the transport raises the internal
+`RequestBodyTooLargeException` for both declared Content-Length over the
+listener limit and actual decoded body overflow. Only that marker qualifies
+a request-body read failure for HTTP 413; arbitrary exceptions whose message
+happens to be "body too large" do not qualify. The raw-wire suite also
+differentiates HTTP 413 for a declared length over quota from HTTP 400 for
+a malformed/overflowed decimal length.
+
+The admission layer requires one unambiguous HTTP/1.1 Host and rejects
+duplicate/joined, blank, whitespace/control or URI-delimiter Host values.
+The Host value must be a syntactically valid URI authority (not arbitrary
+printable ASCII): nonnumeric, empty or out-of-range ports are rejected,
+unbracketed IPv6 and malformed bracket literals fail closed, and canonical
+DNS hosts, numeric ports through 65535, and bracketed IPv6 remain accepted.
+This parses the authority locally without DNS lookups or blocking network I/O.
+HTTP/1.0 may omit Host, but a Host value supplied by the caller must still be
+well formed. Exactly one nonnegative decimal Content-Length is allowed. A
+duplicate, comma-joined, nondecimal or oversized Content-Length is rejected;
+any Content-Length together with Transfer-Encoding is forbidden. For this
+HTTP/1.1 adapter the only permitted Transfer-Encoding is a single `chunked`.
+The 8192-character per-field, 100-field and 32768-character aggregate limits
+remain. Header denials happen before the guest exchange enters admission.
+
+These post-parse checks complement but cannot replace JVM-wide JDK parser
+limits. The JDK may itself reject ambiguous framing before invoking our
+handler. Inbound body-reading IOExceptions (including malformed chunk lengths)
+map to HTTP 400 instead of 500; unlike header denial, this can occur *after*
+guest admission, so no pre-dispatch claim is made. Response-side I/O failures
+remain server errors. NativeHttpFramingAdmissionTest checks decoded header
+policy; NativeHttpRawWireAdmissionTest uses a JDK loopback socket and tracks
+headers admitted versus bodies successfully processed. Neither host test is
+equivalent to native AttoLang guest-backed Spin integration.
+
+**Proof status:** These are staged host-admission safeguards, not certification
+of a complete HTTP/1.1 parser. Exact-head CI, a live raw-wire Spin replay,
+and HTTP/1.0 compatibility need executed evidence before merging.
 
 This backend supports origin-form targets, strict UTF-8 paths, keep-alive,
 chunked transfer, and streaming. It rejects absolute/network-path/fragment

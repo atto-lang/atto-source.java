@@ -679,4 +679,191 @@ final class PatternMatchingHardeningTest {
         });
         assertTrue(error.getMessage().contains("moved value"));
     }
+
+    @Test
+    void openErrorHierarchyNeedsAnUnguardedAncestorOrWildcard() {
+        String hierarchy = """
+                define class Error as
+                end
+
+                define class IOError extends Error as
+                end
+
+                define class FileNotFoundError extends IOError as
+                end
+
+                define class ArgumentError extends Error as
+                end
+                """;
+
+        // Enumerating the currently known leaves cannot close an open Error
+        // hierarchy: future subtypes and the concrete root still exist.
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(hierarchy + """
+                        fnc classify(Error failure): int {
+                          match failure over
+                            on FileNotFoundError missing -> { return 1; }
+                            on IOError io -> { return 2; }
+                            on ArgumentError bad -> { return 3; }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
+                fnc classify(Error failure): int {
+                  match failure over
+                    on FileNotFoundError missing -> { return 1; }
+                    on IOError io -> { return 2; }
+                    on Error other -> { return 3; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void errorAncestorShadowingIsRejectedButGuardedAncestorDoesNotShadow() {
+        String hierarchy = """
+                define class Error as
+                end
+
+                define class IOError extends Error as
+                end
+                """;
+
+        IllegalArgumentException shadowed = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(hierarchy + """
+                        fnc classify(Error failure): int {
+                          match failure over
+                            on Error any -> { return 1; }
+                            on IOError io -> { return 2; }
+                          end
+                        }
+                        """)));
+        assertTrue(shadowed.getMessage().contains("unreachable match arm"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
+                fnc classify(Error failure): int {
+                  match failure over
+                    on Error guarded when false -> { return 9; }
+                    on IOError io -> { return 2; }
+                    on Error rest -> { return 3; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void nominalErrorMatchingDispatchesLeafBeforeAncestorAtRuntime() throws Exception {
+        String program = """
+                define class Error as
+                end
+
+                define class IOError extends Error as
+                end
+
+                define class FileNotFoundError extends IOError as
+                end
+
+                fnc classify(Error failure): int {
+                  match failure over
+                    on Error guarded when false -> { return 99; }
+                    on FileNotFoundError missing -> { return 1; }
+                    on IOError io -> { return 2; }
+                    on Error other -> { return 3; }
+                  end
+                }
+
+                pub fnc main(): void {
+                  stdio.println(classify(new FileNotFoundError()));
+                  stdio.println(classify(new IOError()));
+                  stdio.println(classify(new Error()));
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "error-pattern-runtime.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals("1\n2\n3", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
+    @Test
+    void nestedResultErrorPatternsMustCoverEveryPossibleErrPayload() {
+        String hierarchy = """
+                define class Error as
+                end
+
+                define class IOError extends Error as
+                end
+
+                define class FileNotFoundError extends IOError as
+                end
+                """;
+
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(hierarchy + """
+                        fnc classify(Result<int, Error> outcome): int {
+                          match outcome over
+                            on Ok(value) -> { return value; }
+                            on Err(FileNotFoundError missing) -> { return -1; }
+                            on Err(IOError io) -> { return -2; }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
+                fnc classify(Result<int, Error> outcome): int {
+                  match outcome over
+                    on Ok(value) -> { return value; }
+                    on Err(FileNotFoundError missing) -> { return -1; }
+                    on Err(IOError io) -> { return -2; }
+                    on Err(Error other) -> { return -3; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void errorInterfaceMustBeNominalRatherThanACompatibleMethodShape() {
+        String hierarchy = """
+                define interface CodedError as
+                  fnc code() => int;
+                end
+
+                define class Error implements CodedError as
+                  pub code(): int { return 0; }
+                end
+
+                define class ShapeImpostor as
+                  pub code(): int { return 0; }
+                end
+                """;
+
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(hierarchy + """
+                        fnc classify(Error | ShapeImpostor failure): int {
+                          match failure over
+                            on CodedError coded -> { return coded.code(); }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
+                fnc classify(Error | ShapeImpostor failure): int {
+                  match failure over
+                    on CodedError coded -> { return coded.code(); }
+                    on ShapeImpostor fake -> { return -1; }
+                  end
+                }
+                """)));
+    }
 }

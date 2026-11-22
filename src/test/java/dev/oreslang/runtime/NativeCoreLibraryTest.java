@@ -71,7 +71,7 @@ final class NativeCoreLibraryTest {
         try (var stream = Files.walk(root)) {
             List<Path> modules = stream
                     .filter(Files::isRegularFile)
-                    .filter(path -> path.toString().endsWith(".ores"))
+                    .filter(path -> path.toString().endsWith(".ores") || path.toString().endsWith(".atto"))
                     .sorted()
                     .toList();
             assertFalse(modules.isEmpty(), "native-first stdlib must contain Oreslang modules");
@@ -79,12 +79,12 @@ final class NativeCoreLibraryTest {
                     .map(path -> root.relativize(path).toString().replace((char) 92, '/'))
                     .collect(Collectors.toSet());
             assertEquals(actual, CoreLibrarySources.packagedSourcePaths(),
-                    "every packaged .ores file must be explicitly registered and vice versa");
+                    "every packaged .atto/.ores file must be explicitly registered and vice versa");
 
             for (Path module : modules) {
                 String source = Files.readString(module);
                 String relative = root.relativize(module).toString().replace('\\', '/');
-                String importPath = "std/" + relative.substring(0, relative.length() - ".ores".length());
+                String importPath = "std/" + relative.substring(0, relative.lastIndexOf('.'));
                 MixedSourceUnit unit = MixedSourceUnit.parse(
                         CoreLibrarySources.unitId(importPath),
                         module.getFileName().toString(),
@@ -233,6 +233,8 @@ final class NativeCoreLibraryTest {
         assertEquals(CoreLibrarySources.source("std/core"),
                 CoreLibrarySources.source("std/core.ores"));
         assertTrue(CoreLibrarySources.source("std/testing").contains("define module testing"));
+        assertTrue(CoreLibrarySources.source("std/compute").contains("define module compute"));
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("compute.atto"));
         assertFalse(CoreLibrarySources.packagedSourcePaths().contains("phantom.ores"));
     }
 }

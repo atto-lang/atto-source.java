@@ -6,6 +6,9 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
+import java.net.InetAddress;
+import java.net.Inet6Address;
+import java.net.UnknownHostException;
 import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -16,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.List;
@@ -28,6 +32,72 @@ import java.util.List;
  */
 public final class NativeIo {
     private NativeIo() { }
+
+    /**
+     * Byte-bounded UTF-8 read from one opened descriptor, not a separate
+     * stat() followed by Files.readString(). A concurrent appender may grow
+     * the file, but cannot make this operation buffer more than maxBytes.
+     *
+     * This checks both lexical and canonical READ scopes and rejects a final
+     * symlink. Parent-directory replacement by a hostile concurrent writer
+     * still requires a platform dirfd/sandbox boundary; this is not a
+     * general-purpose race-free path authority primitive.
+     */
+    public static String readTextBounded(
+            OresContext context, String rawPath, long maxBytes) {
+        if (maxBytes < 0 || maxBytes > 16L * 1024L * 1024L) {
+            throw new IllegalArgumentException(
+                    "fs.read_text_bounded_async max_bytes must be in 0..16777216");
+        }
+        Path lexical = lexicalPath(rawPath);
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.READ, lexical.toString(), "fs.read_text_bounded_async");
+        rejectSymlinkComponents(context, RuntimePermissions.Permission.READ, lexical, "fs.read_text_bounded_async");
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                lexical.toString(), "fs.read_text_bounded_async");
+        Path path = canonicalExistingPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                path.toString(), "fs.read_text_bounded_async");
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(
+                    "fs.read_text_bounded_async requires regular file: " + path);
+        }
+        try (var channel = Files.newByteChannel(
+                path, java.util.Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            if (channel.size() > maxBytes) {
+                throw new IllegalArgumentException(
+                        "fs.read_text_bounded_async byte budget exceeded");
+            }
+            java.io.ByteArrayOutputStream bytes =
+                    new java.io.ByteArrayOutputStream((int) Math.min(maxBytes, 8192L));
+            java.nio.ByteBuffer chunk = java.nio.ByteBuffer.allocate(8192);
+            long received = 0;
+            while (true) {
+                chunk.clear();
+                int count = channel.read(chunk);
+                if (count < 0) break;
+                if (count == 0) {
+                    throw new IllegalStateException(
+                            "fs.read_text_bounded_async read made no progress");
+                }
+                if (count > maxBytes - received) {
+                    throw new IllegalArgumentException(
+                            "fs.read_text_bounded_async byte budget exceeded");
+                }
+                bytes.write(chunk.array(), 0, count);
+                received += count;
+            }
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes.toByteArray())).toString();
+        } catch (IOException failure) {
+            throw ioFailure("bounded read", path, failure);
+        }
+    }
 
     public static String readText(OresContext context, String rawPath) {
         Path path = canonicalExistingPath(rawPath);
@@ -43,6 +113,41 @@ public final class NativeIo {
         Path path = canonicalIfExisting(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.exists");
         return Files.exists(path);
+    }
+
+    /**
+     * Measure UTF-8 storage bytes without reading file contents into an actor.
+     * Require scoped READ on the lexical and resolved paths; reject the leaf
+     * symlink and use a nofollow attribute read for the final size witness.
+     */
+    public static long fileSize(OresContext context, String rawPath) {
+        Path lexical = lexicalPath(rawPath);
+        // Validate the caller's lexical scope BEFORE probing file existence,
+        // symlinks or canonical paths. An out-of-scope missing path must
+        // report permission denial, not leak its filesystem state.
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.READ, lexical.toString(), "fs.file_size");
+        rejectSymlinkComponents(context, RuntimePermissions.Permission.READ, lexical, "fs.file_size");
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                lexical.toString(), "fs.file_size");
+        Path path = canonicalExistingPath(rawPath);
+        // A parent may itself be a symlink; never let the lexical grant
+        // authorize the resolved destination outside its READ scope.
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                path.toString(), "fs.file_size");
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isRegularFile()) {
+                throw new IllegalArgumentException("fs.file_size requires regular file: " + path);
+            }
+            return attributes.size();
+        } catch (IOException failure) {
+            throw ioFailure("file size", path, failure);
+        }
     }
 
     /**
@@ -121,15 +226,25 @@ public final class NativeIo {
      */
     public static void writeTextAtomic(OresContext context, String rawPath, String value) {
         Path lexical = lexicalPath(rawPath);
-        if (Files.isSymbolicLink(lexical)) {
-            throw new SecurityException("fs.write_text_atomic refuses symlink: " + lexical);
-        }
+        // Reject out-of-scope destinations before any existence, symlink, or
+        // parent-resolution probe. This must hold even when the parent path
+        // does not exist or its metadata would otherwise reveal its state.
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.WRITE, lexical.toString(), "fs.write_text_atomic");
+        rejectSymlinkComponents(context, RuntimePermissions.Permission.WRITE, lexical, "fs.write_text_atomic");
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                lexical.toString(), "fs.write_text_atomic");
         Path parent = lexical.getParent();
         if (parent == null) throw new IllegalArgumentException("atomic write path has no parent");
         Path canonicalParent = realPath(parent);
         Path target = canonicalParent.resolve(lexical.getFileName());
-        context.requirePermission(RuntimePermissions.Permission.WRITE, lexical.toString(), "fs.write_text_atomic");
-        context.requirePermission(RuntimePermissions.Permission.WRITE, target.toString(), "fs.write_text_atomic");
+        // Reauthorize the resolved parent when a symlinked ancestor could
+        // route an in-scope lexical path to an out-of-scope directory.
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                target.toString(), "fs.write_text_atomic");
         if (!Files.isDirectory(canonicalParent, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("atomic write parent is not a directory: " + parent);
         }
@@ -148,6 +263,108 @@ public final class NativeIo {
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException failure) {
             throw ioFailure("atomic write", target, failure);
+        } finally {
+            if (temp != null) {
+                try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
+            }
+        }
+    }
+
+    /**
+     * Durable atomic UTF-8 replacement for small queue manifests (max 1 MiB).
+     *
+     * The enclosing directory is an independently trusted 0700 POSIX
+     * directory, not attacker-writable. This is a *single-file* durability
+     * primitive, NOT a WAL transaction, actor ownership proof, power-loss
+     * guarantee or a directory-FD openat2 sandbox. It is dispatched only via
+     * AsyncNativeIo so the actual fsync work never parks an actor carrier.
+     * Failures after rename have an UNKNOWN outcome; callers must reconcile
+     * from disk before claiming a committed publisher ACK.
+     */
+    public static void writeTextDurableAtomic(
+            OresContext context, String rawPath, String value) {
+        Path lexical = lexicalPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                lexical.toString(), "fs.write_text_durable_atomic_async");
+        byte[] bytes = java.util.Objects.requireNonNull(value, "manifest text")
+                .getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > 1_048_576) {
+            throw new IllegalArgumentException("durable atomic manifest exceeds 1 MiB");
+        }
+        // A write grant for one destination file does not authorize creating
+        // a sibling temp file or rewriting the containing directory's metadata.
+        // Verify lexical directory WRITE before *any* path metadata lookup.
+        Path parent = lexical.getParent();
+        if (parent == null) throw new IllegalArgumentException("durable manifest has no parent");
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                parent.toString(), "fs.write_text_durable_atomic_async.parent");
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException("durable atomic destination cannot be a symlink");
+        }
+        Path actualParent = realPath(parent);
+        Path target = actualParent.resolve(lexical.getFileName());
+        // A symlinked ancestor must not turn one approved lexical directory
+        // into a different, unapproved directory for temporary write/rename.
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                actualParent.toString(), "fs.write_text_durable_atomic_async.parent");
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                target.toString(), "fs.write_text_durable_atomic_async");
+        if (!Files.isDirectory(actualParent, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(target)) {
+            throw new SecurityException("durable manifest directory/leaf is unsafe");
+        }
+        // A private POSIX directory reduces untrusted cross-UID changes,
+        // but does NOT prevent replacement by the same UID or a process with
+        // write access to its parent. A trusted custody boundary is required.
+        try {
+            var attributes = Files.readAttributes(actualParent,
+                    java.nio.file.attribute.PosixFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS);
+            var mode = attributes.permissions();
+            if (mode.contains(java.nio.file.attribute.PosixFilePermission.GROUP_WRITE)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_READ)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE)
+                    || mode.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE)) {
+                throw new SecurityException("durable manifest directory must be private (0700)");
+            }
+        } catch (UnsupportedOperationException unsupported) {
+            throw new SecurityException(
+                    "durable manifest requires POSIX private-directory support", unsupported);
+        } catch (IOException failure) {
+            throw ioFailure("check durable manifest directory", actualParent, failure);
+        }
+
+        Path temp = null;
+        try {
+            temp = Files.createTempFile(actualParent, ".oreslang-durable-", ".tmp");
+            try (java.nio.channels.FileChannel pending =
+                    java.nio.channels.FileChannel.open(temp, StandardOpenOption.WRITE,
+                            LinkOption.NOFOLLOW_LINKS)) {
+                java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(bytes);
+                while (buffer.hasRemaining()) {
+                    if (pending.write(buffer) <= 0) {
+                        throw new IOException("stalled durable manifest write");
+                    }
+                }
+                pending.force(true);
+            }
+            if (Files.isSymbolicLink(target)) {
+                throw new SecurityException("durable atomic destination became symlink");
+            }
+            Files.move(temp, target,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            temp = null;
+            // The parent directory's rename metadata is separate from file
+            // data durability. Do not complete Future before this succeeds.
+            try (java.nio.channels.FileChannel directory =
+                    java.nio.channels.FileChannel.open(actualParent, StandardOpenOption.READ)) {
+                directory.force(true);
+            }
+        } catch (IOException failure) {
+            throw ioFailure("durable atomic write (outcome may be unknown)", target, failure);
         } finally {
             if (temp != null) {
                 try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
@@ -232,6 +449,7 @@ public final class NativeIo {
             String method,
             String rawUri,
             String body) {
+        TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("http."+method);
         URI uri = checkedHttpUri(rawUri);
         String endpoint = networkEndpoint(uri);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "http." + method.toLowerCase());
@@ -264,6 +482,7 @@ public final class NativeIo {
     }
 
     public static TcpConnection connect(OresContext context, String host, int port) {
+        TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.connect");
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("network.connect host cannot be blank");
         }
@@ -272,11 +491,29 @@ public final class NativeIo {
         }
         String endpoint = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.connect");
+        // Resolve only once, pin the selected numeric address, and require a
+        // second explicit permission for that address before opening a socket.
+        // A hostname grant alone must not authorize an unexpected/private IP.
+        final InetAddress[] resolved;
+        try {
+            resolved = InetAddress.getAllByName(host);
+        } catch (UnknownHostException failure) {
+            throw new IllegalStateException("network DNS resolution failed for " + endpoint, failure);
+        }
+        if (resolved.length == 0) throw new SecurityException("network DNS returned no destination");
+        InetSocketAddress selected = checkedSelectedTcpAddress(
+                context.runtimePermissions(), endpoint, port, resolved[0]);
+        String selectedEndpoint = numericTcpEndpoint(selected.getAddress(), port);
+        context.requirePermission(RuntimePermissions.Permission.NET, selectedEndpoint,
+                "network.connect.selected");
         Socket socket = new Socket();
         try {
             context.nativeIo().register(socket);
-            socket.connect(new InetSocketAddress(host, port), 15_000);
-            return new TcpConnection(context, endpoint, socket);
+            try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
+                // No hostname re-resolution at the physical connect boundary.
+                socket.connect(selected, 15_000);
+                return new TcpConnection(context, endpoint, selectedEndpoint, socket);
+            }
         } catch (Exception failure) {
             context.nativeIo().unregister(socket);
             try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
@@ -284,16 +521,43 @@ public final class NativeIo {
         }
     }
 
+    private static String numericTcpEndpoint(InetAddress address, int port) {
+        String numeric = address.getHostAddress().toLowerCase(java.util.Locale.ROOT);
+        return (address instanceof Inet6Address ? "[" + numeric + "]" : numeric) + ":" + port;
+    }
+
+    // Package-private deterministic test seam: no DNS, sockets, actor code or
+    // permission grant is created by selecting an already resolved address.
+    static InetSocketAddress checkedSelectedTcpAddress(
+            RuntimePermissions permissions, String requestedEndpoint, int port,
+            InetAddress selected) {
+        java.util.Objects.requireNonNull(permissions, "permissions");
+        java.util.Objects.requireNonNull(selected, "selected");
+        if (port < 1 || port > 65535 || selected.isAnyLocalAddress()
+                || selected.isMulticastAddress()) {
+            throw new SecurityException("invalid selected TCP destination");
+        }
+        permissions.require(RuntimePermissions.Permission.NET, requestedEndpoint,
+                "network.connect.requested");
+        permissions.require(RuntimePermissions.Permission.NET,
+                numericTcpEndpoint(selected, port), "network.connect.selected");
+        return new InetSocketAddress(selected, port);
+    }
+
     public static final class TcpConnection implements AutoCloseable {
         private final OresContext context;
         private final String endpoint;
+        private final String selectedEndpoint;
         private final Socket socket;
         private final BufferedReader reader;
         private final BufferedWriter writer;
 
-        private TcpConnection(OresContext context, String endpoint, Socket socket) throws IOException {
+        private TcpConnection(
+                OresContext context, String endpoint, String selectedEndpoint, Socket socket)
+                throws IOException {
             this.context = context;
             this.endpoint = endpoint;
+            this.selectedEndpoint = selectedEndpoint;
             this.socket = socket;
             this.reader = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
@@ -302,8 +566,11 @@ public final class NativeIo {
         }
 
         public String readLine() {
+            TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
-            try {
+            context.requirePermission(RuntimePermissions.Permission.NET, selectedEndpoint,
+                    "network.socket.read_line.selected");
+            try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 return reader.readLine();
             } catch (IOException failure) {
                 throw new IllegalStateException("network read failed for " + endpoint + ": " + failure.getMessage(), failure);
@@ -311,8 +578,11 @@ public final class NativeIo {
         }
 
         public void writeText(String value) {
+            TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
-            try {
+            context.requirePermission(RuntimePermissions.Permission.NET, selectedEndpoint,
+                    "network.socket.write_text.selected");
+            try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 writer.write(value);
                 writer.flush();
             } catch (IOException failure) {
@@ -324,9 +594,13 @@ public final class NativeIo {
         public void close() {
             try {
                 socket.close();
-                context.nativeIo().unregister(socket);
             } catch (IOException failure) {
                 throw new IllegalStateException("network close failed for " + endpoint + ": " + failure.getMessage(), failure);
+            } finally {
+                // A close failure does not prove the underlying handle
+                // retired. Keep it tracked for host revocation/retry unless
+                // the socket's own state confirms it closed.
+                if (socket.isClosed()) context.nativeIo().unregister(socket);
             }
         }
     }
@@ -355,6 +629,37 @@ public final class NativeIo {
         int port = uri.getPort();
         if (port < 0) port = "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
         return uri.getHost().toLowerCase(java.util.Locale.ROOT) + ":" + port;
+    }
+
+    /**
+     * Open (creating if absent) a regular binary file for append and
+     * positional reads. Requires READ and WRITE on both the lexical and the
+     * canonical path, and refuses symlinks, like the text file operations.
+     * Runs on the native I/O worker only.
+     */
+    public static NativeBinaryFile openBinaryFile(OresContext context, String rawPath) {
+        String operation = "fs.open_binary_async";
+        Path lexical = lexicalPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), operation);
+        context.requirePermission(RuntimePermissions.Permission.WRITE, lexical.toString(), operation);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException(operation + " refuses symlink: " + lexical);
+        }
+        Path path = canonicalWritePath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), operation);
+        context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), operation);
+        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+                && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(operation + " requires a regular file: " + path);
+        }
+        try {
+            java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(path,
+                    StandardOpenOption.READ, StandardOpenOption.WRITE,
+                    StandardOpenOption.CREATE, LinkOption.NOFOLLOW_LINKS);
+            return new NativeBinaryFile(path, channel);
+        } catch (IOException failure) {
+            throw ioFailure("open", path, failure);
+        }
     }
 
     private static Path canonicalIfExisting(String rawPath) {
@@ -386,6 +691,43 @@ public final class NativeIo {
         Path resolved = realPath(cursor);
         for (String segment : tail) resolved = resolved.resolve(segment);
         return resolved.normalize();
+    }
+
+    /**
+     * Fail closed before canonical path resolution when ANY component is a
+     * symlink. In particular, do not probe a restricted target via an
+     * in-scope parent symlink before the resolved-scope permission check.
+     *
+     * Walk root-to-leaf: a leaf-first check could itself traverse a symlinked
+     * ancestor and consult the restricted directory's metadata. isSymbolicLink
+     * always checks the final component without following that component.
+     *
+     * The check is not an atomic path walk. A hostile process concurrently
+     * replacing ancestor directories still requires fd-relative resolution
+     * (openat2 / SecureDirectoryStream) or process isolation.
+     */
+    private static void rejectSymlinkComponents(
+            OresContext context, RuntimePermissions.Permission permission,
+            Path lexical, String operation) {
+        Path prefix = lexical.getRoot();
+        if (prefix == null) {
+            throw new IllegalArgumentException("filesystem path must be absolute");
+        }
+        for (Path component : lexical) {
+            prefix = prefix.resolve(component);
+            if (Files.isSymbolicLink(prefix)) {
+                // The walk is root-to-leaf, so the parent has no symlinked
+                // ancestor: its scope check cannot follow this link. An
+                // out-of-scope parent reports permission denial instead of
+                // disclosing that the component is a symlink.
+                Path linkParent = prefix.getParent();
+                if (linkParent != null) {
+                    context.requirePermission(permission, linkParent.toString(), operation);
+                }
+                throw new SecurityException(
+                        operation + " refuses symlink component: " + prefix);
+            }
+        }
     }
 
     private static Path lexicalPath(String rawPath) {

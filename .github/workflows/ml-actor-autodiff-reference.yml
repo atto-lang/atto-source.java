@@ -1,0 +1,30 @@
+name: ML actor autodiff reference
+
+on:
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - "contracts/ml/v1/autodiff-reference*.mjs"
+      - "docs/ML_ACTOR_AUTODIFF_V0.md"
+      - ".github/workflows/ml-actor-autodiff-reference.yml"
+  pull_request:
+    paths:
+      - "contracts/ml/v1/autodiff-reference*.mjs"
+      - "docs/ML_ACTOR_AUTODIFF_V0.md"
+      - ".github/workflows/ml-actor-autodiff-reference.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  reference-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: node --test contracts/ml/v1/autodiff-reference.test.mjs
