@@ -55,7 +55,8 @@ final class PersistentScalarActorV1Test {
                 assertEquals(2L, actor.increment("id-2", 1).orElseThrow());
                 assertEquals(2L, actor.get_count());
                 assertEquals(2L, actor.state_version());
-                assertEquals(OptionalLong.empty(), actor.increment("id-1", 1));
+                assertEquals(1L, actor.increment("id-1", 1).orElseThrow(),
+                        "committed duplicate must return the original result");
                 assertThrows(IllegalStateException.class, () -> actor.increment("id-1", 100));
             }
         }
@@ -80,7 +81,8 @@ final class PersistentScalarActorV1Test {
             try (var actor = PersistentScalarActorV1.open(plan, store, ID)) {
                 assertEquals(7L, actor.get_count());
                 assertEquals(2L, actor.state_version());
-                assertEquals(OptionalLong.empty(), actor.increment("first", 4));
+                assertEquals(4L, actor.increment("first", 4).orElseThrow(),
+                        "replayed old command must return its committed value");
                 assertThrows(IllegalStateException.class, () -> actor.increment("first", 400));
             }
             try (var actor = PersistentScalarActorV1.open(plan, store, ID)) {
