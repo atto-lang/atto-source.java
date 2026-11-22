@@ -1,0 +1,50 @@
+// AttoLang core/result: allocation-free sum-value adapters.
+// Result<T,E>, Ok(T), and Err(E) are sealed compiler-provided values;
+// this .atto module implements additional portable composition operations.
+// Every match is exhaustive. Affine payload moves and inactive drops require
+// compiler ownership verification, not runtime copying or GC.
+define module result as
+
+  pub fnc flatten<T, E>(Result<Result<T, E>, E> nested): Result<T, E> {
+    return match nested over
+      on Ok(inner) -> inner,
+      on Err(error) -> Err(error),
+    end;
+  }
+
+  // Discard the Err payload, without swallowing a thrown/raised failure.
+  pub fnc to_option<T, E>(Result<T, E> value): Option<T> {
+    return match value over
+      on Ok(payload) -> Some(payload),
+      on Err(_) -> None,
+    end;
+  }
+
+  // Preserve only the active Err payload; Ok must be dropped exactly once.
+  pub fnc err_option<T, E>(Result<T, E> value): Option<E> {
+    return match value over
+      on Ok(_) -> None,
+      on Err(error) -> Some(error),
+    end;
+  }
+
+  // Result<Option<T>,E> -> Option<Result<T,E>>, preserving Err.
+  pub fnc transpose<T, E>(Result<Option<T>, E> value): Option<Result<T, E>> {
+    return match value over
+      on Err(error) -> Some(Err(error)),
+      on Ok(inner) -> match inner over
+        on Some(payload) -> Some(Ok(payload)),
+        on None -> None,
+      end,
+    end;
+  }
+
+  // Both branches have the same payload type: no panic/throw on Err.
+  pub fnc merge<T>(Result<T, T> value): T {
+    return match value over
+      on Ok(payload) -> payload,
+      on Err(error) -> error,
+    end;
+  }
+
+end
