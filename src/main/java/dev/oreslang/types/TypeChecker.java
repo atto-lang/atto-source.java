@@ -12954,11 +12954,8 @@ public final class TypeChecker {
     private void validateRegisteredCoreTypeArity(Ast.TypeRef ref) {
         CoreTypeRegistry.TypeInfo info = CoreTypeRegistry.lookup(ref.name()).orElse(null);
         if (info == null || info.kind() != CoreTypeRegistry.Kind.TYPE) return;
-        // Java's historical String scalar remains a compatibility value, not
-        // the allocator-owned alloc/string/String implementation.
         if (info.scope() == CoreTypeRegistry.Scope.ALLOC
-                && preludeProfile == AutomaticPrelude.Profile.CORE
-                && info.javaStatus() != CoreTypeRegistry.LoweringStatus.JAVA_LEGACY_SCALAR) {
+                && preludeProfile == AutomaticPrelude.Profile.CORE) {
             throw new IllegalArgumentException("E_ALLOC_PROFILE_REQUIRED: "
                     + info.canonicalIdentity() + " requires an allocator-enabled profile");
         }
