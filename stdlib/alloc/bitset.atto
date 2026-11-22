@@ -60,18 +60,15 @@ define module bitset as
         let mut int word = self.words.get(i);
         // Kernighan's bit-count loop, with no extra allocation.
         for (let int bit = 0; bit < 63; bit = bit + 1) {
-          if word == 0; do
-            return self.count_prefix_ones(i, count);
+          if word != 0; do
+            word = word & (word - 1);
+            count = count + 1;
           fi
-          word = word & (word - 1);
-          count = count + 1;
         }
       }
       return count;
     }
 
-    // count_ones already includes all prior nonzero words; no re-scan needed.
-    pub count_prefix_ones(int ignored, int count): int { return count; }
 
     pub first_set(): Option<int> {
       for (let int i = 0; i < self.bits; i = i + 1) {
