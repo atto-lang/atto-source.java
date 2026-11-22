@@ -132,26 +132,26 @@ public final class CoreTypeRegistry {
         // Fundamental scalar identities. Spelling aliases intentionally
         // point at one canonical compiler type identity.
         addScalar(out, "int", "core/primitive/i64");
-        addScalar(out, "Int", "core/primitive/i64");
+        addScalar(out, "Int", "core/primitive/i64", LoweringStatus.CONTRACT_ONLY);
         addScalar(out, "i64", "core/primitive/i64");
         addScalar(out, "i8", "core/primitive/i8");
         addScalar(out, "i16", "core/primitive/i16");
         addScalar(out, "i32", "core/primitive/i32");
         addScalar(out, "uint", "core/primitive/u64");
-        addScalar(out, "UInt", "core/primitive/u64");
+        addScalar(out, "UInt", "core/primitive/u64", LoweringStatus.CONTRACT_ONLY);
         addScalar(out, "u8", "core/primitive/u8");
         addScalar(out, "u16", "core/primitive/u16");
         addScalar(out, "u32", "core/primitive/u32");
         addScalar(out, "u64", "core/primitive/u64");
         addScalar(out, "bool", "core/primitive/bool");
         addScalar(out, "Bool", "core/primitive/bool");
-        addScalar(out, "boolean", "core/primitive/bool");
-        addScalar(out, "char", "core/primitive/char");
-        addScalar(out, "Char", "core/primitive/char");
-        addScalar(out, "byte", "core/primitive/u8");
-        addScalar(out, "Byte", "core/primitive/u8");
+        addScalar(out, "boolean", "core/primitive/bool", LoweringStatus.CONTRACT_ONLY);
+        addScalar(out, "char", "core/primitive/char", LoweringStatus.CONTRACT_ONLY);
+        addScalar(out, "Char", "core/primitive/char", LoweringStatus.CONTRACT_ONLY);
+        addScalar(out, "byte", "core/primitive/u8", LoweringStatus.CONTRACT_ONLY);
+        addScalar(out, "Byte", "core/primitive/u8", LoweringStatus.CONTRACT_ONLY);
         addScalar(out, "float", "core/primitive/f64");
-        addScalar(out, "Float", "core/primitive/f64");
+        addScalar(out, "Float", "core/primitive/f64", LoweringStatus.CONTRACT_ONLY);
         addScalar(out, "f32", "core/primitive/f32");
         addScalar(out, "f64", "core/primitive/f64");
         addScalar(out, "decimal", "core/primitive/decimal");
@@ -269,9 +269,14 @@ public final class CoreTypeRegistry {
     }
 
     private static void addScalar(Map<String, TypeInfo> out, String name, String canonical) {
+        addScalar(out, name, canonical, LoweringStatus.JAVA_INTRINSIC);
+    }
+
+    private static void addScalar(Map<String, TypeInfo> out, String name, String canonical,
+                                  LoweringStatus javaStatus) {
         TypeInfo scalar = new TypeInfo(name, canonical, Scope.CORE, Kind.TYPE, 0, 0,
                 Ownership.COPY, Allocation.NONE, DropPolicy.NONE,
-                SendPolicy.ALWAYS, LoweringStatus.JAVA_INTRINSIC);
+                SendPolicy.ALWAYS, javaStatus);
         if (out.putIfAbsent(name, scalar) != null) {
             throw new IllegalStateException("duplicate core scalar identity: " + name);
         }
