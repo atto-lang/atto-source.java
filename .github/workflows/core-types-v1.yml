@@ -1,0 +1,67 @@
+name: core/types source oracle and real Java guest gates
+on:
+  pull_request:
+    paths:
+      - 'core/types.atto'
+      - 'tests/core-types-source.test.mjs'
+      - 'tests/fixtures/core-types-v1/**'
+      - 'src/test/java/dev/oreslang/CoreTypesGuestTest.java'
+      - '.github/workflows/core-types-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Verify exact checkout SHA
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "SOURCE_ONLY_HEAD=$EXPECTED_HEAD"
+          git rev-parse 'HEAD^{tree}'
+      - name: Evaluate actual .atto return expressions with independent BigInt oracle
+        run: |
+          node --test tests/core-types-source.test.mjs
+          echo 'CORE_TYPES_SOURCE_ONLY=PASS'
+          echo 'CORE_TYPES_COMPILED_GUEST=NOT_PROVEN'
+  linked-jvm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile real parser/linker and execute imported Atto guest
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreTypesGuestTest -DfailIfNoTests=true test
+          xml=target/surefire-reports/TEST-dev.oreslang.CoreTypesGuestTest.xml
+          test -s "$xml"
+          grep -Fq 'sourceImportedByRealGuestExecutesBoundaries' "$xml"
+          grep -Fq 'negativeTypeAndWidthFixturesCannotBecomeExecutable' "$xml"
+          grep -Eq 'failures="0".*errors="0"|errors="0".*failures="0"' "$xml"
+          echo 'CORE_TYPES_JAVA_GUEST=EXECUTED'
+      - name: Evidence limitations
+        if: always()
+        run: echo 'JVM guest only; this is not Native Image AOT evidence. Empty runner steps mean NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"
