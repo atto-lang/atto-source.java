@@ -2686,8 +2686,8 @@ public final class TypeChecker {
             Type inner = typeOf(trapped.expression(), env, generics, self);
             if (inner instanceof Borrow)
                 throw new IllegalArgumentException(
-                        "trap cannot wrap a borrowed value without a proven Option loan lifetime");
-            return new Named("Option", List.of(inner));
+                        "trap cannot wrap a borrowed value without a proven Result loan lifetime");
+            return trapValueType(inner);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -8434,8 +8434,26 @@ public final class TypeChecker {
         members.put(name, type);
     }
 
+    private Type trapValueType(Type value) {
+        Type guestError = new Named("Error", List.of());
+        if (value instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
+            Type existingError = named.arguments().get(1);
+            if (existingError.equals(guestError)) return named;
+            // A Result is not wrapped again. Preserve its existing E arm
+            // alongside the ordinary Error thrown while evaluating it.
+            Type combinedError = existingError instanceof Union union
+                    ? new Union(java.util.stream.Stream.concat(
+                            union.options().stream(), java.util.stream.Stream.of(guestError))
+                            .distinct().toList())
+                    : new Union(List.of(existingError, guestError));
+            return new Named("Result", List.of(named.arguments().get(0), combinedError));
+        }
+        return new Named("Result", List.of(value, guestError));
+    }
+
     private Type trapResult(boolean trapped, Type result) {
-        return trapped ? new Named("Option", List.of(result)) : result;
+        return trapped ? trapValueType(result) : result;
     }
 
     private Function trapFunctionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
