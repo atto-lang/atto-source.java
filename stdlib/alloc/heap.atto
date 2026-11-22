@@ -1,0 +1,105 @@
+// Atto-owned heap admission policy. No pointers, raw memory, or host interop.
+// This is NOT a physical heap: the trusted allocation provider alone owns
+// allocation receipts, reverse-order Drop, deallocation and lifetime fencing.
+// The Budget class is owner-local accounting; its release counts are NOT
+// authority to free memory and MUST be derived from authenticated receipts.
+define module heap as
+  // All byte limits are inclusive. Subtraction avoids signed overflow.
+  pub fnc can_reserve(int used, int pending, int request, int limit): bool {
+    if used < 0 || pending < 0 || request < 0 || limit < 0 then return false; fi
+    if used > limit then return false; fi
+    if pending > limit - used then return false; fi
+    return request <= limit - used - pending;
+  }
+
+  // -1 means invalid/overflow/over quota, never a physical allocation.
+  pub fnc charged_bytes(int used, int pending, int request, int limit): int {
+    if !can_reserve(used, pending, request, limit) then return -1; fi
+    return used + pending + request;
+  }
+
+  pub fnc can_release(int used, int release_bytes): bool {
+    return used >= 0 && release_bytes >= 0 && release_bytes <= used;
+  }
+
+  pub fnc next_generation(int current, int maximum): int {
+    if current < 1 || maximum < 2 || current >= maximum then return -1; fi
+    return current + 1;
+  }
+
+  // Physical release requires compiler-inserted drops and authenticated
+  // quiescence; bytes-used == 0 alone NEVER establishes safe reclamation.
+  pub fnc can_reclaim(bool sealed, bool drops_complete,
+                      int used_bytes, int pending_bytes,
+                      int active_loans, int continuations, int io_leases): bool {
+    if !sealed || !drops_complete then return false; fi
+    if used_bytes < 0 || pending_bytes < 0 || active_loans < 0 then return false; fi
+    if continuations < 0 || io_leases < 0 then return false; fi
+    return used_bytes == 0 && pending_bytes == 0 &&
+           active_loans == 0 && continuations == 0 && io_leases == 0;
+  }
+
+  // Single-owner accounting for allocator adapters. A successful reservation
+  // must be cancelled if provider allocation fails, or committed only after
+  // its physical allocation succeeds. This class does not mint receipts.
+  pub define class Budget as
+    let int limit;
+    let mut int used = 0;
+    let mut int pending = 0;
+    let mut bool sealed = false;
+
+    pub constructor(int quota_bytes) {
+      if quota_bytes < 0 then rt fail("alloc/heap: negative quota"); fi
+      self.limit = quota_bytes;
+    }
+
+    pub quota_bytes(): int { return self.limit; }
+    pub used_bytes(): int { return self.used; }
+    pub pending_bytes(): int { return self.pending; }
+    pub is_sealed(): bool { return self.sealed; }
+
+    pub try_reserve(mut self)(int bytes): bool {
+      if self.sealed || bytes <= 0 then return false; fi
+      if !can_reserve(self.used, self.pending, bytes, self.limit) then
+        return false;
+      fi
+      self.pending = self.pending + bytes;
+      return true;
+    }
+
+    pub commit(mut self)(int bytes): bool {
+      if self.sealed || bytes <= 0 || bytes > self.pending then return false; fi
+      self.pending = self.pending - bytes;
+      self.used = self.used + bytes;
+      return true;
+    }
+
+    pub cancel(mut self)(int bytes): bool {
+      if bytes <= 0 || bytes > self.pending then return false; fi
+      self.pending = self.pending - bytes;
+      return true;
+    }
+
+    // ONLY a trusted provider with a uniquely retired live receipt may call
+    // this. Public counter accounting is not a deallocation authorization.
+    pub account_release(mut self)(int bytes): bool {
+      if bytes <= 0 || bytes > self.used then return false; fi
+      self.used = self.used - bytes;
+      return true;
+    }
+
+    pub seal(mut self)(): bool {
+      if self.sealed then return false; fi
+      self.sealed = true;
+      return true;
+    }
+
+    pub is_drained(): bool {
+      return self.sealed && self.used == 0 && self.pending == 0;
+    }
+  end
+
+  pub fnc budget(int quota_bytes): Budget {
+    return new Budget(quota_bytes);
+  }
+end
