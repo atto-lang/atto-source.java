@@ -72,7 +72,7 @@ jobs:
                   raise AssertionError('missing executed JUnit report: ' + name)
               root = ET.parse(path).getroot()
               attrs = root.attrib
-              minimum = {'NativeTimeStdlibTest': 5, 'StdTimeMonotonicRuntimeTest': 3,
+              minimum = {'NativeTimeStdlibTest': 6, 'StdTimeMonotonicRuntimeTest': 3,
                          'OresTimersTest': 1, 'ExecutionAffineSleepRuntimeTest': 1}[name]
               if int(attrs.get('tests', '0')) < minimum:
                   raise AssertionError((name, 'empty or incomplete method cohort', attrs))
