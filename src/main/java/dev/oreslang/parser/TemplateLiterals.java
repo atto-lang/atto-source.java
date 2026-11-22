@@ -136,6 +136,7 @@ final class TemplateLiterals {
             if (c == '$' && at < raw.length() && raw.charAt(at) == '{') {
                 if (++interpolations > MAX_INTERPOLATIONS)
                     throw syntax("template interpolation count limit exceeded");
+                validateDecodedUnicode(literal);
                 pieces.add(new Ast.LiteralExpr(literal.toString()));
                 literal.setLength(0);
                 int close = interpolationEnd(raw, at + 1, 0);
@@ -147,11 +148,26 @@ final class TemplateLiterals {
             }
             literal.append(c);
         }
+        validateDecodedUnicode(literal);
         pieces.add(new Ast.LiteralExpr(literal.toString()));
         Ast.Expr result = pieces.getFirst();
         for (int i = 1; i < pieces.size(); i++)
             result = new Ast.BinaryExpr("+", result, pieces.get(i));
         return result;
+    }
+
+    private static void validateDecodedUnicode(CharSequence value) {
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw syntax("template contains unpaired Unicode surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw syntax("template contains unpaired Unicode surrogate");
+            }
+        }
     }
 
     private static void requireDepth(int nesting) {

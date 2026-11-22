@@ -143,6 +143,24 @@ public final class OresMutex {
      * Linear lock capability. Oreslang lowering owns guard release; guest code
      * may release early, but the mutex itself has no public unlock operation.
      */
+    // Guards created and not yet released, process-wide. The interpreter
+    // deep-scans lexical slots for live guards on every statement; when this
+    // is zero no live guard exists anywhere, so the scan can be skipped.
+    // Increment happens before any release path can run, so the count never
+    // under-reports; a guard whose construction fails only over-reports.
+    private static final java.util.concurrent.atomic.AtomicLong LIVE_GUARDS =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** False only when no unreleased guard exists in this process. */
+    public static boolean mayHaveLiveGuards() {
+        return LIVE_GUARDS.get() != 0;
+    }
+
+    /** Diagnostic: guards created and not yet released, process-wide. */
+    public static long liveGuardCount() {
+        return LIVE_GUARDS.get();
+    }
+
     public interface Guard<T> extends AutoCloseable {
         T value();
         boolean released();
@@ -296,6 +314,7 @@ public final class OresMutex {
             private final TaskOwnedLeases.Lease taskLease;
 
             private LocalGuard(Object owningSegment) {
+                LIVE_GUARDS.incrementAndGet();
                 this.owningSegment = owningSegment;
                 // Registration is part of acquisition, not mutex creation.
                 // If the tracked Task cannot admit the lease, roll back the
@@ -341,6 +360,7 @@ public final class OresMutex {
             /** Only invoked by the owner or after physical Task quiescence. */
             private void releaseFromRuntime() {
                 if (!released.compareAndSet(false, true)) return;
+                LIVE_GUARDS.decrementAndGet();
                 if (!holderSegment.compareAndSet(owningSegment, null)) {
                     throw new IllegalStateException("MutexGuard owner segment changed before release");
                 }
@@ -1296,6 +1316,7 @@ public final class OresMutex {
                                 Object requestingActorDomain,
                                 TaskOwnedLeases.Lease inheritedLease,
                                 boolean registerCurrentTask) {
+                LIVE_GUARDS.incrementAndGet();
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
                 this.requestingActorDomain = requestingActorDomain;
@@ -1344,6 +1365,7 @@ public final class OresMutex {
             /** Called only by the owner or the trusted quiescent Task cleanup. */
             private void releaseFromRuntime(boolean abandoned) {
                 if (!released.compareAndSet(false, true)) return;
+                LIVE_GUARDS.decrementAndGet();
                 if (abandoned) poisoned.set(true);
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
@@ -1353,6 +1375,7 @@ public final class OresMutex {
             /** Handoff loop keeps the physical permit instead of releasing it. */
             private boolean takePermitForHandoff() {
                 if (!released.compareAndSet(false, true)) return false;
+                LIVE_GUARDS.decrementAndGet();
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
                 return true;

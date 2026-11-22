@@ -29,6 +29,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Verify exact actor JUnit selectors with adversarial offline cases
+        run: bash tools/test-actor-continuation-workflow-selection.sh --self-test
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -39,8 +41,8 @@ jobs:
       - name: Compile and run actual actor execution boundary tests
         run: >
           mvn -B -ntp -Dores.runtime.carriers=native
-          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest
-          test
+          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest,ActorContinuationLedgerTest,ActorContinuationLedgerIntegrationTest
+          -DfailIfNoTests=true test
 
   tla-plus-tlc:
     name: TLC model check both finite specifications

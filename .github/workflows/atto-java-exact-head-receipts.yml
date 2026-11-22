@@ -1,0 +1,80 @@
+name: Atto Java exact-head admission and guest receipts
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/**'
+      - 'src/test/**'
+      - 'pom.xml'
+      - '.github/workflows/atto-java-exact-head-receipts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  atto-exact-head-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable event commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert source commit and record tree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          printf 'RECEIPT source_sha=%s\n' "$(git rev-parse HEAD)"
+          printf 'RECEIPT source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
+      - name: Provision GraalVM JDK 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'maven'
+      - name: Run real Java parser compiler linker and guest JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest \
+            clean test
+      - name: Require nonempty unskipped Surefire reports
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d target/surefire-reports
+          for suite in \
+            dev.oreslang.AttoSourceAdmissionTest \
+            dev.oreslang.launcher.AttoMainAdmissionTest \
+            dev.oreslang.launcher.OresMainSourceBudgetTest \
+            dev.oreslang.config.OresProjectConfigTest \
+            dev.oreslang.AttoCacheShapeAdmissionTest \
+            dev.oreslang.ProjectManifestImportTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '<testsuite[^>]*(errors|failures)="[1-9][0-9]*"' "$report"; then
+              echo "::error::Nonzero failures/errors in $suite"
+              exit 1
+            fi
+            printf 'RECEIPT junit_suite=%s report=%s\n' "$suite" "$report"
+          done
+          echo 'RECEIPT guest_42=asserted_by_AttoSourceAdmissionTest_and_AttoCacheShapeAdmissionTest'
+      - name: Preserve compiler and guest test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-java-exact-head-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn

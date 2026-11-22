@@ -99,6 +99,8 @@ public final class ExecutionRegionGraph {
         if (name == null || !name.matches("[A-Za-z_][A-Za-z0-9_]{0,127}"))
             throw new IllegalArgumentException("invalid region identifier");
     }
+    private static final int MAX_VISITS = 16_384;
+
     private static IllegalArgumentException reject(String why) {
         return new IllegalArgumentException("execution region: " + why);
     }
@@ -123,8 +125,17 @@ public final class ExecutionRegionGraph {
         private final HashSet<String> takenParameters = new HashSet<>();
         private int deviceKernels;
         private int taskSubmissions;
+        // Counts every infer/containsKernel/walk visit. Depth alone does not
+        // bound work: a caller-built DAG can share subtrees, so 64 levels of
+        // Sequence(x, x) would otherwise be traversed 2^64 times.
+        private int visits;
 
         private Builder(Map<String, Type> parameters) { this.parameters = parameters; }
+
+        private void enter(int depth) {
+            if (depth > 64) throw reject("AST depth exceeded");
+            if (++visits > MAX_VISITS) throw reject("graph traversal budget exceeded");
+        }
 
         private Value emit(Opcode op, Domain domain, Type type, int left, int right,
                            String detail, Long literal) {
@@ -151,7 +162,7 @@ public final class ExecutionRegionGraph {
         }
 
         private Type infer(Expr expr, Domain domain, int depth) {
-            if (depth > 64) throw reject("AST depth exceeded");
+            enter(depth);
             if (expr instanceof I64Literal) {
                 if (domain != Domain.CPU) throw reject("host scalar inside GPU region");
                 return I64;
@@ -159,6 +170,8 @@ public final class ExecutionRegionGraph {
             if (expr instanceof Parameter parameter) {
                 if (!Objects.equals(parameters.get(parameter.name()), parameter.type()))
                     throw reject("undeclared/mistyped parameter");
+                if (domain == Domain.GPU && !GPU_F32.equals(parameter.type()))
+                    throw reject("host-resident parameter inside GPU region");
                 return parameter.type();
             }
             if (expr instanceof Add add) {
@@ -207,7 +220,7 @@ public final class ExecutionRegionGraph {
         }
 
         private boolean containsKernel(Expr expr, int depth) {
-            if (depth > 64) throw reject("AST depth exceeded");
+            enter(depth);
             if (expr instanceof DeviceKernel) return true;
             if (expr instanceof Sequence sequence)
                 return sequence.values().stream().anyMatch(value -> containsKernel(value, depth + 1));
@@ -222,7 +235,7 @@ public final class ExecutionRegionGraph {
         }
 
         private Value walk(Expr expr, Domain domain, int depth) {
-            if (depth > 64) throw reject("AST depth exceeded");
+            enter(depth);
             if (expr instanceof I64Literal literal) {
                 if (domain != Domain.CPU) throw reject("host scalar inside GPU region");
                 effects.add(Effect.HOST);
@@ -231,6 +244,8 @@ public final class ExecutionRegionGraph {
             if (expr instanceof Parameter parameter) {
                 if (!Objects.equals(parameters.get(parameter.name()), parameter.type()))
                     throw reject("undeclared/mistyped parameter");
+                if (domain == Domain.GPU && !GPU_F32.equals(parameter.type()))
+                    throw reject("host-resident parameter inside GPU region");
                 if ((parameter.type().equals(HOST_F32) || parameter.type().equals(GPU_F32))
                         && !takenParameters.add(parameter.name()))
                     throw reject("use of moved owned buffer parameter '" + parameter.name() + "'");
@@ -317,6 +332,19 @@ public final class ExecutionRegionGraph {
             Value completed = walk(body, next, depth + 1);
             if (!completed.type().equals(bodyType))
                 throw reject("inference/lowering type disagreement");
+
+            // Leaving the region. Control ordering makes every later step
+            // depend on these boundary steps.
+            if (prior == Domain.CPU && next == Domain.GPU && mode == LaunchMode.SYNC) {
+                // A synchronous gpu { } completes before the host proceeds.
+                effects.add(Effect.SUSPEND);
+                emit(Opcode.DEVICE_FENCE, Domain.TRANSFER, VOID, -1, -1);
+            }
+            if (prior == Domain.GPU && next == Domain.CPU) {
+                // Device work after a host continuation is a new validated launch.
+                effects.add(Effect.SUSPEND);
+                emit(Opcode.DEVICE_ADMISSION, Domain.TRANSFER, VOID, -1, -1);
+            }
 
             if (mode == LaunchMode.TASK) {
                 emit(Opcode.TASK_COMPLETE, Domain.HOST, VOID, submitted.id(), completed.id());

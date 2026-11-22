@@ -161,6 +161,7 @@ param           = type_ref [ "mut" ] IDENT
 
 binding_decl    = named_inferred_binding
                 | "const" "fnc" IDENT "=" lambda stmt_terminator
+                | "const" IDENT "<" function_type_signature ">" "=" expression stmt_terminator
                 | { annotation } binding_kind
                   ( IDENT ":" type_ref
                   | [ type_ref ] IDENT )
@@ -173,6 +174,11 @@ named_inferred_literal
                     "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "record" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "tuple" "(" expression { "," expression } ")" ) ;
+(* 'const name<(Args...) => Result> = fnc(...) -> Result { ... };'
+   is an immutable binding with an explicit Fnc<Args..., Result> type.
+   The declared parameter count, parameter types, and return type must agree
+   with the initializer. Mismatched '=> void' versus '-> int' is an error.
+   The '<...>' is a callable-type ascription, not new runtime generic syntax. *)
 (* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
    Named inference captures a lexical compile-time type alias; it does not create a
    runtime type object. infer struct captures an exact closed struct shape. Record
@@ -267,22 +273,37 @@ switch_default  = "default" "->" block ;
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
 select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
-                  "select" [ select_policy ]
-                  "{" select_arm { select_arm } [ select_default ] "}" ;
+                  "select" [ select_policy ] select_static_body ;
+select_static_body
+                = "{" select_arm_sequence "}"
+                | "over" select_arm_sequence "end" ;
+select_arm_sequence
+                = select_default
+                | select_arm { select_arm } [ select_default ] ;
 select_wait_mode= "nb" | "try" ;
 select_policy   = "first" | "fair" | "random" ;
-select_arm      = select_arm_keyword "readch" expression ":"
-                  [ binding_kind IDENT ] { statement }
-                | select_arm_keyword "writech" expression "," expression ":"
-                  { statement } ;
+select_arm      = select_arm_keyword select_read_arm
+                | select_arm_keyword select_write_arm
+                | select_arm_keyword select_legacy_read_arm ;
+select_read_arm = ( "readch" | "await" ) expression ":" select_read_tail ;
+select_read_tail
+                = block
+                | "->" block
+                | binding_kind IDENT [ "->" ] block
+                | [ binding_kind ] type_ref IDENT "->" block ;
+select_write_arm= "writech" expression "," expression ":" [ "->" ] block ;
+select_legacy_read_arm
+                = [ "mut" | binding_kind ] IDENT "="
+                  "readch" "(" expression ")" "->" block ;
 (* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode. *)
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 (* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
-select_default  = "default" ":" { statement } ;
+select_default  = "default" ":" [ "->" ] block ;
 
-(* In select_arm/select_default bodies, the next when/case/default or the closing
-   brace is a structural arm boundary and is not consumed as a nested
-   statement. At most one default arm is permitted. *)
+(* Static select supports equivalent braced and over/end outer delimiters.
+   Every arm body remains a block in both forms; the optional slim arrow only
+   introduces that block and never changes wait mode or result semantics.
+   At most one default arm is permitted, and default must be last. *)
 
 for_stmt        = "for" "(" for_of_head ")" loop_body
                 | "for" "(" c_for_head ")" loop_body
@@ -366,13 +387,21 @@ primary         = literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
-lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
+lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda | "fnc" typed_legacy_lambda ) ;
+(* Anonymous "fnc(args) -> Type { ... }" is syntactic sugar for a lambda,
+   not a separate callable or dispatch return destination. *)
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
 (* "const fnc name = |...| -> ...;" declares an immutable inferred callable binding. *)
 lambda_param    = IDENT | type_ref IDENT | IDENT ":" type_ref ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
-lambda_body     = block | expression ;
+lambda_body     = block | type_ref block | expression ;
+(* After a lambda's '->', an explicit result type is recognized only when
+   immediately followed by a braced block: || -> void { ... }. A bare
+   expression-bodied lambda (|| -> x + 1) remains inferable. The type checker
+   enforces declared return paths, and an inline defer lambda must produce
+   void. This does not introduce '=>' for executable function bodies or
+   per-arm '-> Type' result typing in match/switch/select. *)
 
 tuple_literal   = "tuple" "(" [ argument_list ] ")"
                 | "(" expression "," expression { "," expression } ")" ;
@@ -444,8 +473,10 @@ sequence_type_item
                 | INT_LITERAL "of" type_ref
                 | "..." type_ref
                 | "..." "(" sequence_type_item { "," sequence_type_item } ")" ;
-function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "=>" type_ref
-                | "(" [ function_type_params ] ")" "=>" type_ref ;
+function_type   = "typeof" "fnc" function_type_signature
+                | function_type_signature ;
+function_type_signature
+                = "(" [ function_type_params ] ")" "=>" type_ref ;
 grouped_type    = "(" type_ref ")" ;
 function_type_params
                 = function_type_param { "," function_type_param } ;

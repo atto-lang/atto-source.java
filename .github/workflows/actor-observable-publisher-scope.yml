@@ -1,0 +1,47 @@
+name: Actor observable publisher scopes exact-head JVM
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorEventBus.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPublisherScopedObservationTest.java'
+      - '.github/workflows/actor-observable-publisher-scope.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scoped-observation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "TREE=$(git rev-parse 'HEAD^{tree}')"
+          git hash-object src/main/java/dev/oreslang/runtime/ActorEventBus.java
+          git hash-object src/main/java/dev/oreslang/runtime/ActorRuntime.java
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute scoped observation and original event-bus regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ActorPublisherScopedObservationTest,ActorEventBusTest -DfailIfNoTests=true test
+          for suite in ActorPublisherScopedObservationTest ActorEventBusTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
+            test -s "$report"
+            ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' "$report"
+          done

@@ -241,6 +241,7 @@ final class WebSocketActorConnectionLeaseTest {
             var ledger = WebSocketActorConnectionLease.bindHost(tenant, a, () -> true);
             var first = ledger.issue();
             var start = new CountDownLatch(1);
+            var releaseAcquisition = new CountDownLatch(1);
             var permitted = new AtomicBoolean();
             var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
             Thread acquisition = Thread.ofVirtual().start(() -> {
@@ -248,6 +249,11 @@ final class WebSocketActorConnectionLeaseTest {
                     if (!start.await(2, TimeUnit.SECONDS)) throw new AssertionError("no start");
                     try (var loan = ledger.acquire(first, tenant, a)) {
                         permitted.set(true);
+                        // Keep the physical borrow alive until the competing
+                        // transfer actually attempts admission. Otherwise a
+                        // legitimate acquire/close/transfer sequence looks like
+                        // simultaneous old/new ownership (false test failure).
+                        releaseAcquisition.await();
                     } catch (SecurityException rejectedAfterTransfer) {
                         // Transfer won before admission.
                     }
@@ -256,10 +262,14 @@ final class WebSocketActorConnectionLeaseTest {
             start.countDown();
             WebSocketActorConnectionLease.Handle second;
             try {
-                second = ledger.transferHost(first, tenant, a, b, () -> true);
-            } catch (RejectedExecutionException busy) {
-                // An active physical lease won. The old owner remains valid.
-                second = null;
+                try {
+                    second = ledger.transferHost(first, tenant, a, b, () -> true);
+                } catch (RejectedExecutionException busy) {
+                    // An active physical lease won. The old owner remains valid.
+                    second = null;
+                }
+            } finally {
+                releaseAcquisition.countDown();
             }
             acquisition.join(3000);
             assertFalse(acquisition.isAlive());

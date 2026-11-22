@@ -17,6 +17,40 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class WebSocketFrameCodecTest {
 
     @Test
+    void outboundTextIsStrictUtf8AndBoundedByEncodedBytes() {
+        assertArrayEquals("ok🙂".getBytes(StandardCharsets.UTF_8),
+                WebSocketFrameCodec.encodeTextUtf8("ok🙂", 6));
+        assertArrayEquals("é".getBytes(StandardCharsets.UTF_8),
+                WebSocketFrameCodec.encodeTextUtf8("é", 2));
+        assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                () -> WebSocketFrameCodec.encodeTextUtf8("é", 1));
+        assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                () -> WebSocketFrameCodec.encodeTextUtf8("🙂", 3));
+        assertThrows(IllegalArgumentException.class,
+                () -> WebSocketFrameCodec.encodeTextUtf8("\uD800", 10));
+        assertThrows(IllegalArgumentException.class,
+                () -> WebSocketFrameCodec.encodeTextUtf8("\uDC00", 10));
+        assertThrows(IllegalArgumentException.class,
+                () -> WebSocketFrameCodec.encodeTextUtf8("\uD800x", 10));
+    }
+
+    @Test
+    void reservedCloseCode1014FailsBothInboundAndOutboundValidation() {
+        byte[] reserved = {(byte) (1014 >>> 8), (byte) 1014};
+        byte[] normal = {(byte) (1000 >>> 8), (byte) 1000};
+        assertThrows(IllegalArgumentException.class,
+                () -> new WebSocketFrameCodec.Frame(true,
+                        WebSocketFrameCodec.OPCODE_CLOSE, reserved));
+        assertThrows(IllegalArgumentException.class,
+                () -> WebSocketFrameCodec.decodeClientFrame(
+                        maskedFrame(true, WebSocketFrameCodec.OPCODE_CLOSE, reserved), 64));
+        assertEquals(WebSocketFrameCodec.OPCODE_CLOSE,
+                new WebSocketFrameCodec.Frame(true,
+                        WebSocketFrameCodec.OPCODE_CLOSE, normal).opcode());
+    }
+
+
+    @Test
     void incrementalReaderHandlesShortReadsAndRejectsHugeLengthBeforePayloadRead()
             throws Exception {
         byte[] wire = maskedFrame(

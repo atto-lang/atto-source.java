@@ -109,6 +109,32 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     /** One-shot release after terminal subscribers complete; never retain owners afterwards. */
     private volatile Runnable onNotificationDrained;
     /**
+     * The owning source task's control authority travels with this Future.
+     * A Future/TaskHandle reference cycle is GC-collectible when neither is
+     * externally reachable; a process-static weak-key map with a strong
+     * TaskHandle value is not (the handle points back to this Future).
+     *
+     * Ordinary I/O/channel/timer Futures never acquire this capability.
+     */
+    private volatile TaskHandle<?> sourceTaskHandle;
+
+    /** Runtime-only, one-shot binding; no guest-visible way to forge authority. */
+    synchronized void bindSourceTaskHandle(TaskHandle<?> handle) {
+        Objects.requireNonNull(handle, "handle");
+        if (handle.result() != this) {
+            throw new IllegalArgumentException("task handle does not own this Future");
+        }
+        if (sourceTaskHandle != null) {
+            throw new IllegalStateException("source task handle already bound");
+        }
+        sourceTaskHandle = handle;
+    }
+
+    /** Null for a borrowed (non-task-created) Future. */
+    TaskHandle<?> sourceTaskHandle() {
+        return sourceTaskHandle;
+    }
+    /**
      * Runtime subscribers may finish after the terminal state CAS. Actor arena
      * owners therefore need a receipt for the winning settlement's complete
      * notification drain, not merely isDone() or an early waiter callback.

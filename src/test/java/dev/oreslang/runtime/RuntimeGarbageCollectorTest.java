@@ -477,4 +477,211 @@ final class RuntimeGarbageCollectorTest {
         }
     }
 
+
+    @Test
+    void actorExitUsesBoundedQuantumAndLaterMaintenanceReclaimsReachableOwners() throws Exception {
+        AtomicInteger cleanups = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 96; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    gc.track(owner, cleanups::incrementAndGet);
+                }
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(32, cleanups.get(), "actor exit must not synchronously scan all hooks");
+            var later = gc.collectPeriodic();
+            assertEquals(64, later.cleaned());
+            assertEquals(96, cleanups.get());
+            var ticketsField = RuntimeGarbageCollector.class.getDeclaredField("retiredDomainQueue");
+            ticketsField.setAccessible(true);
+            assertTrue(((java.util.Set<?>) ticketsField.get(gc)).isEmpty(),
+                    "completed actor retirement must not leave a queued heap root");
+            Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
+    void deferredRetirementIsFairAcrossActorsWithLiveOwners() throws Exception {
+        AtomicInteger firstCleanups = new AtomicInteger();
+        AtomicInteger secondCleanups = new AtomicInteger();
+        ArrayList<Object> firstOwners = new ArrayList<>();
+        ArrayList<Object> secondOwners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var first = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 320; i++) {
+                    Object owner = new Object();
+                    firstOwners.add(owner);
+                    gc.track(owner, firstCleanups::incrementAndGet);
+                }
+                context.self().stop();
+            });
+            var second = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 320; i++) {
+                    Object owner = new Object();
+                    secondOwners.add(owner);
+                    gc.track(owner, secondCleanups::incrementAndGet);
+                }
+                context.self().stop();
+            });
+            first.send("stop");
+            second.send("stop");
+            assertTrue(first.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(second.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(32, firstCleanups.get());
+            assertEquals(32, secondCleanups.get());
+            var report = gc.collectPeriodic();
+            assertEquals(256, report.inspected());
+            assertTrue(firstCleanups.get() > 32, "first retired actor must get maintenance");
+            assertTrue(secondCleanups.get() > 32, "second retired actor must not starve");
+            Reference.reachabilityFence(firstOwners);
+            Reference.reachabilityFence(secondOwners);
+        }
+    }
+
+    @Test
+    void permanentlyFailingEarlyHooksDoNotStarveHealthyOwnerInSameActor() throws Exception {
+        AtomicInteger failedAttempts = new AtomicInteger();
+        AtomicInteger healthyCleanup = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 320; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    gc.track(owner, () -> {
+                        failedAttempts.incrementAndGet();
+                        throw new IllegalStateException("permanent poison");
+                    });
+                }
+                Object healthyOwner = new Object();
+                owners.add(healthyOwner);
+                gc.track(healthyOwner, healthyCleanup::incrementAndGet);
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, healthyCleanup.get(),
+                    "32-entry actor exit must stop before the last registered owner");
+            for (int pass = 0; pass < 4 && healthyCleanup.get() == 0; pass++) {
+                var report = gc.collectPeriodic();
+                assertTrue(report.inspected() <= 256);
+                assertFalse(report.jvmGcRequested());
+            }
+            assertEquals(1, healthyCleanup.get(),
+                    "rotating within one actor domain must reach healthy hooks despite earlier poison");
+            assertTrue(failedAttempts.get() >= 32);
+            Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
+    void explicitCloseRemovesRotatingEntryWithoutDoubleCleanup() throws Exception {
+        AtomicInteger completed = new AtomicInteger();
+        AtomicReference<RuntimeGarbageCollector.CleanupHandle> handle = new AtomicReference<>();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 80; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    var trackedHandle = gc.track(owner, completed::incrementAndGet);
+                    if (i == 79) handle.set(trackedHandle);
+                }
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(32, completed.get());
+            handle.get().close();
+            assertEquals(33, completed.get());
+            gc.collectPeriodic();
+            assertEquals(80, completed.get());
+            handle.get().close();
+            assertEquals(80, completed.get(),
+                    "explicit close must be exactly-once even after cursor rotation");
+            Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
+    void poisonedRetiredDomainDoesNotLoopForeverDuringProcessGc() throws Exception {
+        AtomicInteger attempts = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(
+                () -> {}, Duration.ofHours(1), Duration.ofSeconds(1), 8, 8, 8);
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                Object owner = new Object();
+                owners.add(owner);
+                gc.track(owner, () -> {
+                    attempts.incrementAndGet();
+                    throw new IllegalStateException("poisoned cleanup");
+                });
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            int before = attempts.get();
+            var report = gc.collectProcess();
+            assertTrue(report.inspected() <= 8, "process GC has a hard registry-sized retry bound");
+            assertTrue(attempts.get() > before, "poisoned retired cleanup remains retryable");
+            Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
+    void fatalCleanupDoesNotDropDeferredDomainMaintenanceTicket() throws Exception {
+        AtomicInteger fatalAttempts = new AtomicInteger();
+        AtomicInteger successful = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 64; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    if (i == 40) {
+                        gc.track(owner, () -> {
+                            if (fatalAttempts.incrementAndGet() == 1) {
+                                throw new InternalError("test-only fatal cleanup");
+                            }
+                            successful.incrementAndGet();
+                        });
+                    } else {
+                        gc.track(owner, successful::incrementAndGet);
+                    }
+                }
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(32, successful.get());
+            assertThrows(InternalError.class, gc::collectPeriodic);
+            assertTrue(fatalAttempts.get() >= 1);
+            for (int i = 0; i < 3 && successful.get() != 64; i++) {
+                gc.collectPeriodic();
+            }
+            assertEquals(64, successful.get(),
+                    "fatal hook must not lose the retired actor's only maintenance ticket");
+            var ticketsField = RuntimeGarbageCollector.class.getDeclaredField("retiredDomainQueue");
+            ticketsField.setAccessible(true);
+            assertTrue(((java.util.Set<?>) ticketsField.get(gc)).isEmpty());
+            Reference.reachabilityFence(owners);
+        }
+    }
 }

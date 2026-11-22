@@ -1,0 +1,60 @@
+# Source-owning repository only: no cross-org private-source mirror.
+# A zero-step Actions failure is runner admission, NOT guest test evidence.
+name: AttoLang imported class guest regression (Java)
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/AttoImportedModuleClassGuestTest.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalFixtureGuestTest.java'
+      - 'scripts/ci/AttoGuestReceiptVerifier.java'
+      - 'src/test/resources/atto/canonical-v1/**'
+      - 'src/main/java/**'
+      - '.github/workflows/atto-imported-public-class-guest.yml'
+  push:
+    branches: ['feat/atto-source-admission-20261102']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  imported-class-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact Java source HEAD
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Pin JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Verify JUnit evidence admission with source-free negative fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/atto-receipt-gate"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/atto-receipt-gate" scripts/ci/AttoGuestReceiptVerifier.java
+          java -cp "$RUNNER_TEMP/atto-receipt-gate" AttoGuestReceiptVerifier --self-test
+      - name: Execute eight real .atto fixture and imported-class guest cases
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "JAVA_ATTO_IMPORTED_CLASS_HEAD=$EXPECTED_HEAD"
+          mvn -B -ntp -Dtest=AttoCanonicalFixtureGuestTest,AttoImportedModuleClassGuestTest -DfailIfNoTests=true test
+          java -cp "$RUNNER_TEMP/atto-receipt-gate" AttoGuestReceiptVerifier "$EXPECTED_HEAD" target/surefire-reports
+          echo "JAVA_ATTO_CANONICAL_LINKED_GUEST_PASS head=$EXPECTED_HEAD cases=8"
+      - name: Preserve JUnit evidence on failure or success
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-imported-class-guest-junit
+          path: |
+            target/surefire-reports/*AttoCanonicalFixtureGuestTest*
+            target/surefire-reports/*AttoImportedModuleClassGuestTest*
+          if-no-files-found: warn

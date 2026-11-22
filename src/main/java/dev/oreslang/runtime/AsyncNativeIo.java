@@ -230,16 +230,17 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submit(operation, work);
     }
 
-    public <T> OresFuture<T> submitClose(OresContext context, Callable<T> work) {
-        context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close_async");
-        return submitControl("socket.close_async", work);
+    public <T> OresFuture<T> submitClose(
+            OresContext context, String operation, Callable<T> work) {
+        context.requireCapability(IsolatePolicy.Capability.NETWORK, operation);
+        return submitControl(operation, work);
     }
 
-    synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
+    <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
         return admit(operation, work, controls, CONTROL_CAPACITY, controlWorkers);
     }
 
-    synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
+    <T> OresFuture<T> submit(String operation, Callable<T> work) {
         return admit(operation, work, pending, capacity, workers);
     }
 
@@ -248,28 +249,47 @@ public final class AsyncNativeIo implements AutoCloseable {
         Objects.requireNonNull(operation);
         Objects.requireNonNull(work);
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        if (closed || admitted.size() >= limit) {
-            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
-            result.failFromRuntime(new RejectedExecutionException(
-                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
-            return result;
+        RuntimeException rejected = null;
+        ActorRuntime.ActorId lastRetired = null;
+        synchronized (this) {
+            if (closed || admitted.size() >= limit) {
+                CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
+                rejected = new RejectedExecutionException(
+                        closed ? "I/O context closed" : "I/O admission capacity exhausted");
+            } else {
+                Operation<T> op = new Operation<>(
+                        operation, work, result, admitted,
+                        ActorRuntime.currentActorId().orElse(null));
+                admitted.add(op); // Reserve before publishing work to any executor.
+                incrementActorOperationLocked(op.admittedActor);
+                op.queuedAt = CorePerf.start();
+                try {
+                    executor.execute(op);
+                } catch (RuntimeException failure) {
+                    CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
+                    // An executor may enqueue/start a runnable and then throw.
+                    // Only ADMITTED -> CANCELLED_BEFORE_START proves that no
+                    // worker can still touch actor-owned state. If RUNNING
+                    // already won the claim, the physical operation must own
+                    // its Future, loan and final completion notification.
+                    if (op.state.compareAndSet(
+                            OperationState.ADMITTED, OperationState.CANCELLED_BEFORE_START)) {
+                        admitted.remove(op);
+                        lastRetired = decrementActorOperationLocked(op.admittedActor);
+                        rejected = failure;
+                    }
+                }
+            }
         }
-
-        Operation<T> op = new Operation<>(
-                operation, work, result, admitted,
-                ActorRuntime.currentActorId().orElse(null));
-        admitted.add(op); // Reserve before publishing work to any executor.
-        incrementActorOperationLocked(op.admittedActor);
-        long queuedAt = CorePerf.start();
-        op.queuedAt = queuedAt;
+        // Never invoke Future subscribers or actor-finalization callbacks
+        // under the native I/O admission lock. Their callbacks may reenter
+        // actor shutdown and would otherwise deadlock or expose a partial
+        // receipt. A genuine post-entry submitter failure leaves the worker
+        // solely responsible for this Future's physical completion.
         try {
-            executor.execute(op);
-        } catch (RuntimeException failure) {
-            // Rejected admission never owns a worker or physical resource.
-            admitted.remove(op);
-            decrementActorOperationLocked(op.admittedActor);
-            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
-            result.failFromRuntime(failure);
+            if (rejected != null) result.failFromRuntime(rejected);
+        } finally {
+            notifyActorRetirement(lastRetired);
         }
         return result;
     }

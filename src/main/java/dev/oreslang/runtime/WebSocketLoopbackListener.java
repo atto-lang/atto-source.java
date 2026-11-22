@@ -280,6 +280,10 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         // Max 16 explicit tickets. Each keeps its owner loan until actor-turn
         // delivery or scheduler cancellation; no unbounded queued handoffs.
         private int pendingActorTickets;
+        // Exactly one outstanding actor-output read per physical connection.
+        // Guarded by lifecycleLock. This is an obligation, not another
+        // authority ledger: WebSocketActorConnectionLease still owns access.
+        private OresFuture<Void> pendingSourceOutputRelay;
         private final WebSocketOutboundGate outbound =
                 new WebSocketOutboundGate(maxFrameBytes, 16,
                         maxFrameBytes * 16, 4, this::requestActiveWriteAbort);
@@ -377,6 +381,18 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 }
                 if (actorOwnership != null) {
                     throw new RejectedExecutionException("WebSocket connection already bound");
+                }
+                // Binding must begin from a physically quiescent and logically
+                // drained host connection. Otherwise a pre-bind host read,
+                // write or queued fragment could be inherited by the actor
+                // without an actor-generation lease, bypassing the transfer
+                // safety rules on first publication.
+                if (abortRequested.get() || reading.get() || writerActive.get()
+                        || outbound.hasPending()
+                        || protocol.state() != WebSocketSessionState.State.OPEN
+                        || protocol.hasPendingUserState()) {
+                    throw new RejectedExecutionException(
+                            "WebSocket actor bind requires drained host read, write and USER state");
                 }
                 var ledger = WebSocketActorConnectionLease.bindHost(
                         authenticatedTenant, owner, ownerAlive);
@@ -559,13 +575,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         /** Host-only bounded send. No guest actor handle is exposed yet. */
         OresFuture<Void> sendTextAsync(String text) {
             Objects.requireNonNull(text, "text");
-            // Length in UTF-16 code units is a lower bound on UTF-8 output
-            // bytes for valid scalars. Reject huge input before allocating.
-            if (text.length() > maxFrameBytes) {
-                throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
-            }
             return sendUser(WebSocketFrameCodec.OPCODE_TEXT,
-                    text.getBytes(StandardCharsets.UTF_8));
+                    WebSocketFrameCodec.encodeTextUtf8(text, maxFrameBytes));
         }
 
         OresFuture<Void> sendBinaryAsync(byte[] payload) {
@@ -606,11 +617,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
                 ActorRuntime.ActorAddress authenticatedCaller, String text) {
             Objects.requireNonNull(text, "text");
-            if (text.length() > maxFrameBytes) {
-                throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
-            }
             return sendForActor(WebSocketFrameCodec.OPCODE_TEXT,
-                    text.getBytes(StandardCharsets.UTF_8),
+                    WebSocketFrameCodec.encodeTextUtf8(text, maxFrameBytes),
                     handle, tenant, authenticatedCaller);
         }
 
@@ -783,6 +791,11 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                                 "WebSocket delivery requires authenticated actor mailbox turn");
                     }
                     if (!ownerLoan.mayDeliver(handle, tenant, recipient)) return false;
+                    // STOP and structured cancellation are checked by the
+                    // actual actor scheduler before entering guest code.
+                    // This never settles the ticket's physical I/O loan.
+                    runtime.schedulerSafepoint();
+                    if (!ownerLoan.mayDeliver(handle, tenant, recipient)) return false;
                     // Guest execution is outside every ledger/lifecycle lock.
                     // Actor turn ownership and STOP fences belong to ActorRuntime.
                     handler.accept(message);
@@ -885,6 +898,226 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             requireContextActor(context, actor, "websocket.dispatch");
             return dispatchActorMessage(handle, context.contextId(),
                     context.actors(), actor, handler);
+        }
+
+        /**
+         * Trusted compiler/runtime adapter, not an AttoLang guest method.
+         * Accept exactly one complete validated TEXT message for a compiled
+         * code actor. ActorRuntime.send() transfers the value into its normal
+         * bounded user mailbox, so the source code executor's receiveActor()
+         * runs on an actor turn with ActorInboxMail and actor-owned state.
+         *
+         * The connection ticket retains the exact actor/tenant/epoch lease
+         * until the runtime has accepted the message. A refused send closes
+         * the connection instead of silently dropping an admitted USER item.
+         * No socket, closure or mutable host state enters the guest message.
+         */
+        boolean dispatchNextSourceActorText(
+                WebSocketActorConnectionLease.Handle handle,
+                OresContext context, ActorRuntime.ActorRef<Object> actor) {
+            Objects.requireNonNull(context, "runtime context");
+            requireContextActor(context, actor, "websocket.source-dispatch");
+            return dispatchSourceActorText(
+                    handle, context.contextId(), context.actors(), actor);
+        }
+
+        /** HOST-ONLY test seam; production must use OresContext authority. */
+        boolean dispatchHostSourceActorText(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<Object> actor) {
+            return dispatchSourceActorText(handle, tenant, runtime, actor);
+        }
+
+        private boolean dispatchSourceActorText(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<Object> actor) {
+            Objects.requireNonNull(runtime, "source actor runtime");
+            Objects.requireNonNull(actor, "source actor");
+            if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.inActorGroupMailmanExecution()) {
+                throw new SecurityException(
+                        "source WebSocket delivery requires trusted host/supervisor");
+            }
+            if (!runtime.isSourceCodeActor(actor)) {
+                throw new SecurityException(
+                        "WebSocket source delivery requires live compiler-owned actor");
+            }
+            requireNet.accept(endpoint, "websocket.source-dispatch");
+            ActorDeliveryTicket ticket = dequeueActorTicket(
+                    handle, tenant, actor.address(), runtime, actor);
+            if (ticket == null) return false;
+            boolean transferred = false;
+            try {
+                if (ticket.message.opcode() != WebSocketFrameCodec.OPCODE_TEXT) {
+                    throw new IllegalArgumentException(
+                            "TEXT-only source actor bridge refuses binary USER mail");
+                }
+                if (!ticket.ownerLoan.mayDeliver(handle, tenant, actor.address())) {
+                    return false;
+                }
+                // MessageAssembler already validates complete TEXT UTF-8.
+                // Decode strictly again at this guest boundary, never replace
+                // malformed bytes with the Unicode replacement character.
+                String text;
+                try {
+                    text = StandardCharsets.UTF_8.newDecoder()
+                            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                            .decode(java.nio.ByteBuffer.wrap(ticket.message.payload()))
+                            .toString();
+                } catch (java.nio.charset.CharacterCodingException invalid) {
+                    throw new IllegalArgumentException(
+                            "invalid complete WebSocket TEXT UTF-8", invalid);
+                }
+                runtime.send(actor, text); // normal bounded, owned source mailbox
+                transferred = true;
+                return true;
+            } finally {
+                // Once admitted, the actor user mailbox owns the copied value.
+                // The transport's original ticket is settled exactly once.
+                ticket.close();
+                if (!transferred) {
+                    requestActiveWriteAbort();
+                }
+            }
+        }
+
+        /**
+         * Runtime-owned ONE-output relay for a bound compiler/source actor.
+         * Its ActorOutputStream cannot be constructed by guest code. Read
+         * completion only queues a bounded native-I/O worker; the actor's
+         * carrier never submits an outbound socket frame or blocks on it.
+         * Consumers may rearm after completion to forward the next output.
+         */
+        OresFuture<Void> relayNextSourceActorTextOutputAsync(
+                WebSocketActorConnectionLease.Handle handle,
+                OresContext context, ActorRuntime.ActorRef<Object> actor) {
+            Objects.requireNonNull(context, "runtime context");
+            requireContextActor(context, actor, "websocket.source-output");
+            return relaySourceActorOutput(
+                    handle, context.contextId(), context.actors(), actor);
+        }
+
+        /** HOST-ONLY source-executor fixture seam, not guest authority. */
+        OresFuture<Void> relayHostNextSourceActorTextOutputAsync(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<Object> actor) {
+            return relaySourceActorOutput(handle, tenant, runtime, actor);
+        }
+
+        private OresFuture<Void> relaySourceActorOutput(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<Object> actor) {
+            Objects.requireNonNull(runtime, "source actor runtime");
+            Objects.requireNonNull(actor, "source actor");
+            if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.inActorGroupMailmanExecution()) {
+                throw new SecurityException(
+                        "source WebSocket output relay requires host supervisor");
+            }
+            if (!runtime.isSourceCodeActor(actor)) {
+                throw new SecurityException(
+                        "source WebSocket output relay requires live code actor");
+            }
+            requireNet.accept(endpoint, "websocket.source-output");
+            final OresFuture<GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> next;
+            final OresFuture<Void> relay;
+            synchronized (lifecycleLock) {
+                if (retired.get() || closed.get() || abortRequested.get()) {
+                    throw new RejectedExecutionException("WebSocket source relay is retired");
+                }
+                if (pendingSourceOutputRelay != null) {
+                    throw new RejectedExecutionException(
+                            "only one source output reader per connection");
+                }
+                // Acquire/release at registration. The output's actual native
+                // writer will acquire a NEW loan and revalidate epoch/owner.
+                try (var loan = acquireActorLease(
+                        handle, tenant, actor.address())) {
+                    var stream = actor.outputs();
+                    if (!stream.actorId().equals(actor.id())) {
+                        throw new SecurityException("foreign actor output stream");
+                    }
+                    next = stream.next();
+                    // The relay is host-owned and must always cancel on
+                    // connection retirement. The underlying actor-channel
+                    // read is revoked best-effort in the cancellation hook;
+                    // its own admission decision must not prevent retiring
+                    // this connection-scoped observer.
+                    relay = new OresFuture<>(() -> true,
+                            () -> next.cancel(false));
+                    pendingSourceOutputRelay = relay;
+                }
+            }
+            relay.whenCompleteRuntime((unused, terminal) -> {
+                synchronized (lifecycleLock) {
+                    if (pendingSourceOutputRelay == relay) {
+                        pendingSourceOutputRelay = null;
+                    }
+                }
+                // Once a source output was consumed, a failed/cancelled
+                // relay cannot silently leave the session accepting USER
+                // frames: provenance and byte-credit recovery are uncertain.
+                // Revocation is logical and host-close is queued on CONTROL;
+                // no actor carrier calls Socket.close().
+                if (terminal != null && !retired.get()) {
+                    requestActiveWriteAbort();
+                }
+            });
+            next.whenCompleteRuntime((step, failure) -> {
+                if (relay.isDone()) return;
+                if (failure != null) {
+                    relay.failFromRuntime(OresFuture.unwrap(failure));
+                    return;
+                }
+                if (step == null || step.done()) {
+                    relay.failFromRuntime(new IllegalStateException(
+                            "source actor output stream ended before WebSocket reply"));
+                    return;
+                }
+                ActorRuntime.ActorOutput<Object> output = step.value();
+                if (output == null || !actor.id().equals(output.actorId())) {
+                    relay.failFromRuntime(new SecurityException(
+                            "source actor output belongs to a different actor"));
+                    return;
+                }
+                if (!(output.value() instanceof String text)) {
+                    relay.failFromRuntime(new IllegalArgumentException(
+                            "TEXT WebSocket output must be a source actor String"));
+                    return;
+                }
+                // This callback can fire on an actor carrier. Only enqueue a
+                // bounded host worker here; native send rejects actor carriers.
+                try {
+                    OresFuture<Void> staged = nativeIo.submit(
+                            "websocket.source-output-relay", () -> {
+                                if (relay.isDone()) return null;
+                                try {
+                                    OresFuture<Void> write = sendTextForActorAsync(
+                                            handle, tenant, actor.address(), text);
+                                    write.whenCompleteRuntime((ignored, writeError) -> {
+                                        if (writeError == null) {
+                                            relay.completeFromRuntime(null);
+                                        } else {
+                                            relay.failFromRuntime(
+                                                    OresFuture.unwrap(writeError));
+                                        }
+                                    });
+                                } catch (RuntimeException | Error invalid) {
+                                    relay.failFromRuntime(invalid);
+                                }
+                                return null;
+                            });
+                    staged.whenCompleteRuntime((ignored, stageError) -> {
+                        if (stageError != null) {
+                            relay.failFromRuntime(OresFuture.unwrap(stageError));
+                        }
+                    });
+                } catch (RuntimeException | Error admissionFailure) {
+                    relay.failFromRuntime(admissionFailure);
+                }
+            });
+            return relay;
         }
 
         /** Host-only real-actor fixture with the same mailbox admission logic. */
@@ -1005,10 +1238,16 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             // Serialize ledger revocation with host binding, transfer, and
             // authorization. The socket close itself must happen OUTSIDE the
             // lifecycle lock: it can wake the selector/native I/O worker.
+            OresFuture<Void> relayToCancel;
             synchronized (lifecycleLock) {
                 if (!retired.compareAndSet(false, true)) return;
                 if (actorOwnership != null) actorOwnership.revoke();
+                relayToCancel = pendingSourceOutputRelay;
+                pendingSourceOutputRelay = null;
             }
+            // Cancel the actor-output read OUTSIDE lifecycleLock: Future
+            // observers can synchronously reenter native/actor retirement.
+            if (relayToCancel != null) relayToCancel.cancel(false);
             protocol.transportClosed();
             try { socket.close(); }
             catch (IOException failure) {

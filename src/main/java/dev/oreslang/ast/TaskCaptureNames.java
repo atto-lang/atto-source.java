@@ -28,6 +28,16 @@ public final class TaskCaptureNames {
     private static void visitBody(
             List<Ast.Stmt> body, Set<String> outer, Set<String> references) {
         Set<String> locals = new HashSet<>(outer);
+        visitStatementsInScope(body, locals, references);
+    }
+
+    /**
+     * Visit source-ordered statements in an already-created lexical scope.
+     * MatchValueArm prefixes use this because their terminal ARM_RESULT is in
+     * the same scope as top-level bindings declared by the prefix.
+     */
+    private static void visitStatementsInScope(
+            List<Ast.Stmt> body, Set<String> locals, Set<String> references) {
         for (Ast.Stmt stmt : body) visitStmt(stmt, locals, references);
     }
 
@@ -203,6 +213,7 @@ public final class TaskCaptureNames {
                 Set<String> armLocals = new HashSet<>(locals);
                 bindPattern(arm.pattern(), armLocals);
                 visitConditionExpr(arm.guard(), armLocals, names);
+                visitStatementsInScope(arm.prefixStatements(), armLocals, names);
                 visitExpr(arm.value(), armLocals, names);
             }
         } else if (expr instanceof Ast.TypeTestExpr s) {

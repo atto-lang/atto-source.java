@@ -40,7 +40,7 @@ define module compute as
     pub val bool requires_unified_memory;
   end
 
-  pub fnc valid_device_capabilities(&DeviceCapabilities caps): bool {
+  pub fnc valid_device_capabilities(borrow DeviceCapabilities caps): bool {
     if caps.backend == ""; do
       return false;
     fi
@@ -59,7 +59,7 @@ define module compute as
     return true;
   }
 
-  pub fnc valid_buffer_layout(&BufferLayout layout): bool {
+  pub fnc valid_buffer_layout(borrow BufferLayout layout): bool {
     if layout.element_bytes <= 0; do
       return false;
     fi
@@ -87,7 +87,7 @@ define module compute as
   // additionally verify device limits, alignment and real handle provenance.
   // Branch on positive length before dividing. Prove the multiplication is
   // representable in signed i64 before ever evaluating it.
-  pub fnc valid_exact_buffer_layout(&BufferLayout layout): bool {
+  pub fnc valid_exact_buffer_layout(borrow BufferLayout layout): bool {
     if layout.element_bytes <= 0 || layout.length < 0; do
       return false;
     fi
@@ -104,7 +104,7 @@ define module compute as
   }
 
 
-  pub fnc valid_dispatch(&DispatchShape shape): bool {
+  pub fnc valid_dispatch(borrow DispatchShape shape): bool {
     if shape.global_x <= 0 || shape.global_y <= 0 || shape.global_z <= 0; do
       return false;
     fi
@@ -124,8 +124,8 @@ define module compute as
   }
 
   pub fnc device_satisfies(
-    &DeviceCapabilities caps,
-    &KernelRequirements requirements
+    borrow DeviceCapabilities caps,
+    borrow KernelRequirements requirements
   ): bool {
     if caps.backend == "" || caps.name == ""; do
       return false;

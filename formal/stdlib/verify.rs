@@ -6,7 +6,7 @@ use std::{env, process::Command};
 
 const CORE_BLOB: &str = "d2cd9b8e0cd3e3bb3ee6a5f9cebf9ab3312c44f4";
 const TRACE_BLOB: &str = "f4ff35b10683880e42e3151b34fc140d52704dba";
-const TESTING_BLOB: &str = "677754a41983167bb4f8ba5ffa8551bb87aaf9f7";
+const TESTING_BLOB: &str = "60d50aa2b00aadb0d738a41fa821a1443465a918";
 
 fn command(program: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(program)

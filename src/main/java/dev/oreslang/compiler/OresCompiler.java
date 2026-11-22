@@ -11,6 +11,16 @@ import dev.oreslang.types.OwnershipChecker;
 public final class OresCompiler {
     private OresCompiler() { }
 
+    /**
+     * Opt-in first protected-state MIR slice. This executes the production
+     * parser first, then admits only one verified i64 state-root region.
+     * It does NOT bypass or relax ordinary TypeChecker/OwnershipChecker
+     * admission for general compilation and does not claim native AOT.
+     */
+    public static ProtectedScalarMirV1.Plan compileProtectedScalarI64(String source) {
+        return ProtectedScalarMirV1.lower(Parser.parse(source));
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }
@@ -59,6 +69,29 @@ public final class OresCompiler {
             throws java.io.IOException {
         Ast.Program checked = parseAndTypeCheck(source);
         return RealtimePrimitiveCompiler.compile(checked, entry, arity, budget, outputDirectory);
+    }
+
+    /**
+     * Conservative checked-AST actor callback preflight. This proves only
+     * scalar syntax/effect exclusion, not actor heap or hard-RT execution.
+     * The checked AST is produced here, never supplied by the caller.
+     */
+    public static RealtimeActorSourceEffects.Report analyzeRealtimeActorCallback(
+            String source, String actorName, String callbackName, int arity,
+            RealtimeActorSourceEffects.Budget budget) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return RealtimeActorSourceEffects.analyzeChecked(
+                checked, actorName, callbackName, arity, budget);
+    }
+
+    /**
+     * Experimental public interface emission. Static analysis and ownership
+     * admission are mandatory before extracting metadata. This does not execute
+     * guest code, persist a cache, or authorize a decoded external interface.
+     */
+    public static ExportInterfaceCodec.InterfaceFile emitPublicInterface(
+            String source, ExportInterfaceCodec.Header header) {
+        return ExportInterfaceCollector.collect(parseAndTypeCheck(source), header);
     }
 
     /**

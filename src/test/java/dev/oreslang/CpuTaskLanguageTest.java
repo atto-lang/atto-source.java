@@ -113,11 +113,11 @@ final class CpuTaskLanguageTest {
                         end
                         pub async fnc main(): void {
                           val mutex = Mutex.new(new Box());
-                          val guard = mutex.lock();
+                          val lock_guard = mutex.lock();
                           let Future<int> t = cpu task {
-                            return guard.value;
+                            return lock_guard.value;
                           };
-                          guard.release();
+                          lock_guard.release();
                           stdio.stdout.write(await t);
                           return;
                         }

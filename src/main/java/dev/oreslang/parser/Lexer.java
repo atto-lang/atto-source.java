@@ -15,7 +15,7 @@ public final class Lexer {
         KEYWORDS.put("import", IMPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
         KEYWORDS.put("extends", EXTENDS); KEYWORDS.put("implements", IMPLEMENTS);
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
-        KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
+        KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("guard", GUARD); KEYWORDS.put("do", DO);
         KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("spawn", SPAWN); KEYWORDS.put("stop", STOP); KEYWORDS.put("done", DONE); KEYWORDS.put("gpu", GPU); KEYWORDS.put("quantum", QUANTUM);
         KEYWORDS.put("await", AWAIT); KEYWORDS.put("rt", RT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("suspends", SUSPENDS); KEYWORDS.put("generator", GENERATOR); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("trap", TRAP); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("isoactor", ISOACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
         KEYWORDS.put("while", WHILE); KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("loop", LOOP); KEYWORDS.put("block", BLOCK); KEYWORDS.put("break", BREAK); KEYWORDS.put("continue", CONTINUE); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("elif", ELSEIF); KEYWORDS.put("switch", SWITCH); KEYWORDS.put("over", OVER); KEYWORDS.put("match", MATCH); KEYWORDS.put("matches", MATCHES); KEYWORDS.put("is", IS); KEYWORDS.put("default", DEFAULT);
@@ -25,6 +25,8 @@ public final class Lexer {
         KEYWORDS.put("type", TYPE); KEYWORDS.put("types", TYPES); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("trait", TRAIT); KEYWORDS.put("struct", STRUCT); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER);
+        // Future typed unsafe boundary: reserved, never a generic guest identifier.
+        KEYWORDS.put("unsafe", UNSAFE);
         // Reserved until compiler-checked typed effects and source lowering exist.
         KEYWORDS.put("throw", THROW); KEYWORDS.put("raise", RAISE);
         KEYWORDS.put("panic", PANIC); KEYWORDS.put("recover", RECOVER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
@@ -86,11 +88,12 @@ public final class Lexer {
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
             case '<' -> add(match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
             case '/' -> {
-                if (match('/')) while (peek() != '\n' && !isAtEnd()) advance();
+                if (match('/')) while (peek() != '\n' && peek() != '\r' && !isAtEnd()) advance();
                 else if (match('*')) blockComment();
                 else add(SLASH);
             }
-            case ' ', '\r', '\t' -> { }
+            case ' ', '\t' -> { }
+            case '\r' -> { match('\n'); newline(); }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
             case '#' -> symbol();
@@ -162,8 +165,11 @@ public final class Lexer {
         while (depth > 0) {
             if (isAtEnd()) throw error("unterminated block comment");
             char c = advance();
-            if (c == '\n') newline();
-            else if (c == '/' && match('*')) depth++;
+            if (c == '\r') { match('\n'); newline(); }
+            else if (c == '\n') newline();
+            else if (c == '/' && match('*')) {
+                if (++depth > 128) throw error("block comment nesting exceeds 128");
+            }
             else if (c == '*' && match('/')) depth--;
         }
     }
@@ -173,7 +179,9 @@ public final class Lexer {
         int end = TemplateLiterals.closingBacktick(source, current);
         String contents = source.substring(start + 1, end);
         while (current <= end) {
-            if (advance() == '\n') newline();
+            char c = advance();
+            if (c == '\r') { match('\n'); newline(); }
+            else if (c == '\n') newline();
         }
         tokens.add(new Token(TEMPLATE_LITERAL, contents, tokenLine, startColumn));
     }
@@ -182,6 +190,12 @@ public final class Lexer {
         StringBuilder value = new StringBuilder();
         while (!isAtEnd() && peek() != quote) {
             char c = advance();
+            if (c == '\r') {
+                newline();
+                value.append('\r');
+                if (match('\n')) value.append('\n');
+                continue;
+            }
             if (c == '\n') { newline(); value.append('\n'); continue; }
             if (c == '\\') {
                 if (isAtEnd()) throw error("unterminated string escape");
@@ -194,7 +208,22 @@ public final class Lexer {
         }
         if (isAtEnd()) throw error("unterminated string");
         advance();
+        validateDecodedUnicode(value, "string");
         tokens.add(new Token(STRING, value.toString(), line, startColumn));
+    }
+
+    private void validateDecodedUnicode(CharSequence value, String kind) {
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw error(kind + " contains unpaired Unicode surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw error(kind + " contains unpaired Unicode surrogate");
+            }
+        }
     }
 
     private char unicodeEscape() {
@@ -212,20 +241,36 @@ public final class Lexer {
     }
 
     private void number() {
-        while (isDigit(peek()) || peek() == '_') advance();
+        // All decimal runs use one lexical separator rule, including actor
+        // configuration integers, floating-point fractions, imaginary
+        // literals and exponents. Never normalize malformed input in the
+        // parser or let other grammar productions admit it accidentally.
+        decimalDigits("integer");
         boolean floating = false;
         if (peek() == '.' && isDigit(peekNext())) {
-            floating = true; advance();
-            while (isDigit(peek()) || peek() == '_') advance();
+            floating = true;
+            advance();
+            decimalDigits("fractional");
         }
         if (peek() == 'e' || peek() == 'E') {
-            floating = true; advance();
+            floating = true;
+            advance();
             if (peek() == '+' || peek() == '-') advance();
             if (!isDigit(peek())) throw error("malformed exponent");
-            while (isDigit(peek()) || peek() == '_') advance();
+            decimalDigits("exponent");
         }
         if (peek() == 'i') { advance(); add(IMAG); }
         else add(floating ? FLOAT : INT);
+    }
+
+    /** Called after the first digit in a run is known to exist. */
+    private void decimalDigits(String part) {
+        while (isDigit(peek()) || peek() == '_') {
+            if (peek() == '_' && !isDigit(peekNext())) {
+                throw error("malformed " + part + " separator");
+            }
+            advance();
+        }
     }
 
     private void identifier() {

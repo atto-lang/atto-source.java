@@ -56,9 +56,9 @@ final class SourceTaskCleanupHardeningTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  {
-                    val guard = mutex.lock();
-                    guard.value = 7;
+                  block {
+                    val lock_guard = mutex.lock();
+                    lock_guard.value = 7;
                   }
                   // A lexical block's exit must release its implicit guard,
                   // allowing another same-Task acquisition without a deadlock.
@@ -81,7 +81,7 @@ final class SourceTaskCleanupHardeningTest {
                 pub async routine main(): void {
                   val first = Mutex.new(new Counter());
                   val second = Mutex.new(new Counter());
-                  {
+                  block {
                     val one = first.lock();
                     val two = second.lock();
                     one.value = 3;
@@ -174,12 +174,11 @@ final class SourceTaskCleanupHardeningTest {
             throws Exception {
         assertEquals("7DC", run("""
                 async generator fnc values(): int {
-                  try {
-                    yield 7;
-                    yield 8;
-                  } finally {
-                    stdio.stdout.write("C");
-                  }
+                  // Generator cleanup must run exactly once when the consumer
+                  // breaks early or the generator completes.
+                  defer stdio.stdout.write("C");
+                  yield 7;
+                  yield 8;
                   return;
                 }
                 pub async routine main(): void {
@@ -198,12 +197,11 @@ final class SourceTaskCleanupHardeningTest {
             throws Exception {
         assertEquals("12C|F", run("""
                 async generator fnc values(): int {
-                  try {
-                    yield 1;
-                    yield 2;
-                  } finally {
-                    stdio.stdout.write("C");
-                  }
+                  // Generator cleanup must run exactly once when the consumer
+                  // breaks early or the generator completes.
+                  defer stdio.stdout.write("C");
+                  yield 1;
+                  yield 2;
                   return;
                 }
                 pub async routine main(): void {

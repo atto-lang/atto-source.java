@@ -19,6 +19,303 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(15)
 final class WebSocketLoopbackListenerTest {
+
+    /**
+     * HOST-ONLY integration proof: one real TCP client -> authenticated actor
+     * continuation -> actual ActorOutputStream -> fenced outbound socket.
+     * Not proof that an AttoLang source receive handler has been lowered.
+     */
+    @Test
+    void actorBoundUtf8FailuresCannotPublishWireFrames() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var pending = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = pending.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var runtimeId = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(runtimeId,
+                        ActorRuntime.ActorId.create(), 1,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+
+                assertThrows(IllegalArgumentException.class,
+                        () -> connection.sendTextForActorAsync(
+                                handle, tenant, owner, "\uD800"));
+                assertThrows(IllegalArgumentException.class,
+                        () -> connection.sendTextForActorAsync(
+                                handle, tenant, owner, "\uDC00"));
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.sendTextForActorAsync(
+                                handle, tenant, owner, "é".repeat(600)),
+                        "600 UTF-16 units encode as 1200 bytes above 1024 limit");
+                connection.sendTextForActorAsync(
+                        handle, tenant, owner, "ok").get(3, TimeUnit.SECONDS);
+                assertArrayEquals(new byte[] {(byte) 0x81, 2, 'o', 'k'},
+                        client.getInputStream().readNBytes(4),
+                        "invalid UTF-8 sends must not publish a partial frame");
+                connection.close();
+            }
+        }
+    }
+
+    /**
+     * Genuine source ActorCodeExecutor mailbox dispatch and TCP transport,
+     * but the executor here is a HOST FIXTURE, not parsed/compiled EchoActor.atto.
+     */
+    @Test
+    void sourceActorTextEntersActualSourceReceiveMailbox() throws Exception {
+        var received = new java.util.concurrent.CountDownLatch(1);
+        var deliveries = new java.util.concurrent.atomic.AtomicInteger();
+        try (var store = new SharedCodeImageStore();
+             var actors = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("app/echo.atto",
+                    dev.oreslang.parser.Parser.parse(
+                            "pub routine main(): void { return; }"));
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() {
+                    return image;
+                }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String name, ActorRuntime.ActorContext<Object> context) {
+                    assertEquals("EchoActor", name);
+                    return () -> context.self().id();
+                }
+                @Override public void receiveActor(
+                        String name, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    assertEquals("EchoActor", name);
+                    assertEquals(context.self().id(), state.ownerActorId());
+                    assertEquals(context.self().id(), mail.recipient());
+                    assertEquals(mail, context.currentMail().orElseThrow());
+                    assertEquals("hello", mail.value());
+                    assertEquals(0L, mail.sequence());
+                    deliveries.incrementAndGet();
+                    context.runtime().emitCurrentActorOutput("echo:" + mail.value());
+                    received.countDown();
+                }
+            };
+            ActorRuntime.ActorRef<Object> actor = actors.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    executor, "EchoActor");
+            actor.ready().get(3, TimeUnit.SECONDS);
+            assertEquals(actor.id(), actor.outputs().actorId());
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(
+                            tenant, actor.address(), actor::isAlive);
+                    var relay = conn.relayHostNextSourceActorTextOutputAsync(
+                            handle, tenant, actors, actor);
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            () -> conn.relayHostNextSourceActorTextOutputAsync(
+                                    handle, tenant, actors, actor),
+                            "only one pending output reader per socket");
+                    sendMaskedText(client, "hello");
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, actor.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertTrue(conn.dispatchHostSourceActorText(
+                            handle, tenant, actors, actor));
+                    assertTrue(received.await(3, TimeUnit.SECONDS));
+                    assertEquals(1, deliveries.get());
+                    assertEquals(0, conn.pendingActorTicketCount());
+                    // Runtime consumes the source actor's real output channel,
+                    // stages a bounded native worker, then writes under the
+                    // original actor/tenant/connection lease. No test-side echo.
+                    relay.get(3, TimeUnit.SECONDS);
+                    byte[] expected = "echo:hello".getBytes(StandardCharsets.UTF_8);
+                    byte[] frame = client.getInputStream()
+                            .readNBytes(expected.length + 2);
+                    assertEquals(0x81, Byte.toUnsignedInt(frame[0]));
+                    assertEquals(expected.length, Byte.toUnsignedInt(frame[1]));
+                    assertArrayEquals(expected,
+                            java.util.Arrays.copyOfRange(frame, 2, frame.length));
+                    // A pending next-output read must not survive disconnect.
+                    var pendingOutput = conn.relayHostNextSourceActorTextOutputAsync(
+                            handle, tenant, actors, actor);
+                    conn.close();
+                    assertTrue(pendingOutput.isCancelled(),
+                            "physical WebSocket shutdown cancels the source output reader");
+                }
+            } finally {
+                actor.cancel();
+            }
+        }
+    }
+
+    @Test
+    void sourceActorBridgeRejectsHostBehaviorBeforeDequeue() throws Exception {
+        try (var actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> host = actors.spawnPrivateTrusted(
+                    context -> (mail, turn) -> fail("not a source actor"));
+            host.ready().get(3, TimeUnit.SECONDS);
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(
+                            tenant, host.address(), host::isAlive);
+                    sendMaskedText(client, "refuse");
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, host.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertThrows(SecurityException.class,
+                            () -> conn.dispatchHostSourceActorText(
+                                    handle, tenant, actors, host));
+                    assertThrows(SecurityException.class,
+                            () -> conn.relayHostNextSourceActorTextOutputAsync(
+                                    handle, tenant, actors, host),
+                            "a host BehaviorFactory cannot impersonate a source code actor");
+                    assertEquals(0, conn.pendingActorTicketCount(),
+                            "rejection must occur before any physical ticket loan");
+                    conn.close();
+                }
+            } finally {
+                host.cancel();
+            }
+        }
+    }
+
+    @Test
+    void sourceActorBridgeRejectsBinaryWithoutExecutingSourceReceive() throws Exception {
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        try (var store = new SharedCodeImageStore();
+             var actors = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("app/binary-reject.atto",
+                    dev.oreslang.parser.Parser.parse(
+                            "pub routine main(): void { return; }"));
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() {
+                    return image;
+                }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String name, ActorRuntime.ActorContext<Object> context) {
+                    return () -> context.self().id();
+                }
+                @Override public void receiveActor(
+                        String name, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    delivered.incrementAndGet();
+                }
+            };
+            ActorRuntime.ActorRef<Object> actor = actors.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    executor, "TextOnly");
+            actor.ready().get(3, TimeUnit.SECONDS);
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(
+                            tenant, actor.address(), actor::isAlive);
+                    // Valid masked BINARY frame; rejected by the TEXT-only
+                    // source-actor bridge, not by the RFC6455 parser.
+                    client.getOutputStream().write(new byte[] {
+                            (byte) 0x82, (byte) 0x81,
+                            1, 2, 3, 4, (byte) ('x' ^ 1)
+                    });
+                    client.getOutputStream().flush();
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, actor.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertThrows(IllegalArgumentException.class,
+                            () -> conn.dispatchHostSourceActorText(
+                                    handle, tenant, actors, actor));
+                    assertEquals(0, conn.pendingActorTicketCount(),
+                            "rejected binary must settle its physical delivery loan");
+                    assertEquals(0, delivered.get(),
+                            "binary must never become an untyped source actor mail");
+                    conn.close();
+                }
+            } finally {
+                actor.cancel();
+            }
+        }
+    }
+
+    @Test
+    void hostActorOutputTraversesAuthenticatedWebSocketAsText() throws Exception {
+        try (var actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = actors.spawnPrivateTrusted(
+                    ctx -> (mail, turn) -> { });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(
+                            tenant, actor.address(), actor::isAlive);
+                    var value = "echo🙂";
+                    sendMaskedText(client, value);
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, actor.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertTrue(conn.dispatchHostActorMessage(
+                            handle, tenant, actors, actor, frame -> {
+                                assertEquals(WebSocketFrameCodec.OPCODE_TEXT, frame.opcode());
+                                assertTrue(ActorRuntime.inActorExecution());
+                                actors.emitCurrentActorOutput(
+                                        new String(frame.payload(), StandardCharsets.UTF_8));
+                            }));
+                    var output = actor.outputs().next().get(3, TimeUnit.SECONDS);
+                    assertFalse(output.done());
+                    assertEquals(actor.id(), output.value().actorId());
+                    assertEquals(value, output.value().value());
+                    // This test's host-only relay runs OUTSIDE the actor carrier:
+                    // the final guest-lowering bridge must enforce the same
+                    // owner generation and output-stream provenance.
+                    conn.sendTextForActorAsync(handle, tenant, actor.address(),
+                            (String) output.value().value()).get(3, TimeUnit.SECONDS);
+                    byte[] expected = value.getBytes(StandardCharsets.UTF_8);
+                    byte[] actual = client.getInputStream().readNBytes(2 + expected.length);
+                    assertEquals(0x81, Byte.toUnsignedInt(actual[0]));
+                    assertEquals(expected.length, Byte.toUnsignedInt(actual[1]));
+                    assertArrayEquals(expected,
+                            java.util.Arrays.copyOfRange(actual, 2, actual.length));
+                    // The parent can observe output before the actor turn's
+                    // mailbox finally retires its delivery ticket; wait for
+                    // physical lease settlement, not merely output publication.
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                    while (conn.pendingActorTicketCount() != 0
+                            && System.nanoTime() < deadline) {
+                        Thread.sleep(5);
+                    }
+                    assertEquals(0, conn.pendingActorTicketCount());
+                    conn.close();
+                }
+            } finally {
+                actor.cancel();
+            }
+        }
+    }
+
     private static final String KEY = "dGhlIHNhbXBsZSBub25jZQ==";
 
     private static int unusedPort() throws Exception {
@@ -313,6 +610,100 @@ final class WebSocketLoopbackListenerTest {
             try (var available = new ServerSocket(port, 1,
                     InetAddress.getByName("127.0.0.1"))) {
                 assertEquals(port, available.getLocalPort());
+            }
+        }
+    }
+
+    @Test
+    void actorBindRejectsPartialHostFragmentUntilCompletedAndDrained()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+
+                // Non-FIN TEXT frame leaves an unfinished host-owned USER
+                // fragment even though no complete USER message is queued.
+                var first = connection.readAsync();
+                client.getOutputStream().write(new byte[] {
+                        0x01, (byte) 0x81, 1, 2, 3, 4,
+                        (byte) ('h' ^ 1)
+                });
+                client.getOutputStream().flush();
+                assertEquals(WebSocketSessionState.ActionKind.NONE,
+                        first.get(3, TimeUnit.SECONDS).kind());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.bindActorHost(tenant, owner, () -> true));
+
+                var continuation = connection.readAsync();
+                client.getOutputStream().write(new byte[] {
+                        (byte) 0x80, (byte) 0x81, 1, 2, 3, 4,
+                        (byte) ('i' ^ 1)
+                });
+                client.getOutputStream().flush();
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        continuation.get(3, TimeUnit.SECONDS).kind());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.bindActorHost(tenant, owner, () -> true));
+                assertArrayEquals("hi".getBytes(StandardCharsets.UTF_8),
+                        connection.pollUserMessage().orElseThrow().payload());
+
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                try (var loan = connection.acquireActorLease(handle, tenant, owner)) {
+                    assertTrue(loan.mayDeliver(handle, tenant, owner));
+                }
+                connection.close();
+            }
+        }
+    }
+
+    @Test
+    void actorBindRejectsPendingRawReadAndUndrainedHostUserMessage()
+            throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var accepted = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(
+                        java.util.UUID.randomUUID(), ActorRuntime.ActorId.create(),
+                        1, ActorRuntime.ActorKind.PRIVATE, "local-process");
+
+                // Before binding, a raw host read owns its native socket
+                // borrow. No actor generation may inherit that unleased I/O.
+                var rawRead = connection.readAsync();
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.bindActorHost(tenant, owner, () -> true));
+                sendMaskedText(client, "host");
+                assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                        rawRead.get(3, TimeUnit.SECONDS).kind());
+
+                // Finishing the I/O borrow is not sufficient: USER state
+                // received for the old host must also be explicitly drained.
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.bindActorHost(tenant, owner, () -> true));
+                assertArrayEquals("host".getBytes(StandardCharsets.UTF_8),
+                        connection.pollUserMessage().orElseThrow().payload());
+
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+                try (var loan = connection.acquireActorLease(handle, tenant, owner)) {
+                    assertTrue(loan.mayDeliver(handle, tenant, owner));
+                }
+                assertThrows(SecurityException.class, connection::readAsync);
+                assertThrows(SecurityException.class, connection::pollUserMessage);
+                connection.close();
             }
         }
     }

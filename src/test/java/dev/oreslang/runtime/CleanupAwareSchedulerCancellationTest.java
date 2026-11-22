@@ -344,7 +344,19 @@ final class CleanupAwareSchedulerCancellationTest {
                             assertTrue(OresScheduler.cancellationCleanupTurn());
                             cleanupEntries.incrementAndGet();
                             enteredCleanup.countDown();
-                            if (!releaseCleanup.await(4, TimeUnit.SECONDS)) {
+                            // Model a cleanup frame that keeps executing:
+                            // close() interrupts carriers, but an interrupt
+                            // is not a physical-exit receipt.
+                            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+                            boolean released = false;
+                            while (!released && System.nanoTime() < until) {
+                                try {
+                                    released = releaseCleanup.await(25, TimeUnit.MILLISECONDS);
+                                } catch (InterruptedException ignored) {
+                                    // keep running until explicitly released
+                                }
+                            }
+                            if (!released) {
                                 throw new IllegalStateException("test cleanup carrier timeout");
                             }
                             return OresScheduler.done(null);
@@ -356,6 +368,16 @@ final class CleanupAwareSchedulerCancellationTest {
             Thread closer = new Thread(scheduler::close, "close-during-source-cleanup");
             closer.start();
             try {
+                // Wait until close() has revoked the Task and parked in
+                // awaitTermination; otherwise the cleanup may finish first
+                // and a clean Cancelled outcome would be correct.
+                long parkedBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (closer.getState() != Thread.State.TIMED_WAITING
+                        && closer.isAlive() && System.nanoTime() < parkedBy) {
+                    Thread.sleep(2);
+                }
+                assertEquals(Thread.State.TIMED_WAITING, closer.getState(),
+                        "close() must be waiting for the still-running cleanup carrier");
                 // Scheduler shutdown fences queued turns; it cannot treat a
                 // still-executing cleanup frame as a physical release receipt.
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);

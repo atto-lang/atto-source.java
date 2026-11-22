@@ -1,0 +1,58 @@
+name: Hot code generations exact-head
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/hot-code-generations-exact-head.yml'
+      - 'src/main/java/dev/oreslang/runtime/HttpGenerationDrainV1.java'
+      - 'src/main/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1.java'
+      - 'src/test/java/dev/oreslang/runtime/HttpGenerationDrainV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1Test.java'
+      - 'pom.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  java-actor-image-retention:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR head (no persistent credentials)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require expected code tree
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          git hash-object src/main/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1.java
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute both host-only retention JUnit suites
+        run: mvn -B -ntp -Dtest=HotCodeGenerationRetentionV1Test,HttpGenerationDrainV1Test -DfailIfNoTests=true test
+      - name: Check real JUnit XML and zero skipped tests
+        run: |
+          set -euo pipefail
+          for name in HotCodeGenerationRetentionV1Test HttpGenerationDrainV1Test; do
+            report="target/surefire-reports/TEST-dev.oreslang.runtime.${name}.xml"
+            test -s "$report"
+            head -c 800 "$report" | grep -Eq 'tests="[1-9][0-9]*"'
+            head -c 800 "$report" | grep -q 'errors="0"'
+            head -c 800 "$report" | grep -q 'failures="0"'
+            head -c 800 "$report" | grep -q 'skipped="0"'
+          done
+          echo "Host-only JUnit XML checked at exact code head:"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}

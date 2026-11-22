@@ -32,6 +32,14 @@ public final class AutoTraitRules {
     }
 
     public record Capabilities(boolean send, boolean sync, boolean share) {
+        public Capabilities {
+            // Sharing an allocation across actor domains must never outlive
+            // the Send + Sync proofs required for cross-lane safe access.
+            // Normalize even independently constructed structural/dyn caps,
+            // not only built-in wrapper inference.
+            share = share && send && sync;
+        }
+
         public boolean has(AutoTrait trait) {
             return switch (trait) {
                 case SEND -> send;

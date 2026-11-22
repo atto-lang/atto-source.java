@@ -1,0 +1,17 @@
+// Regression: a mutable class binding retains numeric field types across loop updates.
+// This is a current-Java native candidate, not historical 6/6 guest evidence.
+import class TinyState from '../../nn/src/tiny_mlp';
+
+pub routine main(): void {
+  let TinyState state = new TinyState(0.5, 0.0, 1.0, 0.0);
+  val float input = 2.0;
+  for let step = 0; step < 8; step++ do
+    val float preactivation = state.w0 * input + state.b0;
+    if preactivation <= 0.0; do rt fail("invalid mutable-state preactivation"); fi
+    state = new TinyState(state.w0 + 0.125, state.b0, state.w1, state.b1);
+  done
+  val float result = state.w0 * input + state.b0;
+  if result != 3.0; do rt fail("mutable-state numeric field mismatch"); fi
+  stdio.stdout.println("ORES-MUTABLE-STATE-LOOP-NATIVE-PASS");
+  return;
+}

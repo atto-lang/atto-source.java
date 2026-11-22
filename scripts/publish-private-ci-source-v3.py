@@ -13,6 +13,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -46,6 +47,7 @@ HANDOFF_REF = re.compile(
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
 CARRIER_REVIEW_LOGIN = "ORESoftware"
 CARRIER_REVIEW_USER_ID = 11139560
+MAX_SOURCE_PR_REVIEWS = 100
 MAX_GOVERNANCE_FILE = 1024 * 1024
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
@@ -93,6 +95,33 @@ def unique_object(pairs):
             raise Denied("carrier contract contains duplicate JSON key")
         result[key] = value
     return result
+
+
+def strict_json_loads(text, label):
+    """Reject duplicate keys and non-finite JSON numbers for security metadata."""
+    if not isinstance(text, str):
+        raise Denied(label)
+
+    def reject_constant(_value):
+        raise Denied(label + " contains nonfinite JSON constant")
+
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise Denied(label + " contains nonfinite JSON number")
+        return number
+
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except (json.JSONDecodeError, RecursionError, OverflowError, ValueError) as exc:
+        if isinstance(exc, Denied):
+            raise
+        raise Denied(label) from exc
 
 
 def safe_policy_path(value, prefix, suffix):
@@ -168,10 +197,9 @@ def gh_api_list(route):
     )
     if completed.returncode != 0:
         raise Denied("authenticated GitHub list request failed")
-    try:
-        data = json.loads(completed.stdout, object_pairs_hook=unique_object)
-    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
-        raise Denied("invalid GitHub list JSON response") from exc
+    data = strict_json_loads(
+        completed.stdout, "invalid GitHub list JSON response"
+    )
     if not isinstance(data, list):
         raise Denied("unexpected GitHub list response shape")
     return data
@@ -228,8 +256,10 @@ def remote_file_at_source_main(path, main_sha, max_bytes):
 
 def parse_contract(raw, repository, source_pr, test_plan):
     try:
-        doc = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
-    except (UnicodeError, ValueError, RecursionError) as exc:
+        doc = strict_json_loads(
+            raw.decode("utf-8"), "invalid carrier contract JSON"
+        )
+    except UnicodeError as exc:
         raise Denied("invalid carrier contract JSON") from exc
     if not isinstance(doc, dict) or doc.get("schema") != CONTRACT_SCHEMA:
         raise Denied("unsupported carrier contract schema")
@@ -562,7 +592,88 @@ def checked_destination(repository, contract):
     return repo, base_tree, plan_bytes
 
 
-def verify_source_pr(source_pr, source_commit):
+def require_source_pr_independent_review(source_pr, source_commit, author):
+    """Require the latest immutable security-owner review to approve this exact head."""
+    if (not isinstance(author, dict)
+            or type(author.get("id")) is not int
+            or author["id"] <= 0
+            or author["id"] == CARRIER_REVIEW_USER_ID):
+        raise Denied("source PR author is missing or cannot self-authorize")
+
+    reviews = gh_api_list(
+        f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}/reviews?per_page=100"
+    )
+    if len(reviews) >= MAX_SOURCE_PR_REVIEWS:
+        raise Denied("source PR review history may be incomplete")
+
+    candidates = []
+    seen_ids = set()
+    for item in reviews:
+        if not isinstance(item, dict):
+            raise Denied("source PR review entry malformed")
+        review_id = item.get("id")
+        if (type(review_id) is not int or review_id <= 0
+                or review_id in seen_ids):
+            raise Denied("source PR review identity ambiguous")
+        seen_ids.add(review_id)
+        reviewer = item.get("user")
+        if not isinstance(reviewer, dict):
+            raise Denied("source PR review user missing")
+        if (reviewer.get("id") == CARRIER_REVIEW_USER_ID
+                and isinstance(reviewer.get("login"), str)
+                and reviewer["login"].casefold() == CARRIER_REVIEW_LOGIN.casefold()):
+            instant = github_timestamp(
+                item.get("submitted_at"), "source PR review timestamp invalid"
+            )
+            if not isinstance(item.get("state"), str):
+                raise Denied("source PR review state invalid")
+            valid_sha(item.get("commit_id"), "source PR review commit invalid")
+            candidates.append((instant, review_id, item))
+
+    if not candidates:
+        raise Denied("source PR lacks independent security owner approval")
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    current = candidates[-1][2]
+    if (current.get("state") != "APPROVED"
+            or current.get("commit_id") != source_commit):
+        raise Denied("source PR security owner approval is stale or revoked")
+
+
+def require_source_contains_authority(source_commit, authority_sha):
+    """Require the exact source head to contain the current protected main."""
+    source_commit = valid_sha(source_commit, "invalid source commit")
+    authority_sha = valid_sha(
+        authority_sha, "invalid protected source main authority"
+    )
+    comparison = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/compare/{authority_sha}...{source_commit}"
+    )
+    if not isinstance(comparison, dict):
+        raise Denied("source PR protected-main ancestry response invalid")
+
+    status = comparison.get("status")
+    ahead = comparison.get("ahead_by")
+    behind = comparison.get("behind_by")
+    base_commit = comparison.get("base_commit")
+    merge_base = comparison.get("merge_base_commit")
+    if (status not in ("ahead", "identical")
+            or type(ahead) is not int or ahead < 0
+            or type(behind) is not int or behind != 0
+            or not isinstance(base_commit, dict)
+            or base_commit.get("sha") != authority_sha
+            or not isinstance(merge_base, dict)
+            or merge_base.get("sha") != authority_sha):
+        raise Denied("source PR head does not contain protected main")
+
+
+def verify_source_pr(source_pr, source_commit, authority_sha):
+    if (type(source_pr) is not int or source_pr <= 0):
+        raise Denied("invalid source PR number")
+    source_commit = valid_sha(source_commit, "invalid source commit")
+    authority_sha = valid_sha(
+        authority_sha, "invalid protected source main authority"
+    )
+
     origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
     repo_id = origin.get("id")
     if (origin.get("full_name") != legacy.SOURCE_REPO
@@ -573,18 +684,30 @@ def verify_source_pr(source_pr, source_commit):
             or origin.get("disabled") is not False
             or origin.get("fork") is not False):
         raise Denied("source repository identity/state invalid")
+
     pr = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}")
     head = pr.get("head")
     base = pr.get("base")
+    author = pr.get("user")
     if (pr.get("number") != source_pr
             or pr.get("state") != "open"
+            or pr.get("draft") is not False
+            or not isinstance(author, dict)
             or not isinstance(head, dict)
             or head.get("sha") != source_commit
             or not isinstance(head.get("repo"), dict)
             or head["repo"].get("full_name") != legacy.SOURCE_REPO
+            or head["repo"].get("id") != SOURCE_REPOSITORY_ID
             or not isinstance(base, dict)
+            or not isinstance(base.get("repo"), dict)
+            or base["repo"].get("full_name") != legacy.SOURCE_REPO
+            or base["repo"].get("id") != SOURCE_REPOSITORY_ID
             or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
         raise Denied("source commit is not the exact open PR head against main")
+
+    require_source_contains_authority(source_commit, authority_sha)
+
+    require_source_pr_independent_review(source_pr, source_commit, author)
     return repo_id
 
 
@@ -627,8 +750,10 @@ def _validate_maven_argv(argv):
 
 def validate_test_plan(plan_bytes, source_pr):
     try:
-        plan = json.loads(plan_bytes.decode("utf-8"), object_pairs_hook=unique_object)
-    except (UnicodeError, ValueError, RecursionError) as exc:
+        plan = strict_json_loads(
+            plan_bytes.decode("utf-8"), "invalid reviewed carrier test plan"
+        )
+    except UnicodeError as exc:
         raise Denied("invalid reviewed carrier test plan") from exc
     if (not isinstance(plan, dict)
             or plan.get("schema") != "ores-private-ci-test-plan-v1"
@@ -740,18 +865,36 @@ def manifest(files):
     return rows, hashlib.sha256(canonical_bytes(rows)).hexdigest()
 
 
-def authorize_write(root, repository, approved_policy, contract):
-    """Per-write fail-closed guard: incident closure, policy and carrier identity.
+def revalidate_source_governance(
+        root, repository, approved_policy, contract,
+        source_pr, authority_sha):
+    """Re-attest the protected source authority before a persistent write."""
+    current_authority = authorized_main_sha(
+        repository, approved_policy, contract["repository_id"]
+    )
+    if current_authority != authority_sha:
+        raise Denied("source governance authority changed during transfer")
+    checked_control_plane(root, authority_sha)
+    current_contract = checked_contract(
+        root, repository, source_pr,
+        contract["test_plan_path"], authority_sha
+    )
+    if current_contract != contract:
+        raise Denied("carrier contract changed during transfer")
 
-    Protected-source main and the full immutable carrier contract are checked
-    before reading source bytes and again before refs are attached. Repeating
-    those multi-endpoint reads for every blob would multiply API traffic by
-    the file count without adding integrity: the reviewed source commit and
-    pinned destination base SHA are immutable. Privacy and repository identity
-    are the state that can change between individual writes, so those are
-    rechecked immediately before every write. P0 incident status can also
-    change after preflight, so recheck it before EVERY source-bearing write
-    rather than relying on a single initial closure observation.
+
+def authorize_write(
+        root, repository, approved_policy, contract,
+        source_pr, source_commit, source_repo_id, authority_sha):
+    """Per-write fail-closed guard for source and destination authorization.
+
+    Every source-bearing write revalidates the original protected-main
+    authority, reviewed control-plane bytes, immutable carrier contract,
+    exact open PR head, and latest independent security-owner review.
+    Protection weakening, main movement, control-plane/contract drift, PR
+    closure, head movement, or review dismissal therefore revokes authorization
+    for the very next persistent Git-object write. Destination privacy/identity,
+    carrier main, policy, and P0 incident status are likewise rechecked.
     """
     # The incidents may be reopened after initial preflight. Never upload
     # another Git blob/tree/ref while either P0 remains unresolved.
@@ -775,6 +918,12 @@ def authorize_write(root, repository, approved_policy, contract):
     if (branch.get("name") != "main"
             or branch.get("commit", {}).get("sha") != contract["base_sha"]):
         raise Denied("carrier main changed during source-bearing write")
+    if verify_source_pr(source_pr, source_commit, authority_sha) != source_repo_id:
+        raise Denied("source PR authorization changed during transfer")
+    revalidate_source_governance(
+        root, repository, approved_policy, contract,
+        source_pr, authority_sha
+    )
 
 
 def trusted_github_cli():
@@ -799,22 +948,8 @@ def trusted_github_cli():
 
 
 def github_api_environment():
-    """Use one explicit token and no ambient credential/config environment."""
-    provided = [
-        name for name in ("GH_TOKEN", "GITHUB_TOKEN")
-        if os.environ.get(name)
-    ]
-    if len(provided) != 1:
-        raise Denied("exactly one explicit GitHub API token is required")
-    return {
-        provided[0]: os.environ[provided[0]],
-        "GH_HOST": "github.com",
-        "GH_PROMPT_DISABLED": "1",
-        "PATH": "/usr/bin:/bin",
-        "HOME": "/",
-        "XDG_CONFIG_HOME": "/nonexistent",
-        "LC_ALL": "C.UTF-8",
-    }
+    """Reuse the single audited GitHub API environment for every API path."""
+    return legacy.github_api_environment()
 
 
 def run_bounded_gh(argv, *, env, timeout=30):
@@ -879,12 +1014,12 @@ def _gh_ref_request(repository, ref_name, method):
 
 
 def _is_http_status(stderr, status):
-    if not isinstance(stderr, str):
+    if not isinstance(stderr, str) or status != 404:
         return False
-    first_line = stderr.split("\n", 1)[0]
-    return re.fullmatch(
-        rf"gh: [^\r\n]{{1,4096}} \(HTTP {status}\)", first_line
-    ) is not None
+    first_line, separator, _rest = stderr.partition("\n")
+    if not separator:
+        return False
+    return first_line == "gh: Not Found (HTTP 404)"
 
 
 def live_ref_sha(repository, ref_name, expected_repository_id):
@@ -901,10 +1036,9 @@ def live_ref_sha(repository, ref_name, expected_repository_id):
             # repository identity/privacy was revalidated above.
             return None
         raise Denied("carrier ref lookup failed")
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise Denied("carrier ref lookup returned invalid JSON") from exc
+    payload = strict_json_loads(
+        result.stdout, "carrier ref lookup returned invalid JSON"
+    )
     if (not isinstance(payload, dict)
             or payload.get("ref") != "refs/heads/" + ref_name
             or payload.get("object", {}).get("type") != "commit"):
@@ -960,7 +1094,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied(
             "carrier contract repository ID differs from independently reviewed approval"
         )
-    source_repo_id = verify_source_pr(source_pr, source_commit)
+    source_repo_id = verify_source_pr(source_pr, source_commit, authority_sha)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
     plan_meta = validate_test_plan(plan_bytes, source_pr)
 
@@ -977,7 +1111,10 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     branch = "ci/oreslang-" + source_tree
 
     def auth():
-        authorize_write(trusted_root, repository, approved_policy, contract)
+        authorize_write(
+            trusted_root, repository, approved_policy, contract,
+            source_pr, source_commit, source_repo_id, authority_sha
+        )
 
     elements = []
     for rel, data, mode in files:
@@ -1109,7 +1246,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         contract["test_plan_path"], authority_sha
     )
     checked_destination(repository, contract)
-    if verify_source_pr(source_pr, source_commit) != source_repo_id:
+    if verify_source_pr(source_pr, source_commit, authority_sha) != source_repo_id:
         raise Denied("source repository identity changed before publication")
 
     # Create the source-bearing branch first. The carrier workflow fails closed
@@ -1148,7 +1285,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
         # Revalidate the exact open PR head last, immediately before making the
         # carrier executable.
-        if verify_source_pr(source_pr, source_commit) != source_repo_id:
+        if verify_source_pr(source_pr, source_commit, authority_sha) != source_repo_id:
             raise Denied("source repository identity changed before authorization")
 
         auth()
@@ -1169,7 +1306,12 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         require_exact_ref(
             repository, authorization, commit_sha, contract["repository_id"]
         )
-    except Denied as exc:
+    except BaseException as exc:
+        # Ref POSTs can succeed server-side before the client observes a
+        # response. Cleanup therefore applies to interrupts and unexpected
+        # exceptions as well as ordinary Denied failures; otherwise a
+        # KeyboardInterrupt/SystemExit or programming error could strand an
+        # executable authorization ref.
         rollback_error = None
         if authorization_attempted:
             try:
@@ -1177,7 +1319,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                     repository, authorization, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_exc
         if payload_attempted:
             try:
@@ -1185,13 +1327,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                     repository, branch, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_error or rollback_exc
         if rollback_error is not None:
             raise Denied(
                 "private CI handoff failed and carrier ref rollback was incomplete"
             ) from rollback_error
-        raise exc
+        raise
 
     return {
         "commit": commit_sha,
