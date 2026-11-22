@@ -519,16 +519,14 @@ public final class TreeShaker {
         }
 
         private boolean constantEquals(Object left, Object right) {
+            // Numeric identity is never a shortcut: NaN != itself, and
+            // conversion through binary64 can collapse different i64 values.
+            // Fold only with the exact same relation used by the guest.
+            if (left instanceof Number a && right instanceof Number b) {
+                return dev.oreslang.types.NumericValueEquality.equals(a, b);
+            }
             if (left == right) return true;
             if (left == null || right == null) return false;
-            if (left instanceof Number a && right instanceof Number b) {
-                boolean aIntegral = a instanceof Byte || a instanceof Short
-                        || a instanceof Integer || a instanceof Long;
-                boolean bIntegral = b instanceof Byte || b instanceof Short
-                        || b instanceof Integer || b instanceof Long;
-                if (aIntegral && bIntegral) return a.longValue() == b.longValue();
-                return a.doubleValue() == b.doubleValue();
-            }
             return Objects.equals(left, right);
         }
 
@@ -551,7 +549,15 @@ public final class TreeShaker {
                 if (operand == UNKNOWN) return UNKNOWN;
                 if (unary.operator().equals("!") && operand instanceof Boolean value) return !value;
                 if (unary.operator().equals("+") && operand instanceof Number) return operand;
-                if (unary.operator().equals("-") && operand instanceof Long value) return -value;
+                if (unary.operator().equals("-") && operand instanceof Long value) {
+                    try {
+                        return Math.negateExact(value);
+                    } catch (ArithmeticException overflow) {
+                        // Preserve runtime guest ArithmeticOverflowError. Never
+                        // fold MIN negation into the wrapped machine value.
+                        return UNKNOWN;
+                    }
+                }
                 if (unary.operator().equals("-") && operand instanceof Double value) return -value;
                 return UNKNOWN;
             }
@@ -584,7 +590,13 @@ public final class TreeShaker {
 
         private Object compare(Object left, Object right, java.util.function.IntPredicate predicate) {
             if (left instanceof Number l && right instanceof Number r) {
-                return predicate.test(Double.compare(l.doubleValue(), r.doubleValue()));
+                // Never turn exact i64 ordering above 2^53 into double
+                // ordering. Mixed/binary64 comparisons are not folded here:
+                // runtime semantics must be preserved until proven equivalent.
+                if (l instanceof Long a && r instanceof Long b) {
+                    return predicate.test(Long.compare(a, b));
+                }
+                return UNKNOWN;
             }
             if (left instanceof String l && right instanceof String r) {
                 return predicate.test(l.compareTo(r));

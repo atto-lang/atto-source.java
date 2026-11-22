@@ -1,0 +1,48 @@
+name: Numerical v1 exact-head JVM guest regression (NOT full guest AOT)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/NumericValueOrdering.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/runtime/NumericErrorAbi.java'
+      - 'src/test/java/dev/oreslang/Numeric*Test.java'
+      - 'src/test/java/dev/oreslang/TreeShakerNumericEqualityTest.java'
+      - 'src/main/java/dev/oreslang/compiler/TreeShaker.java'
+      - 'src/main/java/dev/oreslang/types/NumericValueEquality.java'
+      - 'contracts/v1/numeric-error-abi.json'
+      - '.github/workflows/numeric-current-main-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  numeric-guest-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision and clean checkout
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute checked scalar and IEEE ordering unit + real guest JUnit
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=NumericValueOrderingTest,NumericValueEqualityExactTest,NumericGuestOrderingV1Test,TreeShakerNumericEqualityTest,NumericCheckedI64CurrentMainTest,NumericIntegerDivisionV1Test,NumericTrapResultV1Test,NumericErrorAbiTest \
+            test
