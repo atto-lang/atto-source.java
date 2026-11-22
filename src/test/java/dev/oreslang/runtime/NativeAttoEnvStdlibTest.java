@@ -125,6 +125,32 @@ final class NativeAttoEnvStdlibTest {
     }
 
     @Test
+    void scopedGrantCannotPromoteMissingIsolateEnvCapability() throws Exception {
+        Path entry = temp.resolve("coarse-deny.atto");
+        Files.writeString(entry, """
+                import module std_env from "std/env";
+                pub routine main(): void {
+                  std_env.get("ATTO_COARSE_DENY_KEY");
+                  return;
+                }
+                """);
+        RuntimePermissions explicit = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.ENV);
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.run(entry,
+                        IsolatePolicy.developer(),
+                        explicit, PermissionCheckMode.RUNTIME,
+                        ExecutionProfile.serverJit(),
+                        Set.of(), System.getenv(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        String detail = deepMessage(failure);
+        assertTrue(detail.contains("exceeds isolate capability")
+                        || detail.contains("permission denied")
+                        || detail.contains("environment"),
+                detail);
+    }
+
+    @Test
     void invalidKeyIsNotRecastAsAbsence() throws Exception {
         Path entry = temp.resolve("bad-name.atto");
         Files.writeString(entry, """
