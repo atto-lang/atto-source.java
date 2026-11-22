@@ -85,6 +85,8 @@ public final class NativeChildProcesses implements AutoCloseable {
         private final CompletableFuture<ExitStatus> exit;
         private final AtomicBoolean outputExceeded = new AtomicBoolean();
         private final AtomicBoolean deadlineExceeded = new AtomicBoolean();
+        // Scope/owner closure is cancellation, not a successful OS exit.
+        private final AtomicBoolean closeCancelled = new AtomicBoolean();
         // A guest may call terminate() repeatedly. Escalation is a single
         // per-child state transition, never a new virtual thread per call.
         private final AtomicBoolean terminationRequested = new AtomicBoolean();
@@ -126,6 +128,11 @@ public final class NativeChildProcesses implements AutoCloseable {
                     throw new CompletionException(new TimeoutException(
                             "child process lifetime exceeded"));
                 }
+                if (closeCancelled.get()) {
+                    throw new CompletionException(
+                            new java.util.concurrent.CancellationException(
+                                    "child process owner closed"));
+                }
                 return status;
             });
         }
@@ -138,6 +145,9 @@ public final class NativeChildProcesses implements AutoCloseable {
                 if (outputExceeded.get()) throw new OutputLimitException();
                 if (deadlineExceeded.get()) throw new CompletionException(
                         new TimeoutException("child process lifetime exceeded"));
+                if (closeCancelled.get()) throw new CompletionException(
+                        new java.util.concurrent.CancellationException(
+                                "child process owner closed"));
                 if (failure != null) throw new CompletionException(failure);
                 Capture out = stdout.join();
                 Capture err = stderr.join();
@@ -149,7 +159,7 @@ public final class NativeChildProcesses implements AutoCloseable {
 
         public ExitStatus tryWait() {
             // Poll cannot encode a ProcessError; wait() reports timeout.
-            if (deadlineExceeded.get()) return null;
+            if (deadlineExceeded.get() || closeCancelled.get()) return null;
             return exit.isDone() && !exit.isCompletedExceptionally()
                     ? exit.getNow(null) : null;
         }
@@ -187,7 +197,10 @@ public final class NativeChildProcesses implements AutoCloseable {
 
         /** Nonblocking revocation of this owned OS process; no PID-based kill. */
         @Override public void close() {
-            if (process.isAlive()) process.destroyForcibly();
+            if (process.isAlive()) {
+                closeCancelled.set(true);
+                process.destroyForcibly();
+            }
         }
 
         private void drain(InputStream input, CompletableFuture<Capture> target) {
