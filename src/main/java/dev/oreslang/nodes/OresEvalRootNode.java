@@ -9088,6 +9088,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                // An explicitly linked lowercase module named 'process' must
+                // win over the pre-existing unqualified process intrinsic.
+                // Inside std/process.atto the intrinsic is reachable through
+                // std.process; do not recursively dispatch to this module.
+                if (name.name().equals("process") && modules.containsKey("process")) {
+                    requireLexicalNamespaceAccess(env, "process", "module");
+                    return new ModuleFacade(this, modules.get("process"));
+                }
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
