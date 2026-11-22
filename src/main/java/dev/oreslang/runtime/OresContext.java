@@ -56,6 +56,8 @@ public final class OresContext implements AutoCloseable {
                 ActorRuntime.currentActorGeneration().orElse(-1L));
     }
 
+    private static final int MAX_ACTIVE_CRYPTO_KEYS = 1024;
+    private static final int MAX_CRYPTO_KEYS_PER_OWNER = 32;
     private final java.util.Map<AeadPrimitives.Key, CryptoKeyOwner> cryptoKeys =
             new java.util.concurrent.ConcurrentHashMap<>();
     private boolean cryptoAdmissionSealed;
@@ -63,8 +65,19 @@ public final class OresContext implements AutoCloseable {
     public synchronized AeadPrimitives.Key newCryptoKey(int algorithm) {
         requireCapability(IsolatePolicy.Capability.CRYPTO, "crypto.aead_new_key");
         if (cryptoAdmissionSealed) throw new IllegalStateException("crypto context closed");
+        CryptoKeyOwner owner = currentCryptoOwner();
+        if (cryptoKeys.size() >= MAX_ACTIVE_CRYPTO_KEYS) {
+            throw new IllegalStateException("AEAD context key quota exceeded");
+        }
+        int actorKeys = 0;
+        for (CryptoKeyOwner candidate : cryptoKeys.values()) {
+            if (candidate.equals(owner)) actorKeys++;
+        }
+        if (actorKeys >= MAX_CRYPTO_KEYS_PER_OWNER) {
+            throw new IllegalStateException("AEAD actor key quota exceeded");
+        }
         AeadPrimitives.Key key = AeadPrimitives.generateKey(algorithm);
-        cryptoKeys.put(key, currentCryptoOwner());
+        cryptoKeys.put(key, owner);
         return key;
     }
 
