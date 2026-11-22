@@ -114,6 +114,8 @@ public final class ActorProtocolAffineCfgV1 {
         Owner previous = facts.owners.get(place);
         if (previous != null && (!previous.maybeAbsent() || !previous.states().isEmpty()))
             throw error("E_PROTOCOL_TARGET_LIVE", block, op);
+        if (previous == null && facts.owners.size() >= MAX_HANDLES)
+            throw error("E_PROTOCOL_HANDLE_BUDGET", block, op);
     }
     private static void requireNoLoans(Facts facts, int block, int op) {
         if (!facts.loans.isEmpty()) throw error("E_PROTOCOL_LOAN_ACROSS_AWAIT", block, op);
@@ -127,6 +129,8 @@ public final class ActorProtocolAffineCfgV1 {
         Facts result = left.copy();
         Set<Integer> ids = new LinkedHashSet<>(left.owners.keySet());
         ids.addAll(right.owners.keySet());
+        if (ids.size() > MAX_HANDLES)
+            throw error("E_PROTOCOL_HANDLE_BUDGET", block, 0);
         for (int id : ids) {
             Owner a = left.owners.get(id), b = right.owners.get(id);
             if (a == null && b == null) continue;
