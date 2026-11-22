@@ -138,6 +138,11 @@ public final class ActorProtocolAffineCfgV1Smoke {
                 b(1,List.of(new Take(1,2),new ReturnHandle(2)),3),
                 b(2,List.of(),3),
                 b(3,List.of(connect(1,10),new CancelLease(10),new Return()))));
+        fails("maybe-moved handle still live on alternate branch cannot be abandoned",
+                "E_PROTOCOL_HANDLE_ESCAPE",p(false,
+                b(0,List.of(init()),1,2),
+                b(1,List.of(new Take(1,2),new ReturnHandle(2)),3),
+                b(2,List.of(),3),ret(3)));
         fails("branch-unbalanced loan","E_PROTOCOL_LOAN_JOIN",p(false,
                 b(0,List.of(init()),1,2),
                 b(1,List.of(new Borrow(1,9,LoanKind.READ)),3),
