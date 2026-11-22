@@ -22,7 +22,8 @@ final class CryptoAeadGuestSourceTest {
     @Test
     void aesAndChaChaRoundTripAndTamperFails() {
         assertEquals("true|true|true|true", run("""
-                pub routine main(): void {
+                import * as crypto from "std.crypto";
+                        pub routine main(): void {
                   val List<int> aad = [1, 2, 3];
                   val List<int> message = [23, 42, 99];
                   val aes = crypto.aead_new_key(1);
@@ -53,6 +54,7 @@ final class CryptoAeadGuestSourceTest {
     void rejectsInvalidAlgorithmAndMalformedBytes() {
         PolyglotException algorithm = assertThrows(PolyglotException.class,
                 () -> run("""
+                        import * as crypto from "std.crypto";
                         pub routine main(): void {
                           val key = crypto.aead_new_key(0);
                           return;
@@ -61,6 +63,7 @@ final class CryptoAeadGuestSourceTest {
         assertTrue(algorithm.getMessage().contains("algorithm"));
         PolyglotException byteRange = assertThrows(PolyglotException.class,
                 () -> run("""
+                        import * as crypto from "std.crypto";
                         pub routine main(): void {
                           val key = crypto.aead_new_key(1);
                           val sealed = crypto.aead_seal(key, [], [256]);
@@ -74,6 +77,7 @@ final class CryptoAeadGuestSourceTest {
     void refusesUseAfterExplicitKeyRetirement() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""
+                        import * as crypto from "std.crypto";
                         pub routine main(): void {
                           val key = crypto.aead_new_key(1);
                           crypto.aead_close(key);
@@ -90,11 +94,12 @@ final class CryptoAeadGuestSourceTest {
     void deniesCryptoOperationsWithoutExplicitCryptoCapability() {
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
-                .arguments(OresLanguage.ID, "--ores-capabilities=STDOUT")
+                .arguments(OresLanguage.ID, new String[] {"--ores-capabilities=STDOUT"})
                 .build()) {
             PolyglotException failure = assertThrows(PolyglotException.class,
                     () -> context.eval(OresLanguage.ID, """
-                            pub routine main(): void {
+                            import * as crypto from "std.crypto";
+                        pub routine main(): void {
                               val key = crypto.aead_new_key(1);
                               return;
                             }
@@ -108,6 +113,7 @@ final class CryptoAeadGuestSourceTest {
     void preventsOwnershipCopyOfOpaqueKey() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""
+                        import * as crypto from "std.crypto";
                         pub routine main(): void {
                           val key = crypto.aead_new_key(1);
                           val stolen = rt copy key;
