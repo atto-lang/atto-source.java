@@ -1,0 +1,41 @@
+import class TestOutcome, IntConfig from '../../stdlib/testing';
+import fnc check_int from '../../stdlib/testing';
+
+// Predicates build TestOutcome directly. Returning an imported helper's
+// result (e.g. expect_true) from a callable currently surfaces an unjoined
+// Future on Java main; see NativeTestingFrameworkTest on 8249f34365.
+
+fnc square_non_negative(int value): TestOutcome {
+  return new TestOutcome(value * value >= 0, "square must be non-negative");
+}
+
+fnc below_one_hundred(int value): TestOutcome {
+  return new TestOutcome(value < 100, "value must stay below 100");
+}
+
+fnc above_minus_forty_two(int value): TestOutcome {
+  return new TestOutcome(value > -42, "value must exceed -42");
+}
+
+fnc report(String label, borrow TestOutcome outcome): void {
+  if outcome.passed; do
+    stdio.stdout.write("PROP|" + label + "|PASS\n");
+  else
+    stdio.stdout.write("PROP|" + label + "|FAIL|" + outcome.message + "\n");
+  fi
+  return;
+}
+
+pub routine main(): void {
+  val TestOutcome square = check_int("square", new IntConfig(7, 200, -1000000000, 1000000000, 256), square_non_negative);
+  report("square", rt borrow square);
+  val TestOutcome below = check_int("below100", new IntConfig(42, 200, 0, 1000000, 256), below_one_hundred);
+  report("below100", rt borrow below);
+  val TestOutcome replay = check_int("below100", new IntConfig(42, 200, 0, 1000000, 256), below_one_hundred);
+  report("below100-replay", rt borrow replay);
+  val TestOutcome negative = check_int("negative", new IntConfig(9, 200, -500000, -1, 256), above_minus_forty_two);
+  report("negative", rt borrow negative);
+  val TestOutcome invalid = check_int("invalid", new IntConfig(1, 10, 5, 4, 8), square_non_negative);
+  report("invalid", rt borrow invalid);
+  return;
+}

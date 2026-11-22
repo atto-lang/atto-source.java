@@ -269,4 +269,163 @@ pub fnc check_int_cases(
   return pass();
 }
 
+// ---------------------------------------------------------------------------
+// Seeded property-based testing with deterministic shrinking (prop v1).
+//
+// Pure AttoLang: no Java interop, no wall clock, no hidden global RNG.
+// A failure report always carries the seed and run index, so every
+// counterexample is replayable by construction. Generation is MINSTD
+// (Park-Miller) so every intermediate product fits in a signed i64 and
+// no checked-arithmetic trap can occur inside the generator itself.
+//
+// Shrinking is greedy and bounded: the failing value moves toward the
+// simplest in-range target (0 when admitted, otherwise the nearest bound)
+// by power-of-two steps, keeping a step only while the property still
+// fails. AttoLang int `/` yields float, so no division is used.
+// ---------------------------------------------------------------------------
+
+type IntPredicate = (int) => TestOutcome;
+
+pub define class IntConfig as
+  pub val int seed;
+  pub val int runs;
+  pub val int lo;
+  pub val int hi;
+  pub val int max_shrinks;
+end
+
+// Normalize any i64 seed into the MINSTD state space [1, 2^31 - 2].
+pub fnc seed_state(int seed): int {
+  return Integer.mod(seed, 2147483646) + 1;
+}
+
+pub fnc next_state(int state): int {
+  return Integer.mod(state * 48271, 2147483647);
+}
+
+// Uniform-ish draw in [lo, hi] from a MINSTD state. Span is bounded so
+// the draw never silently wraps; callers validate the config first.
+pub fnc draw_int(int state, int lo, int hi): int {
+  val int span = hi - lo + 1;
+  return lo + Integer.mod(state, span);
+}
+
+pub fnc shrink_target(int lo, int hi): int {
+  if lo <= 0 && hi >= 0; do
+    return 0;
+  fi
+  if lo > 0; do
+    return lo;
+  fi
+  return hi;
+}
+
+fnc distance(int a, int b): int {
+  if a >= b; do
+    return a - b;
+  fi
+  return b - a;
+}
+
+fnc largest_power_at_most(int limit): int {
+  if limit < 1; do
+    return 0;
+  fi
+  let mut int p = 1;
+  while p <= limit - p; do
+    p = p + p;
+  done
+  return p;
+}
+
+fnc toward(int value, int target, int step): int {
+  if value > target; do
+    return value - step;
+  fi
+  return value + step;
+}
+
+fnc config_error(borrow IntConfig config): String {
+  if config.lo > config.hi; do
+    return "prop: lo must be <= hi";
+  fi
+  if config.hi - config.lo >= 2147483646; do
+    return "prop: hi - lo must be < 2147483646";
+  fi
+  if config.runs < 1 || config.runs > 100000; do
+    return "prop: runs must be in [1, 100000]";
+  fi
+  if config.max_shrinks < 0 || config.max_shrinks > 4096; do
+    return "prop: max_shrinks must be in [0, 4096]";
+  fi
+  return "";
+}
+
+// Edge cases come first (lo, hi, shrink target), then seeded draws.
+fnc candidate_for_run(borrow IntConfig config, int run, int state): int {
+  if run == 0; do
+    return config.lo;
+  fi
+  if run == 1; do
+    return config.hi;
+  fi
+  if run == 2; do
+    return shrink_target(config.lo, config.hi);
+  fi
+  return draw_int(state, config.lo, config.hi);
+}
+
+// Runs edge cases then seeded draws; on the first failure, greedily shrinks
+// toward shrink_target by power-of-two steps. The property is invoked only
+// from this function body (never forwarded), matching check_int_cases.
+pub fnc check_int(String property_name, IntConfig config, IntPredicate property): TestOutcome {
+  val String invalid = config_error(rt borrow config);
+  if invalid != ""; do
+    return fail(invalid);
+  fi
+  let mut int state = seed_state(config.seed);
+  let mut bool found = false;
+  let mut int failing_run = 0;
+  let mut int original = 0;
+  for let mut int run = 0; run < config.runs && !found; run = run + 1 do
+    state = next_state(state);
+    val int value = candidate_for_run(rt borrow config, run, state);
+    let TestOutcome outcome = property(value);
+    if !outcome.passed; do
+      found = true;
+      failing_run = run;
+      original = value;
+    fi
+  done
+  if !found; do
+    return pass();
+  fi
+
+  val int target = shrink_target(config.lo, config.hi);
+  let mut int best = original;
+  let mut int accepted = 0;
+  let mut int step = largest_power_at_most(distance(best, target));
+  for let mut int probes = 0; step >= 1 && accepted < config.max_shrinks && probes < 65536; probes = probes + 1 do
+    val int candidate = toward(best, target, step);
+    let TestOutcome shrunk_outcome = property(candidate);
+    if !shrunk_outcome.passed; do
+      best = candidate;
+      accepted = accepted + 1;
+      val int remaining = distance(best, target);
+      if step > remaining; do
+        step = largest_power_at_most(remaining);
+      fi
+    else
+      step = largest_power_at_most(step - 1);
+    fi
+  done
+
+  return fail("property " + property_name
+    + " falsified: seed=" + to_string(config.seed)
+    + " run=" + to_string(failing_run)
+    + " original=" + to_string(original)
+    + " shrunk=" + to_string(best)
+    + " shrink_steps=" + to_string(accepted));
+}
+
 end
