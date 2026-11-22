@@ -199,3 +199,32 @@ before classifying these guest tests as PASS. This change is Java compiler-local
 and does not assert LLVM, Rust/Wasm, JavaScript, Forge, or .NET parity.
 Seeded property generation/shrinking remains a distinct overlapping Java
 proposal in atto-source.java PR #1747; this patch does not duplicate it.
+
+## Cross-repository `atto test` integration (candidate, not yet executed)
+
+The Java/GraalVM compiler branch contains a source-owned `atto-test.toml`
+for the Rust `atto-test.cli` candidate PR #11. It selects exactly the
+canonical `examples/native-testing-regressions-40.atto` guest and launches
+the existing `dev.oreslang.launcher.OresMain` Maven entry point using an
+argv template, without shell interpolation:
+
+```sh
+# Requires JDK 25, Maven, and the independently built atto-test.cli binary.
+# Put atto-test.cli/bin on PATH, then from this Java compiler checkout:
+atto test --root . --allow-project-command
+```
+
+The `--allow-project-command` opt-in is required because a project
+manifest can otherwise select arbitrary host commands. Use only on a
+reviewed, trusted checkout without ambient secrets; the CLI is not a
+sandbox. `ATTO_BIN` remains available for compiler backends that take a
+single source path directly. This Java integration instead selects Maven
+through the explicit `[native].command`.
+
+A successful local CLI output is **not by itself** independently
+authenticated guest test evidence. CI must bind the exact Java source tree,
+CLI version, compiler/runtime, trusted runner, the 40 expected test IDs,
+nonzero executed steps, process exit, and guest-generated output.
+The existing Java source-owned harness remains the independent receipt
+gate. Backend parity, AOT/hybrid status, and Rust CLI source-head execution
+are not verified by adding this manifest.
