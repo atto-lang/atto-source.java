@@ -34,6 +34,12 @@ top_level_item  = annotated_module_decl
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
                         [ "as" ] { module_member } "end" ;
 
+(* Module declarations are file-level only: exactly one named module-container
+   layer is permitted. Classes, traits, interfaces and named types may occur as
+   direct module_member declarations, but module_member cannot contain another
+   annotated_module_decl. Class/trait/interface bodies cannot contain named
+   class, trait, interface, type, or module declarations. Lexical block-local
+   aggregate/type aliases are distinct from named module members. *)
 module_member   = contract_decl
                 | actor_decl
                 | actor_callable_decl
