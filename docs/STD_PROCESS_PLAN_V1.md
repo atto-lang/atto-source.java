@@ -32,9 +32,10 @@ retirement and supervision are implemented. It does not grant a shell, raw PID,
 process-tree kill, arbitrary env, stdin streaming, detach, or root-free access.
 A nonzero exit status is `Ok(ExitStatus)` rather than `Err`.
 
-This is **not yet the public `.atto` `Process.spawn(Command)` API**. The
-`std/process` `.atto` module currently owns a source-level Command/ExitStatus
-model; connecting it to this guest builtin and enforcing all stdio-mode
+This is **not yet the public `.atto` `process.spawn(Command)` API**. The
+lowercase `std/process` `.atto` module currently owns a source-level Command/ExitStatus
+model; the wrapper now delegates through `std.process.spawn` to avoid
+recursion or global-name shadowing; completing the remaining contract and enforcing all stdio-mode
 options remains required. The `NativeChildProcessesTest` and
 `AttoChildProcessGuestTest` suites and
 `tests/fixtures/std-process-runtime-v1/guest.atto` are checked in but
@@ -45,10 +46,20 @@ graceful escalation, cancellation after abandoned await, and Native Image
 remain unproven. Keep PR in draft until compiler, guest and security gates pass.
 
 
+## Lowercase namespace and intrinsic precedence
+
+The source declares `define module process as`, not `define module Process as`.
+When imported, the linked module takes precedence over the ambient
+unqualified `process` intrinsic in name lookup; it explicitly delegates to
+`std.process.spawn` for the restricted host operation. Type-checking and
+runtime evaluation must resolve this consistently. Programs that need the
+ambient intrinsic without the module import may still use `process`, and
+`std.process` remains an unshadowed intrinsic path.
+
 ## Public import naming
 
-The normal import is `import module Process from "std/process";`.
-The explicit disambiguating import is `import module Process from
+The normal import is `import module process from "std/process";`.
+The explicit disambiguating import is `import module process from
 "atto.std/process";`. The two forms share one compiler-owned source and
 one linked code-unit identity. `atto.std/*` is reserved before project-file
 resolution, so a local package cannot impersonate it. The unqualified
@@ -61,7 +72,7 @@ compatibility aliases. Do not expand the old namespace for new modules.
 ## Implemented in this draft
 
 - `stdlib/process_policy.atto` (`std/process_policy` or `atto.std/process_policy`): pure admission and size-policy helpers.
-- `stdlib/process.atto` (`std/process` or `atto.std/process`): `Process.Command`, `Process.ExitStatus`, explicit stdio modes, `command`, `command_with_args`, `with_stdio`, `valid_stdio`, and `succeeded`. These are guest-side **value contracts, not a launcher**. The host must snapshot and revalidate any mutable arrays.
+- `stdlib/process.atto` (`std/process` or `atto.std/process`): `process.Command`, `process.ExitStatus`, explicit stdio modes, `command`, `command_with_args`, `with_stdio`, `valid_stdio`, and `succeeded`. These are guest-side **value contracts, not a launcher**. The host must snapshot and revalidate any mutable arrays.
 - `src/main/java/dev/oreslang/runtime/TrustedChildProcessRunner.java`: **host-only**, package-private, direct-argv `ProcessBuilder` execution; bounded 1..32 child permits, bounded reader/wait executors, concurrent stdout/stderr capture (4 MiB maximum per stream), timeout/force-kill/reap, closed stdin, explicitly supplied environment, and a mandatory host admission callback.
 - `tests/host/run-std-process-smoke.sh`: independent JDK executable smoke for real child launch/capture, host gate denial, bad argv, byte capture limit, and timeout termination; invokes `javac` and `java` without Maven. Run with `bash tests/host/run-std-process-smoke.sh`.
 - `tests/fixtures/std-process-policy-v1/main.atto` and `tests/fixtures/std-process-v1/main.atto`: **source-only** guest fixtures with expected exit 42 (NOT EXECUTED on compiler).
@@ -74,10 +85,10 @@ current exact PR head.
 ## Future public guest API — NOT IMPLEMENTED
 
 ```atto
-import module Process from "std/process";
+import module process from "std/process";
 // Planned API; the following call does NOT compile or execute yet:
-let Result<Process.ChildProcess, Process.ProcessError> started =
-    await Process.spawn(Process.command("/usr/bin/tool"));
+let Result<process.ChildProcess, process.ProcessError> started =
+    await process.spawn(process.command("/usr/bin/tool"));
 ```
 
 Required surface: `spawn(Command) -> Future<Result<ChildProcess, ProcessError>>`,
