@@ -12,15 +12,15 @@ function pureFunction(name, dependencies = {}) {
     '\\(([^)]*)\\) -> (?:bool|String) \\{([\\s\\S]*?)\\n  \\}');
   const found = source.match(pattern);
   assert.ok(found, 'missing native Atto function ' + name);
-  const parameters = found[1].split(',').map((p) => p.trim().split(/\\s+/).at(-1));
+  const parameters = found[1].split(',').map((p) => p.trim().split(/\s+/).at(-1));
   const body = found[2]
-    .replace(/\\bif\\s+([^;]+);\\s*do/g, (_, condition) => 'if (' + condition + ') {')
-    .replace(/\\bfi\\b/g, '}');
+    .replace(/\bif\s+([^;]+);\s*do/g, (_, condition) => 'if (' + condition + ') {')
+    .replace(/\bfi\b/g, '}');
   // Fail on unsupported Atto constructs rather than executing a JS rewrite
   // whose semantics might silently diverge from the .atto source.
-  assert.doesNotMatch(body, /\\b(?:await|spawn|rt|new|self|for|while|match)\\b/);
+  assert.doesNotMatch(body, /\b(?:await|spawn|rt|new|self|for|while|match)\b/);
   const dependenciesNames = Object.keys(dependencies);
-  const js = new Function(...dependenciesNames, ...parameters, '"use strict";\\n' + body);
+  const js = new Function(...dependenciesNames, ...parameters, '"use strict";\n' + body);
   return (...args) => js(...dependenciesNames.map((key) => dependencies[key]), ...args);
 }
 
@@ -61,8 +61,8 @@ test('native module exposes typed immutable logging records and factories', () =
   assert.match(source, /define module Log as/);
   assert.match(source, /pub define class LogEntry as/);
   assert.equal((source.match(/pub val /g) || []).length,11);
-  assert.match(source, /pub fnc entry_with_fields\\(/);
-  assert.match(source, /pub fnc valid_entry\\(LogEntry record\\)/);
+  assert.match(source, /pub fnc entry_with_fields\(/);
+  assert.match(source, /pub fnc valid_entry\(LogEntry record\)/);
   for (const attr of ['timestamp_ns','actor_id','trace_id','span_id']) {
     assert.match(source, new RegExp('record\\.' + attr + ' < 0'));
   }
@@ -82,7 +82,7 @@ test('bounded queue rejects before mutation and counts only FULL', () => {
   assert.ok(offer.indexOf('self.items.size >= self.capacity') < offer.indexOf('self.items.add'));
   assert.ok(offer.indexOf('self.dropped = self.dropped + 1') <
     offer.indexOf('self.items.add'));
-  assert.match(source,/capacity < 1 \\|\\| capacity > 4096/);
+  assert.match(source,/capacity < 1 \|\| capacity > 4096/);
   assert.match(source,/self.dropped < 2147483647/);
 });
 
@@ -95,20 +95,20 @@ test('one-consumer peek/ack retains entries until acknowledged and then resets',
     ack.indexOf('self.head = self.head + 1'));
   assert.ok(ack.indexOf('self.head = self.head + 1') <
     ack.indexOf('if self.head == self.items.size'));
-  assert.match(ack,/self.items = new Array<LogEntry>\\(\\)/);
-  assert.match(source,/return self.items.get\\(self.head\\)/);
+  assert.match(ack,/self.items = new Array<LogEntry>\(\)/);
+  assert.match(source,/return self.items.get\(self.head\)/);
   assert.match(source,/return self.items.size - self.head/);
 });
 
 test('close rejects production but does not prohibit draining', () => {
-  assert.match(source,/pub close\\(mut self\\) -> void/);
+  assert.match(source,/pub close\(mut self\) -> void/);
   assert.match(source,/self.closed = true/);
-  assert.match(source,/pub is_drained\\(\\) -> bool/);
+  assert.match(source,/pub is_drained\(\) -> bool/);
   const after = source.slice(source.indexOf('pub peek()'));
   assert.doesNotMatch(after.split('pub is_drained')[0], /if self.closed/);
 });
 
 test('no host implementation, incidental I/O, async blocking, dynamic runtime, or reflection', () => {
-  assert.doesNotMatch(source, /java\\.|System\\.|interop\\.|\\bstdio\\.|\\bprintln\\s*\\(|writech|\\bspawn\\b|\\bawait\\b|\\bffi\\b|\\breflect\\b/);
-  assert.doesNotMatch(source,/\\b(?:log_async|flush_async_logs)\\s*\\(/);
+  assert.doesNotMatch(source, /java\.|System\.|interop\.|\bstdio\.|\bprintln\s*\(|writech|\bspawn\b|\bawait\b|\bffi\b|\breflect\b/);
+  assert.doesNotMatch(source,/\b(?:log_async|flush_async_logs)\s*\(/);
 });
