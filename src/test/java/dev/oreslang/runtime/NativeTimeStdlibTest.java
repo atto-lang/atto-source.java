@@ -191,6 +191,46 @@ final class NativeTimeStdlibTest {
     }
 
     @Test
+    void coreOwnershipRejectsWritesToFixedDurationAndInstantFields() throws Exception {
+        // Mutating public fixed-value slots would bypass nonnegative and
+        // monotonic clock invariants. Enforce this through the real compiler,
+        // not just a runtime object wrapper or source-text regex.
+        String[] negativeBodies = {
+                """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val duration = time.nanoseconds(1).expect("one");
+                  duration.nanos = -1;
+                  return;
+                }
+                """,
+                """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val now = time.instant(9, 1);
+                  now.ticks_ns = -1;
+                  return;
+                }
+                """
+        };
+        String[] names = { "duration_nanos", "instant_ticks" };
+        for (int i = 0; i < negativeBodies.length; i++) {
+            Path source = temp.resolve("core_time_fixed_" + names[i] + ".atto");
+            Files.writeString(source, negativeBodies[i]);
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(source),
+                    "accepted forbidden write to fixed time field: " + names[i]);
+            String diagnostic = rejected.toString().toLowerCase(java.util.Locale.ROOT);
+            assertTrue(diagnostic.contains("immutable")
+                            || diagnostic.contains("fixed")
+                            || diagnostic.contains("final")
+                            || diagnostic.contains("ownership"),
+                    () -> "expected core fixed-field ownership rejection, got: " + diagnostic);
+        }
+    }
+
+    @Test
     void compilerRejectsConstReceiversForMutatingTimeMethods() throws Exception {
         // These must be rejected by the real compiler/ownership checker, not
         // merely by a source-text linter. Compilation of a positive mutable
