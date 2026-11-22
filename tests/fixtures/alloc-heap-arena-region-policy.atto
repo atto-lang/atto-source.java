@@ -22,7 +22,10 @@ pub fnc main(): int {
   if !heap.can_release(10, 10) then return 15; fi
   if heap.can_release(10, 11) then return 16; fi
   if heap.next_generation(2147483647, 2147483647) != -1 then return 17; fi
-  if heap.can_reclaim(false, true, 0, 0, 0, 0, 0) then return 18; fi
+  if heap.can_reclaim(false, true, 0, 0, 0, 0, 0, 0, 0) then return 18; fi
+  if heap.can_reclaim(true, true, 0, 0, 1, 0, 0, 0, 0) then return 25; fi
+  if heap.can_reclaim(true, true, 0, 0, 0, 0, 0, 0, 1) then return 26; fi
+  if !heap.can_reclaim(true, true, 0, 0, 0, 0, 0, 0, 0) then return 27; fi
   if arena.alignment_valid(3) then return 19; fi
   if arena.aligned_start(9223372036854775806, 2, 8, 9223372036854775807) != -1 then return 20; fi
   if arena.can_rewind(8, 0, 1, 2, 0, 0) then return 21; fi
