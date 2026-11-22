@@ -3,6 +3,8 @@ package dev.oreslang.imports;
 import dev.oreslang.ast.Ast;
 
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /** Shared invariants for source imports and capability-gated Java host imports. */
@@ -35,6 +37,9 @@ public final class ImportRules {
     }
 
     public static String localName(Ast.ImportDecl imported, String sourceName) {
+        if (imported.kind() == Ast.ImportKind.CONST) {
+            return imported.constAliases().getOrDefault(sourceName, sourceName);
+        }
         if (!imported.wildcard() && imported.namespace() != null) {
             if (imported.names().size() != 1 || !imported.names().getFirst().equals(sourceName)) {
                 throw new IllegalArgumentException("named import alias does not match its selected source name");
@@ -64,7 +69,7 @@ public final class ImportRules {
     public static boolean isTypeOnlyKind(Ast.ImportKind kind) {
         return switch (kind) {
             case ACTOR, CLASS, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES -> true;
-            case MODULE, FUNCTION, ALL -> false;
+            case MODULE, FUNCTION, CONST, ALL -> false;
         };
     }
 
@@ -101,6 +106,27 @@ public final class ImportRules {
                     throw new IllegalArgumentException("named import aliases require exactly one selected name");
                 }
             }
+        }
+
+        // Every typed constant binding has exactly one source name and one
+        // local identity. No wildcard, unlisted alias, duplicated selector or
+        // different source exports colliding onto one local alias.
+        if (imported.kind() == Ast.ImportKind.CONST) {
+            if (imported.wildcard() || imported.namespace() != null) {
+                throw new IllegalArgumentException("import const must select named immutable declarations");
+            }
+            if (!imported.names().containsAll(imported.constAliases().keySet())) {
+                throw new IllegalArgumentException("const aliases must target selected exports");
+            }
+            if (new HashSet<>(imported.names()).size() != imported.names().size()) {
+                throw new IllegalArgumentException("duplicate import const source name");
+            }
+            Set<String> locals = new HashSet<>(exposedBindings(imported));
+            if (locals.size() != imported.names().size()) {
+                throw new IllegalArgumentException("duplicate local import const alias");
+            }
+        } else if (!imported.constAliases().isEmpty()) {
+            throw new IllegalArgumentException("const alias map is only valid for import const");
         }
 
         if (!isJavaPath(imported.path())) return;
