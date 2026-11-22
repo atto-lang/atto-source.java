@@ -45,7 +45,9 @@ final class CoreTypesGuestTest {
                 "void-value-negative.atto",
                 "void-return-negative.atto",
                 "bool-truthiness-negative.atto",
-                "i64-literal-overflow-negative.atto"
+                "i64-literal-overflow-negative.atto",
+                "wrong-arg-negative.atto",
+                "u64-outside-int-negative.atto"
         }) {
             Path input = FIXTURES.resolve(fixture);
             assertTrue(Files.isRegularFile(input), fixture);
