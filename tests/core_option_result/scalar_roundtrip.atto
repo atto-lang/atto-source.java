@@ -3,7 +3,7 @@
 import module option from "../../core/option.atto";
 import module result from "../../core/result.atto";
 
-pub fnc main(): int {
+pub fnc main(): void {
   val Option<Option<int>> nested_some = Some(Some(40));
   val Option<int> flattened = option.flatten<int>(nested_some);
   val Result<int, int> converted = option.to_result<int, int>(flattened, 99);
@@ -16,7 +16,7 @@ pub fnc main(): int {
   val Result<Option<int>, int> round_trip =
     option.transpose<int, int>(transposed);
 
-  return match outer over
+  val int answer = match outer over
     on Err(_) -> 1,
     on Ok(left) -> match round_trip over
       on Err(_) -> 2,
@@ -24,4 +24,6 @@ pub fnc main(): int {
       on Ok(Some(right)) -> left + right,
     end,
   end;
+  stdio.println(answer);
+  return;
 }
