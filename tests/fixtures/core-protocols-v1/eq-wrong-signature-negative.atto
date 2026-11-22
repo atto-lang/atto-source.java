@@ -1,0 +1,7 @@
+import trait Eq from "ores.core/protocols";
+
+define pub class Counter implements Eq<int> as
+  pub equals(String other): bool { return true; }
+end
+
+pub fnc main(): void { return; }

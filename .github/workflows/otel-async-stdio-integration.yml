@@ -1,0 +1,50 @@
+name: OTel async stdio exact-head admission and focused tests
+
+on:
+  push:
+    branches: ["integration/otel-async-stdio-main-20261031"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  admission:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Runner accepted at least one step
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          printf 'ADMISSION_ONLY head=%s run=%s attempt=%s job=%s\n' "$EXPECTED_HEAD" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB"
+  focused-java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify immutable test tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          echo "EXACT_HEAD=$EXPECTED_HEAD"
+          echo "EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile current-main integration and run focused JUnit
+        run: mvn -B -ntp '-Dtest=AsyncStdioLogsTest,StdioLogAndSpreadTest,ActorEndCleanupTest,FormalContextShutdownOrderModelCheckTest' test

@@ -14,7 +14,7 @@ final class ActorTransportConcurrencyContractTest {
         return (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
     }
 
-    @Test void serialAliasAndExplicitOneOneHaveIdenticalImmutablePolicy() {
+    @Test void serialQualifierIsNotEquivalentToExplicitOneOneCapacity() {
         Ast.ClassDecl alias = actor("""
                 define serial http actor CriticalSectionActor as
                 end
@@ -29,8 +29,11 @@ final class ActorTransportConcurrencyContractTest {
         assertEquals(Ast.ActorTransport.HTTP, alias.actorConcurrency().transport());
         assertEquals(new Ast.ActorConcurrency(Ast.ActorTransport.HTTP, 1, 1),
                 explicit.actorConcurrency());
-        assertEquals(alias.actorConcurrency(), explicit.actorConcurrency());
-        assertEquals(alias, explicit, "serial is a canonical AST alias for explicit 1/1");
+        assertTrue(alias.actorConcurrency().serialReceive());
+        assertFalse(explicit.actorConcurrency().serialReceive());
+        assertNotEquals(alias.actorConcurrency(), explicit.actorConcurrency(),
+                "serial is a receive-admission policy, not an alias for 1/1 capacity");
+        assertNotEquals(alias, explicit);
         // Configuration is not actor-owned mutable state.
         assertTrue(alias.fields().isEmpty());
         assertTrue(explicit.fields().isEmpty());
@@ -46,6 +49,28 @@ final class ActorTransportConcurrencyContractTest {
                   receive(ActorMail<int> mail): void { return; }
                 end
                 """)));
+    }
+
+    @Test void serialMarkerSurvivesAnnotationExpansionAndIsDistinctInSameFile() {
+        Ast.Program parsed = Parser.parse("""
+                define actor Concurrent as
+                  receive(ActorMail<int> mail): void { return; }
+                  status(): int { return 7; }
+                end
+                define serial actor Serial as
+                  receive(ActorMail<int> mail): void { return; }
+                  status(): int { return 9; }
+                end
+                """);
+        Ast.Program expanded = AnnotationExpander.expand(parsed);
+        Ast.ClassDecl concurrent = (Ast.ClassDecl) expanded.modules().getFirst().declarations().get(0);
+        Ast.ClassDecl serial = (Ast.ClassDecl) expanded.modules().getFirst().declarations().get(1);
+        assertFalse(concurrent.actorConcurrency().serialReceive());
+        assertTrue(serial.actorConcurrency().serialReceive());
+        assertEquals(concurrent.actorConcurrency().requestConcurrency(), 1);
+        assertEquals(serial.actorConcurrency().requestConcurrency(), 1);
+        assertEquals(concurrent.actorConcurrency().messageConcurrency(), 1);
+        assertEquals(serial.actorConcurrency().messageConcurrency(), 1);
     }
 
     @Test void annotationExpansionPreservesTransportPolicyBeforeSafetyChecking() {

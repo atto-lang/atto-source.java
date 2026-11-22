@@ -1,0 +1,7 @@
+define class Ordinary as
+  receive(int n): int { return n; }
+
+  pub invoke(): int {
+    return self.receive(1);
+  }
+end

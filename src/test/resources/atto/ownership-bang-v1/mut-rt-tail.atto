@@ -1,0 +1,9 @@
+define class Item as
+  pub let int value = 42;
+end
+pub fnc main(): void {
+  let Item item = new Item();
+  val borrow mut Item writer = rt borrow mut item;
+  stdio.stdout.write(writer.value);
+  return;
+}
