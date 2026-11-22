@@ -8258,7 +8258,10 @@ public final class TypeChecker {
         if (named.name().equals("crypto")) {
             Type key = new Named("AeadKey", List.of());
             Type bytes = new ListType(Primitive.INT);
-            Type result = new Named("Result", List.of(bytes, Primitive.STRING));
+            // CryptoError is an opaque, compiler-owned immutable error code,
+            // not an arbitrary String or a guest-constructible host exception.
+            Type error = new Named("CryptoError", List.of());
+            Type result = new Named("Result", List.of(bytes, error));
             return switch (name) {
                 case "sha256" -> new Function(List.of(bytes), bytes);
                 case "hmac_sha256" -> new Function(List.of(bytes, bytes), bytes);
@@ -8273,6 +8276,8 @@ public final class TypeChecker {
                 case "aead_seal", "aead_open" ->
                         new Function(List.of(key, bytes, bytes), result);
                 case "aead_close" -> new Function(List.of(key), Primitive.VOID);
+                case "authentication_failed", "invalid_input",
+                        "resource_exhausted" -> error;
                 default -> {
                     StandardCryptoNamespace.Signature policy =
                             StandardCryptoNamespace.signature(name);
