@@ -293,7 +293,7 @@ pub fnc run_suite(borrow TestSuite suite, borrow TestOptions options): RunSummar
   return summary;
 }
 
-// A forged or corrupted summary must not certify passing test execution.
+// Detect inconsistent counters; this cannot authenticate their source.
 // Validate nonnegativity before subtracting; never add untrusted counters
 // (checked signed arithmetic could otherwise overflow before rejection).
 pub fnc summary_is_valid(borrow RunSummary summary): bool {
