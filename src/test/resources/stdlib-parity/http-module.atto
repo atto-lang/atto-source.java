@@ -67,5 +67,10 @@ pub routine main(): void {
   stdio.println(!http.route_matches_method("GET", "/users/:id", "POST", "/users/42"));
   stdio.println(http.route_matches("/", "/"));
   stdio.println(!http.route_matches("/", "/other"));
+  stdio.println(http.origin_target_valid("/resource%20name"));
+  stdio.println(!http.origin_target_valid("/resource%GG"));
+  stdio.println(!http.origin_target_valid("/resource%"));
+  stdio.println(!http.origin_target_valid("/resource\\path"));
+  stdio.println(!http.origin_target_valid("/resource#fragment"));
   return;
 }
