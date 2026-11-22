@@ -103,7 +103,7 @@ final class SharedStructuredWasmOwnershipParityTest {
         var parsed = Parser.parse(canonicalFixture("overlap.atto"));
         RuntimeException rejected = assertThrows(RuntimeException.class,
                 () -> TypeChecker.check(parsed));
-        assertTrue(rejected.getMessage().startsWith("Oreslang ownership error:"),
+        assertTrue(rejected.getMessage().startsWith("Atto ownership error:"),
                 rejected::getMessage);
         assertTrue(rejected.getMessage().contains("borrow"), rejected::getMessage);
     }
