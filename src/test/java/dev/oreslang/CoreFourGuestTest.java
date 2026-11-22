@@ -108,6 +108,18 @@ final class CoreFourGuestTest {
                         diagnostic.contains("outlive") || diagnostic.contains("return")),
                         fixture + ": " + failure.getMessage());
             }
+            // The actual guest-launch entrypoint must enforce the same linked
+            // ownership gate, not only the public validate() convenience API.
+            // No user code may run after a compiler-negative loan violation.
+            var out = new ByteArrayOutputStream();
+            var err = new ByteArrayOutputStream();
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.runWithExitStatus(
+                            source, IsolatePolicy.developer(),
+                            ExecutionProfile.serverJit(), out, err),
+                    "guest launch must reject before execution: " + fixture);
+            assertEquals("", out.toString(),
+                    "rejected borrow fixture must emit no guest stdout: " + fixture);
         }
     }
 
