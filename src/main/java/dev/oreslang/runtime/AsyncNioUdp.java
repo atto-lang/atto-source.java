@@ -60,9 +60,13 @@ public final class AsyncNioUdp {
             this.kernel = kernel;
         }
 
-        public int localPort() throws IOException {
+        public int localPort() {
             checkLive("udp.local_port");
-            return kernel.localPort();
+            try {
+                return kernel.localPort();
+            } catch (IOException error) {
+                throw new java.io.UncheckedIOException(error);
+            }
         }
 
         public OresFuture<Integer> sendTo(int peerPort, List<?> octets) {
