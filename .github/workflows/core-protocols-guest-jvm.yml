@@ -12,6 +12,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/OresFutureTerminalAdmissionRetentionTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorReadinessLifecycleTest.java'
       - 'tests/fixtures/core-protocols-v1/**'
+      - 'tests/fixtures/core-protocols-java-execution/**'
       - '.github/workflows/core-protocols-guest-jvm.yml'
   workflow_dispatch:
 
@@ -50,6 +51,15 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest,ChannelRuntimeTest,OresFutureTerminalAdmissionRetentionTest,ActorReadinessLifecycleTest -DfailIfNoTests=true test
+          # A compiler invocation is not execution evidence unless Surefire
+          # actually discovers and completes the new guest test method.
+          report='target/surefire-reports/TEST-dev.oreslang.CoreProtocolsGuestTest.xml'
+          test -s "$report"
+          grep -F 'name="canonicalHashAndCloneTraitsExecuteRealLinkedAttoGuestCode"' "$report"
+          grep -F 'name="canonicalHashAndCloneTraitsRejectMissingOrMismatchedGuestMethods"' "$report"
+          # Require unskipped method testcase elements and zero suite failures.
+          grep -F 'skipped="0"' "$report"
+          grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
           echo 'CORE_PROTOCOLS_JAVA_GUEST_JUNIT=EXECUTED'
       - name: Preserve evidence boundary
         if: always()
