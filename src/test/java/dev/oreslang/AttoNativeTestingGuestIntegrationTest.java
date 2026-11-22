@@ -75,6 +75,15 @@ final class AttoNativeTestingGuestIntegrationTest {
         expected.add("ORES_TEST|SUMMARY|total=40|passed=40|failed=0|skipped=0|filtered=0");
         List<String> actual = output.toString(StandardCharsets.UTF_8).lines().toList();
         assertEquals(expected, actual, "guest-generated machine receipts must match exact IDs/order");
+
+        // Separate compiler-backed source; keep the 40-case machine ledger fixed.
+        Path summaryRange = fixture("examples/native-testing-summary-range.atto");
+        requireCanonicalCompile(summaryRange);
+        ByteArrayOutputStream rangeOutput = new ByteArrayOutputStream();
+        execute(summaryRange, rangeOutput);
+        assertEquals(List.of("ATTO_TEST_SUMMARY_RANGE_OK|checks=13"),
+                rangeOutput.toString(StandardCharsets.UTF_8).lines().toList(),
+                "range assertions and summary validation must execute in the guest");
     }
 
     @Test
@@ -106,5 +115,19 @@ final class AttoNativeTestingGuestIntegrationTest {
             assertFalse(output.toString(StandardCharsets.UTF_8).contains("UNEXPECTED_SUCCESS"),
                     "guest continued beyond require_success: " + variant);
         }
+
+        // This negative is not a missing compilation, compiler error, or
+        // synthetic receipt: the actual compiled guest must reach the gate.
+        Path forged = fixture("examples/native-testing-negative-forged-summary.atto");
+        requireCanonicalCompile(forged);
+        ByteArrayOutputStream forgedOutput = new ByteArrayOutputStream();
+        ByteArrayOutputStream forgedErrors = new ByteArrayOutputStream();
+        assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.run(
+                        forged, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                        Set.of(), Map.of(), forgedOutput, forgedErrors),
+                "inconsistent RunSummary must be rejected at runtime");
+        assertFalse(forgedOutput.toString(StandardCharsets.UTF_8).contains("UNEXPECTED_SUCCESS"),
+                "forged guest continued after require_success");
     }
 }
