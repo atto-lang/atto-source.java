@@ -6061,10 +6061,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object trappedFailure(RuntimeException failure) {
-            if (!isTrappableFailure(failure)) throw failure;
+            OresGuestError guest = trappableGuestError(failure);
+            if (guest == null) throw failure;
             // Never carry host exception instances/causes/stacks as Result data.
             // The numeric guest errors have stable nominal identity and code.
-            OresGuestError guest = (OresGuestError) failure;
             String message = guest.getMessage();
             String prefix = guest.guestTypeName() + ": ";
             if (message.startsWith(prefix)) message = message.substring(prefix.length());
@@ -6072,14 +6072,20 @@ public final class OresEvalRootNode extends RootNode {
                     guest.guestTypeName(), guest.abiCode(), message));
         }
 
+        private OresGuestError trappableGuestError(RuntimeException failure) {
+            // The scheduler may wrap an ordinary guest Error in a completion
+            // carrier. Check the *entire* cause/suppression graph for unmaskable
+            // failures before unwrapping the known guest Error identity.
+            if (!dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+                    failure, OresPanic.class)) return null;
+            Throwable unwrapped = OresFuture.unwrap(failure);
+            return unwrapped instanceof OresGuestError guest ? guest : null;
+        }
+
         private boolean isTrappableFailure(RuntimeException failure) {
-            // Only recognized ordinary guest Error throws enter trap. Raw JVM
-            // ArithmeticException, authority denial, panic, cancellation and
-            // other host failures must never become an apparently successful
-            // Err(Error) admission.
-            return failure instanceof OresGuestError
-                    && dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
-                            failure, OresPanic.class);
+            // Raw JVM ArithmeticException, authority denial, panic,
+            // cancellation and other host failures never become Err(Error).
+            return trappableGuestError(failure) != null;
         }
 
         // Cleanup may add suppressed diagnostics but must not replace a
