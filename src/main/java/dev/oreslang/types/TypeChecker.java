@@ -2686,8 +2686,20 @@ public final class TypeChecker {
                 constantBoolean = scalarConstant instanceof Boolean value ? value : null;
             }
 
+            // A direct aggregate literal has an exact runtime field set. An
+            // exact alias preserves it only when its declared type does not
+            // erase fields through structural-row width subtyping.
+            boolean exactAggregate = actual instanceof Record actualRow
+                    && declared instanceof Record declaredRow
+                    && actualRow.kind() == declaredRow.kind()
+                    && actualRow.members().keySet().equals(declaredRow.members().keySet())
+                    && (binding.initializer() instanceof Ast.ObjectExpr
+                        || (binding.initializer() instanceof Ast.NameExpr sourceName
+                                && env.lookup(sourceName.name()) != null
+                                && env.lookup(sourceName.name()).exactAggregate()));
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            if (exactAggregate) env.lookup(binding.name()).setExactAggregate(true);
             if (strictAttoEquality) {
                 Ast.TypeRef sourceType = binding.declaredType();
                 if (sourceType == null) {
@@ -3475,6 +3487,12 @@ public final class TypeChecker {
                     && assignment.target() instanceof Ast.IndexExpr indexed
                     && indexed.receiver() instanceof Ast.NameExpr owner) {
                 env.markInitialized(owner.name(), initializedIndexedField);
+            }
+            if (assignment.target() instanceof Ast.NameExpr rebound) {
+                // Even a statically compatible row can have extra hidden
+                // runtime fields after a reassignment. Invalidate the shape
+                // certificate on any assignment to a rebindable name.
+                env.lookup(rebound.name()).setExactAggregate(false);
             }
             return targetType;
         }
@@ -6221,9 +6239,63 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                if (object.explicitStruct()) {
+                    throw new IllegalArgumentException(
+                            "explicit struct spread requires exact declared-field initialization proof");
+                }
+                // An aggregate spread is a static row expansion, not dynamic Map
+                // reflection. The first executable slice admits only immutable
+                // scalar fields whose copying cannot carry a borrow, actor
+                // capability or mutable reference across ownership domains.
+                Map<String, Type> expanded = new LinkedHashMap<>();
+                for (Ast.ObjectField field : object.fields()) {
+                    if (field.spread()) {
+                        Type sourceType = deref(typeOf(field.value(), env, generics, self));
+                        if (!(sourceType instanceof Record source)
+                                || source.kind() == AggregateKind.CONTRACT) {
+                            throw new IllegalArgumentException(
+                                    "aggregate spread requires a closed record or struct, not "
+                                            + sourceType);
+                        }
+                        if (source.kind() == AggregateKind.RECORD
+                                && !(field.value() instanceof Ast.ObjectExpr)
+                                && !(field.value() instanceof Ast.NameExpr name
+                                        && env.lookup(name.name()) != null
+                                        && env.lookup(name.name()).exactAggregate())) {
+                            // Readonly record row compatibility permits width
+                            // narrowing. Without an exact provenance proof, a
+                            // runtime row can contain keys absent from its
+                            // static type. Never silently copy hidden keys.
+                            throw new IllegalArgumentException(
+                                    "record spread requires a proven exact source shape; "
+                                            + "project narrowed rows with explicit field initializers");
+                        }
+                        for (Map.Entry<String, Type> entry : source.members().entrySet()) {
+                            Type member = entry.getValue();
+                            if (!(member == Primitive.INT || member == Primitive.FLOAT
+                                    || member == Primitive.BOOL || member == Primitive.STRING
+                                    || member instanceof StringLiteral
+                                    || member instanceof Types.BoolLiteral)) {
+                                throw new IllegalArgumentException(
+                                        "aggregate spread field '" + entry.getKey()
+                                                + "' is not a proven copyable scalar: " + member);
+                            }
+                            expanded.put(entry.getKey(),
+                                    object.inferredFieldTypes()
+                                            ? widenCollectionElement(member) : member);
+                        }
+                    } else {
+                        Type type = typeOf(field.value(), env, generics, self);
+                        expanded.put(field.name(), object.inferredFieldTypes()
+                                ? widenCollectionElement(type) : type);
+                    }
+                }
+                if (object.structuralRecord()) {
+                    return new Record(expanded, true, AggregateKind.RECORD);
+                }
+                if (object.inferredStruct()) return Record.struct(expanded);
                 throw new IllegalArgumentException(
-                        "aggregate spread is parsed but not yet type/ownership/lowering checked; "
-                                + "use explicit static field initializers until the v1 contract is implemented");
+                        "unsupported aggregate spread target kind " + object.kind());
             }
             if (object.explicitStruct()) {
                 Map<String, Type> members = new LinkedHashMap<>();
@@ -13503,6 +13575,7 @@ public final class TypeChecker {
             private final Type type;
             private final Ast.BindingKind kind;
             private final Set<String> uninitializedFields;
+            private boolean exactAggregate;
 
             private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
                 this.type = type;
@@ -13511,6 +13584,8 @@ public final class TypeChecker {
             }
             private Type type() { return type; }
             private Ast.BindingKind kind() { return kind; }
+            private boolean exactAggregate() { return exactAggregate; }
+            private void setExactAggregate(boolean value) { exactAggregate = value; }
             private boolean hasUninitializedFields() { return !uninitializedFields.isEmpty(); }
             private boolean isUninitialized(String field) { return uninitializedFields.contains(field); }
             private Set<String> uninitializedFields() {

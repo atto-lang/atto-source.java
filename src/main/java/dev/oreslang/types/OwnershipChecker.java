@@ -2124,8 +2124,48 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                throw error("aggregate spread requires field-wise ownership, borrow and exception-path proof; "
-                        + "unsupported at this frontend stage");
+                if (object.explicitStruct()) {
+                    throw error("explicit struct spread needs declared-field initialization proof");
+                }
+                LinkedHashMap<String, Ast.TypeRef> expanded = new LinkedHashMap<>();
+                for (Ast.ObjectField field : object.fields()) {
+                    if (field.spread()) {
+                        // Read the source without consuming it. Only a closed
+                        // aggregate with statically proved Copy scalar fields
+                        // can be shallow-expanded without shared mutable aliasing.
+                        ValueInfo source = checkExpr(field.value(), scope, false);
+                        Ast.TypeRef sourceType = source.type.isBorrow()
+                                ? source.type.borrowedTarget() : source.type;
+                        if (!sourceType.isClosedAggregateType()) {
+                            throw error("aggregate spread requires a statically known closed record or struct");
+                        }
+                        for (Map.Entry<String, Ast.TypeRef> member
+                                : sourceType.aggregateMembers().entrySet()) {
+                            Ast.TypeRef fieldType = member.getValue();
+                            if (!isCopyType(fieldType)
+                                    || !(Set.of("i8", "i16", "i32", "i64",
+                                            "u8", "u16", "u32", "u64", "int", "uint",
+                                            "bigint", "f32", "f64", "float",
+                                            "bool", "Bool", "string", "String")
+                                            .contains(fieldType.name())
+                                        && fieldType.arguments().isEmpty())) {
+                                throw error("aggregate spread field '" + member.getKey()
+                                        + "' is not a proven scalar Copy field");
+                            }
+                            expanded.put(member.getKey(), fieldType);
+                        }
+                    } else {
+                        ValueInfo fieldValue = checkExpr(field.value(), scope, true);
+                        if (containsMutexGuardType(fieldValue.type) || isBorrowValue(fieldValue)) {
+                            throw error("aggregate field '" + field.name()
+                                    + "' cannot store a guard or escaping borrow");
+                        }
+                        expanded.put(field.name(), fieldValue.type);
+                    }
+                }
+                return new ValueInfo(object.structuralRecord()
+                        ? Ast.TypeRef.readonlyRecordType(expanded)
+                        : Ast.TypeRef.structType(expanded), ValueKind.MOVE_ONLY, null);
             }
             LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
             if (object.explicitStruct()) {
