@@ -1,4 +1,4 @@
-name: Typed effects v1 Java compiler (not guest AOT)
+name: Typed effects v1 Java frontend and linked guest (not Native Image AOT)
 on:
   pull_request:
     paths:
@@ -6,6 +6,9 @@ on:
       - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
       - 'src/test/java/dev/oreslang/CompilerTypedEffectV1Test.java'
       - 'src/test/java/dev/oreslang/compiler/CompilerTypedEffectV1SelfTest.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalFixtureGuestTest.java'
+      - 'src/test/resources/atto/canonical-v1/**'
+      - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - '.github/workflows/typed-effects-v1-java.yml'
   workflow_dispatch:
 permissions:
@@ -22,5 +25,5 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - name: Real Java frontend and source-only effect tests (not Graal guest)
-        run: mvn -B -ntp -Dtest=CompilerTypedEffectV1Test test
+      - name: Check real frontend effects and execute canonical linked Atto guest
+        run: mvn -B -ntp -U '-Dtest=CompilerTypedEffectV1Test,AttoCanonicalFixtureGuestTest' test
