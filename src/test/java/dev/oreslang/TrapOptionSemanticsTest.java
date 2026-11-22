@@ -16,10 +16,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/** Legacy fixture name retained for test discovery; semantics are now Result-based. */
 final class TrapOptionSemanticsTest {
 
     @Test
-    void trapCallsTypeAsOptionAndNestedOptionIsNotFlattened() {
+    void trapCallsTypeAsResultAndOptionPayloadIsPreserved() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 trap fnc value(): int {
                   return 7;
@@ -37,16 +38,16 @@ final class TrapOptionSemanticsTest {
                 }
 
                 fnc use(): void {
-                  val Option<int> one = value();
-                  val Option<Option<int>> nested = maybe(true);
-                  val Option<void> finished = done();
+                  val Result<int, Error> one = value();
+                  val Result<Option<int>, Error> nested = maybe(true);
+                  val Result<void, Error> finished = done();
                   return;
                 }
                 """)));
     }
 
     @Test
-    void trapReturnsSomeOnSuccessAndNoneOnOrdinaryRuntimeFailure() throws Exception {
+    void trapReturnsOkOnSuccessAndErrOnOrdinaryCastFailure() throws Exception {
         String program = """
                 define class Animal as
                 end
@@ -73,21 +74,21 @@ final class TrapOptionSemanticsTest {
                 }
 
                 pub fnc main(): void {
-                  val Option<Dog> good = as_dog(new Dog());
-                  val Option<Dog> bad = as_dog(new Cat());
-                  val Option<Option<int>> nested_some = maybe(true);
-                  val Option<Option<int>> nested_none = maybe(false);
-                  val Option<void> finished = done();
+                  val Result<Dog, Error> good = as_dog(new Dog());
+                  val Result<Dog, Error> bad = as_dog(new Cat());
+                  val Result<Option<int>, Error> nested_some = maybe(true);
+                  val Result<Option<int>, Error> nested_none = maybe(false);
+                  val Result<void, Error> finished = done();
 
-                  stdio.stdout.write(good.is_some());
+                  stdio.stdout.write(good.is_ok());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(bad.is_none());
+                  stdio.stdout.write(bad.is_err());
                   stdio.stdout.write(":");
                   stdio.stdout.write(nested_some.unwrap().unwrap());
                   stdio.stdout.write(":");
                   stdio.stdout.write(nested_none.unwrap().is_none());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(finished.is_some());
+                  stdio.stdout.write(finished.is_ok());
                   return;
                 }
                 """;
@@ -105,7 +106,7 @@ final class TrapOptionSemanticsTest {
                 }
 
                 pub fnc main(): void {
-                  val Option<int> ignored = panics();
+                  val Result<int, Error> ignored = panics();
                   stdio.stdout.write("unreachable");
                   return;
                 }
@@ -161,23 +162,23 @@ final class TrapOptionSemanticsTest {
         }
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(declarations + """
                 fnc check(): void {
-                  val Option<int> number_value = number();
-                  val Option<bool> truth_value = truth();
-                  val Option<void> finished = done();
-                  val Option<Option<int>> nested = optional();
+                  val Result<int, Error> number_value = number();
+                  val Result<bool, Error> truth_value = truth();
+                  val Result<void, Error> finished = done();
+                  val Result<Option<int>, Error> nested = optional();
                   return;
                 }
                 """));
     }
 
     @Test
-    void trappedFunctionValueMustPreserveOptionReturn() throws Exception {
+    void trappedFunctionValueMustPreserveResultReturn() throws Exception {
         String source = """
                 trap fnc value(int x): int { return x + 1; }
                 pub fnc main(): void {
-                  val Fnc<int, Option<int>> callback = value;
-                  val Option<int> direct = value(9);
-                  val Option<int> via_callback = callback(9);
+                  val Fnc<int, Result<int, Error>> callback = value;
+                  val Result<int, Error> direct = value(9);
+                  val Result<int, Error> via_callback = callback(9);
                   stdio.stdout.write(direct.unwrap());
                   stdio.stdout.write(":");
                   stdio.stdout.write(via_callback.unwrap());
@@ -197,13 +198,13 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void qualifiedModuleCallsRemainOptionTyped() throws Exception {
+    void qualifiedModuleCallsRemainResultTyped() throws Exception {
         String source = """
                 define module safely as
                   pub trap fnc value(): int { return 23; }
                 end
                 pub fnc main(): void {
-                  val Option<int> wrapped = safely.value();
+                  val Result<int, Error> wrapped = safely.value();
                   stdio.stdout.write(wrapped.unwrap());
                   return;
                 }
@@ -223,7 +224,7 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void returnedNoneIsSomeNoneAndRuntimeFailureIsOuterNone() throws Exception {
+    void returnedNoneIsOkNoneAndRuntimeFailureIsErr() throws Exception {
         String source = """
                 define class Animal as
                 end
@@ -244,16 +245,16 @@ final class TrapOptionSemanticsTest {
                 }
 
                 pub fnc main(): void {
-                  val Option<Option<int>> none_value = optional(false);
-                  val Option<Option<int>> some_value = optional(true);
-                  val Option<Option<int>> failed_value = failed(new Cat());
-                  stdio.stdout.write(none_value.is_some());
+                  val Result<Option<int>, Error> none_value = optional(false);
+                  val Result<Option<int>, Error> some_value = optional(true);
+                  val Result<Option<int>, Error> failed_value = failed(new Cat());
+                  stdio.stdout.write(none_value.is_ok());
                   stdio.stdout.write(":");
                   stdio.stdout.write(none_value.unwrap().is_none());
                   stdio.stdout.write(":");
                   stdio.stdout.write(some_value.unwrap().unwrap());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(failed_value.is_none());
+                  stdio.stdout.write(failed_value.is_err());
                   return;
                 }
                 """;
@@ -262,16 +263,16 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void voidTrapReturnsSomeEvenWithoutValue() throws Exception {
+    void voidTrapReturnsOkEvenWithoutValue() throws Exception {
         String source = """
                 trap fnc done(): void {
                   return;
                 }
                 pub fnc main(): void {
-                  val Option<void> completed = done();
-                  stdio.stdout.write(completed.is_some());
+                  val Result<void, Error> completed = done();
+                  stdio.stdout.write(completed.is_ok());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(completed.is_none());
+                  stdio.stdout.write(completed.is_err());
                   return;
                 }
                 """;
@@ -280,17 +281,17 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void aTrapMayCallAnotherTrapWithoutImplicitFlattening() throws Exception {
+    void aTrapMayCallAnotherTrapWithoutDoubleWrapping() throws Exception {
         String source = """
                 trap fnc inner(): int { return 11; }
-                trap fnc outer(): Option<int> {
+                trap fnc outer(): Result<int, Error> {
                   return inner();
                 }
                 pub fnc main(): void {
-                  val Option<Option<int>> nested = outer();
-                  stdio.stdout.write(nested.is_some());
+                  val Result<int, Error> nested = outer();
+                  stdio.stdout.write(nested.is_ok());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(nested.unwrap().unwrap());
+                  stdio.stdout.write(nested.unwrap());
                   return;
                 }
                 """;
@@ -305,7 +306,7 @@ final class TrapOptionSemanticsTest {
                 trap fnc safe(): int { return 7; }
                 pub fnc main(): void {
                   val int a = raw();
-                  val Option<int> b = safe();
+                  val Result<int, Error> b = safe();
                   stdio.stdout.write(a);
                   stdio.stdout.write(":");
                   stdio.stdout.write(b.unwrap());
@@ -324,7 +325,7 @@ final class TrapOptionSemanticsTest {
                   return invalid.unwrap();
                 }
                 pub fnc main(): void {
-                  val Option<int> ignored = panics();
+                  val Result<int, Error> ignored = panics();
                   stdio.stdout.write("unreachable");
                   return;
                 }
@@ -383,7 +384,7 @@ final class TrapOptionSemanticsTest {
                 }
 
                 pub fnc main(): void {
-                  val Option<int> ignored = panic_then_cleanup(new Cat());
+                  val Result<int, Error> ignored = panic_then_cleanup(new Cat());
                   stdio.stdout.write("unreachable");
                   return;
                 }
@@ -416,7 +417,7 @@ final class TrapOptionSemanticsTest {
                 }
 
                 pub fnc main(): void {
-                  val Option<int> ignored = cast_then_panic(new Cat());
+                  val Result<int, Error> ignored = cast_then_panic(new Cat());
                   stdio.stdout.write("unreachable");
                   return;
                 }
@@ -448,7 +449,7 @@ final class TrapOptionSemanticsTest {
                 }
 
                 pub fnc main(): void {
-                  val Option<int> ignored = panic_with_finally(new Cat());
+                  val Result<int, Error> ignored = panic_with_finally(new Cat());
                   stdio.stdout.write("unreachable");
                   return;
                 }
@@ -595,10 +596,10 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void expressionTrapRemainsOptionTypedAfterCleanupReconciliation() throws Exception {
+    void expressionTrapUsesResultAfterCleanupReconciliation() throws Exception {
         String source = """
                 pub fnc main(): void {
-                  val Option<int> result = trap (40 + 2);
+                  val Result<int, Error> result = trap (40 + 2);
                   stdio.stdout.write(result.unwrap());
                   return;
                 }
