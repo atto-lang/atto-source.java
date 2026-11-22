@@ -81,7 +81,7 @@ final class AttoNativeTestingGuestIntegrationTest {
         requireCanonicalCompile(summaryRange);
         ByteArrayOutputStream rangeOutput = new ByteArrayOutputStream();
         execute(summaryRange, rangeOutput);
-        assertEquals(List.of("ATTO_TEST_SUMMARY_RANGE_OK|checks=13"),
+        assertEquals(List.of("ATTO_TEST_SUMMARY_RANGE_OK|checks=19"),
                 rangeOutput.toString(StandardCharsets.UTF_8).lines().toList(),
                 "range assertions and summary validation must execute in the guest");
     }
