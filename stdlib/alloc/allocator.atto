@@ -136,6 +136,187 @@ pub fnc layout(int bytes, int alignment): Layout {
   return new Layout(bytes, alignment);
 }
 
+// Owner-local allocation bookkeeping. This is NOT physical allocator
+// authority: no public integer ticket may cause raw memory access or free.
+// The trusted allocator must authenticate its own opaque receipt, then update
+// the Atto ledger only AFTER successful allocation/destruction.
+pub define class Reservation as
+  pub val int slot;
+  pub val int generation;
+  pub val int bytes;
+
+  pub constructor(int slot, int generation, int bytes) {
+    self.slot = slot;
+    self.generation = generation;
+    self.bytes = bytes;
+  }
+
+  pub is_valid(): bool {
+    return self.slot >= 0 && self.generation > 0 && self.bytes > 0;
+  }
+end
+
+// 0=empty, 1=reserved, 2=allocated, 3=retirement pending, 4=exhausted.
+// Generation increases on every cancelled/freed slot; no wrapping/reuse at
+// INT_MAX. A failed physical allocation must cancel, never report success.
+pub define class ReservationLedger as
+  let int limit;
+  let int quota;
+  let mut Array<int> states = new Array<int>();
+  let mut Array<int> generations = new Array<int>();
+  let mut Array<int> sizes = new Array<int>();
+  let mut int pending = 0;
+  let mut int live = 0;
+  let mut int owners = 0;
+  let mut bool sealed = false;
+
+  pub constructor(int capacity, int budget) {
+    if capacity < 1 || capacity > 4096 || budget < 0; do
+      rt fail("alloc/allocator: invalid reservation capacity or budget");
+    fi
+    self.limit = capacity;
+    self.quota = budget;
+    for (let int i = 0; i < capacity; i = i + 1) do
+      self.states.add(0);
+      self.generations.add(1);
+      self.sizes.add(0);
+    done
+  }
+
+  matches(Reservation ticket, int state): bool {
+    if !ticket.is_valid() || ticket.slot >= self.limit; do
+      return false;
+    fi
+    return self.states.get(ticket.slot) == state &&
+           self.generations.get(ticket.slot) == ticket.generation &&
+           self.sizes.get(ticket.slot) == ticket.bytes;
+  }
+
+  retire_slot(mut self)(Reservation ticket): void {
+    let int slot = ticket.slot;
+    let int generation = self.generations.get(slot);
+    self.sizes.set(slot, 0);
+    if generation >= 2147483647; do
+      self.states.set(slot, 4);
+    else
+      self.generations.set(slot, generation + 1);
+      self.states.set(slot, 0);
+    fi
+    return;
+  }
+
+  // Invalid (-1,0,0) means quota exhausted, no free slot or sealed ledger.
+  // Zero-sized layouts need separate trusted identity; never mint one here.
+  pub reserve(mut self)(int bytes): Reservation {
+    if self.sealed || bytes <= 0 || self.live > self.quota ||
+       self.pending > self.quota - self.live ||
+       bytes > self.quota - self.live - self.pending; do
+      return new Reservation(-1, 0, 0);
+    fi
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) == 0; do
+        self.states.set(i, 1);
+        self.sizes.set(i, bytes);
+        self.pending = self.pending + bytes;
+        return new Reservation(i, self.generations.get(i), bytes);
+      fi
+    done
+    return new Reservation(-1, 0, 0);
+  }
+
+  // Trusted provider only, AFTER a physical allocation succeeded.
+  pub record_commit(mut self)(Reservation ticket): bool {
+    if !self.matches(ticket, 1); do return false; fi
+    self.states.set(ticket.slot, 2);
+    self.pending = self.pending - ticket.bytes;
+    self.live = self.live + ticket.bytes;
+    self.owners = self.owners + 1;
+    return true;
+  }
+
+  // Trusted provider only, AFTER physical allocation failed.
+  pub record_cancel(mut self)(Reservation ticket): bool {
+    if !self.matches(ticket, 1); do return false; fi
+    self.pending = self.pending - ticket.bytes;
+    self.retire_slot(ticket);
+    return true;
+  }
+
+  // A real provider must separately prove that no borrow or continuation
+  // survives before entering destructor/deallocation.
+  pub begin_retirement(mut self)(Reservation ticket): bool {
+    if !self.matches(ticket, 2); do return false; fi
+    self.states.set(ticket.slot, 3);
+    return true;
+  }
+
+  // Trusted provider only, AFTER T's destructor AND free have completed.
+  // Failure must leave state=3 pending; it may not reuse the storage.
+  pub finish_retirement(mut self)(Reservation ticket): bool {
+    if !self.matches(ticket, 3); do return false; fi
+    self.live = self.live - ticket.bytes;
+    self.owners = self.owners - 1;
+    self.retire_slot(ticket);
+    return true;
+  }
+
+  pub seal(mut self)(): bool {
+    if self.sealed; do return false; fi
+    self.sealed = true;
+    return true;
+  }
+
+  pub pending_bytes(): int { return self.pending; }
+  pub used_bytes(): int { return self.live; }
+  pub active(): int { return self.owners; }
+  pub capacity(): int { return self.limit; }
+  pub is_sealed(): bool { return self.sealed; }
+  pub is_drained(): bool {
+    return self.sealed && self.pending == 0 &&
+           self.live == 0 && self.owners == 0;
+  }
+end
+
+pub fnc reservation_ledger(int capacity, int budget): ReservationLedger {
+  return new ReservationLedger(capacity, budget);
+}
+
+pub fnc reservation_self_test(): bool {
+  let mut ReservationLedger book = new ReservationLedger(2, 12);
+  let Reservation first = book.reserve(8);
+  if !first.is_valid() || first.slot != 0 || book.pending_bytes() != 8 ||
+     book.reserve(5).is_valid() || !book.record_commit(first) ||
+     book.record_commit(first) || book.used_bytes() != 8 ||
+     book.pending_bytes() != 0; do
+    return false;
+  fi
+  let Reservation temp = book.reserve(4);
+  if !temp.is_valid() || book.reserve(1).is_valid() ||
+     !book.record_cancel(temp) || book.record_cancel(temp) ||
+     book.record_commit(temp) || book.pending_bytes() != 0; do
+    return false;
+  fi
+  let Reservation reused = book.reserve(4);
+  if !reused.is_valid() || reused.slot != temp.slot ||
+     reused.generation != temp.generation + 1 ||
+     book.record_cancel(temp) || !book.record_commit(reused) ||
+     book.active() != 2 || book.reserve(1).is_valid(); do
+    return false;
+  fi
+  if !book.begin_retirement(reused) || book.begin_retirement(reused) ||
+     book.finish_retirement(first) || book.used_bytes() != 12; do
+    return false;
+  fi
+  if !book.finish_retirement(reused) || book.finish_retirement(reused) ||
+     book.used_bytes() != 8 || !book.begin_retirement(first) ||
+     !book.seal() || book.reserve(1).is_valid() ||
+     book.is_drained() || !book.finish_retirement(first); do
+    return false;
+  fi
+  return book.is_drained() && book.active() == 0 &&
+         book.used_bytes() == 0 && book.pending_bytes() == 0;
+}
+
 pub fnc self_test(): bool {
   let Layout word = new Layout(3, 4);
   if !valid_alignment(4) || valid_alignment(3) ||
@@ -151,7 +332,7 @@ pub fnc self_test(): bool {
      aligned_start(3, 0, 8, 8) != 3; do
     return false;
   fi
-  return array_bytes(4, 3, 12) == 12 &&
+  return reservation_self_test() && array_bytes(4, 3, 12) == 12 &&
          array_bytes(4, 4, 12) == -1 &&
          array_bytes(0, 100, 0) == 0 &&
          aligned_end(2147483646, 4, 8, 2147483647) == -1;
