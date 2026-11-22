@@ -151,5 +151,24 @@ pub routine main(): void {
   empty_frame.add(1);
   empty_frame.add(0);
   stdio.println(zorde.decode_frame(empty_frame).is_ok());
+
+  // Canonical unsigned 31-bit wire limits: writer must not emit a
+  // representation its own reader cannot admit. Failure is atomic.
+  let mut varuint31 = zorde.writer(8);
+  stdio.println(varuint31.write_varuint(2147483647));
+  stdio.println(varuint31.size());
+  stdio.println(varuint31.write_varuint(2147483648));
+  stdio.println(varuint31.size());
+  let mut Array<int> illegal_octet = new Array<int>();
+  illegal_octet.add(256);
+  stdio.println(varuint31.write_bytes(illegal_octet));
+  stdio.println(varuint31.size());
+  let mut Array<int> empty_bytes = new Array<int>();
+  stdio.println(zorde.encode_frame(2147483648, 1, empty_bytes).is_err());
+  let mut Array<int> empty_bytes2 = new Array<int>();
+  stdio.println(zorde.encode_frame(1, 2147483648, empty_bytes2).is_err());
+  let mut Array<int> empty_bytes3 = new Array<int>();
+  stdio.println(zorde.encode_frame(2147483647, 2147483647, empty_bytes3).is_ok());
+  stdio.println(zorde.decode_frame_for(2147483648, 1, valid_frame).is_err());
   return;
 }
