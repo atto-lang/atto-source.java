@@ -14,6 +14,7 @@ import dev.oreslang.types.ReadonlyShapeProjectionV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.AeadPrimitives;
+import dev.oreslang.runtime.CryptoPrimitives;
 import dev.oreslang.runtime.OresVector;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -10466,13 +10467,19 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof CryptoAeadFacade crypto) {
                 return switch (name) {
+                    case "sha256" -> (Invokable) crypto::sha256;
+                    case "hmac_sha256" -> (Invokable) crypto::hmacSha256;
+                    case "pbkdf2_hmac_sha256" -> (Invokable) crypto::pbkdf2HmacSha256;
+                    case "base64_encode" -> (Invokable) crypto::base64Encode;
+                    case "base64_decode" -> (Invokable) crypto::base64Decode;
+                    case "secure_random_bytes" -> (Invokable) crypto::secureRandomBytes;
+                    case "constant_time_equals" -> (Invokable) crypto::constantTimeEquals;
                     case "aead_new_key" -> (Invokable) crypto::newKey;
                     case "aead_seal" -> (Invokable) crypto::seal;
                     case "aead_open" -> (Invokable) crypto::open;
                     case "aead_close" -> (Invokable) crypto::close;
                     default -> throw new IllegalArgumentException(
-                            "unknown crypto AEAD member " + name
-                                    + " (SHA/HMAC/KDF are supplied by separate crypto PR)");
+                            "unknown crypto member " + name);
                 };
             }
             if (receiver instanceof EnvFacade environment) {
@@ -14435,6 +14442,121 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Long> out = new ArrayList<>(bytes.length);
             for (byte b : bytes) out.add((long) (b & 255));
             return out;
+        }
+
+        private void requireCrypto(String operation) {
+            context.requireCapability(IsolatePolicy.Capability.CRYPTO, operation);
+        }
+
+        // These functions preserve the exact bounded cryptographic primitive
+        // implementations from PR #1367; the guest-facing byte conversions
+        // are intentionally the only adaptation. Never fall through to Java FFI.
+        private Object sha256(List<Object> arguments) {
+            requireCrypto("crypto.sha256");
+            requireOne(arguments, "crypto.sha256");
+            byte[] message = byteList(arguments.getFirst(),
+                    CryptoPrimitives.MAX_HASH_INPUT_BYTES, "SHA-256 input");
+            byte[] digest = null;
+            try {
+                digest = CryptoPrimitives.sha256(message);
+                return guestBytes(digest);
+            } finally {
+                java.util.Arrays.fill(message, (byte) 0);
+                if (digest != null) java.util.Arrays.fill(digest, (byte) 0);
+            }
+        }
+
+        private Object hmacSha256(List<Object> arguments) {
+            requireCrypto("crypto.hmac_sha256");
+            requireTwo(arguments, "crypto.hmac_sha256");
+            byte[] key = byteList(arguments.get(0),
+                    CryptoPrimitives.MAX_KEY_BYTES, "HMAC key");
+            byte[] message = null;
+            byte[] digest = null;
+            try {
+                message = byteList(arguments.get(1),
+                        CryptoPrimitives.MAX_HASH_INPUT_BYTES, "HMAC message");
+                digest = CryptoPrimitives.hmacSha256(key, message);
+                return guestBytes(digest);
+            } finally {
+                java.util.Arrays.fill(key, (byte) 0);
+                if (message != null) java.util.Arrays.fill(message, (byte) 0);
+                if (digest != null) java.util.Arrays.fill(digest, (byte) 0);
+            }
+        }
+
+        private Object pbkdf2HmacSha256(List<Object> arguments) {
+            requireCrypto("crypto.pbkdf2_hmac_sha256");
+            if (arguments.size() != 4) throw new IllegalArgumentException(
+                    "crypto.pbkdf2_hmac_sha256 expects password,salt,iterations,output_bytes");
+            byte[] password = byteList(arguments.get(0),
+                    CryptoPrimitives.MAX_KEY_BYTES, "PBKDF2 password");
+            byte[] salt = null;
+            byte[] output = null;
+            try {
+                salt = byteList(arguments.get(1),
+                        CryptoPrimitives.MAX_SALT_BYTES, "PBKDF2 salt");
+                int iterations = integer(arguments.get(2), "PBKDF2 iterations");
+                int count = integer(arguments.get(3), "PBKDF2 output bytes");
+                output = CryptoPrimitives.pbkdf2HmacSha256(password, salt, iterations, count);
+                return guestBytes(output);
+            } finally {
+                java.util.Arrays.fill(password, (byte) 0);
+                if (salt != null) java.util.Arrays.fill(salt, (byte) 0);
+                if (output != null) java.util.Arrays.fill(output, (byte) 0);
+            }
+        }
+
+        private Object base64Encode(List<Object> arguments) {
+            requireCrypto("crypto.base64_encode");
+            requireOne(arguments, "crypto.base64_encode");
+            byte[] source = byteList(arguments.getFirst(),
+                    CryptoPrimitives.MAX_BASE64_INPUT_BYTES, "Base64 input");
+            try {
+                return CryptoPrimitives.base64Encode(source);
+            } finally {
+                java.util.Arrays.fill(source, (byte) 0);
+            }
+        }
+
+        private Object base64Decode(List<Object> arguments) {
+            requireCrypto("crypto.base64_decode");
+            requireOne(arguments, "crypto.base64_decode");
+            byte[] result = CryptoPrimitives.base64Decode(
+                    requireString(arguments.getFirst(), "Base64 input"));
+            try {
+                return guestBytes(result);
+            } finally {
+                java.util.Arrays.fill(result, (byte) 0);
+            }
+        }
+
+        private Object secureRandomBytes(List<Object> arguments) {
+            requireCrypto("crypto.secure_random_bytes");
+            requireOne(arguments, "crypto.secure_random_bytes");
+            byte[] result = CryptoPrimitives.secureRandomBytes(
+                    integer(arguments.getFirst(), "random byte count"));
+            try {
+                return guestBytes(result);
+            } finally {
+                java.util.Arrays.fill(result, (byte) 0);
+            }
+        }
+
+        private Object constantTimeEquals(List<Object> arguments) {
+            requireCrypto("crypto.constant_time_equals");
+            requireTwo(arguments, "crypto.constant_time_equals");
+            byte[] a = byteList(arguments.get(0),
+                    CryptoPrimitives.MAX_HASH_INPUT_BYTES, "comparison left");
+            byte[] b = null;
+            try {
+                b = byteList(arguments.get(1),
+                        CryptoPrimitives.MAX_HASH_INPUT_BYTES, "comparison right");
+                return CryptoPrimitives.constantTimeEquals(a, b);
+            } finally {
+                java.util.Arrays.fill(a, (byte) 0);
+                if (b != null) java.util.Arrays.fill(b, (byte) 0);
+            }
         }
 
         private AeadPrimitives.Key ownedKey(Object value, String operation) {
