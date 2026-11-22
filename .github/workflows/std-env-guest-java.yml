@@ -5,18 +5,22 @@ on:
     paths:
       - 'stdlib/env.atto'
       - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/test/java/dev/oreslang/runtime/NativeAttoEnvStdlibTest.java'
       - 'src/test/resources/stdlib-parity/env.atto'
+      - 'src/test/resources/stdlib-parity/env-injected.atto'
       - '.github/workflows/std-env-guest-java.yml'
   push:
     branches: [main]
     paths:
       - 'stdlib/env.atto'
       - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/test/java/dev/oreslang/runtime/NativeAttoEnvStdlibTest.java'
       - 'src/test/resources/stdlib-parity/env.atto'
+      - 'src/test/resources/stdlib-parity/env-injected.atto'
       - '.github/workflows/std-env-guest-java.yml'
 
 permissions:
@@ -67,6 +71,10 @@ jobs:
           for case_name in \
             envModuleUsesClosedCanonicalAttoRegistry \
             linkedGuestExecutesStdEnvFallbackAndMissingSemantics \
+            linkedGuestUsesOnlyExplicitContextEnvironment \
+            snapshotDoesNotInspectDeniedHostValues \
+            missingCoarseEnvCapabilitySkipsEvenHostKeyEnumeration \
+            snapshotBoundsAuthorizedValuesAndNeverPrintsContents \
             projectCannotShadowCompilerOwnedStdEnv \
             scopedDenyPrecedesHostEnvironmentLookup \
             keyScopedDenyOverridesBroadAllowAndFallback \
