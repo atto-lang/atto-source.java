@@ -48,8 +48,7 @@ final class AsyncPersistentScalarActorRuntimeTest {
             await(io.ready());
             assertTrue(await(io.bootstrap(KEY, plan.initial_snapshot())));
             var prepared = prepare(images, io);
-            var actor = runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
-                    prepared, prepared.actor_type_name());
+            var actor = runtime.spawnPreparedPersistentScalarActor(prepared);
             assertNull(actor.ready().get(10, TimeUnit.SECONDS));
 
             // Send three messages before waiting: the runtime mailbox must
@@ -77,8 +76,7 @@ final class AsyncPersistentScalarActorRuntimeTest {
              var runtime = new ActorRuntime(IsolatePolicy.developer())) {
             await(reopened.ready());
             var prepared = prepare(images, reopened);
-            var actor = runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
-                    prepared, prepared.actor_type_name());
+            var actor = runtime.spawnPreparedPersistentScalarActor(prepared);
             assertNull(actor.ready().get(10, TimeUnit.SECONDS));
             actor.send(PersistentScalarCodeExecutor.get_count_message("recovered"));
             assertEquals(List.of("recovered", 2L), output(actor));
@@ -108,8 +106,7 @@ final class AsyncPersistentScalarActorRuntimeTest {
             assertTrue(await(io.enqueue(KEY, new DurableActorStore.Inbound(
                     "typed", plan.encode_increment_message(3)))));
             var prepared = prepare(images, io);
-            var actor = runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
-                    prepared, prepared.actor_type_name());
+            var actor = runtime.spawnPreparedPersistentScalarActor(prepared);
             assertNull(actor.ready().get(10, TimeUnit.SECONDS));
             actor.send(PersistentScalarCodeExecutor.get_count_message("replayed"));
             assertEquals(List.of("replayed", 7L), output(actor));
@@ -135,13 +132,11 @@ final class AsyncPersistentScalarActorRuntimeTest {
             await(newIo.ready());
             await(oldIo.bootstrap(KEY, plan.initial_snapshot()));
             var old = prepare(oldImages, oldIo);
-            var oldActor = oldRuntime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
-                    old, old.actor_type_name());
+            var oldActor = oldRuntime.spawnPreparedPersistentScalarActor(old);
             assertNull(oldActor.ready().get(10, TimeUnit.SECONDS));
 
             var current = prepare(newImages, newIo);
-            var currentActor = newRuntime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
-                    current, current.actor_type_name());
+            var currentActor = newRuntime.spawnPreparedPersistentScalarActor(current);
             assertNull(currentActor.ready().get(10, TimeUnit.SECONDS));
 
             oldActor.send(PersistentScalarCodeExecutor.increment_message("stale", 99));
