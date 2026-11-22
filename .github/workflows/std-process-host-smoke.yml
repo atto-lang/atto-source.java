@@ -7,6 +7,12 @@ on:
       - 'stdlib/process_policy.atto'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/main/java/dev/oreslang/runtime/TrustedChildProcessRunner.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeChildProcesses.java'
+      - 'src/main/java/dev/oreslang/runtime/OresContext.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/AttoChildProcessGuestTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeChildProcessesTest.java'
       - 'tests/host/StdProcessNamespaceSmoke.java'
       - 'tests/host/TrustedChildProcessRunnerSmoke.java'
       - 'tests/host/run-std-process-smoke.sh'
@@ -32,3 +38,19 @@ jobs:
           java-version: '21'
       - name: Verify Java host process and namespace tests
         run: bash tests/host/run-std-process-smoke.sh
+
+  guest-jdk21:
+    name: guest-jdk21-process-bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Compile and execute real child-process JVM and guest tests
+        run: mvn --batch-mode -Dtest=NativeChildProcessesTest,AttoChildProcessGuestTest test
