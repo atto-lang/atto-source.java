@@ -15,7 +15,11 @@
 //
 // The host network facade remains an implementation detail.
 define module Udp as
-  pub async routine bind_loopback(int port): UdpSocket {
-    return await network.bind_udp("127.0.0.1", port);
+  // A synchronous wrapper returns the VM-owned Future without creating an
+  // independent async task. The caller awaits it in the socket's owner task.
+  // An async routine returning UdpSocket would require a forbidden cross-task
+  // move of a privileged host handle.
+  pub fnc bind_loopback(int port): Future<UdpSocket> {
+    return network.bind_udp("127.0.0.1", port);
   }
 end
