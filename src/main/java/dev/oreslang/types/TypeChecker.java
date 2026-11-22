@@ -8256,6 +8256,18 @@ public final class TypeChecker {
                 default -> throw new IllegalArgumentException("unknown Bytes member " + name);
             };
         }
+        // UDP packet reads are immediate immutable snapshots. The socket is
+        // affine and its asynchronous operations return Future<T>.
+        if (named.name().equals("UdpPacket")) {
+            return switch (name) {
+                case "bytes" -> new Function(List.of(), new ListType(Primitive.INT));
+                case "source_port" -> new Function(List.of(), Primitive.INT);
+                default -> throw new IllegalArgumentException("unknown UdpPacket member " + name);
+            };
+        }
+        if (named.name().equals("UdpSocket") && name.equals("local_port")) {
+            return new Function(List.of(), Primitive.INT);
+        }
         // Async TCP v1.1: split is synchronous and consumes the connection.
         if (named.name().equals("NioConnection") && name.equals("split")) {
             return new Function(List.of(), new Tuple(
@@ -8312,6 +8324,10 @@ public final class TypeChecker {
             }
             case "network", "net" -> {
                 switch (name) {
+                    case "bind_udp" -> {
+                        result = new Named("UdpSocket", List.of());
+                        parameters = List.of(Primitive.STRING, Primitive.INT);
+                    }
                     case "listen_async" -> {
                         result = new Named("NioListener", List.of());
                         parameters = List.of(Primitive.STRING, Primitive.INT);
@@ -8342,6 +8358,23 @@ public final class TypeChecker {
                         result = Primitive.VOID; parameters = List.of();
                     }
                     default -> throw new IllegalArgumentException("unknown BinaryFile member " + name);
+                }
+            }
+            case "UdpSocket" -> {
+                switch (name) {
+                    case "send_to" -> {
+                        result = Primitive.INT;
+                        parameters = List.of(Primitive.INT, new ListType(Primitive.INT));
+                    }
+                    case "recv_from" -> {
+                        result = new Named("UdpPacket", List.of());
+                        parameters = List.of(Primitive.INT);
+                    }
+                    case "close" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown UdpSocket member " + name);
                 }
             }
             case "NioListener" -> {
