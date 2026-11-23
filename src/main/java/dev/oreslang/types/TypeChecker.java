@@ -62,6 +62,8 @@ public final class TypeChecker {
 
     /** Strict source-profile flag is local to this checker; never process-global. */
     private boolean strictAttoEquality;
+    /** Selected lexical prelude profile; defaults to hosted Java for compatibility. */
+    private AutomaticPrelude.Profile preludeProfile = AutomaticPrelude.Profile.HOSTED;
     /** Exact return spelling scoped to the checked source callable. */
     private Ast.TypeRef strictCallableReturnSource;
 
@@ -400,6 +402,20 @@ public final class TypeChecker {
      * unchanged; strict callers must not bypass this path after parsing.
      */
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program, boolean strictAttoEquality) {
+        return checkTypesWithDiagnostics(program, strictAttoEquality, AutomaticPrelude.Profile.HOSTED);
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, AutomaticPrelude.Profile preludeProfile) {
+        return checkTypesWithDiagnostics(program, false, preludeProfile);
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, boolean strictAttoEquality,
+            AutomaticPrelude.Profile preludeProfile) {
+        if (preludeProfile == null) {
+            throw new IllegalArgumentException("prelude profile cannot be null");
+        }
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -410,6 +426,7 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
+        checker.preludeProfile = preludeProfile;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -632,6 +649,10 @@ public final class TypeChecker {
             rejectUnloweredCheckedClassEffects(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
+            if (CoreTypeRegistry.protectedIdentity(linked.name())) {
+                throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked contract/trait cannot "
+                        + "replace compiler-owned core identity " + linked.name());
+            }
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
         program = AnnotationExpander.expand(program);
@@ -718,6 +739,14 @@ public final class TypeChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
+            // Check both the import spelling and authenticated source origin;
+            // a harmless local alias must not cloak a forged builtin identity.
+            if (CoreTypeRegistry.protectedIdentity(name)
+                    || CoreTypeRegistry.protectedIdentity(declaration.name())) {
+                throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked class identity '"
+                        + name + "' / '" + declaration.name()
+                        + "' cannot replace a compiler-owned core type");
+            }
 
             String linkedModuleAlias = null;
             boolean importedDirectly = declaration.actorKind() == Ast.ActorKind.NONE
@@ -769,6 +798,10 @@ public final class TypeChecker {
                 if (alias.getKey() == null || alias.getValue() == null
                         || !alias.getKey().equals(alias.getValue().name())) {
                     throw new IllegalArgumentException("invalid private linked field type alias");
+                }
+                if (CoreTypeRegistry.protectedIdentity(alias.getKey())) {
+                    throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked private alias cannot "
+                            + "replace compiler-owned core type " + alias.getKey());
                 }
             }
             checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
@@ -855,6 +888,12 @@ public final class TypeChecker {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
+                // An explicit import alias may not redirect a compiler-owned
+                // ADT constructor/type to a user package or host interop symbol.
+                if (CoreTypeRegistry.protectedIdentity(name)) {
+                    throw new IllegalArgumentException("E_PRELUDE_SPOOF: explicit import cannot "
+                            + "rebind compiler-owned prelude identity '" + name + "'");
+                }
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
                 if (localNames.contains(name)
@@ -906,6 +945,10 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
+        if (CoreTypeRegistry.protectedIdentity(name)) {
+            throw new IllegalArgumentException("E_PRELUDE_SPOOF: compiler-owned prelude identity '"
+                    + name + "' cannot be declared as " + declarationKind);
+        }
         if ("Symbol".equals(name) || "Newable".equals(name)
                 || "Atomic".equals(name) || "AtomicCompareExchange".equals(name)) {
             throw new IllegalArgumentException(name
@@ -915,6 +958,10 @@ public final class TypeChecker {
     }
 
     private void putFunction(String module, Ast.FunctionDecl fn) {
+        if (CoreTypeRegistry.protectedIdentity(fn.name())) {
+            throw new IllegalArgumentException("E_PRELUDE_SPOOF: compiler-owned prelude identity '"
+                    + fn.name() + "' cannot be declared as a function");
+        }
         String qualified = module + "." + fn.name();
         putFunctionSlot(qualified, fn);
 
@@ -13127,6 +13174,41 @@ public final class TypeChecker {
         throw new IllegalArgumentException("E_TYPE_QUERY_UNBOUND: " + binding);
     }
 
+    /**
+     * Generic arity for compiler-owned core names is read from CoreTypeRegistry.
+     * This is deliberately limited to explicit ordinary type arguments: array
+     * shape dimensions and named collection layout metadata are separate syntax
+     * channels and must be validated by their dedicated rules.
+     */
+    private void validateRegisteredCoreTypeArity(Ast.TypeRef ref, Set<String> generics) {
+        CoreTypeRegistry.TypeInfo info = CoreTypeRegistry.lookup(ref.name()).orElse(null);
+        if (info == null || info.kind() != CoreTypeRegistry.Kind.TYPE) return;
+        // Type variables, primitive scalars (dedicated diagnostics below) and
+        // user declarations that shadow a prelude name keep their own rules.
+        if (generics.contains(ref.name())
+                || info.canonicalIdentity().startsWith("core/primitive/")) return;
+        if (!Set.of("Option", "Result").contains(ref.name()) && findClass(ref.name()) != null) return;
+        if (info.scope() == CoreTypeRegistry.Scope.ALLOC
+                && preludeProfile == AutomaticPrelude.Profile.CORE) {
+            throw new IllegalArgumentException("E_ALLOC_PROFILE_REQUIRED: "
+                    + info.canonicalIdentity() + " requires an allocator-enabled profile");
+        }
+        if (ref.inferArguments()) return;
+        if (ref.arguments().stream().anyMatch(Ast.TypeRef::isSequenceShape)
+                || ref.arguments().stream().anyMatch(Ast.TypeRef::isNamedParameter)) return;
+        int arity = ref.arguments().size();
+        // Option and Result require exact explicit generic arguments; most
+        // existing collection syntax also has contextual inference forms.
+        if (arity == 0 && !Set.of("Option", "Result").contains(ref.name())) return;
+        if (!info.acceptsArity(arity)) {
+            String expected = info.minGenericArity() == info.maxGenericArity()
+                    ? Integer.toString(info.minGenericArity())
+                    : info.minGenericArity() + ".." + info.maxGenericArity();
+            throw new IllegalArgumentException("E_CORE_TYPE_ARITY: " + info.canonicalIdentity()
+                    + " requires generic arity " + expected + ", found " + arity);
+        }
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
         return resolve(ref, generics, self, false);
     }
@@ -13595,6 +13677,8 @@ public final class TypeChecker {
                 resolvingAliases.remove(alias);
             }
         }
+
+        validateRegisteredCoreTypeArity(ref, generics);
 
         // Primitive and scalar built-in types do not accept higher-kinded
         // application. Previously e.g. int<string> silently resolved to int.
