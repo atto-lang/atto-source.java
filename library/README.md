@@ -5,9 +5,9 @@ Layered `core`/`alloc`/`std` units per
 packaged as resources under `dev/oreslang/lib/` and imported with
 
 ```atto
-import module num from "core/num";
-import module arena from "alloc/arena";
-import module path from "std/path";
+import module num from "atto.core/num";
+import module arena from "atto.alloc/arena";
+import module path from "atto.std/path";
 ```
 
 | Layer   | Units |
@@ -16,9 +16,11 @@ import module path from "std/path";
 | `alloc` | `arena` |
 | `std`   | `io`, `path` (POSIX/Windows variant chosen by `--target-os=` / `--platform=`, else the host OS) |
 
-* `core/`, `alloc/` and `atto.*` roots are reserved and fail closed for unknown
-  units. On the shared legacy roots (`std/`, `ores.core/`, `ores.std/`) only v1
-  unit names select this registry; every existing legacy module keeps working.
+* `atto.<layer>/<unit>` is canonical; `<layer>/<unit>` is accepted shorthand.
+  `ores.*` spellings never select a v1 unit. `atto.core/<x>` and `atto.std/<x>`
+  also reach every pre-v1 legacy module (e.g. `atto.std/assert`); the old
+  `ores.*`/`std/` legacy spellings keep working for those modules only.
+* Unknown units under `atto.*`, `core/` and `alloc/` fail closed.
 * Library units may import only their own or a lower layer.
 * `.atto` units run under the checked-i64 profile; imports of library units and
   explicit `.atto` files are admitted in that profile.

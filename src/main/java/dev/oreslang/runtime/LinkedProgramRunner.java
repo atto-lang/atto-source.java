@@ -607,15 +607,15 @@ public final class LinkedProgramRunner {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (!CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
-                throw new IllegalArgumentException("compiler-owned "
-                        + library.layer().label() + " modules may import only core/*, alloc/* or std/*: "
+                throw new IllegalArgumentException("compiler-owned atto."
+                        + library.layer().label() + " modules may import only atto.core/*, atto.alloc/* or atto.std/*: "
                         + id + " -> " + imported.path());
             }
             CoreLibrarySources.LibraryUnit dependency =
                     CoreLibrarySources.libraryUnit(imported.path());
             if (!CoreLibrarySources.layerMayDependOn(library.layer(), dependency.layer())) {
-                throw new IllegalArgumentException("compiler-owned "
-                        + library.layer().label() + " modules may not depend on "
+                throw new IllegalArgumentException("compiler-owned atto."
+                        + library.layer().label() + " modules may not depend on atto."
                         + dependency.layer().label() + "/*: " + id + " -> " + imported.path());
             }
             dependencies.add(dependency);
