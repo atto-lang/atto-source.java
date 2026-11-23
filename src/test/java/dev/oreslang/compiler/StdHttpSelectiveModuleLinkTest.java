@@ -48,7 +48,7 @@ final class StdHttpSelectiveModuleLinkTest {
     @Test
     void privateModuleCannotBeImportedAcrossUnits() {
         Ast.Program library = Parser.parse("""
-                define module http as
+                define private module http as
                   pub fnc status(): int { return 200; }
                 end
                 define pub module http3 as

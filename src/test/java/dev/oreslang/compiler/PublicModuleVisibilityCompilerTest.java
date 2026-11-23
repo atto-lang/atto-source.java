@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Public module exposure changes are observable import-graph ABI changes. */
 final class PublicModuleVisibilityCompilerTest {
     private static final String PRIVATE = """
-            define module api as
+            define private module api as
               pub fnc version(): int { return 1; }
             end
             """;
@@ -56,7 +56,7 @@ final class PublicModuleVisibilityCompilerTest {
     @Test
     void publicFunctionInsidePrivateModuleIsNotAnExport() {
         String library = """
-                define module internal as
+                define private module internal as
                   pub fnc leak(): int { return 7; }
                 end
                 """;

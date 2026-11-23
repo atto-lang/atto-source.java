@@ -4062,7 +4062,8 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             return;
         }
-        throw error("mutation target must be rooted in a mutable local/parameter or exclusive borrow");
+        throw error("mutation target must be rooted in a mutable local/parameter or exclusive borrow ("
+                + what + " on " + receiver.getClass().getSimpleName() + ")");
     }
 
     /**

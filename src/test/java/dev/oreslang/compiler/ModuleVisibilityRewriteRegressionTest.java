@@ -21,7 +21,7 @@ final class ModuleVisibilityRewriteRegressionTest {
               define class Widget as
               end
             end
-            define module internal as
+            define private module internal as
               fnc secret(): int { return 17; }
             end
             export pub entry;
