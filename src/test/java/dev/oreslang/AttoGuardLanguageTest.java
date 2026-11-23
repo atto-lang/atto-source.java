@@ -60,18 +60,59 @@ final class AttoGuardLanguageTest {
     }
 
     @Test
-    void continueGuardTargetsEnclosingLoop() throws Exception {
-        assertEquals("3", run("""
-                pub routine main(): void {
-                  let i = 0;
-                  loop {
-                    i = i + 1;
-                    guard i >= 3 { continue; }
-                    stdio.stdout.write(i);
-                    break;
-                  }
-                }
-                """));
+    void guardRequiresExplicitReturnNotLoopExit() {
+        // A break or continue may exit a loop/iteration, but never returns
+        // from the enclosing function, so neither proves a valid guard.
+        for (String failure : new String[]{"break;", "continue;"}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("""
+                        pub routine main(): void {
+                          let i = 0;
+                          loop {
+                            i = i + 1;
+                            guard i >= 3 { %s }
+                            if i > 5 then break; fi
+                          }
+                        }
+                        """.formatted(failure)));
+            assertTrue(error.getMessage().contains(
+                    "guard failure block must explicitly return"), error::getMessage);
+        }
+    }
+
+    @Test
+    void guardDoesNotTrustUnreachableReturnAfterLoopExit() {
+        for (String failure : new String[]{"break;", "continue;"}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("""
+                        pub routine main(): void {
+                          loop {
+                            guard false else
+                              %s
+                              return;
+                            end
+                            return;
+                          }
+                        }
+                        """.formatted(failure)));
+            assertTrue(error.getMessage().contains(
+                    "guard failure block must explicitly return"), error::getMessage);
+        }
+    }
+
+    @Test
+    void guardRejectsThrowOnlyFailureEvenIfItWouldTerminate() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    pub routine main(): void {
+                      guard false { throw new Error("bad"); }
+                    }
+                    """));
+        // The Java frontend currently rejects typed throw at source admission
+        // before guard flow proof. Either route must reject this program.
+        assertTrue(error.getMessage().contains("typed exceptional effect")
+                || error.getMessage().contains("guard failure block must explicitly return"),
+                error::getMessage);
     }
 
     @Test
@@ -121,6 +162,92 @@ final class AttoGuardLanguageTest {
                   stdio.stdout.write(choose(0));
                 }
                 """));
+    }
+
+    @Test
+    void keywordElseEndGuardMatchesBracedReturnAndFallthrough() throws Exception {
+        assertEquals("423-1", run("""
+                fnc brace(int x): int {
+                  guard x > 0 { return -1; }
+                  return x;
+                }
+                fnc keyword(int x): int {
+                  guard x > 0 else
+                    return -1;
+                  end
+                  return x;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(keyword(42));
+                  stdio.stdout.write(brace(3));
+                  stdio.stdout.write(keyword(0));
+                }
+                """));
+    }
+
+    @Test
+    void keywordGuardUsesOuterIfElseCorrectlyAndSupportsNestedGuards() throws Exception {
+        assertEquals("4279", run("""
+                fnc choose(bool ready, int x): int {
+                  if ready then
+                    guard x > 0 else
+                      return 7;
+                    end
+                  else
+                    return 9;
+                  fi
+                  return 42;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(choose(true, 1));
+                  stdio.stdout.write(choose(true, 0));
+                  stdio.stdout.write(choose(false, 1));
+                }
+                """));
+    }
+
+    @Test
+    void keywordGuardMatchesBracedSideEffectsAndTerminationProof() throws Exception {
+        assertEquals("failed42", run("""
+                fnc choose(int x): int {
+                  guard x > 0 else
+                    stdio.stdout.write("failed");
+                    return 42;
+                  end
+                  return x;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(choose(0));
+                }
+                """));
+        reject("""
+                fnc choose(int x): int {
+                  guard x > 0 else
+                    stdio.stdout.write(x);
+                  end
+                  return x;
+                }
+                """);
+        reject("""
+                fnc choose(int x): int {
+                  guard x > 0 else
+                    return 0;
+                  fi
+                  return x;
+                }
+                """);
+    }
+
+    @Test
+    void keywordGuardTypechecksOriginalOptionalPortExample() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc optional_port(bool present): Option<int> {
+                  guard present else
+                    return None;
+                  end
+                  return Some(8080);
+                }
+                """)));
     }
 
     @Test
