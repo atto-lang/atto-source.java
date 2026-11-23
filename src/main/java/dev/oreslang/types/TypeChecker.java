@@ -682,10 +682,19 @@ public final class TypeChecker {
             // Only concrete, effect-free signatures are linked. Anything else
             // (Any/generic/async/annotated callables, e.g. std/assert) keeps the
             // legacy opaque import behavior instead of a nominal mis-typing.
+            Set<String> linkedNominals = linkedClasses.keySet();
             boolean allConcrete = module.declarations().stream()
-                    .allMatch(d -> d instanceof Ast.FunctionDecl fn
+                    .allMatch(d -> (d instanceof Ast.FunctionDecl fn
                             && (fn.visibility() != Ast.Visibility.PUBLIC
-                                || concreteLinkedSignature(fn)));
+                                || linkableSignature(fn, linkedNominals)))
+                            // Public module classes are linked as alias.X by
+                            // the incremental compiler; private helpers and
+                            // aliases are invisible to the importer.
+                            || (d instanceof Ast.ClassDecl klass
+                                && klass.actorKind() == Ast.ActorKind.NONE
+                                && (klass.visibility() != Ast.Visibility.PUBLIC
+                                    || linkedNominals.contains(alias + "." + klass.name())))
+                            || d instanceof Ast.TypeAliasDecl);
             if (!allConcrete) {
                 // Mixed modules (classes, generic or Any signatures) keep the
                 // opaque import binding, but their concrete public functions
@@ -703,7 +712,7 @@ public final class TypeChecker {
                     if (declaration instanceof Ast.FunctionDecl fn
                             && fn.visibility() == Ast.Visibility.PUBLIC
                             && publicArity.get(fn.name()) == 1
-                            && concreteLinkedSignature(fn)) {
+                            && linkableSignature(fn, linkedNominals)) {
                         checker.putFunctionSlot(alias + "." + fn.name(), fn);
                         checker.partiallyLinkedModules.add(alias);
                     }
@@ -2025,6 +2034,49 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
+    /**
+     * Cross-file callable signatures the importer can type exactly (typed
+     * linked IR v1): concrete or generic, sync, async or suspends, with owned
+     * or borrowed parameters over built-in, collection and linked nominal
+     * types. Nominals must already be qualified to their linked alias.X name.
+     * Anything else stays an opaque import, never a guessed type.
+     */
+    private static boolean linkableSignature(Ast.FunctionDecl fn, Set<String> linkedNominals) {
+        if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
+                || fn.generator() || fn.structural() || fn.nonLexical() || fn.trapped()
+                || !fn.annotations().isEmpty()) {
+            return false;
+        }
+        Set<String> generics = Set.copyOf(fn.genericParameters());
+        if (!linkableType(fn.returnType(), generics, linkedNominals, true)) return false;
+        for (Ast.Param param : fn.parameters()) {
+            if (param == null || param.structural()
+                    || !linkableType(param.type(), generics, linkedNominals, false)) return false;
+        }
+        return true;
+    }
+
+    private static boolean linkableType(Ast.TypeRef ref, Set<String> generics,
+                                        Set<String> linkedNominals, boolean allowVoid) {
+        if (ref == null || ref.name() == null || ref.inferArguments()) return false;
+        if (ref.isBorrow()) {
+            return linkableType(ref.borrowedTarget(), generics, linkedNominals, false);
+        }
+        List<Ast.TypeRef> args = ref.arguments();
+        if (args.stream().anyMatch(arg -> arg.isSequenceShape() || arg.isNamedParameter())) return false;
+        java.util.function.IntPredicate arity = n -> args.size() == n
+                && args.stream().allMatch(arg -> linkableType(arg, generics, linkedNominals, false));
+        if (generics.contains(ref.name())) return args.isEmpty();
+        return switch (ref.name()) {
+            case "int", "float", "bool", "String", "string" -> args.isEmpty();
+            case "void" -> allowVoid && args.isEmpty();
+            case "Option", "Array", "List", "Future", "Set" -> arity.test(1);
+            case "Result", "Map" -> arity.test(2);
+            default -> linkedNominals.contains(ref.name())
+                    && args.stream().allMatch(arg -> linkableType(arg, generics, linkedNominals, false));
+        };
+    }
+
     private static boolean concreteLinkedSignature(Ast.FunctionDecl fn) {
         if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
                 || fn.async() || fn.suspends() || fn.generator() || fn.structural()

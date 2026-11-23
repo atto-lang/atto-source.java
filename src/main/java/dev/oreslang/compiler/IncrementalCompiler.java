@@ -303,17 +303,19 @@ public final class IncrementalCompiler {
             String id, Ast.Program program, Map<String, Ast.Program> parsed,
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Ast.ModuleDecl> result = new LinkedHashMap<>();
-        Map<String, String> resolutions = importResolutions.getOrDefault(id, Map.of());
         for (Ast.ImportDecl imported : program.imports()) {
             if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) continue;
-            String targetId = resolutions.get(imported.path());
+            // Same resolution as class linking: explicit resolver entries
+            // first, then supplied relative units (ImportGraph proves identity).
+            String targetId = ImportGraph.resolveImportUnitId(
+                    id, imported, parsed.keySet(), importResolutions);
             Ast.Program target = targetId == null ? null : parsed.get(targetId);
             if (target == null) continue;
             for (String name : imported.names()) {
                 for (Ast.ModuleDecl module : target.modules()) {
                     if (module.name().equals(name)) {
                         String alias = dev.oreslang.imports.ImportRules.localName(imported, name);
-                        if (result.putIfAbsent(alias, module) != null) {
+                        if (result.putIfAbsent(alias, ForeignModuleQualifier.qualify(alias, module)) != null) {
                             throw new IllegalArgumentException(
                                     "duplicate imported module binding '" + alias + "'");
                         }
@@ -370,16 +372,31 @@ public final class IncrementalCompiler {
                         throw new IllegalArgumentException(
                                 "missing linked module '" + moduleName + "'");
                     }
-                    String prefix = ImportRules.localName(imported, moduleName) + ".";
+                    String moduleAlias = ImportRules.localName(imported, moduleName);
+                    String prefix = moduleAlias + ".";
+                    LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
+                    for (Ast.Decl companion : selected.declarations()) {
+                        if (companion instanceof Ast.TypeAliasDecl typeAlias
+                                && moduleAliases.putIfAbsent(typeAlias.name(), typeAlias) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate type alias in linked module: " + typeAlias.name());
+                        }
+                    }
                     for (Ast.Decl declaration : selected.declarations()) {
                         if (declaration instanceof Ast.ClassDecl klass
                                 && klass.visibility() == Ast.Visibility.PUBLIC
                                 && klass.actorKind() == Ast.ActorKind.NONE) {
                             String qualified = prefix + klass.name();
-                            if (ownershipClasses.putIfAbsent(qualified, klass) != null) {
+                            // Signatures name sibling module classes by short
+                            // name; the importer only reaches them as alias.X.
+                            Ast.ClassDecl linkedClass =
+                                    ForeignModuleQualifier.qualify(moduleAlias, selected, klass);
+                            if (ownershipClasses.putIfAbsent(qualified, linkedClass) != null
+                                    || linked.putIfAbsent(qualified, linkedClass) != null) {
                                 throw new IllegalArgumentException(
                                         "ambiguous linked public module class '" + qualified + "'");
                             }
+                            aliases.put(qualified, Map.copyOf(moduleAliases));
                         }
                     }
                 }
