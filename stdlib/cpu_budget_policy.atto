@@ -1,0 +1,47 @@
+// CPU sizing arithmetic extracted from CpuCarrierBudget.java.
+// OS/cgroup reads, runner affinity, and actual worker admission stay host-only.
+define module cpu_budget_policy as
+  pub fnc clamp_processors(int available, int cpuset, int quota): int {
+    let int result = available;
+    if result < 1; do result = 1; fi
+    if cpuset > 0 && cpuset < result; do result = cpuset; fi
+    if quota > 0 && quota < result; do result = quota; fi
+    return result;
+  }
+
+  // Numeric cgroup quota helper; text parsing and OS trust stay in Java.
+  // Java's positive long quota is ceil(amount / period), saturated to i32.
+  pub fnc quota_ceil(int amount, int period): int {
+    if amount <= 0 || period <= 0; do return 0; fi
+    val int whole = amount / period;
+    let int result = whole;
+    if amount > whole * period; do result = result + 1; fi
+    if result > 2147483647; do return 2147483647; fi
+    return result;
+  }
+
+  pub fnc private_workers(int budget): int {
+    if budget > 2147483647; do return -1; fi
+    let int capacity = budget;
+    if capacity < 1; do capacity = 1; fi
+    let int workers = capacity / 4;
+    if workers < 1; do workers = 1; fi
+    return workers;
+  }
+
+  pub fnc shared_workers(int budget): int {
+    if budget > 2147483647; do return -1; fi
+    let int capacity = budget;
+    if capacity < 1; do capacity = 1; fi
+    val int reserved = 2 * private_workers(capacity);
+    let int workers = capacity - reserved;
+    if workers < 1; do workers = 1; fi
+    return workers;
+  }
+
+  // Explicitly mirrors Java's current untrusted=private sizing,
+  // not a proof of tenant-level physical CPU quotas.
+  pub fnc untrusted_workers(int budget): int {
+    return private_workers(budget);
+  }
+end

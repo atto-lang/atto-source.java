@@ -1,0 +1,14 @@
+import module source_budget_policy from "std/source_budget_policy.atto";
+pub routine main(): void {
+  stdio.println(source_budget_policy.valid_depth(96));
+  stdio.println(source_budget_policy.valid_depth(97));
+  stdio.println(source_budget_policy.can_admit(0, 0, 2, 1));
+  stdio.println(source_budget_policy.can_admit(67108864, 3, 1, 1));
+  stdio.println(source_budget_policy.can_admit(67108860, 100, 4, 96));
+  stdio.println(source_budget_policy.can_admit(0, 1024, 0, 0));
+  stdio.println(source_budget_policy.can_admit(0, 0, 0, -1));
+  stdio.println(source_budget_policy.can_admit(0, 0, -1, 0));
+  stdio.println(source_budget_policy.bytes_remaining(67108800, 10));
+  stdio.println(source_budget_policy.units_remaining(30, 1023));
+  return;
+}

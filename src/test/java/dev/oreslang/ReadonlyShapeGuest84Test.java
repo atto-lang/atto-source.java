@@ -34,7 +34,7 @@ final class ReadonlyShapeGuest84Test {
             }
             """;
 
-    private static void compileAndRun(String source) {
+    private static void compileAndRun(String source) throws java.io.IOException {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
                 "real Atto type checker must accept structural call");
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -49,7 +49,7 @@ final class ReadonlyShapeGuest84Test {
     }
 
     @Test
-    void structuralInterfaceToDifferentlyLaidOutClassesMustExecute() {
+    void structuralInterfaceToDifferentlyLaidOutClassesMustExecute() throws Exception {
         compileAndRun("""
                 define interface HasX
                     x: int;
@@ -61,7 +61,7 @@ final class ReadonlyShapeGuest84Test {
     }
 
     @Test
-    void bareAnonymousShapeToDifferentlyLaidOutClassesMustExecute() {
+    void bareAnonymousShapeToDifferentlyLaidOutClassesMustExecute() throws Exception {
         compileAndRun("""
                 fnc read_x(p: {x: int}): int {
                     return p.x;

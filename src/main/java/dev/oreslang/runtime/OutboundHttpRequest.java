@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -487,10 +488,29 @@ public final class OutboundHttpRequest {
             String method,
             String url,
             List<?> rawHeaders) {
+        return request(context, method, url, rawHeaders, null);
+    }
+
+    /**
+     * Fourth argument is an immutable String (UTF-8) or list of 0..255
+     * integers (Bytes-compatible portable bootstrap). Copy the entire
+     * body before asynchronous admission; no live guest Array or mutable
+     * alias crosses the source Task to physical I/O worker.
+     */
+    public static OresFuture<Response> request(
+            OresContext context,
+            String method,
+            String url,
+            List<?> rawHeaders,
+            Object rawBody) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(url, "url");
-        List<Map.Entry<String, String>> headers = requestHeaders(rawHeaders);
+        if (!method.equals("GET") && !method.equals("HEAD")
+                && !method.equals("POST")) {
+            throw new IllegalArgumentException("http.request supports GET, HEAD or POST");
+        }
+        List<Map.Entry<String, String>> providedHeaders = requestHeaders(rawHeaders);
         URI target;
         try {
             target = URI.create(url);
@@ -499,10 +519,46 @@ public final class OutboundHttpRequest {
                     "http.request requires a canonical absolute URL", invalid));
         }
 
-        ProxyOutboundLoopback.validateTarget(target, method);
+        // Preserve the GET/HEAD proof harness public contract. A POST has
+        // exactly the same canonical loopback authority/path admission; its
+        // method and bounded body are checked independently above.
+        ProxyOutboundLoopback.validateTarget(
+                target, method.equals("POST") ? "GET" : method);
         String endpoint = "127.0.0.1:" + target.getPort();
         context.requirePermission(
                 RuntimePermissions.Permission.NET, endpoint, "http.request");
+
+        // Resolve permissions before copying up to 1 MiB of guest-owned
+        // memory. Unauthorized requests must not incur body traversal or
+        // borrow mutable source bytes across actor/task boundaries.
+        final byte[] requestBody = requestBodyBytes(rawBody);
+        if (!method.equals("POST") && requestBody.length != 0) {
+            throw new IllegalArgumentException("only POST may carry a request body");
+        }
+
+        // Read the immutable context on the *guest admission* carrier, not
+        // the later physical-I/O worker. No userland tracing call is required.
+        // The same immutable header list is then carried through async I/O.
+        final List<Map.Entry<String, String>> headers;
+        final SemanticTraceBuffer.Scope clientSpan;
+        if (context.autoTrace().enabled()) {
+            // A top-level client call without a logical parent is a genuine
+            // root span, not a synthetic child of an invisible span.
+            TraceParent activeParent = TaskContext.traceParent();
+            TraceParent outbound = activeParent == null
+                    ? TraceParent.newRoot(true) : activeParent.newChild();
+            headers = withTraceparentValue(providedHeaders, outbound);
+            clientSpan = context.semanticTrace().begin(outbound,
+                    activeParent == null ? "" : activeParent.spanId(),
+                    SemanticTraceBuffer.HTTP_CLIENT, SemanticTraceBuffer.Kind.CLIENT);
+        } else {
+            headers = providedHeaders;
+            clientSpan = null;
+        }
+        // Allocated only with sampling and trusted context; otherwise the
+        // CLIENT path incurs no new physical-operation bookkeeping.
+        final java.util.concurrent.atomic.AtomicInteger observedStatus =
+                clientSpan == null ? null : new java.util.concurrent.atomic.AtomicInteger();
 
         Owner owner = Owner.capture(context);
         Revocation revocation = new Revocation(context);
@@ -525,14 +581,21 @@ public final class OutboundHttpRequest {
                             target,
                             method,
                             headers,
+                            requestBody,
                             owner,
                             revocation,
                             exposed,
-                            lifetime);
+                            lifetime,
+                            observedStatus);
                     return null;
                 });
 
         physical.whenCompleteRuntime((ignored, failure) -> {
+            // An async CLIENT span follows actual physical network operation
+            // retirement, not the Future returned at source admission.
+            SemanticTraceBuffer.finish(clientSpan,
+                    observedStatus == null ? 0 : observedStatus.get(),
+                    failure != null);
             if (failure == null) {
                 if (!lifetime.isDone()) lifetime.completeFromRuntime(null);
                 return;
@@ -557,10 +620,12 @@ public final class OutboundHttpRequest {
             URI target,
             String method,
             List<Map.Entry<String, String>> headers,
+            byte[] requestBody,
             Owner owner,
             Revocation revocation,
             OresFuture<Response> exposed,
-            OresFuture<Void> lifetime) throws IOException {
+            OresFuture<Void> lifetime,
+            java.util.concurrent.atomic.AtomicInteger observedStatus) throws IOException {
         if (revocation.requested()) {
             throw new CancellationException(
                     "http.request revoked before native acquisition");
@@ -577,7 +642,8 @@ public final class OutboundHttpRequest {
         BodyPipe pipe = null;
         try (transport) {
             PinnedHttpTransport.Response upstream =
-                    transport.request(target, method, headers);
+                    transport.request(target, method, headers, requestBody);
+            if (observedStatus != null) observedStatus.set(upstream.status());
             try (upstream) {
                 if (revocation.requested()) {
                     throw new CancellationException(
@@ -626,6 +692,107 @@ public final class OutboundHttpRequest {
         } finally {
             revocation.clearTransport(transport);
         }
+    }
+
+    /**
+     * Trusted HTTP CLIENT boundary: inject a new W3C child parent-id from
+     * immutable logical task context. No sender-controlled traceparent can
+     * override the runtime-owned identity while tracing is enabled.
+     *
+     * This first slice does NOT create an OTLP CLIENT span, or copy tracestate.
+     * It is a standalone wire-propagation primitive with explicit budgets.
+     */
+    static List<Map.Entry<String, String>> withTraceparent(
+            List<Map.Entry<String, String>> provided,
+            TraceParent parent) {
+        Objects.requireNonNull(provided, "provided");
+        if (parent == null) return provided;
+        return withTraceparentValue(provided, parent.newChild());
+    }
+
+    /** Inject an already-minted root or child span ID exactly once. */
+    private static List<Map.Entry<String, String>> withTraceparentValue(
+            List<Map.Entry<String, String>> provided,
+            TraceParent outgoing) {
+        Objects.requireNonNull(provided, "provided");
+        Objects.requireNonNull(outgoing, "outgoing");
+
+        long bytes = 0L;
+        for (Map.Entry<String, String> header : provided) {
+            String key = header.getKey();
+            if (key.equalsIgnoreCase("traceparent") || key.equalsIgnoreCase("tracestate")) {
+                throw new IllegalArgumentException(
+                        "traceparent/tracestate are runtime-owned while auto tracing is enabled");
+            }
+            bytes += (long) key.length() + header.getValue().length() + 4L;
+        }
+        // "traceparent" (11) + ": " (2) + 55-byte W3C v00 value + CRLF (2)
+        if (provided.size() >= 100 || bytes > 32_768L - 70L) {
+            throw new IllegalArgumentException(
+                    "http.request trace propagation exceeds header budgets");
+        }
+        ArrayList<Map.Entry<String, String>> result =
+                new ArrayList<>(provided.size() + 1);
+        result.addAll(provided);
+        result.add(Map.entry("traceparent", outgoing.toHeader()));
+        return List.copyOf(result);
+    }
+
+    static byte[] requestBodyBytes(Object value) {
+        if (value == null) return new byte[0];
+        final int max = PinnedHttpTransport.MAX_REQUEST_BODY_BYTES;
+        if (value instanceof String text) {
+            if (text.length() > max) {
+                throw new IllegalArgumentException(
+                        "HTTP UTF-8 request body exceeds 1 MiB limit");
+            }
+            // Java's default UTF-8 encoder silently replaces malformed
+            // UTF-16. That corrupts signed/structured POST payloads and
+            // makes the bytes different from the guest's declared text.
+            for (int i = 0; i < text.length(); i++) {
+                char codeUnit = text.charAt(i);
+                if (Character.isHighSurrogate(codeUnit)) {
+                    if (i + 1 >= text.length()
+                            || !Character.isLowSurrogate(text.charAt(++i))) {
+                        throw new IllegalArgumentException(
+                                "HTTP request body contains unpaired surrogate");
+                    }
+                } else if (Character.isLowSurrogate(codeUnit)) {
+                    throw new IllegalArgumentException(
+                            "HTTP request body contains unpaired surrogate");
+                }
+            }
+            byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+            if (utf8.length > max) {
+                throw new IllegalArgumentException(
+                        "HTTP UTF-8 request body exceeds 1 MiB limit");
+            }
+            return utf8;
+        }
+        if (value instanceof List<?> bytes) {
+            if (bytes.size() > max) {
+                throw new IllegalArgumentException(
+                        "HTTP request body exceeds 1 MiB limit");
+            }
+            byte[] data = new byte[bytes.size()];
+            for (int i = 0; i < bytes.size(); i++) {
+                Object item = bytes.get(i);
+                if (!(item instanceof Byte || item instanceof Short
+                        || item instanceof Integer || item instanceof Long)) {
+                    throw new IllegalArgumentException(
+                            "HTTP Bytes require integral octets, index " + i);
+                }
+                long octet = ((Number) item).longValue();
+                if (octet < 0 || octet > 255) {
+                    throw new IllegalArgumentException(
+                            "HTTP Bytes octet outside 0..255, index " + i);
+                }
+                data[i] = (byte) octet;
+            }
+            return data;
+        }
+        throw new IllegalArgumentException(
+                "HTTP request body must be UTF-8 String or List<int> Bytes");
     }
 
     private static List<Map.Entry<String, String>> requestHeaders(List<?> raw) {

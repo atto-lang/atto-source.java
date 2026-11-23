@@ -78,6 +78,12 @@ public final class TypeChecker {
 
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    // Record statically resolved direct calls during type checking. Routines are
+    // direct-call-only and may not occur on a recursive call-graph cycle.
+    private final IdentityHashMap<Ast.FunctionDecl, Set<Ast.FunctionDecl>> staticFunctionCalls =
+            new IdentityHashMap<>();
+    private Ast.FunctionDecl currentFunction;
+
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -607,6 +613,25 @@ public final class TypeChecker {
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts,
             boolean strictAttoEquality) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(program, linkedClasses,
+                linkedAliases, linkedContracts, Map.of(), strictAttoEquality);
+    }
+
+    /**
+     * As above, plus checked public signatures of explicitly imported source
+     * modules (`import module m from ...`), keyed by local module alias. Their
+     * public functions type `m.f(...)` calls exactly like same-file modules;
+     * bodies stay in their own unit and private functions stay invisible.
+     */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Ast.ModuleDecl> linkedModules,
+            boolean strictAttoEquality) {
+        if (linkedModules == null) {
+            throw new IllegalArgumentException("linked modules cannot be null");
+        }
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -641,6 +666,34 @@ public final class TypeChecker {
         checker.strictAttoEquality = strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            String alias = entry.getKey();
+            Ast.ModuleDecl module = entry.getValue();
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                            && use.names().stream().anyMatch(name ->
+                                    ImportRules.localName(use, name).equals(alias)));
+            if (!imported || module == null || checker.modules.containsKey(alias)) {
+                throw new IllegalArgumentException(
+                        "linked module was not uniquely imported: " + alias);
+            }
+            // Only concrete, effect-free signatures are linked. Anything else
+            // (Any/generic/async/annotated callables, e.g. std/assert) keeps the
+            // legacy opaque import behavior instead of a nominal mis-typing.
+            boolean allConcrete = module.declarations().stream()
+                    .allMatch(d -> d instanceof Ast.FunctionDecl fn
+                            && (fn.visibility() != Ast.Visibility.PUBLIC
+                                || concreteLinkedSignature(fn)));
+            if (!allConcrete) continue;
+            checker.importedValues.remove(alias);
+            checker.modules.put(alias, module);
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    checker.putFunctionSlot(alias + "." + fn.name(), fn);
+                }
+            }
+        }
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
@@ -1004,6 +1057,45 @@ public final class TypeChecker {
                 }
             } finally {
                 currentLexicalModule = previousModule;
+            }
+        }
+        rejectRecursiveRoutines(program);
+    }
+
+    private void recordStaticFunctionCall(Ast.FunctionDecl target) {
+        if (currentFunction == null) return;
+        staticFunctionCalls.computeIfAbsent(currentFunction,
+                ignored -> java.util.Collections.newSetFromMap(new IdentityHashMap<>())).add(target);
+    }
+
+    /**
+     * Reject any statically resolved function-call cycle that reenters a routine,
+     * including cycles through ordinary fncs. Tail-call lowering cannot make
+     * recursive routines legal. Dynamic dispatch needs an additional runtime
+     * reentry fence; this pass covers direct, arity-resolved function calls.
+     */
+    private void rejectRecursiveRoutines(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.FunctionDecl routine)
+                        || routine.kind() != Ast.CallableKind.ROUTINE) continue;
+                Set<Ast.FunctionDecl> visited =
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+                java.util.ArrayDeque<Ast.FunctionDecl> pending = new java.util.ArrayDeque<>();
+                pending.add(routine);
+                visited.add(routine);
+                while (!pending.isEmpty()) {
+                    Ast.FunctionDecl caller = pending.removeFirst();
+                    for (Ast.FunctionDecl callee : staticFunctionCalls.getOrDefault(caller, Set.of())) {
+                        if (callee == routine) {
+                            throw new IllegalArgumentException(
+                                    "routine '" + module.name() + "." + routine.name()
+                                            + "' cannot be recursive (directly or indirectly); "
+                                            + "declare a fnc for recursive behavior");
+                        }
+                        if (visited.add(callee)) pending.addLast(callee);
+                    }
+                }
             }
         }
     }
@@ -1589,9 +1681,12 @@ public final class TypeChecker {
         Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
         strictCallableReturnSource = strictAttoEquality && !fn.generator() ? fn.returnType() : null;
         currentMaySuspend = fn.async() || fn.suspends();
+        Ast.FunctionDecl previousFunction = currentFunction;
+        currentFunction = fn;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            currentFunction = previousFunction;
             strictCallableReturnSource = previousStrictReturnSource;
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
@@ -1905,6 +2000,38 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
+    private static boolean concreteLinkedSignature(Ast.FunctionDecl fn) {
+        if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
+                || fn.async() || fn.suspends() || fn.generator() || fn.structural()
+                || fn.nonLexical() || fn.trapped() || !fn.genericParameters().isEmpty()
+                || !fn.annotations().isEmpty() || !concreteLinkedType(fn.returnType(), true)) {
+            return false;
+        }
+        for (Ast.Param param : fn.parameters()) {
+            if (param == null || param.structural() || param.mutable()
+                    || !concreteLinkedType(param.type(), false)) return false;
+        }
+        return true;
+    }
+
+    private static boolean concreteLinkedType(Ast.TypeRef ref, boolean allowVoid) {
+        if (ref == null || ref.name() == null || ref.inferArguments()) return false;
+        List<Ast.TypeRef> args = ref.arguments();
+        return switch (ref.name()) {
+            case "int", "float", "bool", "String", "string" -> args.isEmpty();
+            case "void" -> allowVoid && args.isEmpty();
+            case "Option" -> args.size() == 1 && concreteLinkedType(args.get(0), false);
+            case "Result" -> args.size() == 2 && concreteLinkedType(args.get(0), false)
+                    && concreteLinkedType(args.get(1), false);
+            default -> false;
+        };
+    }
+
+    /** `with` changes have no constructor-argument scope. */
+    private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
+        return fieldInitializerMaySuspend(expr, new Env(null));
+    }
+
     private boolean fieldInitializerMaySuspend(Ast.Expr expr, Env scalarInitializerArgs) {
         if (expr instanceof Ast.AwaitExpr
                 || expr instanceof Ast.TaskExpr
@@ -4324,6 +4451,17 @@ public final class TypeChecker {
                         "type_of<T>() requires compiler-backed guest AOT lowering; "
                         + "static descriptor query admission is not guest execution");
             }
+            // Native .atto collection functions back these direct member calls.
+            // Never fabricate an Unknown-valued polymorphic method signature.
+            if (call.callee() instanceof Ast.MemberExpr collectionMethod
+                    && Set.of("map", "filter", "reduce").contains(collectionMethod.member())) {
+                Type collectionReceiver = deref(
+                        typeOf(collectionMethod.receiver(), env, generics, self));
+                if (collectionReceiver instanceof ListType list) {
+                    return checkNativeCollectionCombinator(
+                            call, list, collectionMethod.member(), env, generics, self);
+                }
+            }
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr inlineLambda) {
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
@@ -4514,6 +4652,7 @@ public final class TypeChecker {
                         checkStrictNumericCallArguments(target, call.arguments(), env);
                     }
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    recordStaticFunctionCall(target);
                     // This target is a checked local function declaration in the
                     // immutable, macro-expanded program. A runtime lexical value
                     // still wins if the identifier is shadowed.
@@ -4617,6 +4756,7 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    recordStaticFunctionCall(target);
                     return trappedCallableResult(target.trapped(), target.async(), target.suspends(), target.generator(), result);
                 }
                 if (pkgRoot) {
@@ -6062,6 +6202,13 @@ public final class TypeChecker {
             if (sumReceiver instanceof Function) {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
+            }
+            if (sumReceiver instanceof ListType
+                    && Set.of("map", "filter", "reduce").contains(member.member())) {
+                throw new IllegalArgumentException(
+                        "collection." + member.member()
+                                + " is a direct-call-only generic method; "
+                                + "use values." + member.member() + "(...)");
             }
             if (member.member().equals("to_string")
                     && (sumReceiver == Primitive.INT || sumReceiver == Primitive.BOOL)) {
@@ -8451,6 +8598,10 @@ public final class TypeChecker {
                         result = Primitive.VOID;
                         parameters = List.of(Primitive.STRING, Primitive.STRING);
                     }
+                    case "write_resp2_reply_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING);
+                    }
                     case "write_bytes_async" -> {
                         result = Primitive.VOID; parameters = List.of(new ListType(Primitive.INT));
                     }
@@ -10689,6 +10840,84 @@ public final class TypeChecker {
                 "Map." + operation + " requires a directly owned writable let binding "
                         + "or a proven exclusive Map loan or writable actor self field; "
                         + "const/readonly owners and captured method values are denied");
+    }
+
+    /**
+     * Type-check the syntactic sugar for the compiled core/collections.atto
+     * functions. A method value is not reifiable: direct calls alone have
+     * enough context to infer the mapped element and accumulator types.
+     *
+     * V1 intentionally rejects non-scalar payloads because the generic core
+     * implementation uses get/add and has no proven affine transfer contract.
+     */
+    private Type checkNativeCollectionCombinator(
+            Ast.CallExpr call, ListType source, String operation,
+            Env env, Set<String> generics, Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "collection." + operation + " infers types from the callback; "
+                            + "call-site type arguments are not supported");
+        }
+        int arity = operation.equals("reduce") ? 2 : 1;
+        if (call.arguments().size() != arity
+                || call.arguments().stream().anyMatch(arg -> arg instanceof Ast.SpreadExpr)) {
+            throw new IllegalArgumentException(
+                    "collection." + operation + " expects "
+                            + (arity == 1 ? "one callback" : "an initial value and callback"));
+        }
+        Type element = source.element();
+        if (!nativeCollectionCopyScalar(element)) {
+            throw new IllegalArgumentException(
+                    "collection." + operation + " requires a concrete Copy scalar element "
+                            + "until native ownership-aware combinators are verified");
+        }
+        Type accumulator = null;
+        if (operation.equals("reduce")) {
+            accumulator = widenCollectionElement(
+                    deref(typeOf(call.arguments().getFirst(), env, generics, self)));
+            if (!nativeCollectionCopyScalar(accumulator)) {
+                throw new IllegalArgumentException(
+                        "collection.reduce requires a concrete Copy scalar accumulator");
+            }
+        }
+        Ast.Expr callbackSource = call.arguments().get(arity - 1);
+        Type callbackType = typeOf(callbackSource, env, generics, self);
+        if (!(callbackType instanceof Function callback)
+                || callback.async()
+                || callback.mutableParameters().contains(true)
+                || callback.parameters().size() != arity) {
+            throw new IllegalArgumentException(
+                    "collection." + operation + " requires a synchronous, non-mutating "
+                            + arity + "-parameter callback");
+        }
+        if (operation.equals("reduce")) {
+            requireAssignable(accumulator, callback.parameters().get(0),
+                    "collection.reduce accumulator parameter");
+            requireAssignable(element, callback.parameters().get(1),
+                    "collection.reduce element parameter");
+            requireAssignable(callback.result(), accumulator,
+                    "collection.reduce callback result");
+            return accumulator;
+        }
+        requireAssignable(element, callback.parameters().getFirst(),
+                "collection." + operation + " callback element");
+        if (operation.equals("filter")) {
+            requireAssignable(callback.result(), Primitive.BOOL,
+                    "collection.filter predicate result");
+            return source;
+        }
+        Type result = widenCollectionElement(deref(callback.result()));
+        if (!nativeCollectionCopyScalar(result)) {
+            throw new IllegalArgumentException(
+                    "collection.map requires a concrete Copy scalar result");
+        }
+        return new ListType(result);
+    }
+
+    private static boolean nativeCollectionCopyScalar(Type type) {
+        return type == Primitive.INT || type == Primitive.BOOL
+                || type == Primitive.STRING || type == Primitive.FLOAT
+                || type == Primitive.DECIMAL || type == Primitive.COMPLEX;
     }
 
     private Type builtinCollectionMember(Type receiver, String member) {
