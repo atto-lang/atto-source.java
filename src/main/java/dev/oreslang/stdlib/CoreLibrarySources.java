@@ -81,7 +81,8 @@ public final class CoreLibrarySources {
             "time.atto",
             "channel.atto",
             "process.atto", "process_policy.atto",
-            "http.atto");
+            "http.atto",
+            "sync.atto", "path_lexical.atto");
 
     private CoreLibrarySources() { }
 
