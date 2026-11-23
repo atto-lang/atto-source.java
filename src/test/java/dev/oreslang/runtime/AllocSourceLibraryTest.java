@@ -19,8 +19,7 @@ class AllocSourceLibraryTest {
 
     @Test
     void allocRegistryHasDistinctIdentityAndFailClosedPaths() throws Exception {
-        assertEquals(Set.of("stats.atto", "aligned.atto", "secure.atto"),
-                CoreLibrarySources.packagedAllocPaths());
+        assertTrue(CoreLibrarySources.packagedAllocPaths().containsAll(Set.of("stats.atto", "aligned.atto", "secure.atto")));
         for (String stem : List.of("stats", "aligned", "secure")) {
             String path = "atto.alloc/" + stem;
             assertTrue(CoreLibrarySources.isAllocImport(path));

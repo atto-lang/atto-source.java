@@ -281,10 +281,10 @@ public final class CoreLibrarySources {
     public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        return normalized.equals("ores.core")
-                || normalized.equals("ores.std")
-                || normalized.startsWith(CORE_IMPORT_PREFIX)
-                || normalized.startsWith(STD_IMPORT_PREFIX);
+        for (String root : new String[] {"ores.core", "ores.std", "atto.core", "atto.alloc", "atto.std", "alloc"}) {
+            if (normalized.equals(root) || normalized.startsWith(root + "/")) return true;
+        }
+        return false;
     }
 
     public static Set<String> packagedCorePaths() {

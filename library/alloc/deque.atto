@@ -25,7 +25,7 @@ define module deque as
 
     pub push_back(mut self)(int value): bool {
       if self.count == self.limit; do return false; fi
-      let int index = (self.head + self.count) % self.limit;
+      let int index = Integer.rem((self.head + self.count), self.limit);
       self.data.set(index, value);
       self.count = self.count + 1;
       return true;
@@ -47,7 +47,7 @@ define module deque as
       if self.count == 0; do return None; fi
       let int result = self.data.get(self.head);
       self.data.set(self.head, 0);
-      self.head = (self.head + 1) % self.limit;
+      self.head = Integer.rem((self.head + 1), self.limit);
       self.count = self.count - 1;
       if self.count == 0; do self.head = 0; fi
       return Some(result);
@@ -55,7 +55,7 @@ define module deque as
 
     pub pop_back(mut self)(): Option<int> {
       if self.count == 0; do return None; fi
-      let int index = (self.head + self.count - 1) % self.limit;
+      let int index = Integer.rem((self.head + self.count - 1), self.limit);
       let int result = self.data.get(index);
       self.data.set(index, 0);
       self.count = self.count - 1;
@@ -70,12 +70,12 @@ define module deque as
 
     pub back(): Option<int> {
       if self.count == 0; do return None; fi
-      return Some(self.data.get((self.head + self.count - 1) % self.limit));
+      return Some(self.data.get(Integer.rem((self.head + self.count - 1), self.limit)));
     }
 
     pub at(int index): Option<int> {
       if index < 0 || index >= self.count; do return None; fi
-      return Some(self.data.get((self.head + index) % self.limit));
+      return Some(self.data.get(Integer.rem((self.head + index), self.limit)));
     }
 
     // Transactional: failure preserves all existing elements and indices.
@@ -89,7 +89,7 @@ define module deque as
       let mut Array<int> next = new Array<int>();
       for (let int i = 0; i < new_capacity; i = i + 1) {
         if i < self.count; do
-          next.add(self.data.get((self.head + i) % self.limit));
+          next.add(self.data.get(Integer.rem((self.head + i), self.limit)));
         else
           next.add(0);
         fi
@@ -102,7 +102,7 @@ define module deque as
 
     pub clear(mut self)(): void {
       for (let int i = 0; i < self.count; i = i + 1) {
-        self.data.set((self.head + i) % self.limit, 0);
+        self.data.set(Integer.rem((self.head + i), self.limit), 0);
       }
       self.count = 0;
       self.head = 0;

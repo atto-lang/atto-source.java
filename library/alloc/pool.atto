@@ -65,7 +65,7 @@ define pub class SlotPool as
 
   // Caller MUST finish T's destructor/zeroization and prove no live loans
   // before calling release. This only retires metadata.
-  pub release(mut self)(PoolLease lease): bool {
+  pub release(mut self)(borrow PoolLease lease): bool {
     if self.closed || !lease.valid() ||
        lease.slot >= self.limit ||
        self.states.get(lease.slot) != 1 ||
@@ -113,15 +113,15 @@ pub fnc self_test(): bool {
   if slots.acquire().valid() || slots.available() != 0; do
     return false;
   fi
-  if !slots.release(first) || slots.release(first); do
+  if !slots.release(rt borrow first) || slots.release(rt borrow first); do
     return false;
   fi
   let PoolLease second = slots.acquire();
   if !second.valid() || second.generation != 2 ||
-     slots.release(first) || slots.close(); do
+     slots.release(rt borrow first) || slots.close(); do
     return false;
   fi
-  if !slots.release(second) || !slots.close(); do
+  if !slots.release(rt borrow second) || !slots.close(); do
     return false;
   fi
   return !slots.acquire().valid() && slots.active() == 0;

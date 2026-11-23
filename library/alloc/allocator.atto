@@ -24,7 +24,7 @@ pub fnc aligned_start(int offset, int bytes, int alignment,
   if bytes == 0; do
     return offset;
   fi
-  let int remainder = offset - (offset / alignment) * alignment;
+  let int remainder = Integer.rem(offset, alignment);
   let mut int padding = 0;
   if remainder != 0; do
     padding = alignment - remainder;
@@ -57,7 +57,7 @@ pub fnc array_bytes(int element_bytes, int count, int limit): int {
   if element_bytes == 0 || count == 0; do
     return 0;
   fi
-  if count > limit / element_bytes; do
+  if count > idiv(limit, element_bytes); do
     return -1;
   fi
   return count * element_bytes;
@@ -74,7 +74,7 @@ pub fnc aligned_stride(int element_bytes, int alignment,
     return 0;
   fi
   let int remainder = element_bytes -
-                        (element_bytes / alignment) * alignment;
+                        (idiv(element_bytes, alignment)) * alignment;
   let mut int padding = 0;
   if remainder != 0; do
     padding = alignment - remainder;
@@ -111,7 +111,7 @@ define pub class Layout as
       return 0;
     fi
     let int remainder = self.bytes -
-                         (self.bytes / self.alignment) * self.alignment;
+                         (idiv(self.bytes, self.alignment)) * self.alignment;
     if remainder == 0; do
       if self.bytes > quota; do return -1; fi
       return self.bytes;
@@ -183,7 +183,7 @@ define pub class ReservationLedger as
     done
   }
 
-  matches(Reservation ticket, int state): bool {
+  matches_state(borrow Reservation ticket, int state): bool {
     if !ticket.is_valid() || ticket.slot >= self.limit; do
       return false;
     fi
@@ -192,7 +192,7 @@ define pub class ReservationLedger as
            self.sizes.get(ticket.slot) == ticket.bytes;
   }
 
-  retire_slot(mut self)(Reservation ticket): void {
+  retire_slot(mut self)(borrow Reservation ticket): void {
     let int slot = ticket.slot;
     let int generation = self.generations.get(slot);
     self.sizes.set(slot, 0);
@@ -225,8 +225,8 @@ define pub class ReservationLedger as
   }
 
   // Trusted provider only, AFTER a physical allocation succeeded.
-  pub record_commit(mut self)(Reservation ticket): bool {
-    if !self.matches(ticket, 1); do return false; fi
+  pub record_commit(mut self)(borrow Reservation ticket): bool {
+    if !self.matches_state(ticket, 1); do return false; fi
     self.states.set(ticket.slot, 2);
     self.pending = self.pending - ticket.bytes;
     self.live = self.live + ticket.bytes;
@@ -235,8 +235,8 @@ define pub class ReservationLedger as
   }
 
   // Trusted provider only, AFTER physical allocation failed.
-  pub record_cancel(mut self)(Reservation ticket): bool {
-    if !self.matches(ticket, 1); do return false; fi
+  pub record_cancel(mut self)(borrow Reservation ticket): bool {
+    if !self.matches_state(ticket, 1); do return false; fi
     self.pending = self.pending - ticket.bytes;
     self.retire_slot(ticket);
     return true;
@@ -244,16 +244,16 @@ define pub class ReservationLedger as
 
   // A real provider must separately prove that no borrow or continuation
   // survives before entering destructor/deallocation.
-  pub begin_retirement(mut self)(Reservation ticket): bool {
-    if !self.matches(ticket, 2); do return false; fi
+  pub begin_retirement(mut self)(borrow Reservation ticket): bool {
+    if !self.matches_state(ticket, 2); do return false; fi
     self.states.set(ticket.slot, 3);
     return true;
   }
 
   // Trusted provider only, AFTER T's destructor AND free have completed.
   // Failure must leave state=3 pending; it may not reuse the storage.
-  pub finish_retirement(mut self)(Reservation ticket): bool {
-    if !self.matches(ticket, 3); do return false; fi
+  pub finish_retirement(mut self)(borrow Reservation ticket): bool {
+    if !self.matches_state(ticket, 3); do return false; fi
     self.live = self.live - ticket.bytes;
     self.owners = self.owners - 1;
     self.retire_slot(ticket);
@@ -285,32 +285,32 @@ pub fnc reservation_self_test(): bool {
   let mut ReservationLedger book = new ReservationLedger(2, 12);
   let Reservation first = book.reserve(8);
   if !first.is_valid() || first.slot != 0 || book.pending_bytes() != 8 ||
-     book.reserve(5).is_valid() || !book.record_commit(first) ||
-     book.record_commit(first) || book.used_bytes() != 8 ||
+     book.reserve(5).is_valid() || !book.record_commit(rt borrow first) ||
+     book.record_commit(rt borrow first) || book.used_bytes() != 8 ||
      book.pending_bytes() != 0; do
     return false;
   fi
   let Reservation temp = book.reserve(4);
   if !temp.is_valid() || book.reserve(1).is_valid() ||
-     !book.record_cancel(temp) || book.record_cancel(temp) ||
-     book.record_commit(temp) || book.pending_bytes() != 0; do
+     !book.record_cancel(rt borrow temp) || book.record_cancel(rt borrow temp) ||
+     book.record_commit(rt borrow temp) || book.pending_bytes() != 0; do
     return false;
   fi
   let Reservation reused = book.reserve(4);
   if !reused.is_valid() || reused.slot != temp.slot ||
      reused.generation != temp.generation + 1 ||
-     book.record_cancel(temp) || !book.record_commit(reused) ||
+     book.record_cancel(rt borrow temp) || !book.record_commit(rt borrow reused) ||
      book.active() != 2 || book.reserve(1).is_valid(); do
     return false;
   fi
-  if !book.begin_retirement(reused) || book.begin_retirement(reused) ||
-     book.finish_retirement(first) || book.used_bytes() != 12; do
+  if !book.begin_retirement(rt borrow reused) || book.begin_retirement(rt borrow reused) ||
+     book.finish_retirement(rt borrow first) || book.used_bytes() != 12; do
     return false;
   fi
-  if !book.finish_retirement(reused) || book.finish_retirement(reused) ||
-     book.used_bytes() != 8 || !book.begin_retirement(first) ||
+  if !book.finish_retirement(rt borrow reused) || book.finish_retirement(rt borrow reused) ||
+     book.used_bytes() != 8 || !book.begin_retirement(rt borrow first) ||
      !book.seal() || book.reserve(1).is_valid() ||
-     book.is_drained() || !book.finish_retirement(first); do
+     book.is_drained() || !book.finish_retirement(rt borrow first); do
     return false;
   fi
   return book.is_drained() && book.active() == 0 &&
@@ -337,3 +337,21 @@ pub fnc self_test(): bool {
          array_bytes(0, 100, 0) == 0 &&
          aligned_end(2147483646, 4, 8, 2147483647) == -1;
 }
+
+// Floor division for a >= 0 and b > 0 (int/int yields float on this backend).
+fnc idiv(int a, int b): int {
+  let mut int q = 0;
+  let mut int r = a;
+  while r >= b do
+    let mut int d = b;
+    let mut int m = 1;
+    while d <= r - d do
+      d = d + d;
+      m = m + m;
+    done
+    r = r - d;
+    q = q + m;
+  done
+  return q;
+}
+

@@ -18,9 +18,9 @@ pub fnc main(): int {
   let mut other = bitset.new_bitset(128);
   other.try_set(62, true);
   other.try_set(64, true);
-  bits.try_intersect_with(other);
+  bits.try_intersect_with(rt borrow other);
   if bits.count_ones() != 1; do return 5; fi
-  bits.try_union_with(other);
+  bits.try_union_with(rt borrow other);
   if bits.count_ones() != 2; do return 6; fi
   bits.clear_all();
   if bits.count_ones() != 0; do return 7; fi

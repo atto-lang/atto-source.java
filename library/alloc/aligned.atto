@@ -17,7 +17,7 @@ define module aligned as
        !valid_alignment(alignment); do
       return -1;
     fi
-    val int residue = address % alignment;
+    val int residue = Integer.rem(address, alignment);
     if residue == 0; do
       return 0;
     fi
@@ -67,6 +67,23 @@ define module aligned as
     if bytes == 0; do
       return 0;
     fi
-    return ((bytes - 1) / page_bytes) + 1;
+    return (idiv((bytes - 1), page_bytes)) + 1;
+  }
+
+  // Floor division for a >= 0 and b > 0 (int/int yields float on this backend).
+  fnc idiv(int a, int b): int {
+    let mut int q = 0;
+    let mut int r = a;
+    while r >= b do
+      let mut int d = b;
+      let mut int m = 1;
+      while d <= r - d do
+        d = d + d;
+        m = m + m;
+      done
+      r = r - d;
+      q = q + m;
+    done
+    return q;
   }
 end

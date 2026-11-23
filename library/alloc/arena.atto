@@ -36,7 +36,7 @@ define module arena as
     if !alignment_valid(alignment) then return -1; fi
     // Empty allocations are zero-cost; no phantom alignment charge.
     if bytes == 0 then return cursor; fi
-    let int remainder = cursor - (cursor / alignment) * alignment;
+    let int remainder = Integer.rem(cursor, alignment);
     let mut int padding = 0;
     if remainder != 0 then
       padding = alignment - remainder;

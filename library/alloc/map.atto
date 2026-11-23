@@ -30,7 +30,7 @@ define module map as
 
     // Signed remainder can be negative; the adjustment makes it a valid slot.
     start_slot(int key): int {
-      let mut int start = key % self.limit;
+      let mut int start = Integer.rem(key, self.limit);
       if start < 0; do
         start = start + self.limit;
       fi
@@ -40,7 +40,7 @@ define module map as
     pub get(int key): Option<int> {
       let int start = self.start_slot(key);
       for (let int probe = 0; probe < self.limit; probe = probe + 1) {
-        let int slot = (start + probe) % self.limit;
+        let int slot = Integer.rem((start + probe), self.limit);
         let int state = self.states.get(slot);
         if state == 0; do
           return None;
@@ -57,7 +57,7 @@ define module map as
     pub get_or(int key, int fallback): int {
       let int start = self.start_slot(key);
       for (let int probe = 0; probe < self.limit; probe = probe + 1) {
-        let int slot = (start + probe) % self.limit;
+        let int slot = Integer.rem((start + probe), self.limit);
         let int state = self.states.get(slot);
         if state == 0; do
           return fallback;
@@ -72,7 +72,7 @@ define module map as
     pub contains_key(int key): bool {
       let int start = self.start_slot(key);
       for (let int probe = 0; probe < self.limit; probe = probe + 1) {
-        let int slot = (start + probe) % self.limit;
+        let int slot = Integer.rem((start + probe), self.limit);
         let int state = self.states.get(slot);
         if state == 0; do
           return false;
@@ -90,7 +90,7 @@ define module map as
       let int start = self.start_slot(key);
       let mut int first_deleted = -1;
       for (let int probe = 0; probe < self.limit; probe = probe + 1) {
-        let int slot = (start + probe) % self.limit;
+        let int slot = Integer.rem((start + probe), self.limit);
         let int state = self.states.get(slot);
         if state == 1; do
           if self.keys.get(slot) == key; do
@@ -129,7 +129,7 @@ define module map as
     pub remove(mut self)(int key): Option<int> {
       let int start = self.start_slot(key);
       for (let int probe = 0; probe < self.limit; probe = probe + 1) {
-        let int slot = (start + probe) % self.limit;
+        let int slot = Integer.rem((start + probe), self.limit);
         let int state = self.states.get(slot);
         if state == 0; do
           return None;

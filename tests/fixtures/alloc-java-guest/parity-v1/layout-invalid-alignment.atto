@@ -3,7 +3,7 @@ import fnc valid_alignment from "atto.alloc/allocator";
 import fnc valid_layout from "atto.alloc/allocator";
 
 pub fnc main(): int {
-  return !valid_alignment(0) && !valid_alignment(3) &&
-         !valid_alignment(2097152) && !valid_layout(4, 3) &&
-         valid_layout(4, 8) ? 42 : 1;
+  return !imports::valid_alignment(0) && !imports::valid_alignment(3) &&
+         !imports::valid_alignment(2097152) && !imports::valid_layout(4, 3) &&
+         imports::valid_layout(4, 8) ? 42 : 1;
 }

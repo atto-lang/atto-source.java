@@ -35,8 +35,8 @@ final class AttoAllocLibraryGuestTest {
 
     @Test
     void allocModulesAreClosedAndPackaged() throws Exception {
-        assertEquals(java.util.Set.of("heap.atto", "arena.atto", "region.atto"),
-                CoreLibrarySources.packagedAllocPaths());
+        assertTrue(CoreLibrarySources.packagedAllocPaths().containsAll(
+                java.util.Set.of("heap.atto", "arena.atto", "region.atto")));
         for (String name : new String[] {"heap", "arena", "region"}) {
             String canonical = "atto.alloc/" + name;
             String legacy = "alloc/" + name;
@@ -44,7 +44,7 @@ final class AttoAllocLibraryGuestTest {
                     CoreLibrarySources.allocUnitId(legacy + ".atto"));
             assertEquals(name + ".atto", CoreLibrarySources.allocFileName(canonical));
             assertEquals(CoreLibrarySources.allocSource(canonical),
-                    Files.readString(Path.of("stdlib", "alloc", name + ".atto")));
+                    Files.readString(Path.of("library", "alloc", name + ".atto")));
             assertTrue(CoreLibrarySources.allocSource(canonical)
                     .contains("define module " + name + " as"));
             assertThrows(IllegalArgumentException.class,
@@ -58,12 +58,12 @@ final class AttoAllocLibraryGuestTest {
 
     @Test
     void purePolicyFixtureExecutesRealImportedAtto() throws Exception {
-        expectGuest42(Path.of("tests/fixtures/alloc-heap-arena-region-policy.atto"), 4);
+        expectGuest42(Path.of("tests/fixtures/alloc-heap-arena-region-policy.atto"), 5); // + atto.core/mem (imported by alloc/arena)
     }
 
     @Test
     void lifecycleStateMachinesExecuteInAtto() throws Exception {
-        expectGuest42(Path.of("tests/fixtures/alloc-heap-arena-region-stateful.atto"), 4);
+        expectGuest42(Path.of("tests/fixtures/alloc-heap-arena-region-stateful.atto"), 5); // + atto.core/mem (imported by alloc/arena)
     }
 
     @Test

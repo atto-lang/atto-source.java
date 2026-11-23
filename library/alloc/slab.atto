@@ -29,7 +29,7 @@ define module slab as
   end
 
   pub define class Slab as
-    let OwnerToken owner_token = new OwnerToken();
+    let OwnerToken owner_token;
     let int domain;
     let int limit;
     let mut Array<int> values = new Array<int>();
@@ -41,6 +41,7 @@ define module slab as
     let mut bool closed = false;
 
     pub constructor(int domain, int limit) {
+      self.owner_token = new OwnerToken();
       if domain < 1 || limit < 1 || limit > 1048576; do
         rt fail("slab: invalid domain or bounded capacity");
       fi
@@ -70,7 +71,7 @@ define module slab as
       return Ok(new Handle(self.owner_token, self.domain, index, 1));
     }
 
-    pub contains(Handle handle): bool {
+    pub contains(borrow Handle handle): bool {
       if self.closed || !handle.matches_owner(self.owner_token) ||
          handle.domain != self.domain ||
          handle.slot < 0 || handle.slot >= self.values.size ||
@@ -81,12 +82,12 @@ define module slab as
              self.generations.get(handle.slot) == handle.generation;
     }
 
-    pub read(Handle handle): Result<int, String> {
+    pub read(borrow Handle handle): Result<int, String> {
       if !self.contains(handle); do return Err("InvalidHandle"); fi
       return Ok(self.values.get(handle.slot));
     }
 
-    pub replace(mut self)(Handle handle, int value): bool {
+    pub replace(mut self)(borrow Handle handle, int value): bool {
       if !self.contains(handle); do return false; fi
       self.values.set(handle.slot, value);
       return true;
@@ -94,7 +95,7 @@ define module slab as
 
     // Removal invalidates the old handle, including when the same slot is reused.
     // A slot at generation INT_MAX is quarantined forever (no ABA wrap).
-    pub remove(mut self)(Handle handle): Result<int, String> {
+    pub remove(mut self)(borrow Handle handle): Result<int, String> {
       if !self.contains(handle); do return Err("InvalidHandle"); fi
       let int index = handle.slot;
       let int previous = self.values.get(index);

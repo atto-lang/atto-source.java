@@ -68,7 +68,7 @@ define pub class BoundedIntSet as
 
   // All binary operations require identical domains; a mismatch causes no
   // mutation. Callers must not create overlapping mutable/immutable loans.
-  pub union_from(mut self)(BoundedIntSet other): bool {
+  pub union_from(mut self)(borrow BoundedIntSet other): bool {
     if self.domain != other.capacity(); do return false; fi
     for (let int i = 0; i < self.domain; i = i + 1) do
       if other.contains(i) && self.flags.get(i) == 0; do
@@ -79,7 +79,7 @@ define pub class BoundedIntSet as
     return true;
   }
 
-  pub intersect_from(mut self)(BoundedIntSet other): bool {
+  pub intersect_from(mut self)(borrow BoundedIntSet other): bool {
     if self.domain != other.capacity(); do return false; fi
     for (let int i = 0; i < self.domain; i = i + 1) do
       if self.flags.get(i) == 1 && !other.contains(i); do
@@ -90,7 +90,7 @@ define pub class BoundedIntSet as
     return true;
   }
 
-  pub subtract_from(mut self)(BoundedIntSet other): bool {
+  pub subtract_from(mut self)(borrow BoundedIntSet other): bool {
     if self.domain != other.capacity(); do return false; fi
     for (let int i = 0; i < self.domain; i = i + 1) do
       if self.flags.get(i) == 1 && other.contains(i); do
@@ -101,7 +101,7 @@ define pub class BoundedIntSet as
     return true;
   }
 
-  pub is_subset_of(BoundedIntSet other): bool {
+  pub is_subset_of(borrow BoundedIntSet other): bool {
     if self.domain != other.capacity(); do return false; fi
     for (let int i = 0; i < self.domain; i = i + 1) do
       if self.flags.get(i) == 1 && !other.contains(i); do
@@ -135,7 +135,7 @@ define pub class IntHashSet as
 
   home(int key): int {
     // Signed remainder is bounded by capacity-1; correction cannot overflow.
-    let int remainder = key % self.limit;
+    let int remainder = Integer.rem(key, self.limit);
     if remainder < 0; do return remainder + self.limit; fi
     return remainder;
   }
@@ -269,13 +269,13 @@ pub fnc self_test(): bool {
   fi
   rhs.insert(4);
   rhs.insert(7);
-  if lhs.union_from(wrong) || lhs.len() != 2 ||
-     !lhs.union_from(rhs) || lhs.len() != 3 ||
-     !lhs.contains(7) || !rhs.is_subset_of(lhs); do
+  if lhs.union_from(rt borrow wrong) || lhs.len() != 2 ||
+     !lhs.union_from(rt borrow rhs) || lhs.len() != 3 ||
+     !lhs.contains(7) || !rhs.is_subset_of(rt borrow lhs); do
     return false;
   fi
-  if !lhs.intersect_from(rhs) || lhs.len() != 2 ||
-     lhs.contains(2) || !lhs.subtract_from(rhs) ||
+  if !lhs.intersect_from(rt borrow rhs) || lhs.len() != 2 ||
+     lhs.contains(2) || !lhs.subtract_from(rt borrow rhs) ||
      !lhs.is_empty() || lhs.remove(4); do
     return false;
   fi

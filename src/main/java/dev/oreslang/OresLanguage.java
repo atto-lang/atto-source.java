@@ -162,6 +162,13 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         context.close();
     }
 
+    /** ./x or ../x without an extension: a .atto importer resolves it to x.atto only. */
+    private static boolean extensionlessRelative(String path) {
+        if (!(path.startsWith("./") || path.startsWith("../"))) return false;
+        String leaf = path.substring(path.lastIndexOf('/') + 1);
+        return !leaf.isEmpty() && leaf.indexOf('.') < 0;
+    }
+
     @Override
     protected CallTarget parse(ParsingRequest request) {
         var source = request.getSource();
@@ -193,7 +200,8 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // profile; anything else (legacy .ores, Java, packages) still fails.
         if (checkedI64 && program.imports().stream().anyMatch(imported ->
                 !dev.oreslang.stdlib.CoreLibrarySources.isCompilerOwnedAttoImport(imported.path())
-                        && !imported.path().endsWith(".atto"))) {
+                        && !imported.path().endsWith(".atto")
+                        && !extensionlessRelative(imported.path()))) {
             throw new IllegalArgumentException(
                     "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: imports require profile-checked linking");
         }

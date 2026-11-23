@@ -5,15 +5,15 @@ import class Reservation from "atto.alloc/allocator";
 pub fnc main(): int {
   let mut ReservationLedger ledger = new ReservationLedger(1, 9);
   let Reservation old = ledger.reserve(5);
-  if !old.is_valid() || !ledger.record_cancel(old); do
+  if !old.is_valid() || !ledger.record_cancel(rt borrow old); do
     return 1;
   fi
   let Reservation fresh = ledger.reserve(5);
   if !fresh.is_valid() || fresh.slot != old.slot ||
      fresh.generation != old.generation + 1 ||
-     ledger.record_commit(old) || ledger.record_cancel(old) ||
-     !ledger.record_commit(fresh) || ledger.begin_retirement(old) ||
-     !ledger.begin_retirement(fresh) || !ledger.finish_retirement(fresh); do
+     ledger.record_commit(rt borrow old) || ledger.record_cancel(rt borrow old) ||
+     !ledger.record_commit(rt borrow fresh) || ledger.begin_retirement(rt borrow old) ||
+     !ledger.begin_retirement(rt borrow fresh) || !ledger.finish_retirement(rt borrow fresh); do
     return 2;
   fi
   return ledger.used_bytes() == 0 && ledger.active() == 0 ? 42 : 3;

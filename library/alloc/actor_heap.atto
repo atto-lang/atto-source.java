@@ -14,12 +14,12 @@ define module actor_heap as
   pub define class HeapHandle as
     let OwnerToken owner_token;
     pub val int incarnation;
-    pub val int block;
+    pub val int block_index;
     pub val int generation;
-    pub constructor(OwnerToken owner_token, int incarnation, int block, int generation) {
+    pub constructor(OwnerToken owner_token, int incarnation, int block_index, int generation) {
       self.owner_token = owner_token;
       self.incarnation = incarnation;
-      self.block = block;
+      self.block_index = block_index;
       self.generation = generation;
     }
 
@@ -36,7 +36,7 @@ define module actor_heap as
     let mut int generation = 1;
     let mut bool active = true;
 
-    pub constructor(int start, int extent) {
+    constructor(int start, int extent) {
       self.start = start;
       self.extent = extent;
       self.requested = extent;
@@ -65,7 +65,7 @@ define module actor_heap as
   end
 
   pub define class ActorHeap as
-    let OwnerToken owner_token = new OwnerToken();
+    let OwnerToken owner_token;
     let int incarnation;
     let int capacity_words;
     let int max_blocks;
@@ -77,6 +77,7 @@ define module actor_heap as
     let mut bool closed = false;
 
     pub constructor(int incarnation, int capacity_words, int max_blocks) {
+      self.owner_token = new OwnerToken();
       if incarnation < 1 || capacity_words < 1 ||
          capacity_words > 1048576 || max_blocks < 1 ||
          max_blocks > 1048576; do
@@ -98,12 +99,12 @@ define module actor_heap as
         return Err("InvalidSize");
       fi
       for (let int i = 0; i < self.blocks.size; i = i + 1) {
-        let mut Block block = self.blocks.get(i);
-        if block.reusable(count); do
-          block.activate(count);
-          self.charged_words = self.charged_words + block.extent;
+        let mut Block blk = self.blocks.get(i);
+        if blk.reusable(count); do
+          blk.activate(count);
+          self.charged_words = self.charged_words + blk.extent;
           self.live_blocks = self.live_blocks + 1;
-          return Ok(new HeapHandle(self.owner_token, self.incarnation, i, block.token()));
+          return Ok(new HeapHandle(self.owner_token, self.incarnation, i, blk.token()));
         fi
       }
       if self.blocks.size >= self.max_blocks ||
@@ -118,45 +119,45 @@ define module actor_heap as
       return Ok(new HeapHandle(self.owner_token, self.incarnation, self.blocks.size - 1, 1));
     }
 
-    pub contains(HeapHandle handle): bool {
+    pub contains(borrow HeapHandle handle): bool {
       if self.closed || !handle.matches_owner(self.owner_token) ||
          handle.incarnation != self.incarnation ||
-         handle.block < 0 || handle.block >= self.blocks.size ||
+         handle.block_index < 0 || handle.block_index >= self.blocks.size ||
          handle.generation < 1; do
         return false;
       fi
-      let Block block = self.blocks.get(handle.block);
-      return block.is_active() && block.token() == handle.generation;
+      let Block blk = self.blocks.get(handle.block_index);
+      return blk.is_active() && blk.token() == handle.generation;
     }
 
-    pub read(HeapHandle handle, int index): Result<int, String> {
-      if !self.contains(handle); do return Err("InvalidHandle"); fi
-      let Block block = self.blocks.get(handle.block);
-      if index < 0 || index >= block.length(); do
+    pub read(borrow HeapHandle handle, int index): Result<int, String> {
+      if !self.contains(rt borrow handle); do return Err("InvalidHandle"); fi
+      let Block blk = self.blocks.get(handle.block_index);
+      if index < 0 || index >= blk.length(); do
         return Err("OutOfBounds");
       fi
-      return Ok(self.words.get(block.start + index));
+      return Ok(self.words.get(blk.start + index));
     }
 
-    pub write(mut self)(HeapHandle handle, int index, int value): bool {
-      if !self.contains(handle); do return false; fi
-      let Block block = self.blocks.get(handle.block);
-      if index < 0 || index >= block.length(); do return false; fi
-      self.words.set(block.start + index, value);
+    pub write(mut self)(borrow HeapHandle handle, int index, int value): bool {
+      if !self.contains(rt borrow handle); do return false; fi
+      let Block blk = self.blocks.get(handle.block_index);
+      if index < 0 || index >= blk.length(); do return false; fi
+      self.words.set(blk.start + index, value);
       return true;
     }
 
     // Zeroes all words in the physical extent, refunds once and invalidates
     // the handle. Generation exhaustion permanently quarantines the extent.
-    pub release(mut self)(HeapHandle handle): bool {
-      if !self.contains(handle); do return false; fi
-      let mut Block block = self.blocks.get(handle.block);
-      for (let int i = 0; i < block.extent; i = i + 1) {
-        self.words.set(block.start + i, 0);
+    pub release(mut self)(borrow HeapHandle handle): bool {
+      if !self.contains(rt borrow handle); do return false; fi
+      let mut Block blk = self.blocks.get(handle.block_index);
+      for (let int i = 0; i < blk.extent; i = i + 1) {
+        self.words.set(blk.start + i, 0);
       }
-      self.charged_words = self.charged_words - block.extent;
+      self.charged_words = self.charged_words - blk.extent;
       self.live_blocks = self.live_blocks - 1;
-      block.retire();
+      blk.retire();
       return true;
     }
 
@@ -168,8 +169,8 @@ define module actor_heap as
         self.words.set(i, 0);
       }
       for (let int i = 0; i < self.blocks.size; i = i + 1) {
-        let mut Block block = self.blocks.get(i);
-        if block.is_active(); do block.retire(); fi
+        let mut Block blk = self.blocks.get(i);
+        if blk.is_active(); do blk.retire(); fi
       }
       self.charged_words = 0;
       self.live_blocks = 0;

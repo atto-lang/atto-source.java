@@ -5,10 +5,10 @@ import class Reservation from "atto.alloc/allocator";
 pub fnc main(): int {
   let mut ReservationLedger ledger = new ReservationLedger(1, 8);
   let Reservation ticket = ledger.reserve(7);
-  if !ticket.is_valid() || !ledger.record_commit(ticket) ||
-     !ledger.begin_retirement(ticket) || ledger.begin_retirement(ticket) ||
-     !ledger.finish_retirement(ticket) || ledger.finish_retirement(ticket) ||
-     ledger.record_commit(ticket) || !ledger.seal(); do
+  if !ticket.is_valid() || !ledger.record_commit(rt borrow ticket) ||
+     !ledger.begin_retirement(rt borrow ticket) || ledger.begin_retirement(rt borrow ticket) ||
+     !ledger.finish_retirement(rt borrow ticket) || ledger.finish_retirement(rt borrow ticket) ||
+     ledger.record_commit(rt borrow ticket) || !ledger.seal(); do
     return 1;
   fi
   return ledger.is_drained() ? 42 : 2;

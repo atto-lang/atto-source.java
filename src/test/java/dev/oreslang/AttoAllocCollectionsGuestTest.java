@@ -28,7 +28,7 @@ final class AttoAllocCollectionsGuestTest {
     @Test
     void allocModulesParseAsAttoLangSource() throws Exception {
         for (String module : new String[] {"bitset", "linked_list", "map"}) {
-            Path path = Path.of("stdlib", "alloc", module + ".atto");
+            Path path = Path.of("library", "alloc", module + ".atto");
             assertTrue(Files.isRegularFile(path), "missing real .atto module " + path);
             String code = Files.readString(path);
             assertFalse(code.contains("import java"));
@@ -132,7 +132,7 @@ final class AttoAllocCollectionsGuestTest {
 
     private void execute(String name) throws Exception {
         Path fixture = ROOT.resolve(name);
-        Path module = Path.of("stdlib", "alloc", name);
+        Path module = Path.of("library", "alloc", name);
         assertTrue(Files.isRegularFile(fixture), "missing .atto fixture " + fixture);
         assertTrue(Files.isRegularFile(module), "missing .atto module " + module);
         // Stage exact original module bytes, without host-generated guest code

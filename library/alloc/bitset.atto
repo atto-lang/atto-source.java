@@ -13,7 +13,12 @@ define module bitset as
         rt fail("bitset: bit_count outside 0..1048576");
       fi
       self.bits = bit_count;
-      let int word_count = (bit_count + 62) / 63;
+      let mut int word_count = 0;
+      let mut int covered = 0;
+      while covered < bit_count do
+        covered = covered + 63;
+        word_count = word_count + 1;
+      done
       for (let int i = 0; i < word_count; i = i + 1) {
         self.words.add(0);
       }
@@ -34,9 +39,9 @@ define module bitset as
       if index < 0 || index >= self.bits; do
         return None;
       fi
-      let int word = self.words.get(index / 63);
-      let int mask = self.masks.get(index % 63);
-      return Some(((word / mask) % 2) != 0);
+      let int word = self.words.get(self.idiv(index, 63));
+      let int mask = self.masks.get(Integer.rem(index, 63));
+      return Some((Integer.rem((self.idiv(word, mask)), 2)) != 0);
     }
 
     // Returns previous bit; no state changes for an invalid index.
@@ -44,10 +49,10 @@ define module bitset as
       if index < 0 || index >= self.bits; do
         return Err("IndexOutOfBounds");
       fi
-      let int slot = index / 63;
-      let int mask = self.masks.get(index % 63);
+      let int slot = self.idiv(index, 63);
+      let int mask = self.masks.get(Integer.rem(index, 63));
       let int previous = self.words.get(slot);
-      let bool old = ((previous / mask) % 2) != 0;
+      let bool old = (Integer.rem((self.idiv(previous, mask)), 2)) != 0;
       if value && !old; do
         self.words.set(slot, previous + mask);
       fi
@@ -69,10 +74,10 @@ define module bitset as
       for (let int i = 0; i < self.words.size; i = i + 1) {
         let mut int word = self.words.get(i);
         for (let int bit = 0; bit < 63; bit = bit + 1) {
-          if (word % 2) != 0; do
+          if (Integer.rem(word, 2)) != 0; do
             count = count + 1;
           fi
-          word = word / 2;
+          word = self.idiv(word, 2);
         }
       }
       return count;
@@ -80,9 +85,9 @@ define module bitset as
 
     pub first_set(): Option<int> {
       for (let int i = 0; i < self.bits; i = i + 1) {
-        let int word = self.words.get(i / 63);
-        let int mask = self.masks.get(i % 63);
-        if ((word / mask) % 2) != 0; do
+        let int word = self.words.get(self.idiv(i, 63));
+        let int mask = self.masks.get(Integer.rem(i, 63));
+        if (Integer.rem((self.idiv(word, mask)), 2)) != 0; do
           return Some(i);
         fi
       }
@@ -96,8 +101,8 @@ define module bitset as
       let mut int b = right;
       let mut int result = 0;
       for (let int i = 0; i < 63; i = i + 1) {
-        let bool left_set = (a % 2) != 0;
-        let bool right_set = (b % 2) != 0;
+        let bool left_set = (Integer.rem(a, 2)) != 0;
+        let bool right_set = (Integer.rem(b, 2)) != 0;
         if intersection; do
           if left_set && right_set; do
             result = result + self.masks.get(i);
@@ -107,13 +112,13 @@ define module bitset as
             result = result + self.masks.get(i);
           fi
         fi
-        a = a / 2;
-        b = b / 2;
+        a = self.idiv(a, 2);
+        b = self.idiv(b, 2);
       }
       return result;
     }
 
-    pub try_union_with(mut self)(BitSet other): Result<int, String> {
+    pub try_union_with(mut self)(borrow BitSet other): Result<int, String> {
       if self.bits != other.bits; do
         return Err("LengthMismatch");
       fi
@@ -124,7 +129,7 @@ define module bitset as
       return Ok(self.count_ones());
     }
 
-    pub try_intersect_with(mut self)(BitSet other): Result<int, String> {
+    pub try_intersect_with(mut self)(borrow BitSet other): Result<int, String> {
       if self.bits != other.bits; do
         return Err("LengthMismatch");
       fi
@@ -133,6 +138,23 @@ define module bitset as
             self.words.get(i), other.words.get(i), true));
       }
       return Ok(self.count_ones());
+    }
+
+    // Floor division for a >= 0 and b > 0 (int/int yields float on this backend).
+    idiv(int a, int b): int {
+      let mut int q = 0;
+      let mut int r = a;
+      while r >= b do
+        let mut int d = b;
+        let mut int m = 1;
+        while d <= r - d do
+          d = d + d;
+          m = m + m;
+        done
+        r = r - d;
+        q = q + m;
+      done
+      return q;
     }
   end
 
@@ -148,4 +170,5 @@ define module bitset as
   pub fnc new_bitset(int length): BitSet {
     return new BitSet(length);
   }
+
 end
