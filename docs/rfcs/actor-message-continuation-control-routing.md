@@ -94,3 +94,26 @@ Supervisor traffic must not compete for ordinary mailbox capacity. Specify bound
 - Claiming this RFC's contracts are implemented or tested.
 
 Related existing issues to reconcile: #74, #110, #142, #143, #153, #202, #275, #284, #324.
+
+
+## Source audit findings (2026-11-23, Java main snapshot)
+
+This section supersedes any assumption that the mechanisms above must be built from scratch.
+
+1. **Scheduler affinity already exists.** `src/main/java/dev/oreslang/runtime/OresScheduler.java` documents scheduler-owned resumable `Task` / `Await` / `Resume` and explicitly forbids producer, timer, I/O and JNI completion threads from executing continuations directly. Preserve this contract; do not add a competing continuation event loop.
+2. **Future completion plumbing already exists.** `OresFuture.whenCompleteRuntime[Cancellable]` supports runtime waiters; `ActorRuntime.enqueueOnCompletion` registers a completion callback that enqueues onto the target actor. Audit the registration-versus-completion and cancellation races rather than adding a second future implementation.
+3. **Actor continuation admission is separate from DATA.** `docs/ACTOR_SUPERVISOR_MAIL_CHANNEL_AUDIT_V1.md` describes bounded private actor DATA (policy-sized), continuation (1,024), and SourceTask cleanup (1,024) channels. Do not bypass these bounds by creating a new unbounded reply queue.
+4. **Supervisor CONTROL transport exists.** `ActorSupervisorControlLane` implements bounded per-child reservations, generation fencing, single-flight polling, ACK/retry, and root transfer. Earlier blanket statements that no CONTROL lane exists are obsolete. End-to-end compiler-lowered supervisor handling and fair/lossless integration still require proof.
+5. **A concrete concurrency hardening candidate:** `ActorSupervisorControlLane.transferPublishedTo(root)` is synchronized on the source and calls synchronized `root.publish`. Opposing concurrent transfers between two lanes can invert lock order and deadlock. Before enabling general lane-to-lane transfers, either enforce a strict acyclic root-only transfer topology with validation or refactor to ordered locking/transactional transfer. Add a deterministic opposing-transfer regression test. **Not fixed by this documentation-only change.**
+6. **Transfer failure atomicity:** root publication may succeed for some slots and fail on a later slot; document whether partial transfer is an accepted, recoverable state and test accounting invariants (source pending + in-flight + root pending + in-flight) across failure injection.
+7. **CONTROL capacity must be reserved before child publication**, and DATA backpressure must never consume that capacity. A successful `sendAsync` Future signals *admission*, not handler execution; avoid treating it as a request/reply result.
+
+### Hardening gates to add to the implementation PR
+
+- Deterministic concurrent transfer/ACK/retry/retire tests, including opposite-direction transfer and partial failure injection.
+- Completion before/after registration, cancellation revocation ordering, and no user callbacks on completion producer threads.
+- Verify no DATA or supervisor mailbox capacity is borrowed for continuation replies, and no unbounded waiter allocations.
+- Exact-head JDK25 and GraalVM Native Image execution; failed/zero-step Actions do not count as tests.
+- Reconcile the existing Java runtime and supervisor PRs before selecting an implementation. Do not duplicate the scheduler, future, mailbox or CONTROL lane.
+
+**Audit status:** source inspection completed for the named files; no runtime patch or executable tests are claimed in this RFC revision.
