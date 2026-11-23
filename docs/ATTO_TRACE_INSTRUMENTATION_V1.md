@@ -2,10 +2,10 @@
 
 **Status:** new guest API and guest execution regression test on a feature branch. Test execution and CI verification are **NOT EXECUTED**. This is a portable manual instrumentation boundary, **not** a completed distributed tracing SDK or automatic network tracer.
 
-Canonical import: `import module Trace from "ores.std/trace";`. The legacy `std/trace` remains valid. The source of truth is `stdlib/trace.ores`, implemented entirely in AttoLang. No Java Truffle telemetry implementation is exposed as its public semantics.
+Canonical import: `import module Trace from "atto.std/trace";`. The legacy `std/trace` remains valid. The source of truth is `stdlib/trace.ores`, implemented entirely in AttoLang. No Java Truffle telemetry implementation is exposed as its public semantics.
 
 ```atto
-import module Trace from "ores.std/trace";
+import module Trace from "atto.std/trace";
 
 pub routine compute_value(int input): int {
   return input + 2;

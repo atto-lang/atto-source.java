@@ -1,4 +1,4 @@
-import module layout_policy from "ores.std/layout_policy.atto";
+import module layout_policy from "atto.std/layout_policy.atto";
 pub routine main(): void {
   stdio.println(layout_policy.valid_shape(1, 3, 2, 4, 8, 1));
   stdio.println(layout_policy.byte_length(1, 3, 2, 4, 8, 1).unwrap());

@@ -1,4 +1,4 @@
-import trait Clone from "ores.core/protocols";
+import trait Clone from "atto.core/protocols";
 define class Broken implements Clone<int> as
 end
 pub fnc main(): void { return; }
