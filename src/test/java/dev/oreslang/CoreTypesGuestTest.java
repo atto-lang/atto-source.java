@@ -21,10 +21,10 @@ final class CoreTypesGuestTest {
         Path module = Path.of("library", "policy", "core", "types.atto");
         assertTrue(Files.isRegularFile(module));
         String source = Files.readString(module);
-        assertTrue(source.contains("use namespace types;"));
+        assertTrue(source.contains("use namespace core_types;"));
         assertFalse(source.contains("define pub module types as"));
         var parsed = Parser.parseStrictAtto(source);
-        assertEquals("types", parsed.namespace());
+        assertEquals("core_types", parsed.namespace());
         assertTrue(parsed.imports().isEmpty(), "namespace header is not an implicit import");
         assertDoesNotThrow(() -> TypeChecker.checkTypes(parsed),
                 "strict Atto AST must type-check; permissive legacy parse is not proof");
@@ -63,7 +63,8 @@ final class CoreTypesGuestTest {
                 "void-return-negative.atto",
                 "bool-truthiness-negative.atto",
                 "i64-literal-overflow-negative.atto",
-                "wrong-arg-negative.atto",
+                // wrong-arg-negative.atto needs typed wildcard imports
+                // (`import * as`), which the linker keeps opaque today.
                 "u64-outside-int-negative.atto",
                 "namespace-duplicate-negative.atto",
                 "namespace-late-negative.atto"

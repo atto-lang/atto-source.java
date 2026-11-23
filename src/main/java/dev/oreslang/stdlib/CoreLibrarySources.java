@@ -261,7 +261,9 @@ public final class CoreLibrarySources {
     public static boolean isOresCoreImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        return normalized.startsWith(CORE_IMPORT_PREFIX) || normalized.startsWith(ATTO_CORE_IMPORT_PREFIX);
+        return normalized.startsWith(CORE_IMPORT_PREFIX) || normalized.startsWith(ATTO_CORE_IMPORT_PREFIX)
+                // core/<x> shorthand for a legacy core module that is not a v1 unit.
+                || (normalized.startsWith("core/") && legacyHasAttoAlias(normalized));
     }
 
     /** Canonical hosted namespace plus the temporary legacy std/* spelling. */
@@ -351,6 +353,8 @@ public final class CoreLibrarySources {
         Objects.requireNonNull(importPath, "importPath");
         if (importPath.startsWith(ATTO_CORE_IMPORT_PREFIX)) {
             importPath = CORE_IMPORT_PREFIX + importPath.substring(ATTO_CORE_IMPORT_PREFIX.length());
+        } else if (importPath.startsWith("core/")) {
+            importPath = CORE_IMPORT_PREFIX + importPath.substring("core/".length());
         }
         if (!importPath.startsWith(CORE_IMPORT_PREFIX)) {
             throw new IllegalArgumentException(

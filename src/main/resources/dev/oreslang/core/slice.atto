@@ -48,9 +48,9 @@ define module slice as
     return length + bound;
   }
 
-  pub fnc valid_endpoints(int start, int end, int length): bool {
+  pub fnc valid_endpoints(int start, int end_bound, int length): bool {
     return normalize_bound(start, length) >= 0 &&
-           normalize_bound(end, length) >= 0;
+           normalize_bound(end_bound, length) >= 0;
   }
 
   // Canonical logical window meaning, aligned with sibling core/slice PR.
@@ -60,9 +60,9 @@ define module slice as
 
   // Positive-step range element count, 0 for a valid empty/reversed interval,
   // and -1 for an invalid explicit bound. No unchecked addition/multiplication.
-  pub fnc range_len(int start, int end, int length): int {
+  pub fnc range_len(int start, int end_bound, int length): int {
     val int first = normalize_bound(start, length);
-    val int last = normalize_bound(end, length);
+    val int last = normalize_bound(end_bound, length);
     if first < 0 || last < 0; do return -1; fi
     if first >= last; do return 0; fi
     return last - first;

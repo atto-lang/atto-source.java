@@ -190,7 +190,10 @@ define module num as
       factor = factor >>> 1;
       term = wrapping_add(term, term);
     }
-    if negative then return wrapping_sub(0, product); fi
+    if negative then
+      let int negated = wrapping_sub(0, product);
+      return negated;
+    fi
     return product;
   }
 
