@@ -208,8 +208,8 @@ public final class OwnershipChecker {
             }
             // A foreign nominal must not masquerade as a compiler-owned core
             // owner/loan identity, even behind a qualified namespace import.
-            checker.rejectPreludeForge(name, "linked class binding");
-            checker.rejectPreludeForge(declaration.name(), "linked class origin");
+            checker.rejectPreludeForgeNow(name, "linked class binding");
+            checker.rejectPreludeForgeNow(declaration.name(), "linked class origin");
             // A checked actor signature is transport/protocol metadata, not
             // a transferable actor instance. Link it only through an exact
             // named actor import; class imports cannot silently reclassify
@@ -259,14 +259,15 @@ public final class OwnershipChecker {
 
     private void index(Ast.Program program) {
         for (Ast.ImportDecl imported : program.imports()) {
-            if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
-                for (String source : imported.names()) {
-                    String local = dev.oreslang.imports.ImportRules.localName(imported, source);
-                    if (AutomaticPrelude.protectedIdentity(local)) {
-                        throw error("E_PRELUDE_SPOOF: imported function cannot replace core identity " + local);
-                    }
-                    importedFncs.add(local);
+            if (imported.wildcard()) continue;
+            for (String source : imported.names()) {
+                String local = dev.oreslang.imports.ImportRules.localName(imported, source);
+                if (AutomaticPrelude.protectedIdentity(local)) {
+                    deferPreludeSpoof(error("E_PRELUDE_SPOOF: imported "
+                            + imported.kind().name().toLowerCase(java.util.Locale.ROOT)
+                            + " cannot replace core identity " + local));
                 }
+                if (imported.kind() == Ast.ImportKind.FUNCTION) importedFncs.add(local);
             }
         }
         for (Ast.ModuleDecl module : program.modules()) {
@@ -290,9 +291,24 @@ public final class OwnershipChecker {
 
     private void rejectPreludeForge(String name, String declarationKind) {
         if (AutomaticPrelude.protectedIdentity(name)) {
+            deferPreludeSpoof(error("E_PRELUDE_SPOOF: cannot forge compiler-owned core identity "
+                    + name + " with " + declarationKind));
+        }
+    }
+
+    private void rejectPreludeForgeNow(String name, String declarationKind) {
+        if (AutomaticPrelude.protectedIdentity(name)) {
             throw error("E_PRELUDE_SPOOF: cannot forge compiler-owned core identity "
                     + name + " with " + declarationKind);
         }
+    }
+
+    // Indexing never throws so metadata probes can inspect forged programs;
+    // every analysis entry point reports the first spoof before validating.
+    private IllegalArgumentException preludeSpoof;
+
+    private void deferPreludeSpoof(IllegalArgumentException spoof) {
+        if (preludeSpoof == null) preludeSpoof = spoof;
     }
 
     private void indexFunction(String module, Ast.FunctionDecl fn) {
@@ -327,6 +343,7 @@ public final class OwnershipChecker {
     }
 
     private void validate(Ast.Program program) {
+        if (preludeSpoof != null) throw preludeSpoof;
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.SingletonDecl) {

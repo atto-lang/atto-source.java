@@ -313,11 +313,19 @@ public final class CoreTypeRegistry {
         Objects.requireNonNull(name, "name");
         return Optional.ofNullable(TYPES.get(name));
     }
+    /**
+     * Prelude names are auto-imported, not reserved words. Only the core sum
+     * carriers, their constructors and primitive scalars are protected; other
+     * catalogued names (Box, Error, Pair, List, Map, ...) may be declared by user
+     * code and shadow the prelude, as in Rust. Reserving them broke existing
+     * programs that declare classes with those names.
+     */
     public static boolean protectedIdentity(String name) {
         TypeInfo info = TYPES.get(name);
-        return info != null && info.compilerOwnedIdentity()
-                || "FixedList".equals(name) || "Vector".equals(name)
-                || "ReadLoan".equals(name) || "WriteLoan".equals(name);
+        if (info == null) return false;
+        if (info.kind() == Kind.CONSTRUCTOR) return true;
+        if ("Option".equals(name) || "Result".equals(name)) return true;
+        return info.canonicalIdentity().startsWith("core/primitive/");
     }
     public static boolean coreConstructor(String name) {
         TypeInfo info = TYPES.get(name);

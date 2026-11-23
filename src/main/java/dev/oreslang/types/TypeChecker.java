@@ -13180,9 +13180,14 @@ public final class TypeChecker {
      * shape dimensions and named collection layout metadata are separate syntax
      * channels and must be validated by their dedicated rules.
      */
-    private void validateRegisteredCoreTypeArity(Ast.TypeRef ref) {
+    private void validateRegisteredCoreTypeArity(Ast.TypeRef ref, Set<String> generics) {
         CoreTypeRegistry.TypeInfo info = CoreTypeRegistry.lookup(ref.name()).orElse(null);
         if (info == null || info.kind() != CoreTypeRegistry.Kind.TYPE) return;
+        // Type variables, primitive scalars (dedicated diagnostics below) and
+        // user declarations that shadow a prelude name keep their own rules.
+        if (generics.contains(ref.name())
+                || info.canonicalIdentity().startsWith("core/primitive/")) return;
+        if (!Set.of("Option", "Result").contains(ref.name()) && findClass(ref.name()) != null) return;
         if (info.scope() == CoreTypeRegistry.Scope.ALLOC
                 && preludeProfile == AutomaticPrelude.Profile.CORE) {
             throw new IllegalArgumentException("E_ALLOC_PROFILE_REQUIRED: "
@@ -13673,7 +13678,7 @@ public final class TypeChecker {
             }
         }
 
-        validateRegisteredCoreTypeArity(ref);
+        validateRegisteredCoreTypeArity(ref, generics);
 
         // Primitive and scalar built-in types do not accept higher-kinded
         // application. Previously e.g. int<string> silently resolved to int.
