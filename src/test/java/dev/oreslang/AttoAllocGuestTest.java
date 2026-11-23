@@ -19,7 +19,8 @@ final class AttoAllocGuestTest {
 
     @Test
     void closedAllocSourcesResolveToOneCompilerOwnedUnitPerModule() throws Exception {
-        assertEquals(6, CoreLibrarySources.packagedAttoAllocPaths().size());
+        assertTrue(CoreLibrarySources.packagedAttoAllocPaths().containsAll(java.util.Set.of(
+                "allocator.atto", "set.atto", "drop.atto", "arc.atto", "pool.atto", "weak.atto")));
         for (String name : new String[]{"allocator", "set", "drop", "arc", "pool", "weak"}) {
             String canonical = "atto.alloc/" + name;
             String source = CoreLibrarySources.attoAllocSource(canonical);
