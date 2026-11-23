@@ -1,0 +1,17 @@
+// expect-stdout: 34:closed
+// Closing twice cannot discard already committed FIFO values.
+import module channel from "std/channel";
+
+pub routine main(): void {
+  val Channel<int> ch = channel.bounded<int>(2);
+  writech ch, 3;
+  writech ch, 4;
+  channel.close<int>(ch);
+  channel.close<int>(ch);
+  stdio.stdout.write(readch ch);
+  stdio.stdout.write(readch ch);
+  if channel.is_closed<int>(ch); do
+    stdio.stdout.write(":closed");
+  fi
+  return;
+}

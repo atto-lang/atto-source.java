@@ -1,0 +1,14 @@
+// expect-runtime-error: channel closed
+// Committed FIFO data survives closure; once it drains, an immediate
+// try_receive must report closed, not open/temporarily-unready None.
+import module channel from "std/channel";
+
+pub routine main(): void {
+  val Channel<int> ch = channel.bounded<int>(1);
+  writech ch, 42;
+  channel.close<int>(ch);
+  stdio.stdout.write(readch ch);
+  val Option<int> terminal = channel.try_receive<int>(ch);
+  stdio.stdout.write("unexpected");
+  return;
+}

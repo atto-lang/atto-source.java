@@ -78,7 +78,8 @@ public final class CoreLibrarySources {
             "admission_deadline_policy.atto",
             "env.atto",
             "task.atto",
-            "time.atto");
+            "time.atto",
+            "channel.atto");
 
     private CoreLibrarySources() { }
 

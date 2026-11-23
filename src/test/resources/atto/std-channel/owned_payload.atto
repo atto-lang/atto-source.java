@@ -1,0 +1,20 @@
+// expect-stdout: accepted:56
+// Non-copy data moves to the channel through an Atto function boundary.
+import module channel from "std/channel";
+
+pub async routine main(): void {
+  val Channel<Array<int>> ch = channel.bounded<Array<int>>(1);
+  val Array<int> payload = [5, 6];
+  val TryWriteResult<Array<int>> outcome =
+      channel.try_send<Array<int>>(ch, rt take payload);
+  do match outcome over
+    on Accepted -> { stdio.stdout.write("accepted:"); }
+    on Full(rejected) -> { stdio.stdout.write("unexpected-full"); }
+    on Closed(rejected) -> { stdio.stdout.write("unexpected-closed"); }
+  end
+  val Array<int> received = await channel.receive<Array<int>>(ch);
+  stdio.stdout.write(received[0]);
+  stdio.stdout.write(received[1]);
+  channel.close<Array<int>>(ch);
+  return;
+}
