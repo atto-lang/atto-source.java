@@ -97,7 +97,7 @@ public final class CoreLibrarySources {
     private static final String LIB_RESOURCE_PREFIX = "dev/oreslang/lib/";
 
     private static final java.util.Map<Layer, Set<String>> V1_UNITS = java.util.Map.of(
-            Layer.CORE, Set.of("num", "cmp", "option", "result", "mem"),
+            Layer.CORE, Set.of("num", "cmp", "option", "result", "mem", "range", "cell", "contracts"),
             Layer.ALLOC, Set.of("arena", "heap", "region", "bitset", "linked_list", "map", "allocator", "arc", "drop", "pool", "set", "weak", "actor_heap", "deque", "slab", "aligned", "secure", "stats"),
             Layer.STD, Set.of("io", "path"));
 
