@@ -229,10 +229,13 @@ public final class OwnershipChecker {
                 // name exposed by that import, not Class or another module's
                 // identically named class. The linker validates source identity.
                 imported = program.imports().stream().anyMatch(use ->
-                        use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                        (use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
                                 && use.names().stream().anyMatch(moduleName ->
                                         name.equals(ImportRules.localName(use, moduleName)
-                                                + "." + declaration.name())));
+                                                + "." + declaration.name())))
+                                // import * as ns: file-root classes as ns.Class
+                                || (use.wildcard() && use.namespace() != null
+                                        && name.equals(use.namespace() + "." + declaration.name())));
             }
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {

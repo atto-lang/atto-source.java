@@ -198,4 +198,70 @@ final class CrossFileLinkedTypingTest {
         assertTrue(failure.getMessage().contains("main.atto"), failure::getMessage);
         assertTrue(failure.getMessage().contains("arity"), failure::getMessage);
     }
+
+    private static final String ROOT_LIB = """
+            define pub class Point as
+              pub val int x;
+              pub constructor(int x) { self.x = x; }
+            end
+            pub fnc origin(): Point { return new Point(0); }
+            pub fnc wrap<T>(T value): Option<T> { return Some(value); }
+            pub fnc twice(int value): Array<int> {
+              let mut Array<int> out = new Array<int>();
+              out.add(value);
+              out.add(value);
+              return out;
+            }
+            """;
+
+    private static void compileWithRoot(String main) {
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("geo.atto", ROOT_LIB);
+        sources.put("main.atto", main);
+        new IncrementalCompiler().compile(sources);
+    }
+
+    @Test
+    void wildcardNamespaceImportsTypeFileRootDeclarations() {
+        assertDoesNotThrow(() -> compileWithRoot("""
+                import * as geo from "./geo.atto";
+                pub fnc main(): int {
+                  let geo.Point p = geo.origin();
+                  let String name = "a";
+                  let Option<String> boxed = geo.wrap(name);
+                  let Array<int> pair = geo.twice(21);
+                  return p.x;
+                }
+                """));
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> compileWithRoot("""
+                        import * as geo from "./geo.atto";
+                        pub fnc main(): int {
+                          let String name = "a";
+                          let Option<int> boxed = geo.wrap(name);
+                          return 0;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("boxed"), failure::getMessage);
+    }
+
+    @Test
+    void importedFunctionBindingsAreTypedThroughImports() {
+        assertDoesNotThrow(() -> compileWithRoot("""
+                import fnc twice from "./geo.atto";
+                pub fnc main(): int {
+                  let Array<int> pair = imports::twice(21);
+                  return pair.get(0) + pair.get(1);
+                }
+                """));
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> compileWithRoot("""
+                        import fnc twice from "./geo.atto";
+                        pub fnc main(): int {
+                          let String wrong = imports::twice(21);
+                          return 0;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("wrong"), failure::getMessage);
+    }
 }

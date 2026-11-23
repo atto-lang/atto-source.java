@@ -119,6 +119,9 @@ public final class TypeChecker {
     private final Set<String> partiallyLinkedModules = new HashSet<>();
     /** Explicit local import fnc aliases only, never wildcard imports. */
     private final Map<String, Ast.ImportDecl> importedFunctions = new HashMap<>();
+    // import fnc bindings whose checked signature is linked; imports::f(...)
+    // then types as a call into the synthetic $imports$ module.
+    private final Set<String> linkedImportCallables = new HashSet<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -631,6 +634,25 @@ public final class TypeChecker {
             Map<String, Ast.InterfaceDecl> linkedContracts,
             Map<String, Ast.ModuleDecl> linkedModules,
             boolean strictAttoEquality) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(program, linkedClasses, linkedAliases,
+                linkedContracts, linkedModules, Map.of(), strictAttoEquality);
+    }
+
+    /**
+     * As above, plus the checked declarations behind explicit
+     * {@code import fnc f from ...} bindings, keyed by local name. A linkable
+     * signature types {@code imports::f(...)} exactly; others stay opaque.
+     */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Ast.ModuleDecl> linkedModules,
+            Map<String, Ast.FunctionDecl> linkedImportFunctions,
+            boolean strictAttoEquality) {
+        if (linkedImportFunctions == null) {
+            throw new IllegalArgumentException("linked import functions cannot be null");
+        }
         if (linkedModules == null) {
             throw new IllegalArgumentException("linked modules cannot be null");
         }
@@ -672,9 +694,12 @@ public final class TypeChecker {
             String alias = entry.getKey();
             Ast.ModuleDecl module = entry.getValue();
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                    (use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
                             && use.names().stream().anyMatch(name ->
-                                    ImportRules.localName(use, name).equals(alias)));
+                                    ImportRules.localName(use, name).equals(alias)))
+                            // `import * as alias from "./file.atto"` links the
+                            // file-root public declarations under the alias.
+                            || (use.wildcard() && alias.equals(use.namespace())));
             if (!imported || module == null || checker.modules.containsKey(alias)) {
                 throw new IllegalArgumentException(
                         "linked module was not uniquely imported: " + alias);
@@ -727,6 +752,22 @@ public final class TypeChecker {
                     checker.putFunctionSlot(alias + "." + fn.name(), fn);
                 }
             }
+        }
+        List<Ast.Decl> importCallables = new ArrayList<>();
+        for (Map.Entry<String, Ast.FunctionDecl> entry : linkedImportFunctions.entrySet()) {
+            String local = entry.getKey();
+            Ast.FunctionDecl fn = entry.getValue();
+            if (fn == null || !local.equals(fn.name())
+                    || !checker.importedFunctions.containsKey(local)
+                    || fn.visibility() != Ast.Visibility.PUBLIC
+                    || !linkableSignature(fn, linkedClasses.keySet())) continue;
+            checker.putFunctionSlot(Parser.IMPORTS_NAMESPACE + "." + local, fn);
+            checker.linkedImportCallables.add(local);
+            importCallables.add(fn);
+        }
+        if (!importCallables.isEmpty()) {
+            checker.modules.put(Parser.IMPORTS_NAMESPACE, new Ast.ModuleDecl(
+                    Parser.IMPORTS_NAMESPACE, List.of(), List.of(), importCallables));
         }
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
@@ -795,9 +836,10 @@ public final class TypeChecker {
                         && name.substring(separator + 1).equals(declaration.name())) {
                     String prefix = name.substring(0, separator);
                     boolean importedModule = program.imports().stream().anyMatch(use ->
-                            use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                            (use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
                                     && use.names().stream().anyMatch(sourceName ->
-                                            ImportRules.localName(use, sourceName).equals(prefix)));
+                                            ImportRules.localName(use, sourceName).equals(prefix)))
+                                    || (use.wildcard() && prefix.equals(use.namespace())));
                     if (importedModule) linkedModuleAlias = prefix;
                 }
             }
@@ -4773,7 +4815,8 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr importedCall
                     && importedCall.receiver() instanceof Ast.NameExpr namespace
-                    && namespace.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                    && namespace.name().equals(Parser.IMPORTS_NAMESPACE)
+                    && !linkedImportCallables.contains(importedCall.member())) {
                 if (!importedFunctions.containsKey(importedCall.member())) {
                     throw new IllegalArgumentException(
                             "imports::" + importedCall.member()

@@ -258,6 +258,8 @@ public final class IncrementalCompiler {
                                 linked.classes(), linked.aliases(), contracts,
                                 linkedImportedModules(id, parsed.get(id), parsed,
                                         normalizedImportResolutions),
+                                linkedImportedFunctions(id, parsed.get(id), parsed,
+                                        normalizedImportResolutions),
                                 strictAtto);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
@@ -304,6 +306,25 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Ast.ModuleDecl> result = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.wildcard() && imported.namespace() != null
+                    && !ImportRules.isJavaPath(imported.path())) {
+                // `import * as alias from "./file.atto"`: the target's
+                // file-root public declarations, linked under the alias.
+                String targetId = ImportGraph.resolveImportUnitId(
+                        id, imported, parsed.keySet(), importResolutions);
+                Ast.Program target = targetId == null ? null : parsed.get(targetId);
+                if (target == null) continue;
+                for (Ast.ModuleDecl module : target.modules()) {
+                    if (!module.name().equals(Parser.ROOT_MODULE)) continue;
+                    Ast.ModuleDecl qualified = ForeignModuleQualifier.qualify(imported.namespace(), module);
+                    if (result.putIfAbsent(imported.namespace(), new Ast.ModuleDecl(imported.namespace(),
+                            qualified.annotations(), qualified.contracts(), qualified.declarations())) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate imported module binding '" + imported.namespace() + "'");
+                    }
+                }
+                continue;
+            }
             if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) continue;
             // Same resolution as class linking: explicit resolver entries
             // first, then supplied relative units (ImportGraph proves identity).
@@ -321,6 +342,37 @@ public final class IncrementalCompiler {
                         }
                     }
                 }
+            }
+        }
+        return result;
+    }
+
+    /** Declarations behind explicit `import fnc f from ...` bindings, by local name. */
+    private static Map<String, Ast.FunctionDecl> linkedImportedFunctions(
+            String id, Ast.Program program, Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.FunctionDecl> result = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.FUNCTION || imported.wildcard()) continue;
+            String targetId = ImportGraph.resolveImportUnitId(
+                    id, imported, parsed.keySet(), importResolutions);
+            Ast.Program target = targetId == null ? null : parsed.get(targetId);
+            if (target == null) continue;
+            for (String name : imported.names()) {
+                Ast.FunctionDecl match = null;
+                int matches = 0;
+                for (Ast.ModuleDecl module : target.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.FunctionDecl fn
+                                && fn.visibility() == Ast.Visibility.PUBLIC
+                                && fn.name().equals(name)) {
+                            match = fn;
+                            matches++;
+                        }
+                    }
+                }
+                // Overloads stay opaque; ImportGraph already rejects ambiguity.
+                if (matches == 1) result.putIfAbsent(ImportRules.localName(imported, name), match);
             }
         }
         return result;
@@ -344,6 +396,32 @@ public final class IncrementalCompiler {
             // ImportGraph already proves the requested public declaration kind;
             // dropping ACTOR here previously let Worker.receive() fall through
             // to the unknown-member path without checking mailbox ingress.
+            if (imported.wildcard() && imported.namespace() != null
+                    && !ImportRules.isJavaPath(imported.path())) {
+                String sourceId = ImportGraph.resolveImportUnitId(
+                        unitId, imported, parsed.keySet(), importResolutions);
+                Ast.Program source = sourceId == null ? null : parsed.get(sourceId);
+                if (source == null) continue;
+                for (Ast.ModuleDecl module : source.modules()) {
+                    if (!module.name().equals(Parser.ROOT_MODULE)) continue;
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl klass
+                                && klass.visibility() == Ast.Visibility.PUBLIC
+                                && klass.actorKind() == Ast.ActorKind.NONE) {
+                            String qualified = imported.namespace() + "." + klass.name();
+                            Ast.ClassDecl linkedClass =
+                                    ForeignModuleQualifier.qualify(imported.namespace(), module, klass);
+                            if (ownershipClasses.putIfAbsent(qualified, linkedClass) != null
+                                    || linked.putIfAbsent(qualified, linkedClass) != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous linked namespace class '" + qualified + "'");
+                            }
+                            aliases.put(qualified, Map.of());
+                        }
+                    }
+                }
+                continue;
+            }
             if (imported.wildcard() || (imported.kind() != Ast.ImportKind.CLASS
                     && imported.kind() != Ast.ImportKind.ACTOR
                     && imported.kind() != Ast.ImportKind.MODULE)) continue;
