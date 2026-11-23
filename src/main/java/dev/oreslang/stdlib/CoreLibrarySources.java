@@ -43,7 +43,12 @@ public final class CoreLibrarySources {
             "collections.atto",
             "math.atto",
             "hash.atto",
-            "cell.atto");
+            "cell.atto",
+            "slice.atto",
+            "error.atto",
+            "ptr.atto",
+            "atomic.atto",
+            "iter.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
@@ -93,7 +98,7 @@ public final class CoreLibrarySources {
     private static final String LIB_RESOURCE_PREFIX = "dev/oreslang/lib/";
 
     private static final java.util.Map<Layer, Set<String>> V1_UNITS = java.util.Map.of(
-            Layer.CORE, Set.of("num", "cmp", "option", "result", "mem"),
+            Layer.CORE, Set.of("num", "cmp", "option", "result", "mem", "range", "cell", "contracts"),
             Layer.ALLOC, Set.of("arena", "heap", "region", "bitset", "linked_list", "map", "allocator", "arc", "drop", "pool", "set", "weak", "actor_heap", "deque", "slab", "aligned", "secure", "stats"),
             Layer.STD, Set.of("io", "path"));
 
@@ -256,7 +261,9 @@ public final class CoreLibrarySources {
     public static boolean isOresCoreImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        return normalized.startsWith(CORE_IMPORT_PREFIX) || normalized.startsWith(ATTO_CORE_IMPORT_PREFIX);
+        return normalized.startsWith(CORE_IMPORT_PREFIX) || normalized.startsWith(ATTO_CORE_IMPORT_PREFIX)
+                // core/<x> shorthand for a legacy core module that is not a v1 unit.
+                || (normalized.startsWith("core/") && legacyHasAttoAlias(normalized));
     }
 
     /** Canonical hosted namespace plus the temporary legacy std/* spelling. */
@@ -346,6 +353,8 @@ public final class CoreLibrarySources {
         Objects.requireNonNull(importPath, "importPath");
         if (importPath.startsWith(ATTO_CORE_IMPORT_PREFIX)) {
             importPath = CORE_IMPORT_PREFIX + importPath.substring(ATTO_CORE_IMPORT_PREFIX.length());
+        } else if (importPath.startsWith("core/")) {
+            importPath = CORE_IMPORT_PREFIX + importPath.substring("core/".length());
         }
         if (!importPath.startsWith(CORE_IMPORT_PREFIX)) {
             throw new IllegalArgumentException(
