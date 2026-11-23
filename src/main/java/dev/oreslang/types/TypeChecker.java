@@ -863,7 +863,11 @@ public final class TypeChecker {
             }
             checker.classes.put(name, declaration);
             String previousName = checker.linkedClassNames.putIfAbsent(declaration, name);
-            if (previousName != null && !previousName.equals(name)) {
+            // One physical module imported under two module aliases (e.g.
+            // canonical and legacy selectors) names one nominal type; a direct
+            // class import under a second spelling is still rejected.
+            if (previousName != null && !previousName.equals(name)
+                    && !(linkedModuleAlias != null && previousName.endsWith("." + declaration.name()))) {
                 throw new IllegalArgumentException(
                         "the same linked class cannot be imported through multiple names: "
                                 + declaration.name());
