@@ -173,6 +173,8 @@ public final class CoreLibrarySources {
         try {
             if (importPath.startsWith("atto.core/"))
                 return CORE_SOURCES.contains(canonicalCoreRelativePath(importPath));
+            if (importPath.startsWith("core/"))
+                return CORE_SOURCES.contains(canonicalCoreRelativePath("atto." + importPath));
             if (importPath.startsWith("atto.std/"))
                 return STD_SOURCES.contains(canonicalStdRelativePath(importPath));
         } catch (IllegalArgumentException invalid) {
@@ -204,6 +206,46 @@ public final class CoreLibrarySources {
     public static String librarySource(LibraryUnit unit) throws IOException {
         return readPackagedSource(unit.resource(), unit.layer().label() + "/" + unit.name());
     }
+
+    // ---- alloc layer convenience API (layered registry backed) ----------
+
+    /** True for any atto.alloc/ or alloc/ selector. */
+    public static boolean isAllocImport(String importPath) {
+        return importPath != null
+                && (importPath.startsWith("atto.alloc/") || importPath.startsWith("alloc/"));
+    }
+
+    private static LibraryUnit allocUnit(String importPath) {
+        LibraryUnit unit = libraryUnit(importPath);
+        if (unit.layer() != Layer.ALLOC) {
+            throw new IllegalArgumentException("not a compiler-owned atto.alloc module: " + importPath);
+        }
+        return unit;
+    }
+
+    public static String allocSource(String importPath) throws IOException {
+        return librarySource(allocUnit(importPath));
+    }
+
+    public static String allocUnitId(String importPath) {
+        return allocUnit(importPath).unitId();
+    }
+
+    public static String allocFileName(String importPath) {
+        return allocUnit(importPath).fileName();
+    }
+
+    /** Registered alloc units as "<unit>.atto". */
+    public static Set<String> packagedAllocPaths() {
+        java.util.Set<String> out = new java.util.TreeSet<>();
+        for (String unit : V1_UNITS.get(Layer.ALLOC)) out.add(unit + ".atto");
+        return java.util.Collections.unmodifiableSet(out);
+    }
+
+    public static String attoAllocSource(String importPath) throws IOException { return allocSource(importPath); }
+    public static String attoAllocUnitId(String importPath) { return allocUnitId(importPath); }
+    public static String attoAllocFileName(String importPath) { return allocFileName(importPath); }
+    public static Set<String> packagedAttoAllocPaths() { return packagedAllocPaths(); }
 
     /** core -> core; alloc -> core|alloc; std -> core|alloc|std. */
     public static boolean layerMayDependOn(Layer importer, Layer dependency) {
