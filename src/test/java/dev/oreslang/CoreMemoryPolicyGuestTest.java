@@ -57,7 +57,7 @@ final class CoreMemoryPolicyGuestTest {
         var result = LinkedProgramRunner.runWithExitStatus(
                 entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(), out, err);
         assertEquals("", out.toString(StandardCharsets.UTF_8));
-        assertEquals("", err.toString(StandardCharsets.UTF_8));
+        assertEquals("", withoutInterpreterOnlyWarning(err.toString(StandardCharsets.UTF_8)));
         return result.exitStatus();
     }
 
@@ -171,4 +171,14 @@ final class CoreMemoryPolicyGuestTest {
         }
     }
 
+
+    /** Truffle prints a one-time fallback-runtime notice on JVMs without JVMCI. */
+    private static String withoutInterpreterOnlyWarning(String err) {
+        int start = err.indexOf("[To redirect Truffle log output");
+        if (start < 0) start = err.indexOf("[engine] WARNING: The polyglot engine uses a fallback runtime");
+        if (start < 0) return err;
+        String tail = "WarnInterpreterOnly=false' system property.";
+        int end = err.indexOf(tail, start);
+        return end < 0 ? err : (err.substring(0, start) + err.substring(end + tail.length())).strip();
+    }
 }
