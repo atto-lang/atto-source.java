@@ -119,6 +119,9 @@ public final class TypeChecker {
     private final Set<String> partiallyLinkedModules = new HashSet<>();
     /** Explicit local import fnc aliases only, never wildcard imports. */
     private final Map<String, Ast.ImportDecl> importedFunctions = new HashMap<>();
+    // import fnc bindings whose checked signature is linked; imports::f(...)
+    // then types as a call into the synthetic $imports$ module.
+    private final Set<String> linkedImportCallables = new HashSet<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -631,6 +634,25 @@ public final class TypeChecker {
             Map<String, Ast.InterfaceDecl> linkedContracts,
             Map<String, Ast.ModuleDecl> linkedModules,
             boolean strictAttoEquality) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(program, linkedClasses, linkedAliases,
+                linkedContracts, linkedModules, Map.of(), strictAttoEquality);
+    }
+
+    /**
+     * As above, plus the checked declarations behind explicit
+     * {@code import fnc f from ...} bindings, keyed by local name. A linkable
+     * signature types {@code imports::f(...)} exactly; others stay opaque.
+     */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Ast.ModuleDecl> linkedModules,
+            Map<String, Ast.FunctionDecl> linkedImportFunctions,
+            boolean strictAttoEquality) {
+        if (linkedImportFunctions == null) {
+            throw new IllegalArgumentException("linked import functions cannot be null");
+        }
         if (linkedModules == null) {
             throw new IllegalArgumentException("linked modules cannot be null");
         }
@@ -672,9 +694,12 @@ public final class TypeChecker {
             String alias = entry.getKey();
             Ast.ModuleDecl module = entry.getValue();
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                    (use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
                             && use.names().stream().anyMatch(name ->
-                                    ImportRules.localName(use, name).equals(alias)));
+                                    ImportRules.localName(use, name).equals(alias)))
+                            // `import * as alias from "./file.atto"` links the
+                            // file-root public declarations under the alias.
+                            || (use.wildcard() && alias.equals(use.namespace())));
             if (!imported || module == null || checker.modules.containsKey(alias)) {
                 throw new IllegalArgumentException(
                         "linked module was not uniquely imported: " + alias);
@@ -682,10 +707,19 @@ public final class TypeChecker {
             // Only concrete, effect-free signatures are linked. Anything else
             // (Any/generic/async/annotated callables, e.g. std/assert) keeps the
             // legacy opaque import behavior instead of a nominal mis-typing.
+            Set<String> linkedNominals = linkedClasses.keySet();
             boolean allConcrete = module.declarations().stream()
-                    .allMatch(d -> d instanceof Ast.FunctionDecl fn
+                    .allMatch(d -> (d instanceof Ast.FunctionDecl fn
                             && (fn.visibility() != Ast.Visibility.PUBLIC
-                                || concreteLinkedSignature(fn)));
+                                || linkableSignature(fn, linkedNominals)))
+                            // Public module classes are linked as alias.X by
+                            // the incremental compiler; private helpers and
+                            // aliases are invisible to the importer.
+                            || (d instanceof Ast.ClassDecl klass
+                                && klass.actorKind() == Ast.ActorKind.NONE
+                                && (klass.visibility() != Ast.Visibility.PUBLIC
+                                    || linkedNominals.contains(alias + "." + klass.name())))
+                            || d instanceof Ast.TypeAliasDecl);
             if (!allConcrete) {
                 // Mixed modules (classes, generic or Any signatures) keep the
                 // opaque import binding, but their concrete public functions
@@ -703,7 +737,7 @@ public final class TypeChecker {
                     if (declaration instanceof Ast.FunctionDecl fn
                             && fn.visibility() == Ast.Visibility.PUBLIC
                             && publicArity.get(fn.name()) == 1
-                            && concreteLinkedSignature(fn)) {
+                            && linkableSignature(fn, linkedNominals)) {
                         checker.putFunctionSlot(alias + "." + fn.name(), fn);
                         checker.partiallyLinkedModules.add(alias);
                     }
@@ -718,6 +752,22 @@ public final class TypeChecker {
                     checker.putFunctionSlot(alias + "." + fn.name(), fn);
                 }
             }
+        }
+        List<Ast.Decl> importCallables = new ArrayList<>();
+        for (Map.Entry<String, Ast.FunctionDecl> entry : linkedImportFunctions.entrySet()) {
+            String local = entry.getKey();
+            Ast.FunctionDecl fn = entry.getValue();
+            if (fn == null || !local.equals(fn.name())
+                    || !checker.importedFunctions.containsKey(local)
+                    || fn.visibility() != Ast.Visibility.PUBLIC
+                    || !linkableSignature(fn, linkedClasses.keySet())) continue;
+            checker.putFunctionSlot(Parser.IMPORTS_NAMESPACE + "." + local, fn);
+            checker.linkedImportCallables.add(local);
+            importCallables.add(fn);
+        }
+        if (!importCallables.isEmpty()) {
+            checker.modules.put(Parser.IMPORTS_NAMESPACE, new Ast.ModuleDecl(
+                    Parser.IMPORTS_NAMESPACE, List.of(), List.of(), importCallables));
         }
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
@@ -786,9 +836,10 @@ public final class TypeChecker {
                         && name.substring(separator + 1).equals(declaration.name())) {
                     String prefix = name.substring(0, separator);
                     boolean importedModule = program.imports().stream().anyMatch(use ->
-                            use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                            (use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
                                     && use.names().stream().anyMatch(sourceName ->
-                                            ImportRules.localName(use, sourceName).equals(prefix)));
+                                            ImportRules.localName(use, sourceName).equals(prefix)))
+                                    || (use.wildcard() && prefix.equals(use.namespace())));
                     if (importedModule) linkedModuleAlias = prefix;
                 }
             }
@@ -812,7 +863,11 @@ public final class TypeChecker {
             }
             checker.classes.put(name, declaration);
             String previousName = checker.linkedClassNames.putIfAbsent(declaration, name);
-            if (previousName != null && !previousName.equals(name)) {
+            // One physical module imported under two module aliases (e.g.
+            // canonical and legacy selectors) names one nominal type; a direct
+            // class import under a second spelling is still rejected.
+            if (previousName != null && !previousName.equals(name)
+                    && !(linkedModuleAlias != null && previousName.endsWith("." + declaration.name()))) {
                 throw new IllegalArgumentException(
                         "the same linked class cannot be imported through multiple names: "
                                 + declaration.name());
@@ -2025,6 +2080,75 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
+    /**
+     * Cross-file callable signatures the importer can type exactly (typed
+     * linked IR v1): concrete or generic, sync, async or suspends, with owned
+     * or borrowed parameters over built-in, collection and linked nominal
+     * types. Nominals must already be qualified to their linked alias.X name.
+     * Anything else stays an opaque import, never a guessed type.
+     */
+    private static boolean linkableSignature(Ast.FunctionDecl fn, Set<String> linkedNominals) {
+        if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
+                || fn.generator() || fn.structural() || fn.nonLexical() || fn.trapped()
+                || !fn.annotations().isEmpty()) {
+            return false;
+        }
+        Set<String> generics = Set.copyOf(fn.genericParameters());
+        if (!linkableType(fn.returnType(), generics, linkedNominals, true)) return false;
+        for (Ast.Param param : fn.parameters()) {
+            if (param == null || param.structural()
+                    || !linkableType(param.type(), generics, linkedNominals, false)) return false;
+        }
+        return true;
+    }
+
+    private static boolean linkableType(Ast.TypeRef ref, Set<String> generics,
+                                        Set<String> linkedNominals, boolean allowVoid) {
+        if (ref == null || ref.name() == null || ref.inferArguments()) return false;
+        if (ref.isBorrow()) {
+            return linkableType(ref.borrowedTarget(), generics, linkedNominals, false);
+        }
+        List<Ast.TypeRef> args = ref.arguments();
+        if (args.stream().anyMatch(arg -> arg.isSequenceShape() || arg.isNamedParameter())) return false;
+        java.util.function.IntPredicate arity = n -> args.size() == n
+                && args.stream().allMatch(arg -> linkableType(arg, generics, linkedNominals, false));
+        if (generics.contains(ref.name())) return args.isEmpty();
+        return switch (ref.name()) {
+            case "int", "float", "bool", "String", "string" -> args.isEmpty();
+            case "void" -> allowVoid && args.isEmpty();
+            // Future<void> is the result of an awaited side effect.
+            case "Future" -> args.size() == 1 && linkableType(args.get(0), generics, linkedNominals, true);
+            case "Option", "Array", "List", "Set" -> arity.test(1);
+            case "Result", "Map" -> arity.test(2);
+            default -> args.stream().allMatch(arg -> linkableType(arg, generics, linkedNominals, false))
+                    && (linkedNominals.contains(ref.name()) || builtinNominal(ref));
+        };
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, Boolean> BUILTIN_NOMINALS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * A compiler-provided nominal (ChildProcess, Channel<T>, Duration, ...):
+     * it resolves in a checker that has no user declarations at all, so the
+     * importer's own declarations can never be what it names.
+     */
+    private static boolean builtinNominal(Ast.TypeRef ref) {
+        // Dynamic top types keep the legacy opaque import (e.g. std/assert's
+        // Any parameters accept every value through runtime equality).
+        if (Set.of("Any", "Object", "Unknown", "Dynamic").contains(ref.name())) return false;
+        Ast.TypeRef probe = new Ast.TypeRef(ref.name(),
+                ref.arguments().stream().map(ignored -> Ast.TypeRef.simple("int")).toList(), false);
+        return BUILTIN_NOMINALS.computeIfAbsent(probe.toString(), ignored -> {
+            try {
+                Type resolved = new TypeChecker().resolve(probe, Set.of(), null);
+                return resolved != null && resolved != Unknown.INSTANCE;
+            } catch (RuntimeException unresolved) {
+                return false;
+            }
+        });
+    }
+
     private static boolean concreteLinkedSignature(Ast.FunctionDecl fn) {
         if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
                 || fn.async() || fn.suspends() || fn.generator() || fn.structural()
@@ -4721,7 +4845,8 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr importedCall
                     && importedCall.receiver() instanceof Ast.NameExpr namespace
-                    && namespace.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                    && namespace.name().equals(Parser.IMPORTS_NAMESPACE)
+                    && !linkedImportCallables.contains(importedCall.member())) {
                 if (!importedFunctions.containsKey(importedCall.member())) {
                     throw new IllegalArgumentException(
                             "imports::" + importedCall.member()

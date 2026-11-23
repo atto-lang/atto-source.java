@@ -89,11 +89,12 @@ final class NamespaceModuleBoundaryTest {
     }
 
     @Test
-    void namespacesAreFlatAndAppearOnlyBeforeImportsAndDeclarations() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+    void namespacesAreDottedAndAppearOnlyBeforeImportsAndDeclarations() {
+        // Namespace names use '.' separators; '/' belongs to import paths.
+        assertEquals("org.lib", Parser.parse("""
                 namespace org.lib;
                 pub routine main(): void { return; }
-                """));
+                """).namespace());
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub routine main(): void { return; }
                 namespace later;

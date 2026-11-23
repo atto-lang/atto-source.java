@@ -13,6 +13,8 @@ public final class Parser {
     // '$' cannot appear in source identifiers; only parser can mint these namespaces.
     public static final String PKG_ROOT_NAMESPACE = "$pkg_root$";
     public static final String IMPORTS_NAMESPACE = "$imports$";
+    /** Marker for `use default namespace(n);`, resolved against the source path. */
+    public static final String DERIVED_NAMESPACE_PREFIX = "$default$";
 
     public enum AttoCallableVersion { V1, V2 }
 
@@ -347,16 +349,45 @@ public final class Parser {
         // Preserve the older "namespace foo;" header with identical AST identity.
         String namespace = null;
         boolean useNamespaceHeader = isContextualIdentifier("use");
+        boolean derivedNamespace = false;
         if (useNamespaceHeader) {
             advance();
+            derivedNamespace = match(DEFAULT);
             consume(NAMESPACE, "expected 'namespace' after file-root 'use'");
         }
-        if (useNamespaceHeader || match(NAMESPACE)) {
-            namespace = consume(IDENT, "expected flat namespace name").lexeme();
-            if (ROOT_MODULE.equals(namespace)) {
-                throw error(previous(), "namespace name '" + ROOT_MODULE + "' is reserved for file-root declarations");
+        if (derivedNamespace) {
+            // `use default namespace;` / `use default namespace(n);` derives
+            // the namespace from the last n folders of the package-relative
+            // source path. The parser has no path, so it records the depth and
+            // the compiler resolves it (DERIVED_NAMESPACE_PREFIX + n).
+            int depth = 1;
+            if (match(LPAREN)) {
+                Token count = consume(INT, "expected a namespace folder depth from 1 to 32");
+                try {
+                    depth = Integer.parseInt(count.lexeme());
+                } catch (NumberFormatException invalid) {
+                    throw error(count, "namespace folder depth must be an integer from 1 to 32");
+                }
+                if (depth < 1 || depth > 32) {
+                    throw error(count, "namespace folder depth must be an integer from 1 to 32");
+                }
+                consume(RPAREN, "expected ')' after namespace folder depth");
             }
-            if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
+            namespace = DERIVED_NAMESPACE_PREFIX + depth;
+            consume(SEMICOLON, "namespace declaration must end with ';'");
+        } else if (useNamespaceHeader || match(NAMESPACE)) {
+            // Namespace names are dotted (commerce.storefront); file paths use
+            // '/' and appear only inside import strings.
+            StringBuilder dotted = new StringBuilder();
+            do {
+                String segment = consume(IDENT, "expected namespace name").lexeme();
+                if (ROOT_MODULE.equals(segment)) {
+                    throw error(previous(), "namespace name '" + ROOT_MODULE + "' is reserved for file-root declarations");
+                }
+                if (dotted.length() > 0) dotted.append('.');
+                dotted.append(segment);
+            } while (match(DOT));
+            namespace = dotted.toString();
             consume(SEMICOLON, "namespace declaration must end with ';'");
         }
 
