@@ -1,0 +1,30 @@
+// Compiler-backed std/task guest fixture. Expected stdout: 42.
+import module task_api from "std/task";
+pub async fnc main(): void {
+  if task_api.deadline_reached(8, 9); do rt fail("early deadline"); fi
+  if !task_api.deadline_reached(9, 9); do rt fail("expired deadline"); fi
+  if task_api.deadline_reached(-1, 9); do rt fail("invalid clock"); fi
+  if task_api.deadline_reached(9, 0); do rt fail("no deadline"); fi
+  if task_api.remaining_slots(1, 2) != 1; do rt fail("quota"); fi
+  if task_api.remaining_slots(3, 2) != 0; do rt fail("over quota"); fi
+
+  let group = task_api.group_policy(5, 2);
+  if group.try_admit(4); do rt fail("wrong generation admitted"); fi
+  if !group.try_admit(5); do rt fail("first admission"); fi
+  if !group.try_admit(5); do rt fail("second admission"); fi
+  if group.try_admit(5); do rt fail("capacity exceeded"); fi
+  if group.active() != 2; do rt fail("active mismatch"); fi
+  if group.ready_to_retire(); do rt fail("premature retire"); fi
+  if group.request_cancel(4); do rt fail("foreign cancel"); fi
+  if !group.request_cancel(5); do rt fail("cancel intent"); fi
+  if !group.is_cancel_requested(); do rt fail("missing cancel flag"); fi
+  if group.try_admit(5); do rt fail("admitted after cancel"); fi
+  if group.ready_to_retire(); do rt fail("retired with active children"); fi
+  if !group.finish(5); do rt fail("first completion"); fi
+  if group.ready_to_retire(); do rt fail("retired too early"); fi
+  if !group.finish(5); do rt fail("second completion"); fi
+  if group.finish(5); do rt fail("duplicate completion"); fi
+  if !group.ready_to_retire(); do rt fail("retirement not reached"); fi
+  stdio.stdout.write(await task_api.run_int_task(42));
+  return;
+}
