@@ -35,6 +35,12 @@ class AttoLibrariesV1Test {
         assertFalse(CoreLibrarySources.isLayeredLibraryImport("std/assert"));
         assertFalse(CoreLibrarySources.isLayeredLibraryImport("./core/num.atto"));
         assertFalse(CoreLibrarySources.isLayeredLibraryImport("std.fs"));
+        // AttoLang names only: ores.* never selects a v1 unit.
+        assertFalse(CoreLibrarySources.isLayeredLibraryImport("ores.core/num"));
+        assertFalse(CoreLibrarySources.isLayeredLibraryImport("ores.std/io"));
+        // atto.std/<legacy> reaches the pre-v1 module.
+        assertFalse(CoreLibrarySources.isLayeredLibraryImport("atto.std/assert"));
+        assertTrue(CoreLibrarySources.isStdImport("atto.std/assert"));
         assertThrows(IllegalArgumentException.class,
                 () -> CoreLibrarySources.libraryUnit("core/../num"));
         assertThrows(IllegalArgumentException.class,
