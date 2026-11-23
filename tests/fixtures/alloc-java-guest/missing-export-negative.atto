@@ -1,0 +1,3 @@
+// Undeclared function must not fall through to ambient package source.
+import fnc imaginary_allocator from "atto.alloc/allocator";
+pub fnc main(): void { return; }

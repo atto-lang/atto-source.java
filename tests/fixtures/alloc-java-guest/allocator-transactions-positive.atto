@@ -1,0 +1,17 @@
+// Compiled guest must exercise class imports and checked allocation transitions.
+import class ReservationLedger from "atto.alloc/allocator";
+import class Reservation from "atto.alloc/allocator";
+
+pub fnc main(): int {
+  let mut ReservationLedger ledger = new ReservationLedger(1, 10);
+  let Reservation ticket = ledger.reserve(7);
+  if !ticket.is_valid() || ledger.reserve(4).is_valid() ||
+     !ledger.record_commit(ticket) || ledger.record_commit(ticket) ||
+     !ledger.begin_retirement(ticket) || ledger.begin_retirement(ticket) ||
+     ledger.is_drained() || !ledger.finish_retirement(ticket) ||
+     ledger.finish_retirement(ticket) || !ledger.seal() ||
+     ledger.reserve(1).is_valid(); do
+    return 1;
+  fi
+  return ledger.is_drained() ? 42 : 2;
+}

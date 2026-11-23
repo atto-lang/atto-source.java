@@ -1,0 +1,8 @@
+// Reject length multiplication and alignment wrap at i32 bounds.
+import fnc array_bytes from "atto.alloc/allocator";
+import fnc aligned_end from "atto.alloc/allocator";
+
+pub fnc main(): int {
+  return array_bytes(2147483647, 2, 2147483647) == -1 &&
+         aligned_end(2147483646, 4, 8, 2147483647) == -1 ? 42 : 1;
+}

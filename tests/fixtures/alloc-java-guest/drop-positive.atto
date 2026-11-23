@@ -1,0 +1,3 @@
+// Compiled guest execution fixture, not a host-side policy oracle.
+import fnc self_test from "atto.alloc/drop";
+pub fnc main(): int { return self_test() ? 42 : 1; }
