@@ -11,7 +11,7 @@ packaged source. **Do not introduce** `ores.std` in new Atto programs.
 callable payloads, including nested callable fields. Passing a channel across
 an actor or tenant boundary must fail closed unless an independently verified
 capability/codec contract explicitly allows it. Noncopy payloads must be moved
-exactly once; use explicit `rt take` at call sites.
+exactly once; use explicit `take!` at call sites.
 
 The Atto module is source-only. It calls the existing runtime/compiler-owned
 `Channel<T>` and `readch`, `writech`, `nb`, `try` instructions.
