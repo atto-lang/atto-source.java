@@ -80,7 +80,8 @@ public final class CoreLibrarySources {
             "task.atto",
             "time.atto",
             "channel.atto",
-            "process.atto", "process_policy.atto");
+            "process.atto", "process_policy.atto",
+            "http.atto");
 
     private CoreLibrarySources() { }
 
@@ -255,6 +256,41 @@ public final class CoreLibrarySources {
     public static String attoAllocUnitId(String importPath) { return allocUnitId(importPath); }
     public static String attoAllocFileName(String importPath) { return allocFileName(importPath); }
     public static Set<String> packagedAttoAllocPaths() { return packagedAllocPaths(); }
+
+    /**
+     * The graph linker must never treat reserved library names as ordinary
+     * supplied source paths, or accept a caller-provided resolver mapping to an
+     * unrelated source unit. Only identities registered by this compiler can be
+     * bound. Null denotes a non-reserved import. This checks identity, not byte
+     * provenance: the runtime loader still supplies content from this registry.
+     */
+    public static String requiredRegisteredBuiltinUnitId(String importPath) {
+        Objects.requireNonNull(importPath, "importPath");
+        if (isLayeredLibraryImport(importPath)) {
+            return libraryUnit(importPath).unitId();
+        }
+        if (isStdImport(importPath)) {
+            String relative = canonicalStdRelativePath(importPath);
+            if (!STD_SOURCES.contains(relative)) {
+                throw new IllegalArgumentException(
+                        "unregistered compiler-owned std import: " + importPath);
+            }
+            return unitId(importPath);
+        }
+        if (isOresCoreImport(importPath)) {
+            String relative = canonicalCoreRelativePath(importPath);
+            if (!CORE_SOURCES.contains(relative)) {
+                throw new IllegalArgumentException(
+                        "unregistered compiler-owned core import: " + importPath);
+            }
+            return oresCoreUnitId(importPath);
+        }
+        if (isReservedOresLibraryImport(importPath)) {
+            throw new IllegalArgumentException(
+                    "unregistered reserved compiler-library identity: " + importPath);
+        }
+        return null;
+    }
 
     /** core -> core; alloc -> core|alloc; std -> core|alloc|std. */
     public static boolean layerMayDependOn(Layer importer, Layer dependency) {

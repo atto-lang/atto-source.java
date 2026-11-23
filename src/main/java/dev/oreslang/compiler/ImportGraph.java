@@ -3,6 +3,7 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.stdlib.CoreLibrarySources;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -42,6 +43,34 @@ final class ImportGraph {
         String resolved = importResolutions
                 .getOrDefault(normalizedUnitId, Map.of())
                 .get(imported.path());
+
+        // Reserved std/core/alloc identities must not be resolved through
+        // the general relative/source/package fallback. The trusted source
+        // closure collector registers an exact dependency on the built-in
+        // unit; an arbitrary caller-supplied path must never substitute for
+        // that namespace, even if it is present in the compilation unit set.
+        String expectedBuiltin = CoreLibrarySources.requiredRegisteredBuiltinUnitId(imported.path());
+        if (expectedBuiltin != null) {
+            if (resolved == null) {
+                throw new IllegalArgumentException(
+                        "registered built-in import '" + imported.path()
+                                + "' requires an authenticated source-unit resolution");
+            }
+            String target = normalizeUnitId(resolved);
+            if (!expectedBuiltin.equals(target)) {
+                throw new IllegalArgumentException(
+                        "built-in import '" + imported.path()
+                                + "' cannot be redirected to '" + target
+                                + "' (expected '" + expectedBuiltin + "')");
+            }
+            rejectSelfImport(normalizedUnitId, imported.path(), target);
+            if (!available.contains(target)) {
+                throw new IllegalArgumentException(
+                        "registered built-in source unit is missing: '" + target + "'");
+            }
+            return target;
+        }
+
         if (resolved != null) {
             String normalizedResolved = normalizeUnitId(resolved);
             rejectSelfImport(normalizedUnitId, imported.path(), normalizedResolved);
@@ -132,10 +161,20 @@ final class ImportGraph {
         int matches = 0;
         for (Ast.ModuleDecl module : program.modules()) {
             if (kind == Ast.ImportKind.MODULE) {
-                if (!module.name().equals(Parser.ROOT_MODULE) && module.name().equals(name)) matches++;
+                // Imported modules are public nominal exports, not just any
+                // source-level namespace. Private/default modules cannot be
+                // selected through a cross-file `import module` declaration.
+                if (!module.name().equals(Parser.ROOT_MODULE)
+                        && module.name().equals(name)
+                        && module.visibility() == Ast.Visibility.PUBLIC) matches++;
                 continue;
             }
 
+            // A declaration marked public does not escape a private
+            // containing module. For file-root exports the synthetic root
+            // acts as the ordinary public source surface.
+            if (!module.name().equals(Parser.ROOT_MODULE)
+                    && module.visibility() != Ast.Visibility.PUBLIC) continue;
             for (Ast.Decl decl : module.declarations()) {
                 boolean matched = switch (kind) {
                     case FUNCTION -> decl instanceof Ast.FunctionDecl fn

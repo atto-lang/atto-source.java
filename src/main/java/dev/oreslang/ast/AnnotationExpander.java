@@ -32,7 +32,9 @@ public final class AnnotationExpander {
     public static Ast.Program expand(Ast.Program program) {
         List<Ast.ModuleDecl> modules = new ArrayList<>(program.modules().size());
         for (Ast.ModuleDecl module : program.modules()) modules.add(expandModule(module));
-        return new Ast.Program(program.namespace(), program.imports(), modules);
+        // Preserve the file export ledger across all annotation rewrites.
+        // Dropping it would silently alter cross-unit visibility and ABI.
+        return new Ast.Program(program.namespace(), program.imports(), modules, program.exports());
     }
 
     public static boolean isGeneratedFromJsonSetter(Ast.MethodDecl method) {
@@ -125,7 +127,7 @@ public final class AnnotationExpander {
                 declarations.add(declaration);
             }
         }
-        return new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations);
+        return new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations, module.visibility());
     }
 
     private static Ast.ClassDecl expandClass(Ast.ClassDecl klass) {

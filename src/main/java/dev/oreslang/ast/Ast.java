@@ -60,14 +60,26 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts,
+                             List<Decl> declarations, Visibility visibility) {
         public ModuleDecl {
+            java.util.Objects.requireNonNull(name, "module name");
+            java.util.Objects.requireNonNull(visibility, "module visibility");
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
-        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
+        // Legacy hand-authored module ASTs remain private by default.
+        public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts,
+                          List<Decl> declarations) {
+            this(name, annotations, contracts, declarations, Visibility.PRIVATE);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, List.of(), List.of(), declarations, Visibility.PRIVATE);
+        }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, annotations, List.of(), declarations, Visibility.PRIVATE);
+        }
     }
 
     /**

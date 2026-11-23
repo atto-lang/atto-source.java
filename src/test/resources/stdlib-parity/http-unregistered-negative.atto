@@ -1,0 +1,6 @@
+// A reserved built-in identity must not fall back to ambient project files.
+import * as invalid from "std.unregistered";
+pub routine main(): void {
+  stdio.println("unexpected built-in resolution");
+  return;
+}

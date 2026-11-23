@@ -1,0 +1,12 @@
+// Importing a pure HTTP library must not erase a moved owner's borrow state.
+import * as http from "atto.std/http";
+define class Box as
+  pub let int value = 42;
+end
+pub fnc main(): void {
+  val Box original = new Box();
+  val Box transferred = rt take original;
+  stdio.println(http.status_valid(200));
+  stdio.println(original.value);
+  return;
+}

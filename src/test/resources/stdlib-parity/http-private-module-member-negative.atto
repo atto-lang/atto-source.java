@@ -1,0 +1,6 @@
+// The public member inside a private module must not be a bare import.
+import fnc leak from "./http-module-private-lib.atto";
+pub routine main(): void {
+  stdio.println(leak());
+  return;
+}

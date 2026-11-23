@@ -7,6 +7,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.stdlib.CoreLibrarySources;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
@@ -12108,6 +12109,25 @@ public final class OresEvalRootNode extends RootNode {
 
         private String resolveImportUnitId(String rawPath) {
             String hostResolved = context.resolvedLinkedImport(codeUnitId, rawPath);
+
+            // Runtime defense in depth: even a direct or legacy single-unit
+            // evaluation must not resolve compiler-owned std/core/alloc names
+            // through ambient files, package roots or an attacker-selected
+            // linked source ID. The authenticated loader must bind them to
+            // exactly the compiler's closed registry identity.
+            String expectedBuiltin =
+                    CoreLibrarySources.requiredRegisteredBuiltinUnitId(rawPath);
+            if (expectedBuiltin != null) {
+                if (hostResolved == null) {
+                    throw new SecurityException(
+                            "compiler-owned import has no linked registered source: " + rawPath);
+                }
+                if (!expectedBuiltin.equals(normalizeUnitId(hostResolved))) {
+                    throw new SecurityException(
+                            "compiler-owned import identity mismatch: " + rawPath);
+                }
+                return expectedBuiltin;
+            }
             if (hostResolved != null) return hostResolved;
 
             String raw = rawPath.replace('\\', '/');
@@ -12125,9 +12145,26 @@ public final class OresEvalRootNode extends RootNode {
             return candidate;
         }
 
+        /**
+         * A public declaration inside a private module is not a cross-unit
+         * export. Use the exact checked AST declaration identity so an
+         * unrelated equal-named public declaration cannot confer authority.
+         */
+        private boolean isPubliclyExportableDeclaration(Ast.Decl declaration) {
+            for (Ast.ModuleDecl ownerModule : program.modules()) {
+                if (!ownerModule.name().equals(Parser.ROOT_MODULE)
+                        && ownerModule.visibility() != Ast.Visibility.PUBLIC) continue;
+                for (Ast.Decl member : ownerModule.declarations()) {
+                    if (member == declaration) return true;
+                }
+            }
+            return false;
+        }
+
         private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
             Ast.FunctionDecl fn = findFunction(name, args.size());
-            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                    || !isPubliclyExportableDeclaration(fn)) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export callable '" + name + "'");
             }
@@ -12158,7 +12195,8 @@ public final class OresEvalRootNode extends RootNode {
             return switch (kind) {
                 case FUNCTION -> {
                     Ast.FunctionDecl fn = findSingleFunction(name);
-                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                            || !isPubliclyExportableDeclaration(fn)) {
                         throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export function '" + name + "'");
                     }
                     if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE) {
@@ -12177,7 +12215,8 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.ClassDecl klass = findClass(name);
                     if (klass == null
                             || klass.actorKind() != Ast.ActorKind.NONE
-                            || klass.visibility() != Ast.Visibility.PUBLIC) {
+                            || klass.visibility() != Ast.Visibility.PUBLIC
+                            || !isPubliclyExportableDeclaration(klass)) {
                         throw new IllegalArgumentException(
                                 "code unit '" + codeUnitId
                                         + "' does not export public ordinary class '" + name + "'");
@@ -12190,8 +12229,10 @@ public final class OresEvalRootNode extends RootNode {
                                         + " is a type-only selector and cannot be evaluated as a runtime value");
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
-                    if (module == null || module.name().equals(Parser.ROOT_MODULE)) {
-                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    if (module == null || module.name().equals(Parser.ROOT_MODULE)
+                            || module.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId + "' does not export public module '" + name + "'");
                     }
                     yield new ModuleFacade(this, module);
                 }
@@ -12201,13 +12242,21 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object exportAny(String name) {
             Ast.ModuleDecl module = modules.get(name);
-            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
+            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) {
+                if (module.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "code unit '" + codeUnitId + "' does not export public module '" + name + "'");
+                }
+                return new ModuleFacade(this, module);
+            }
             Ast.ClassDecl klass = findClass(name);
-            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC) {
+            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC
+                    && isPubliclyExportableDeclaration(klass)) {
                 return new ClassFacade(this, klass);
             }
             Ast.FunctionDecl fn = findSingleFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
+            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC
+                    && isPubliclyExportableDeclaration(fn)) {
                 if (fn.kind() == Ast.CallableKind.ROUTINE) {
                     throw new IllegalArgumentException(
                             "routine '" + name
@@ -12227,6 +12276,8 @@ public final class OresEvalRootNode extends RootNode {
                 return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
+                if (!candidate.name().equals(Parser.ROOT_MODULE)
+                        && candidate.visibility() != Ast.Visibility.PUBLIC) continue;
                 for (Ast.Decl decl : candidate.declarations()) {
                     if (decl instanceof Ast.FieldDecl field
                             && field.visibility() == Ast.Visibility.PUBLIC
