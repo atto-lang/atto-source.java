@@ -31,6 +31,24 @@ public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
     // Never reuse a legacy-checked unit as strict-AOT source admission evidence.
     private final Map<String, CompiledUnit> strictAttoCache = new LinkedHashMap<>();
+    // Parsing is separate from type/borrow admission. Cached expanded syntax
+    // may be reused, but checked units must still honor current import ABI.
+    // Strict-Atto and legacy parsing must never share cache entries.
+    private final Map<String, ParsedUnit> parsedCache = new LinkedHashMap<>();
+    private final Map<String, ParsedUnit> strictAttoParsedCache = new LinkedHashMap<>();
+    // Include the imported declaration identity, not only resolved source IDs:
+    // swapping {left} for {right} within the same provider also invalidates
+    // re-exports and all downstream typed assumptions.
+    private final Map<String, List<ImportBinding>> importBindingCache = new LinkedHashMap<>();
+    private final Map<String, List<ImportBinding>> strictAttoImportBindingCache = new LinkedHashMap<>();
+    private record ImportBinding(Ast.ImportDecl declaration, String resolvedTarget) { }
+
+    // Raw AST is the input to semantic analysis (which expands annotations
+    // itself). The expanded AST is used for graph linking and ABI indexing.
+    // Both are immutable source-derived facts, never checked/borrow-authority.
+    private record ParsedUnit(
+            String sourceDigest, String abiDigest,
+            Ast.Program rawProgram, Ast.Program program) { }
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -61,9 +79,21 @@ public final class IncrementalCompiler {
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions,
             boolean strictAtto) {
+        if (sources == null) throw new IllegalArgumentException("sources cannot be null");
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
-        if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
         Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
+        Map<String, ParsedUnit> selectedParsedCache =
+                strictAtto ? strictAttoParsedCache : parsedCache;
+        Map<String, List<ImportBinding>> selectedBindingCache =
+                strictAtto ? strictAttoImportBindingCache : importBindingCache;
+        if (sources.isEmpty()) {
+            // The input map is a complete source snapshot, including removals.
+            // A later re-add must not reuse a checked result for deleted files.
+            selectedCache.clear();
+            selectedParsedCache.clear();
+            selectedBindingCache.clear();
+            return new BuildResult(Map.of(), Set.of(), Set.of(), List.of(), Set.of());
+        }
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
@@ -76,22 +106,38 @@ public final class IncrementalCompiler {
         Map<String, String> hashes = new LinkedHashMap<>();
         Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
+        Map<String, ParsedUnit> stagedParsed = new LinkedHashMap<>();
+        LinkedHashSet<String> reparsed = new LinkedHashSet<>();
 
-        // Parse the complete source set before resolving imports. This is the
-        // first half of cycle tolerance: A may name B while B names A because
-        // neither unit is recursively compiled while discovering the other.
+        // Parse all *changed* inputs before resolving the complete graph.
+        // This is in-memory only: AST keys include strict-vs-legacy parser
+        // mode via separate maps. Never treat parse reuse as type validation.
         for (Map.Entry<String, String> entry : normalized.entrySet()) {
-            hashes.put(entry.getKey(), digest(entry.getValue()));
-            final Ast.Program program;
-            try {
-                program = AnnotationExpander.expand(strictAtto
-                        ? Parser.parseStrictAtto(entry.getValue())
-                        : Parser.parse(entry.getValue()));
-            } catch (IllegalArgumentException invalid) {
-                throw new SourceUnitDiagnosticException(entry.getKey(), "", "", invalid);
+            String id = entry.getKey();
+            String sourceDigest = digest(entry.getValue());
+            hashes.put(id, sourceDigest);
+            ParsedUnit previous = selectedParsedCache.get(id);
+            ParsedUnit unit;
+            if (previous != null && previous.sourceDigest().equals(sourceDigest)) {
+                unit = previous;
+            } else {
+                final Ast.Program rawProgram;
+                final Ast.Program expandedProgram;
+                try {
+                    rawProgram = strictAtto
+                            ? Parser.parseStrictAtto(entry.getValue())
+                            : Parser.parse(entry.getValue());
+                    expandedProgram = AnnotationExpander.expand(rawProgram);
+                } catch (IllegalArgumentException invalid) {
+                    throw new SourceUnitDiagnosticException(id, "", "", invalid);
+                }
+                unit = new ParsedUnit(
+                        sourceDigest, abiDigest(expandedProgram), rawProgram, expandedProgram);
+                reparsed.add(id);
             }
-            parsed.put(entry.getKey(), program);
-            abiHashes.put(entry.getKey(), abiDigest(program));
+            stagedParsed.put(id, unit);
+            parsed.put(id, unit.program());
+            abiHashes.put(id, unit.abiDigest());
         }
 
         Map<String, Map<String, String>> normalizedImportResolutions =
@@ -121,14 +167,46 @@ public final class IncrementalCompiler {
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
 
+        // A dependency SET is not sufficient: swapping the binding of two
+        // imports can retain exactly the same set of target source IDs.
+        // Resolve every declaration again against this complete snapshot.
+        Map<String, List<ImportBinding>> resolvedBindings = new LinkedHashMap<>();
+        LinkedHashSet<String> unversioned = new LinkedHashSet<>();
+        for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+            String id = entry.getKey();
+            ArrayList<ImportBinding> targets = new ArrayList<>();
+            for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                String target = ImportGraph.resolveImportUnitId(
+                        id, imported, parsed.keySet(), normalizedImportResolutions);
+                if (target == null) {
+                    // Unknown host/package interface: never keep an unchecked
+                    // cached type result across builds without version proof.
+                    unversioned.add(id);
+                    targets.add(new ImportBinding(imported, null));
+                } else {
+                    targets.add(new ImportBinding(imported, target));
+                }
+            }
+            resolvedBindings.put(id, List.copyOf(targets));
+        }
+
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
             CompiledUnit previous = selectedCache.get(id);
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
-            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
+            boolean bindingsChanged = previous == null
+                    || !resolvedBindings.get(id).equals(selectedBindingCache.get(id));
+            if (sourceChanged || depsChanged || bindingsChanged || unversioned.contains(id)) {
+                dirty.add(id);
+            }
+            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))
+                    || bindingsChanged || unversioned.contains(id)) {
+                // Binding changes may alter exposed identities even when the
+                // raw public declaration text is unchanged.
+                abiChanged.add(id);
+            }
         }
 
         /*
@@ -176,9 +254,7 @@ public final class IncrementalCompiler {
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
-                                strictAtto
-                                        ? Parser.parseStrictAtto(normalized.get(id))
-                                        : Parser.parse(normalized.get(id)),
+                                stagedParsed.get(id).rawProgram(),
                                 linked.classes(), linked.aliases(), contracts,
                                 linkedImportedModules(id, parsed.get(id), parsed,
                                         normalizedImportResolutions),
@@ -206,13 +282,20 @@ public final class IncrementalCompiler {
             rebuilt.add(id);
         }
 
-        selectedCache.keySet().retainAll(normalized.keySet());
+        // Publish syntax, imported bindings and checked units together ONLY
+        // after all graph validation, type/ownership checks have succeeded.
+        selectedCache.clear();
         selectedCache.putAll(next);
+        selectedParsedCache.clear();
+        selectedParsedCache.putAll(stagedParsed);
+        selectedBindingCache.clear();
+        selectedBindingCache.putAll(resolvedBindings);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
-                initializationGroups);
+                initializationGroups,
+                Set.copyOf(reparsed));
     }
 
     /** Imported source modules by local alias, from their resolved units. */
@@ -346,6 +429,10 @@ public final class IncrementalCompiler {
     public synchronized void clear() {
         cache.clear();
         strictAttoCache.clear();
+        parsedCache.clear();
+        strictAttoParsedCache.clear();
+        importBindingCache.clear();
+        strictAttoImportBindingCache.clear();
     }
 
     /**
@@ -568,7 +655,7 @@ public final class IncrementalCompiler {
     }
 
     private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v3\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v4\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -584,7 +671,16 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+            // Lexical declaration order is not public ABI. Keep each
+            // declaration's internal parameter/member order and sort the
+            // complete export entries to prevent false importer invalidation.
+            List<String> declarations = new ArrayList<>();
+            for (Ast.Decl decl : module.declarations()) {
+                StringBuilder exported = new StringBuilder();
+                appendAbi(exported, decl);
+                if (!exported.isEmpty()) declarations.add(exported.toString());
+            }
+            declarations.stream().sorted().forEach(abi::append);
         }
         return digest(abi.toString());
     }
@@ -596,15 +692,27 @@ public final class IncrementalCompiler {
             if (fn.async()) abi.append("async ");
             if (fn.generator()) abi.append("generator ");
             if (fn.structural()) abi.append("structural ");
+            abi.append("suspends=").append(fn.suspends())
+                    .append(" nonlexical=").append(fn.nonLexical())
+                    .append(" trapped=").append(fn.trapped()).append(' ');
             abi.append(fn.kind()).append(" pub ").append(fn.name());
             appendGenericSpecs(abi, fn.genericSpecs());
             appendParams(abi, fn.parameters());
-            abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+            abi.append("=>").append(typeRef(fn.returnType()));
+            appendEffects(abi, fn.effects());
+            appendAnnotations(abi, fn.annotations());
+            abi.append('\n');
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
             if (klass.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(klass.actorKind()).append(" pub class ").append(klass.name());
+            abi.append(klass.actorKind()).append(" pub class ").append(klass.name())
+                    .append(" abstract=").append(klass.isAbstract())
+                    .append(" concurrency=").append(klass.actorConcurrency().transport())
+                    .append('/').append(klass.actorConcurrency().requestConcurrency())
+                    .append('/').append(klass.actorConcurrency().messageConcurrency())
+                    .append('/').append(klass.actorConcurrency().serialReceive());
+            appendAnnotations(abi, klass.annotations());
             appendGenerics(abi, klass.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
@@ -626,6 +734,7 @@ public final class IncrementalCompiler {
                     && klass.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 abi.append(" constructor");
                 appendParams(abi, klass.constructor().parameters());
+                appendAnnotations(abi, klass.constructor().annotations());
                 abi.append('\n');
             } else if (klass.constructor() == null) {
                 // Legacy synthesized constructors are externally visible when
@@ -649,7 +758,10 @@ public final class IncrementalCompiler {
                 if (field.visibility() != Ast.Visibility.PUBLIC) continue;
                 abi.append(" field ").append(field.bindingKind()).append(' ')
                         .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
-                        .append(' ').append(field.name()).append('\n');
+                        .append(' ').append(field.name()).append(" mutableReferent=")
+                        .append(field.mutableReferent());
+                appendAnnotations(abi, field.annotations());
+                abi.append('\n');
             }
             List<String> methodEntries = new ArrayList<>();
             for (Ast.MethodDecl method : klass.methods()) {
@@ -663,7 +775,8 @@ public final class IncrementalCompiler {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(iface.declarationKind().name().toLowerCase()).append(' ')
-                    .append(iface.visibility()).append(' ').append(iface.name());
+                    .append(iface.visibility()).append(' ').append(iface.name())
+                    .append(" moduleContract=").append(iface.moduleContract());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
@@ -707,7 +820,10 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
             abi.append("binding ").append(field.bindingKind()).append(' ')
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
-                    .append(' ').append(field.name()).append('\n');
+                    .append(' ').append(field.name()).append(" mutableReferent=")
+                    .append(field.mutableReferent());
+            appendAnnotations(abi, field.annotations());
+            abi.append('\n');
         }
     }
 
@@ -715,12 +831,19 @@ public final class IncrementalCompiler {
         StringBuilder out = new StringBuilder();
         if (method.async()) out.append("async ");
         if (method.structural()) out.append("structural ");
+        out.append("suspends=").append(method.suspends())
+                .append(" abstract=").append(method.isAbstract())
+                .append(" critical=").append(method.critical())
+                .append(" receiver=").append(typeRef(method.explicitReceiverType()));
         out.append(method.isStatic() ? " static-fnc " : " method ")
                 .append(method.name())
                 .append("#arity").append(method.arity());
         appendGenerics(out, method.genericParameters());
         appendParams(out, method.parameters());
-        out.append("=>").append(typeRef(method.returnType())).append('\n');
+        out.append("=>").append(typeRef(method.returnType()));
+        appendEffects(out, method.effects());
+        appendAnnotations(out, method.annotations());
+        out.append('\n');
         return out.toString();
     }
 
@@ -731,7 +854,9 @@ public final class IncrementalCompiler {
                 .append("#arity").append(fn.parameters().size());
         appendGenerics(out, fn.genericParameters());
         appendParams(out, fn.parameters());
-        out.append("=>").append(typeRef(fn.returnType())).append('\n');
+        out.append("=>").append(typeRef(fn.returnType()));
+        appendEffects(out, fn.effects());
+        out.append('\n');
         return out.toString();
     }
 
@@ -761,9 +886,45 @@ public final class IncrementalCompiler {
             if (param.structural()) abi.append("structural ");
             abi.append(typeRef(param.type()));
             if (param.mutable()) abi.append(" mut");
+            // Named arguments make source parameter names observable API.
+            appendLengthPrefixed(abi, param.name());
             abi.append(',');
         }
         abi.append(')');
+    }
+
+    private static void appendLengthPrefixed(StringBuilder abi, String value) {
+        if (value == null) {
+            abi.append("-1:");
+        } else {
+            abi.append(value.length()).append(':').append(value);
+        }
+    }
+
+    private static void appendEffects(StringBuilder abi, Ast.EffectSpec effects) {
+        abi.append(" effects[throws=");
+        effects.throwsTypes().stream().map(IncrementalCompiler::typeRef).sorted()
+                .forEach(type -> appendLengthPrefixed(abi, type));
+        abi.append(",raises=");
+        effects.raisesTypes().stream().map(IncrementalCompiler::typeRef).sorted()
+                .forEach(type -> appendLengthPrefixed(abi, type));
+        abi.append(",panics=");
+        effects.panicsTypes().stream().map(IncrementalCompiler::typeRef).sorted()
+                .forEach(type -> appendLengthPrefixed(abi, type));
+        abi.append(']');
+    }
+
+    private static void appendAnnotations(StringBuilder abi, List<Ast.Annotation> annotations) {
+        abi.append(" annotations[");
+        for (Ast.Annotation annotation : annotations) {
+            appendLengthPrefixed(abi, annotation.name());
+            abi.append('(');
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                appendLengthPrefixed(abi, typeRef(argument));
+            }
+            abi.append(')');
+        }
+        abi.append(']');
     }
 
     private static String typeRef(Ast.TypeRef ref) {
@@ -883,14 +1044,25 @@ public final class IncrementalCompiler {
             Map<String, CompiledUnit> units,
             Set<String> rebuiltUnits,
             Set<String> reusedUnits,
-            List<List<String>> initializationGroups) {
+            List<List<String>> initializationGroups,
+            Set<String> reparsedUnits) {
         public BuildResult {
             units = Map.copyOf(units);
             rebuiltUnits = Set.copyOf(rebuiltUnits);
             reusedUnits = Set.copyOf(reusedUnits);
+            reparsedUnits = Set.copyOf(reparsedUnits);
             initializationGroups = initializationGroups.stream()
                     .map(List::copyOf)
                     .toList();
+        }
+
+        /** Backward-compatible constructor for callers that track only checked units. */
+        public BuildResult(
+                Map<String, CompiledUnit> units,
+                Set<String> rebuiltUnits,
+                Set<String> reusedUnits,
+                List<List<String>> initializationGroups) {
+            this(units, rebuiltUnits, reusedUnits, initializationGroups, Set.of());
         }
 
         /** Backward-compatible constructor for callers that do not need lifecycle planning. */
@@ -898,7 +1070,7 @@ public final class IncrementalCompiler {
                 Map<String, CompiledUnit> units,
                 Set<String> rebuiltUnits,
                 Set<String> reusedUnits) {
-            this(units, rebuiltUnits, reusedUnits, List.of());
+            this(units, rebuiltUnits, reusedUnits, List.of(), Set.of());
         }
 
         public boolean rebuilt(String unitId) { return rebuiltUnits.contains(normalizeUnitId(unitId)); }
