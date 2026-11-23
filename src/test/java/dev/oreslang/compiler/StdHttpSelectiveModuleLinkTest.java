@@ -58,7 +58,7 @@ final class StdHttpSelectiveModuleLinkTest {
         assertEquals(Ast.Visibility.PRIVATE, library.modules().get(0).visibility());
         assertEquals(Ast.Visibility.PUBLIC, library.modules().get(1).visibility());
         Ast.Program importer = Parser.parse(
-                "import module http from \"atto.std/http\";\n"
+                "import module http as web from \"atto.std/http\";\n"
                         + "pub fnc main(): void { return; }");
         var error = assertThrows(IllegalArgumentException.class,
                 () -> ImportGraph.validateLinkedImports(
@@ -71,7 +71,7 @@ final class StdHttpSelectiveModuleLinkTest {
     void namespaceWildcardSelectsUnitRatherThanNamedModules() throws Exception {
         Ast.Program library = Parser.parse(CoreLibrarySources.source("atto.std/http"));
         Ast.Program importer = Parser.parse(
-                "import * as http from \"atto.std/http\";\n"
+                "import * as web from \"atto.std/http\";\n"
                         + "pub fnc main(): void { return; }");
         assertDoesNotThrow(() -> ImportGraph.validateLinkedImports(
                 Map.of(LIB_ID, library, APP_ID, importer), RESOLUTIONS));

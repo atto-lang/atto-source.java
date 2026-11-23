@@ -33,7 +33,7 @@ final class RegisteredStdImportGraphTest {
 
     @Test
     void stdHttpResolvesOnlyToRegisteredIdentity() {
-        Ast.ImportDecl http = parse("import * as http from \"atto.std/http\";");
+        Ast.ImportDecl http = parse("import * as web from \"atto.std/http\";");
         assertEquals(HTTP, CoreLibrarySources.requiredRegisteredBuiltinUnitId("atto.std/http"));
         assertEquals(HTTP, resolve(http, Map.of("atto.std/http", HTTP), SUPPLIED));
         assertEquals(HTTP, CoreLibrarySources.requiredRegisteredBuiltinUnitId("std/http.atto"));
@@ -42,7 +42,7 @@ final class RegisteredStdImportGraphTest {
 
     @Test
     void rejectsMissingMapRatherThanTrustingAnAmbientFilename() {
-        Ast.ImportDecl http = parse("import * as http from \"atto.std/http\";");
+        Ast.ImportDecl http = parse("import * as web from \"atto.std/http\";");
         var error = assertThrows(IllegalArgumentException.class,
                 () -> resolve(http, Map.of(), SUPPLIED));
         assertTrue(error.getMessage().contains("authenticated source-unit resolution"),
@@ -51,7 +51,7 @@ final class RegisteredStdImportGraphTest {
 
     @Test
     void rejectsSpoofedMappedTargetEvenWhenItExists() {
-        Ast.ImportDecl http = parse("import * as http from \"atto.std/http\";");
+        Ast.ImportDecl http = parse("import * as web from \"atto.std/http\";");
         var error = assertThrows(IllegalArgumentException.class,
                 () -> resolve(http, Map.of("atto.std/http", ATTACKER), SUPPLIED));
         assertTrue(error.getMessage().contains("cannot be redirected"),
@@ -60,7 +60,7 @@ final class RegisteredStdImportGraphTest {
 
     @Test
     void rejectsMissingRegisteredSourceUnit() {
-        Ast.ImportDecl http = parse("import * as http from \"atto.std/http\";");
+        Ast.ImportDecl http = parse("import * as web from \"atto.std/http\";");
         var error = assertThrows(IllegalArgumentException.class,
                 () -> resolve(http, Map.of("atto.std/http", HTTP), Set.of(APP)));
         assertTrue(error.getMessage().contains("source unit is missing"), error.getMessage());
@@ -69,8 +69,8 @@ final class RegisteredStdImportGraphTest {
     @Test
     void unknownReservedRootsAlwaysFailClosed() {
         for (String bad : new String[] {
-                "std.unknown", "std.http3", "std", "alloc.arena",
-                "core.result", "std/http.ores", "std/unregistered"
+                "atto.std/unknown", "atto.std/http3", "std", "atto.alloc/missing",
+                "atto.core/missing", "std/http.ores", "std/unregistered"
         }) {
             Ast.ImportDecl invalid = parse("import * as x from \"" + bad + "\";");
             assertThrows(IllegalArgumentException.class,

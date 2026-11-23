@@ -1,6 +1,6 @@
 // File-root and explicitly public module declarations are exportable.
 // A member inside 'internal' is never a cross-source export.
-define module internal as
+define private module internal as
   pub fnc leak(): int { return 7; }
 end
 define pub module public_api as

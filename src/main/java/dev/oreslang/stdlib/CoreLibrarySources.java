@@ -332,7 +332,8 @@ public final class CoreLibrarySources {
         for (String root : new String[] {"ores.core", "ores.std", "atto.core", "atto.alloc", "atto.std", "alloc"}) {
             if (normalized.equals(root) || normalized.startsWith(root + "/")) return true;
         }
-        return false;
+        // Bare layer names are never package or project selectors.
+        return normalized.equals("core") || normalized.equals("std");
     }
 
     public static Set<String> packagedCorePaths() {

@@ -19,7 +19,7 @@ final class NativeAttoStdNamespaceImportTest {
         Ast.ImportDecl shorthand = Parser.parse(
                 "import http from \"std/http.atto\";\n" + BODY).imports().getFirst();
         Ast.ImportDecl explicit = Parser.parse(
-                "import * as http from \"std/http.atto\";\n" + BODY).imports().getFirst();
+                "import * as web from \"std/http.atto\";\n" + BODY).imports().getFirst();
 
         assertEquals(explicit, shorthand);
         assertEquals(Ast.ImportKind.ALL, shorthand.kind());
@@ -69,7 +69,7 @@ final class NativeAttoStdNamespaceImportTest {
     void namespaceAliasesMustNotSilentlyCollide() {
         Ast.Program program = Parser.parse(
                 "import http from \"std/http.atto\";\n"
-                + "import * as http from \"std/http.atto\";\n" + BODY);
+                + "import * as web from \"std/http.atto\";\n" + BODY);
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypesWithDiagnostics(program));
     }

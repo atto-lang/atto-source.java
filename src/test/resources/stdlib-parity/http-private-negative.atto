@@ -1,6 +1,6 @@
 // Must never resolve the std.http private helper through a namespace wildcard.
-import * as http from "atto.std/http";
+import * as web from "atto.std/http";
 pub routine main(): void {
-  stdio.println(http.is_token_char(65));
+  stdio.println(web.is_token_char(65));
   return;
 }

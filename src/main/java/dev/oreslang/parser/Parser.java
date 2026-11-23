@@ -482,7 +482,10 @@ public final class Parser {
                         throw error(previous(), "modules accept only pub/private visibility; other declaration modifiers are forbidden");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
-                    modules.add(parseModule(annotations, modifiers.visibility));
+                    // An unmarked `define module` stays a public unit (the
+                    // v1 library form); `define private module` opts out.
+                    modules.add(parseModule(annotations,
+                            modifiers.visibilitySeen ? modifiers.visibility : Ast.Visibility.PUBLIC));
                     continue;
                 }
                 if (match(CONTRACT)) {

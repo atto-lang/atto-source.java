@@ -47,12 +47,12 @@ final class AttoChildProcessGuestTest {
         String probe = quote("dev.oreslang.runtime.NativeChildProcessesTest$ChildProcessProbe");
         String cwd = quote(workingDirectory());
         return """
-                import module process from "std/process";
+                import module process as proc from "std/process";
                 pub async routine main(): int {
                   // This member exists only on the imported lowercase module.
                   // If the global intrinsic shadows it, compilation must fail.
-                  if process.succeeded(process.exit_status(0, false)) == false then return 84; fi
-                  val attempted = await process.spawn(%s, ["-cp", %s, %s, "exit42"], %s);
+                  if proc.succeeded(proc.exit_status(0, false)) == false then return 84; fi
+                  val attempted = await proc.spawn(%s, ["-cp", %s, %s, "exit42"], %s);
                   if attempted.is_err() then return %d; fi
                   val child = attempted.unwrap();
                   val captured = await child.collect_output();

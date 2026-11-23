@@ -1,10 +1,10 @@
 // HTTP scalar policy calls cannot implicitly borrow/copy a class handle.
-import * as http from "atto.std/http";
+import * as web from "atto.std/http";
 define class Box as
   pub let int value = 42;
 end
 pub fnc main(): void {
   val Box owner = new Box();
-  stdio.println(http.status_valid(owner));
+  stdio.println(web.status_valid(owner));
   return;
 }
