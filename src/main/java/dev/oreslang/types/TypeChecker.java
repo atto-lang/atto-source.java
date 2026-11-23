@@ -2135,6 +2135,12 @@ public final class TypeChecker {
      * importer's own declarations can never be what it names.
      */
     private static boolean builtinNominal(Ast.TypeRef ref) {
+<<<<<<< ours
+=======
+        // Dynamic top types keep the legacy opaque import (e.g. std/assert's
+        // Any parameters accept every value through runtime equality).
+        if (Set.of("Any", "Object", "Unknown", "Dynamic").contains(ref.name())) return false;
+>>>>>>> theirs
         Ast.TypeRef probe = new Ast.TypeRef(ref.name(),
                 ref.arguments().stream().map(ignored -> Ast.TypeRef.simple("int")).toList(), false);
         return BUILTIN_NOMINALS.computeIfAbsent(probe.toString(), ignored -> {
