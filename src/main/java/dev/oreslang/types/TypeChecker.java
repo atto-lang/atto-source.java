@@ -2116,11 +2116,34 @@ public final class TypeChecker {
         return switch (ref.name()) {
             case "int", "float", "bool", "String", "string" -> args.isEmpty();
             case "void" -> allowVoid && args.isEmpty();
-            case "Option", "Array", "List", "Future", "Set" -> arity.test(1);
+            // Future<void> is the result of an awaited side effect.
+            case "Future" -> args.size() == 1 && linkableType(args.get(0), generics, linkedNominals, true);
+            case "Option", "Array", "List", "Set" -> arity.test(1);
             case "Result", "Map" -> arity.test(2);
-            default -> linkedNominals.contains(ref.name())
-                    && args.stream().allMatch(arg -> linkableType(arg, generics, linkedNominals, false));
+            default -> args.stream().allMatch(arg -> linkableType(arg, generics, linkedNominals, false))
+                    && (linkedNominals.contains(ref.name()) || builtinNominal(ref));
         };
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, Boolean> BUILTIN_NOMINALS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * A compiler-provided nominal (ChildProcess, Channel<T>, Duration, ...):
+     * it resolves in a checker that has no user declarations at all, so the
+     * importer's own declarations can never be what it names.
+     */
+    private static boolean builtinNominal(Ast.TypeRef ref) {
+        Ast.TypeRef probe = new Ast.TypeRef(ref.name(),
+                ref.arguments().stream().map(ignored -> Ast.TypeRef.simple("int")).toList(), false);
+        return BUILTIN_NOMINALS.computeIfAbsent(probe.toString(), ignored -> {
+            try {
+                Type resolved = new TypeChecker().resolve(probe, Set.of(), null);
+                return resolved != null && resolved != Unknown.INSTANCE;
+            } catch (RuntimeException unresolved) {
+                return false;
+            }
+        });
     }
 
     private static boolean concreteLinkedSignature(Ast.FunctionDecl fn) {

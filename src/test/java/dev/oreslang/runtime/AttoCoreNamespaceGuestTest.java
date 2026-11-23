@@ -73,11 +73,11 @@ final class AttoCoreNamespaceGuestTest {
     }
 
     @Test
-    void dotted_and_duplicate_namespace_headers_fail_closed() throws Exception {
+    void dotted_namespaces_parse_and_duplicate_headers_fail_closed() throws Exception {
         String source = Files.readString(Path.of("library", "policy", "core", "namespace", "slice.atto"));
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(source.replace("use namespace slice;",
-                        "use namespace atto.core.slice;")));
+        // Namespace names are dotted; '/' only separates import paths.
+        assertEquals("atto.core.slice", Parser.parse(source.replace("use namespace slice;",
+                "use namespace atto.core.slice;")).namespace());
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(source + "\nuse namespace injected;"));
         assertThrows(IllegalArgumentException.class,

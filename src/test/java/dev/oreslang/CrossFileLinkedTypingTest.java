@@ -43,6 +43,14 @@ final class CrossFileLinkedTypingTest {
                 return value + 1;
               }
 
+              pub async fnc settle(): void {
+                return;
+              }
+
+              pub fnc empty_bytes(): Bytes {
+                return Bytes.empty();
+              }
+
               pub fnc total(borrow Array<int> values): int {
                 let mut int sum = 0;
                 for (let int i = 0; i < values.size; i = i + 1) {
@@ -263,5 +271,24 @@ final class CrossFileLinkedTypingTest {
                         }
                         """));
         assertTrue(failure.getMessage().contains("wrong"), failure::getMessage);
+    }
+
+    @Test
+    void builtinNominalsAndFutureVoidAreLinked() {
+        accepts("""
+                import module lib from "./lib.atto";
+                pub async fnc main(): int {
+                  await lib.settle();
+                  let Bytes data = lib.empty_bytes();
+                  return 0;
+                }
+                """);
+        rejects("""
+                import module lib from "./lib.atto";
+                pub fnc main(): int {
+                  let int data = lib.empty_bytes();
+                  return data;
+                }
+                """, "data");
     }
 }
