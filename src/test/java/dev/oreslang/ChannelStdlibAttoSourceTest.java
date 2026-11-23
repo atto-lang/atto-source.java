@@ -96,7 +96,7 @@ final class ChannelStdlibAttoSourceTest {
         String guest = Files.readString(
                 FIXTURES.resolve("use_after_taken_try_send.atto"), StandardCharsets.UTF_8);
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(guest)));
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(guest));
         assertTrue(rejected.getMessage().contains("use of moved value"),
                 () -> "expected core borrow/move rejection, got: " + rejected.getMessage());
     }
@@ -111,18 +111,13 @@ final class ChannelStdlibAttoSourceTest {
     }
 
     private static String run(String file) throws Exception {
-        byte[] bytes = Files.readAllBytes(FIXTURES.resolve(file));
-        String program = new String(bytes, StandardCharsets.UTF_8);
+        // std/channel is a compiler-owned unit: the linked program runner
+        // binds it (a bare Context.eval has no library loader by design).
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, file)
-                .mimeType(OresLanguage.MIME_TYPE).build();
-        Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).out(output).build();
-        try {
-            context.eval(source);
-        } finally {
-            context.close(true);
-        }
+        dev.oreslang.runtime.LinkedProgramRunner.run(FIXTURES.resolve(file).toAbsolutePath(),
+                dev.oreslang.runtime.IsolatePolicy.developer(),
+                dev.oreslang.runtime.ExecutionProfile.serverJit(),
+                java.util.Set.of(), java.util.Map.of(), output, new ByteArrayOutputStream());
         return output.toString(StandardCharsets.UTF_8);
     }
 }

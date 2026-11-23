@@ -23,15 +23,17 @@ define module channel as
     return Channel.new<T>(0);
   }
 
-  // Default channel operations are suspendable, not thread-blocking.
+  // Default channel operations are suspendable, not thread-blocking: they
+  // return the registration Future, so callers write `await channel.send(...)`.
+  // (Generic async callables need a sendable bound this compiler does not
+  // have yet; a Future-returning fnc has the same await semantics.)
   // rt take makes ownership transfer explicit for non-copy payloads.
-  pub async fnc send<T>(Channel<T> ch, T value): void {
-    writech ch, rt take value;
-    return;
+  pub fnc send<T>(Channel<T> ch, T value): Future<void> {
+    return nb writech ch, rt take value;
   }
 
-  pub async fnc receive<T>(Channel<T> ch): T {
-    return readch ch;
+  pub fnc receive<T>(Channel<T> ch): Future<T> {
+    return nb readch ch;
   }
 
   // Register a waiter and return a Future immediately. Cancellation is

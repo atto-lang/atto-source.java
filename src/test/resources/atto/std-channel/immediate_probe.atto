@@ -3,14 +3,14 @@ import module channel from "std/channel";
 
 pub async routine main(): void {
   val Channel<int> ch = channel.bounded<int>(1);
-  val TryWriteResult<int> first = channel.try_send<int>(ch, 1);
+  val TryWriteResult<int> probe = channel.try_send<int>(ch, 1);
   val TryWriteResult<int> second = channel.try_send<int>(ch, 2);
-  do match first over
+  match probe over
     on Accepted -> { stdio.stdout.write("accepted"); }
-    on Full(value) -> { stdio.stdout.write("unexpected-first-full"); }
-    on Closed(value) -> { stdio.stdout.write("unexpected-first-closed"); }
+    on Full(value) -> { stdio.stdout.write("unexpected-probe-full"); }
+    on Closed(value) -> { stdio.stdout.write("unexpected-probe-closed"); }
   end
-  do match second over
+  match second over
     on Accepted -> { stdio.stdout.write("unexpected-second-accepted"); }
     on Full(value) -> {
       stdio.stdout.write(":full:");

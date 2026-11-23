@@ -9,7 +9,7 @@ pub routine main(): void {
   val Array<int> payload = [5, 6];
   val TryWriteResult<Array<int>> outcome =
       channel.try_send<Array<int>>(ch, rt take payload);
-  do match outcome over
+  match outcome over
     on Accepted -> { stdio.stdout.write("accepted"); }
     on Full(rejected) -> { stdio.stdout.write("full"); }
     on Closed(rejected) -> { stdio.stdout.write("closed"); }
