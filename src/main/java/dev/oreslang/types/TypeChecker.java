@@ -115,6 +115,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** Imported module aliases whose concrete public functions are typed. */
+    private final Set<String> partiallyLinkedModules = new HashSet<>();
     /** Explicit local import fnc aliases only, never wildcard imports. */
     private final Map<String, Ast.ImportDecl> importedFunctions = new HashMap<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
@@ -684,7 +686,30 @@ public final class TypeChecker {
                     .allMatch(d -> d instanceof Ast.FunctionDecl fn
                             && (fn.visibility() != Ast.Visibility.PUBLIC
                                 || concreteLinkedSignature(fn)));
-            if (!allConcrete) continue;
+            if (!allConcrete) {
+                // Mixed modules (classes, generic or Any signatures) keep the
+                // opaque import binding, but their concrete public functions
+                // still type `alias.f(...)` calls.
+                // Overloaded names stay opaque: a partial view could not
+                // select among slots it does not fully know.
+                Map<String, Integer> publicArity = new HashMap<>();
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && fn.visibility() == Ast.Visibility.PUBLIC) {
+                        publicArity.merge(fn.name(), 1, Integer::sum);
+                    }
+                }
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && fn.visibility() == Ast.Visibility.PUBLIC
+                            && publicArity.get(fn.name()) == 1
+                            && concreteLinkedSignature(fn)) {
+                        checker.putFunctionSlot(alias + "." + fn.name(), fn);
+                        checker.partiallyLinkedModules.add(alias);
+                    }
+                }
+                continue;
+            }
             checker.importedValues.remove(alias);
             checker.modules.put(alias, module);
             for (Ast.Decl declaration : module.declarations()) {
@@ -6316,7 +6341,14 @@ public final class TypeChecker {
                         || name.name().equals("net")
                         || name.name().equals("http")
                         || name.name().equals("env"))) return Unknown.INSTANCE;
-            if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
+            if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) {
+                if (partiallyLinkedModules.contains(name.name())) {
+                    Ast.FunctionDecl linked =
+                            findSingleQualifiedFunction(name.name() + "." + member.member());
+                    if (linked != null) return trapFunctionType(linked, Set.of(), null);
+                }
+                return Unknown.INSTANCE;
+            }
 
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
