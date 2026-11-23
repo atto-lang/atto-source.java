@@ -1,4 +1,4 @@
-import trait Eq from "ores.core/protocols";
+import trait Eq from "atto.core/protocols";
 
 define pub class Impostor as
   pub equals(int other): bool { return true; }

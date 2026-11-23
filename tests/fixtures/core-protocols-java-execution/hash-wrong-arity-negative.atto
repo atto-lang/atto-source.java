@@ -1,4 +1,4 @@
-import trait Hash from "ores.core/protocols";
+import trait Hash from "atto.core/protocols";
 define class Broken implements Hash as
   pub hash_value(int salt): int { return salt; }
 end

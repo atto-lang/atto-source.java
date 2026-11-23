@@ -1,7 +1,7 @@
 // AttoLang-native compiler-owned modules: execute through the real guest.
 import module core from "std/core.atto";
 import module Assert from "std/assert.atto";
-import module numeric from "ores.core/numeric.atto";
+import module numeric from "atto.core/numeric.atto";
 
 pub routine main(): void {
   stdio.println(core.min_int(8, 3));
