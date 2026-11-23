@@ -185,6 +185,8 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
         }
+        // `use default namespace(n);` names the last n folders of this unit.
+        program = dev.oreslang.compiler.PackageLayout.NONE.withEffectiveNamespace(codeUnitId, program);
         // No mixed-profile call graph: an unchecked imported callee could wrap
         // inside a checked caller until the linker proves transitive profile
         // compatibility over every source unit and pinned compiled interface.

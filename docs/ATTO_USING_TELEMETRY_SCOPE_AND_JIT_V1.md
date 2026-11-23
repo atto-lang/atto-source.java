@@ -11,7 +11,7 @@ effect-safe semantics, native OTLP export or full backend parity.
 ## Source syntax
 
 ```atto
-import module telemetry from "ores.std/telemetry";
+import module telemetry from "atto.std/telemetry";
 
 pub fnc checkout(Order order): Result<void, Error> {
   using telemetry.span("checkout") as span {

@@ -119,10 +119,10 @@ final class AttoAllocGuestTest {
                   return;
                 }
                 """));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        assertEquals("alloc.bad", Parser.parse("""
                 use namespace alloc.bad;
                 pub fnc main(): void { return; }
-                """));
+                """).namespace());
     }
 
     @Test

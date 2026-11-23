@@ -1,6 +1,6 @@
 // Portable compiler-backed AttoLang stdlib parity fixture.
 // Expected stdout is pinned by NativeAttoStdlibTest.
-import module bounds from "ores.std/bounds";
+import module bounds from "atto.std/bounds";
 pub routine main(): void {
   stdio.println(bounds.valid_int_bounds(3, 9));
   stdio.println(bounds.valid_int_bounds(9, 3));

@@ -1,4 +1,4 @@
-import trait Eq from "ores.core/protocols";
+import trait Eq from "atto.core/protocols";
 
 define pub class Counter implements Eq<int> as
   equals(int other): bool { return true; }
