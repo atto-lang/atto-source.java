@@ -104,7 +104,7 @@ public final class CoreLibrarySources {
 
     private static final java.util.Map<Layer, Set<String>> V1_UNITS = java.util.Map.of(
             Layer.CORE, Set.of("num", "cmp", "option", "result", "mem"),
-            Layer.ALLOC, Set.of("arena", "heap", "region"),
+            Layer.ALLOC, Set.of("arena", "heap", "region", "bitset", "linked_list", "map"),
             Layer.STD, Set.of("io", "path"));
 
     /** OS family for platform-variant units (std/path). */
