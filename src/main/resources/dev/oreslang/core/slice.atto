@@ -82,7 +82,7 @@ define module slice as
     if !valid_window(offset, 0, length); do return false; fi
     if count == 0; do return true; fi
     if offset >= length; do return false; fi
-    return count - 1 <= (length - 1 - offset) / stride;
+    return count - 1 <= idiv((length - 1 - offset), stride);
   }
 
   // Local-only helpers for copyable integer elements. Array<int>.get_copy()
@@ -136,7 +136,137 @@ define module slice as
     if stride == -9223372036854775808; do
       return count == 1;
     fi
-    return count - 1 <= offset / -stride;
+    return count - 1 <= idiv(offset, 0 - stride);
   }
 
+  // Array-view search/compare helpers (from atto-source.java#1772).
+  // Option distinguishes an absent element (including an invalid span)
+  // from the integer zero. Returned integers are independent values.
+  pub fnc get_int(Array<int> values, int offset, int count,
+                  int index): Option<int> {
+    if !valid_range(offset, count, values.size); do
+      return None;
+    fi
+    if !valid_index(index, count); do
+      return None;
+    fi
+    return Some(values.get(offset + index));
+  }
+
+  pub fnc first_int(Array<int> values, int offset,
+                    int count): Option<int> {
+    return get_int(values, offset, count, 0);
+  }
+
+  pub fnc last_int(Array<int> values, int offset,
+                   int count): Option<int> {
+    if count <= 0; do
+      return None;
+    fi
+    return get_int(values, offset, count, count - 1);
+  }
+
+  // Returns the first relative index, not the absolute array index.
+  pub fnc find_int(Array<int> values, int offset, int count,
+                   int needle): Option<int> {
+    if !valid_range(offset, count, values.size); do
+      return None;
+    fi
+    for (let int i = 0; i < count; i = i + 1) {
+      if values.get(offset + i) == needle; do
+        return Some(i);
+      fi
+    }
+    return None;
+  }
+
+  pub fnc contains_int(Array<int> values, int offset,
+                       int count, int needle): bool {
+    return find_int(values, offset, count, needle).is_some();
+  }
+
+  pub fnc count_int(Array<int> values, int offset,
+                    int count, int needle): Option<int> {
+    if !valid_range(offset, count, values.size); do
+      return None;
+    fi
+    let int found = 0;
+    for (let int i = 0; i < count; i = i + 1) {
+      if values.get(offset + i) == needle; do
+        found = found + 1;
+      fi
+    }
+    return Some(found);
+  }
+
+  pub fnc equal_int(Array<int> left, int left_offset, int left_count,
+                    Array<int> right, int right_offset, int right_count): bool {
+    if !valid_range(left_offset, left_count, left.size) ||
+       !valid_range(right_offset, right_count, right.size); do
+      return false;
+    fi
+    if left_count != right_count; do
+      return false;
+    fi
+    for (let int i = 0; i < left_count; i = i + 1) {
+      if left.get(left_offset + i) != right.get(right_offset + i); do
+        return false;
+      fi
+    }
+    return true;
+  }
+
+  pub fnc starts_with_int(Array<int> values, int offset, int count,
+                          Array<int> prefix, int prefix_offset,
+                          int prefix_count): bool {
+    if !valid_range(offset, count, values.size) ||
+       !valid_range(prefix_offset, prefix_count, prefix.size); do
+      return false;
+    fi
+    if prefix_count > count; do
+      return false;
+    fi
+    for (let int i = 0; i < prefix_count; i = i + 1) {
+      if values.get(offset + i) != prefix.get(prefix_offset + i); do
+        return false;
+      fi
+    }
+    return true;
+  }
+
+  pub fnc ends_with_int(Array<int> values, int offset, int count,
+                        Array<int> suffix, int suffix_offset,
+                        int suffix_count): bool {
+    if !valid_range(offset, count, values.size) ||
+       !valid_range(suffix_offset, suffix_count, suffix.size); do
+      return false;
+    fi
+    if suffix_count > count; do
+      return false;
+    fi
+    let int tail = offset + (count - suffix_count);
+    for (let int i = 0; i < suffix_count; i = i + 1) {
+      if values.get(tail + i) != suffix.get(suffix_offset + i); do
+        return false;
+      fi
+    }
+    return true;
+  }
+
+  // Floor division for a >= 0 and b > 0 (int/int yields float on this backend).
+  fnc idiv(int a, int b): int {
+    let mut int q = 0;
+    let mut int r = a;
+    while r >= b do
+      let mut int d = b;
+      let mut int m = 1;
+      while d <= r - d do
+        d = d + d;
+        m = m + m;
+      done
+      r = r - d;
+      q = q + m;
+    done
+    return q;
+  }
 end
