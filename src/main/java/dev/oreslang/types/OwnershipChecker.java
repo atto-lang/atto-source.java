@@ -206,6 +206,10 @@ public final class OwnershipChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked ownership class: " + name);
             }
+            // A foreign nominal must not masquerade as a compiler-owned core
+            // owner/loan identity, even behind a qualified namespace import.
+            checker.rejectPreludeForgeNow(name, "linked class binding");
+            checker.rejectPreludeForgeNow(declaration.name(), "linked class origin");
             // A checked actor signature is transport/protocol metadata, not
             // a transferable actor instance. Link it only through an exact
             // named actor import; class imports cannot silently reclassify
@@ -255,20 +259,56 @@ public final class OwnershipChecker {
 
     private void index(Ast.Program program) {
         for (Ast.ImportDecl imported : program.imports()) {
-            if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
-                for (String source : imported.names()) {
-                    importedFncs.add(dev.oreslang.imports.ImportRules.localName(imported, source));
+            if (imported.wildcard()) continue;
+            for (String source : imported.names()) {
+                String local = dev.oreslang.imports.ImportRules.localName(imported, source);
+                if (AutomaticPrelude.protectedIdentity(local)) {
+                    deferPreludeSpoof(error("E_PRELUDE_SPOOF: imported "
+                            + imported.kind().name().toLowerCase(java.util.Locale.ROOT)
+                            + " cannot replace core identity " + local));
                 }
+                if (imported.kind() == Ast.ImportKind.FUNCTION) importedFncs.add(local);
             }
         }
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
-                else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
-                else if (decl instanceof Ast.InterfaceDecl iface) index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    rejectPreludeForge(fn.name(), "function");
+                    indexFunction(module.name(), fn);
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectPreludeForge(klass.name(), "class");
+                    index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectPreludeForge(iface.name(), "interface");
+                    index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectPreludeForge(alias.name(), "type alias");
+                }
             }
         }
+    }
+
+    private void rejectPreludeForge(String name, String declarationKind) {
+        if (AutomaticPrelude.protectedIdentity(name)) {
+            deferPreludeSpoof(error("E_PRELUDE_SPOOF: cannot forge compiler-owned core identity "
+                    + name + " with " + declarationKind));
+        }
+    }
+
+    private void rejectPreludeForgeNow(String name, String declarationKind) {
+        if (AutomaticPrelude.protectedIdentity(name)) {
+            throw error("E_PRELUDE_SPOOF: cannot forge compiler-owned core identity "
+                    + name + " with " + declarationKind);
+        }
+    }
+
+    // Indexing never throws so metadata probes can inspect forged programs;
+    // every analysis entry point reports the first spoof before validating.
+    private IllegalArgumentException preludeSpoof;
+
+    private void deferPreludeSpoof(IllegalArgumentException spoof) {
+        if (preludeSpoof == null) preludeSpoof = spoof;
     }
 
     private void indexFunction(String module, Ast.FunctionDecl fn) {
@@ -303,6 +343,7 @@ public final class OwnershipChecker {
     }
 
     private void validate(Ast.Program program) {
+        if (preludeSpoof != null) throw preludeSpoof;
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.SingletonDecl) {
@@ -3493,10 +3534,10 @@ public final class OwnershipChecker {
                     && target.arguments().size() == 1) {
                 throw error("Future.flatten cannot consume a borrowed Future");
             }
-            boolean borrowedSum = (target.name().equals("Option")
-                    && target.arguments().size() == 1)
-                    || (target.name().equals("Result")
-                    && target.arguments().size() == 2);
+            // Imported or implicitly visible core ADT names are the SAME
+            // compiler-owned owner/loan identity; never bypass this gate.
+            boolean borrowedSum = CoreTypeRegistry.coreSumCarrier(
+                    target.name(), target.arguments().size());
             if (borrowedSum && extracting && !isCopyType(target)) {
                 throw error(member.member()
                         + " cannot consume an affine Option/Result through a borrow");
@@ -6086,13 +6127,19 @@ public final class OwnershipChecker {
             return none;
         }
 
-        if (name.equals("Option") || name.equals("IteratorResult")) {
+        if (CoreTypeRegistry.coreSumCarrier(name, type.arguments().size())
+                && name.equals("Option")) {
+            return taskCaptureCapabilities(
+                    type.arguments().getFirst(), visitingClasses, budget, depth + 1);
+        }
+        if (name.equals("IteratorResult")) {
             return type.arguments().size() == 1
                     ? taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1)
                     : none;
         }
-        if (name.equals("Result")) {
-            if (type.arguments().size() != 2) return none;
+        if (CoreTypeRegistry.coreSumCarrier(name, type.arguments().size())
+                && name.equals("Result")) {
+            
             AutoTraitRules.Capabilities left =
                     taskCaptureCapabilities(type.arguments().get(0), visitingClasses, budget, depth + 1);
             AutoTraitRules.Capabilities right =
@@ -6861,8 +6908,9 @@ public final class OwnershipChecker {
                     -> type.arguments().isEmpty();
             case "SharedMutex", "Channel" -> type.arguments().size() == 1;
             case "ActorRef" -> isVerifiedActorReference(type);
-            case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
-            case "Result" -> type.arguments().size() == 2
+            case "Option" -> CoreTypeRegistry.coreSumCarrier("Option", type.arguments().size())
+                    && isCopyType(type.arguments().getFirst());
+            case "Result" -> CoreTypeRegistry.coreSumCarrier("Result", type.arguments().size())
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
             default -> false;
