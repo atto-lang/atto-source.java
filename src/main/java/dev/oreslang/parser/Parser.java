@@ -862,6 +862,12 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        // A module is a file-level container. Its direct children may declare
+        // types, but may not introduce another module scope.
+        if (check(MODULE)) {
+            throw error(peek(), "nested modules are not permitted; declare modules at file scope");
+        }
+
         if (isContextualIdentifier("declare")) {
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
@@ -903,6 +909,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (check(MODULE)) {
+                throw error(peek(), "nested modules are not permitted; declare modules at file scope");
+            }
             if (isContextualIdentifier("singleton")) {
                 Token keyword = advance();
                 if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
@@ -1405,7 +1414,7 @@ public final class Parser {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             if (check(DEFINE) || check(CLASS) || check(MODULE) || check(INTERFACE)
-                    || check(ACTOR) || check(ISOACTOR)) {
+                    || check(TRAIT) || check(TYPE) || check(ACTOR) || check(ISOACTOR)) {
                 throw error(peek(),
                         "declarations cannot be nested inside classes; declare nested types at file or module scope");
             }
@@ -2046,7 +2055,7 @@ public final class Parser {
                         "actors do not declare constructors; actor state is initialized by the actor runtime");
             }
             if (check(DEFINE) || check(CLASS) || check(MODULE) || check(INTERFACE)
-                    || check(ACTOR) || check(ISOACTOR)) {
+                    || check(TRAIT) || check(TYPE) || check(ACTOR) || check(ISOACTOR)) {
                 throw error(peek(),
                         "declarations cannot be nested inside actors; declare nested types at file or module scope");
             }
@@ -2275,6 +2284,11 @@ public final class Parser {
             Modifiers memberModifiers = parseModifiers();
             if (match(DEFINE)) {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
+            }
+            if (check(MODULE) || check(CLASS) || check(INTERFACE)
+                    || check(TRAIT) || check(TYPE)) {
+                throw error(peek(),
+                        "named type and module declarations are not permitted inside interfaces, traits, or contracts");
             }
 
             // A module contract may require the presence of a public nominal
