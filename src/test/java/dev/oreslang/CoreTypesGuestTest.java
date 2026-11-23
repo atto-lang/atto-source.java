@@ -18,7 +18,7 @@ final class CoreTypesGuestTest {
 
     @Test
     void coreTypesPublicLibraryParsesAndChecksWithoutHostInterop() throws Exception {
-        Path module = Path.of("core", "types.atto");
+        Path module = Path.of("library", "policy", "core", "types.atto");
         assertTrue(Files.isRegularFile(module));
         String source = Files.readString(module);
         assertTrue(source.contains("use namespace types;"));

@@ -1,6 +1,6 @@
 // Compiled-guest coverage matrix, not a host/reference-model substitute.
 // Every branch must stay reachable: 64-bit, signed and unsigned admission boundaries.
-import * as types from "../../../core/types.atto";
+import * as types from "../../../library/policy/core/types.atto";
 
 pub fnc main() -> int {
   if types.fits_i8(-129); do return 1; fi
