@@ -52,7 +52,7 @@ final class AttoChildProcessGuestTest {
                   // This member exists only on the imported lowercase module.
                   // If the global intrinsic shadows it, compilation must fail.
                   if proc.succeeded(proc.exit_status(0, false)) == false then return 84; fi
-                  val attempted = await proc.spawn(%s, ["-cp", %s, %s, "exit42"], %s);
+                  val attempted = await proc.start(%s, ["-cp", %s, %s, "exit42"], %s);
                   if attempted.is_err() then return %d; fi
                   val child = attempted.unwrap();
                   val captured = await child.collect_output();

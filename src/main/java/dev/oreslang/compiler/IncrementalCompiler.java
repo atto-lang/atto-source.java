@@ -337,7 +337,8 @@ public final class IncrementalCompiler {
                     if (!module.name().equals(Parser.ROOT_MODULE)) continue;
                     Ast.ModuleDecl qualified = ForeignModuleQualifier.qualify(imported.namespace(), module);
                     if (result.putIfAbsent(imported.namespace(), new Ast.ModuleDecl(imported.namespace(),
-                            qualified.annotations(), qualified.contracts(), qualified.declarations())) != null) {
+                            qualified.annotations(), qualified.contracts(), qualified.declarations(),
+                            Ast.Visibility.PUBLIC)) != null) {
                         throw new IllegalArgumentException(
                                 "duplicate imported module binding '" + imported.namespace() + "'");
                     }
