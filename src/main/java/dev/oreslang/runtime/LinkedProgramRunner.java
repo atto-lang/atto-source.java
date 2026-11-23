@@ -98,6 +98,48 @@ public final class LinkedProgramRunner {
         return validate(entryFile, System.getenv());
     }
 
+    /**
+     * Single-source check against compiler-owned libraries only: a source
+     * whose every import names a core/alloc/std unit is linked with those
+     * units' checked interfaces (no filesystem, project or package lookup).
+     * Returns null when any import needs project resolution, so callers keep
+     * their opaque single-unit behaviour.
+     */
+    public static Ast.Program checkAgainstCompilerLibraries(String source) {
+        Ast.Program program = Parser.parse(source);
+        if (program.imports().isEmpty()) return null;
+        String id = "@source/inline.atto";
+        LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
+        LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
+        SourceAdmissionBudget budget = new SourceAdmissionBudget();
+        try {
+            for (Ast.ImportDecl imported : program.imports()) {
+                ImportRules.validate(imported);
+                String path = imported.path();
+                if (CoreLibrarySources.isLayeredLibraryImport(path)) {
+                    CoreLibrarySources.LibraryUnit library = CoreLibrarySources.libraryUnit(path);
+                    recordImportResolution(importResolutions, id, path, library.unitId());
+                    collectLayeredLibraryClosure(library, units, importResolutions, budget, 1);
+                } else if (CoreLibrarySources.isStdImport(path)) {
+                    recordImportResolution(importResolutions, id, path, CoreLibrarySources.unitId(path));
+                    collectStdImportClosure(path, units, importResolutions, budget, 1);
+                } else if (CoreLibrarySources.isOresCoreImport(path)) {
+                    recordImportResolution(importResolutions, id, path, CoreLibrarySources.oresCoreUnitId(path));
+                    collectOresCoreImportClosure(path, units, importResolutions, budget, 1);
+                } else {
+                    return null;
+                }
+            }
+        } catch (IOException unreadable) {
+            throw new java.io.UncheckedIOException(unreadable);
+        }
+        LinkedHashMap<String, String> sources = new LinkedHashMap<>();
+        sources.put(id, source);
+        sources.putAll(oresSources(units));
+        IncrementalCompiler.BuildResult build = new IncrementalCompiler().compile(sources, importResolutions);
+        return build.units().get(id).program();
+    }
+
     public static IncrementalCompiler.BuildResult validate(
             Path entryFile,
             Map<String, String> environment) throws IOException {

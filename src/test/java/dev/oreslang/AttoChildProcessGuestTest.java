@@ -76,12 +76,17 @@ final class AttoChildProcessGuestTest {
                 "--ores-permission-run-deny=*",
                 "--ores-permission-read-allow=" + workingDirectory()
         };
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false)
-                .arguments(OresLanguage.ID, args).build()) {
-            return context.eval(Source.newBuilder(OresLanguage.ID, source, "std-process-guest.atto")
-                    .mimeType(OresLanguage.MIME_TYPE).build()).asInt();
-        }
+        // Compiler-owned std imports are bound by the linked program runner
+        // (a bare Context.eval has no library loader by design).
+        Path entry = java.nio.file.Files.createTempDirectory("atto-process-guest").resolve("main.atto");
+        java.nio.file.Files.writeString(entry, source);
+        var policy = dev.oreslang.runtime.IsolatePolicy.fromApplicationArguments(args);
+        var permissions = dev.oreslang.runtime.RuntimePermissions.fromApplicationArguments(args, policy);
+        var result = dev.oreslang.runtime.LinkedProgramRunner.runWithExitStatus(
+                entry, policy, permissions, dev.oreslang.runtime.PermissionCheckMode.RUNTIME,
+                dev.oreslang.runtime.ExecutionProfile.serverJit(), java.util.Set.of(), java.util.Map.of(),
+                new java.io.ByteArrayOutputStream(), new java.io.ByteArrayOutputStream());
+        return result.exitStatus();
     }
 
     @Test void guestExecutesAndAwaitsRealChild() throws Exception {
