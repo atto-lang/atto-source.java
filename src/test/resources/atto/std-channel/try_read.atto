@@ -5,13 +5,13 @@ import module channel from "std/channel";
 pub routine main(): void {
   val Channel<int> ch = channel.bounded<int>(1);
   val Option<int> probe = channel.try_receive<int>(ch);
-  match probe over
+  do match probe over
     on None -> { stdio.stdout.write("empty"); }
     on Some(value) -> { stdio.stdout.write("unexpected-ready"); }
   end
   writech ch, 7;
   val Option<int> second = channel.try_receive<int>(ch);
-  match second over
+  do match second over
     on None -> { stdio.stdout.write("unexpected-empty"); }
     on Some(value) -> {
       stdio.stdout.write(":");

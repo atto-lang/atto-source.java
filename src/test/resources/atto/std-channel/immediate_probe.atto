@@ -5,12 +5,12 @@ pub async routine main(): void {
   val Channel<int> ch = channel.bounded<int>(1);
   val TryWriteResult<int> probe = channel.try_send<int>(ch, 1);
   val TryWriteResult<int> second = channel.try_send<int>(ch, 2);
-  match probe over
+  do match probe over
     on Accepted -> { stdio.stdout.write("accepted"); }
     on Full(value) -> { stdio.stdout.write("unexpected-probe-full"); }
     on Closed(value) -> { stdio.stdout.write("unexpected-probe-closed"); }
   end
-  match second over
+  do match second over
     on Accepted -> { stdio.stdout.write("unexpected-second-accepted"); }
     on Full(value) -> {
       stdio.stdout.write(":full:");
