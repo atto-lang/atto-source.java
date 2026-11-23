@@ -57,7 +57,7 @@ final class NativeTimeStdlibTest {
                   stdio.println(tiny.as_ms_ceil());
                   stdio.println(time.milliseconds(-1).is_err());
                   stdio.println(time.hours(2562048).is_err());
-                  stdio.println(one.checked_add(one).expect("sum").as_ns());
+                  stdio.println(one.checked_add(rt borrow one).expect("sum").as_ns());
                   return;
                 }
                 """);
@@ -85,27 +85,30 @@ final class NativeTimeStdlibTest {
                   val half = time.milliseconds(500).expect("half");
                   let mut manual = time.manual_clock(9, 1000000000);
                   stdio.println(manual.now().ticks_ns);
-                  stdio.println(manual.advance(half).expect("advance").ticks_ns);
-                  stdio.println(manual.advance(time.nanoseconds(0).expect("zero")).expect("still").ticks_ns);
+                  stdio.println(manual.advance(rt borrow half).expect("advance").ticks_ns);
+                  val __b1 = time.nanoseconds(0).expect("zero");
+                  stdio.println(manual.advance(rt borrow __b1).expect("still").ticks_ns);
                   val start = time.instant(9, 1000000000);
                   val later = manual.now();
-                  val due = time.deadline_after(start, half).expect("due");
-                  stdio.println(due.expired(start).expect("not due"));
-                  stdio.println(due.expired(later).expect("due"));
-                  stdio.println(due.expired(time.instant(10, 1500000000)).is_err());
+                  val due = time.deadline_after(rt borrow start, rt borrow half).expect("due");
+                  stdio.println(due.expired(rt borrow start).expect("not due"));
+                  stdio.println(due.expired(rt borrow later).expect("due"));
+                  val __b2 = time.instant(10, 1500000000);
+                  stdio.println(due.expired(rt borrow __b2).is_err());
                   let mut timer = time.one_shot(due);
-                  stdio.println(timer.poll(start).expect("early"));
-                  stdio.println(timer.poll(later).expect("fire"));
-                  stdio.println(timer.poll(later).expect("once"));
+                  stdio.println(timer.poll(rt borrow start).expect("early"));
+                  stdio.println(timer.poll(rt borrow later).expect("fire"));
+                  stdio.println(timer.poll(rt borrow later).expect("once"));
                   stdio.println(timer.did_fire());
-                  let mut every = time.interval(later, half);
-                  stdio.println(every.poll(later).expect("interval fire"));
-                  stdio.println(every.poll(later).expect("interval no double fire"));
+                  let mut every = time.interval(manual.now(), time.milliseconds(500).expect("period"));
+                  stdio.println(every.poll(rt borrow later).expect("interval fire"));
+                  stdio.println(every.poll(rt borrow later).expect("interval no double fire"));
                   stdio.println(every.next_due().expect("interval next").ticks_ns);
                   stdio.println(every.cancel());
                   stdio.println(every.next_due().is_err());
                   let mut at_limit = time.manual_clock(20, 9223372036854775807);
-                  stdio.println(at_limit.advance(time.nanoseconds(1).expect("one ns")).is_err());
+                  val __b3 = time.nanoseconds(1).expect("one ns");
+                  stdio.println(at_limit.advance(rt borrow __b3).is_err());
                   stdio.println(at_limit.now().ticks_ns);
                   return;
                 }
@@ -171,10 +174,12 @@ final class NativeTimeStdlibTest {
                 pub routine main(): void {
                   val clock = time.manual_clock(7, 0);
                   val one = time.nanoseconds(1).expect("one");
-                  stdio.println(clock.advance(one).expect("advance").ticks_ns);
-                  val due = time.deadline_after(clock.now(), one).expect("due");
+                  stdio.println(clock.advance(rt borrow one).expect("advance").ticks_ns);
+                  val __b4 = clock.now();
+                  val due = time.deadline_after(rt borrow __b4, rt borrow one).expect("due");
                   val timer = time.one_shot(due);
-                  stdio.println(timer.poll(time.instant(7, 2)).expect("fire"));
+                  val __b5 = time.instant(7, 2);
+                  stdio.println(timer.poll(rt borrow __b5).expect("fire"));
                   val repeating = time.interval(time.instant(7, 2), one);
                   stdio.println(repeating.cancel());
                   return;
@@ -240,7 +245,8 @@ final class NativeTimeStdlibTest {
                 import module time from "std/time";
                 pub routine main(): void {
                   const clock = time.manual_clock(7, 0);
-                  clock.advance(time.nanoseconds(1).expect("one"));
+                  val __b6 = time.nanoseconds(1).expect("one");
+                  clock.advance(rt borrow __b6);
                   return;
                 }
                 """,
@@ -248,9 +254,10 @@ final class NativeTimeStdlibTest {
                 import module time from "std/time";
                 pub routine main(): void {
                   val now = time.instant(7, 0);
-                  val due = time.deadline_after(now, time.nanoseconds(1).expect("one")).expect("due");
+                  val __b7 = time.nanoseconds(1).expect("one");
+                  val due = time.deadline_after(rt borrow now, rt borrow __b7).expect("due");
                   const timer = time.one_shot(due);
-                  timer.poll(now);
+                  timer.poll(rt borrow now);
                   return;
                 }
                 """,

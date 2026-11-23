@@ -11,29 +11,46 @@ define module time as
       self.nanos = nanos;
     }
     pub as_ns(): int { return self.nanos; }
-    pub as_ms_floor(): int { return self.nanos / 1000000; }
+    pub as_ms_floor(): int { return self.floor_div(self.nanos, 1000000); }
     pub as_ms_ceil(): int {
-      let int whole = self.nanos / 1000000;
+      let int whole = self.floor_div(self.nanos, 1000000);
       if Integer.rem(self.nanos, 1000000) == 0; do return whole; fi
       return whole + 1;
     }
     pub is_zero(): bool { return self.nanos == 0; }
-    pub checked_add(Duration other): Result<Duration, String> {
+    pub checked_add(borrow Duration other): Result<Duration, String> {
       if other.nanos > 9223372036854775807 - self.nanos; do
         return Err("DurationOverflow");
       fi
       return Ok(new Duration(self.nanos + other.nanos));
     }
-    pub checked_sub(Duration other): Result<Duration, String> {
+    pub checked_sub(borrow Duration other): Result<Duration, String> {
       if other.nanos > self.nanos; do return Err("DurationUnderflow"); fi
       return Ok(new Duration(self.nanos - other.nanos));
     }
     pub checked_mul(int factor): Result<Duration, String> {
       if factor < 0; do return Err("NegativeMultiplier"); fi
-      if factor != 0 && self.nanos > 9223372036854775807 / factor; do
+      if factor != 0 && self.nanos > self.floor_div(9223372036854775807, factor); do
         return Err("DurationOverflow");
       fi
       return Ok(new Duration(self.nanos * factor));
+    }
+    // Exact floor division for a >= 0 and b > 0 (int / int is a float on
+    // this backend); binary long division, at most 63 doublings per step.
+    floor_div(int a, int b): int {
+      let mut int quotient = 0;
+      let mut int rest = a;
+      while rest >= b do
+        let mut int chunk = b;
+        let mut int count = 1;
+        while chunk <= rest - chunk do
+          chunk = chunk + chunk;
+          count = count + count;
+        done
+        rest = rest - chunk;
+        quotient = quotient + count;
+      done
+      return quotient;
     }
   end
 
@@ -79,12 +96,12 @@ define module time as
       self.clock_id = clock_id;
       self.ticks_ns = ticks_ns;
     }
-    pub duration_since(Instant earlier): Result<Duration, String> {
+    pub duration_since(borrow Instant earlier): Result<Duration, String> {
       if self.clock_id != earlier.clock_id; do return Err("ClockDomainMismatch"); fi
       if self.ticks_ns < earlier.ticks_ns; do return Err("ClockWentBackwards"); fi
       return Ok(new Duration(self.ticks_ns - earlier.ticks_ns));
     }
-    pub checked_add(Duration duration): Result<Instant, String> {
+    pub checked_add(borrow Duration duration): Result<Instant, String> {
       if duration.nanos > 9223372036854775807 - self.ticks_ns; do
         return Err("InstantOverflow");
       fi
@@ -115,7 +132,7 @@ define module time as
       return new Instant(self.clock_id, self.now_ns);
     }
 
-    pub advance(mut self)(Duration delta): Result<Instant, String> {
+    pub advance(mut self)(borrow Duration delta): Result<Instant, String> {
       if delta.nanos > 9223372036854775807 - self.now_ns; do
         return Err("ClockRangeExhausted");
       fi
@@ -132,17 +149,17 @@ define module time as
   define pub class Deadline as
     pub val Instant due;
     pub constructor(Instant due) { self.due = due; }
-    pub expired(Instant now): Result<bool, String> {
+    pub expired(borrow Instant now): Result<bool, String> {
       if now.clock_id != self.due.clock_id; do return Err("ClockDomainMismatch"); fi
       return Ok(now.ticks_ns >= self.due.ticks_ns);
     }
-    pub remaining(Instant now): Result<Duration, String> {
+    pub remaining(borrow Instant now): Result<Duration, String> {
       if now.clock_id != self.due.clock_id; do return Err("ClockDomainMismatch"); fi
       if now.ticks_ns >= self.due.ticks_ns; do return Ok(new Duration(0)); fi
       return Ok(new Duration(self.due.ticks_ns - now.ticks_ns));
     }
   end
-  pub fnc deadline_after(Instant now, Duration duration): Result<Deadline, String> {
+  pub fnc deadline_after(borrow Instant now, borrow Duration duration): Result<Deadline, String> {
     if duration.nanos > 9223372036854775807 - now.ticks_ns; do
       return Err("DeadlineOverflow");
     fi
@@ -155,7 +172,7 @@ define module time as
     let mut bool armed = true;
     let mut bool fired = false;
     pub constructor(Deadline deadline) { self.deadline = deadline; }
-    pub poll(mut self)(Instant now): Result<bool, String> {
+    pub poll(mut self)(borrow Instant now): Result<bool, String> {
       if !self.armed; do return Ok(false); fi
       if now.clock_id != self.deadline.due.clock_id; do
         return Err("ClockDomainMismatch");
@@ -192,7 +209,7 @@ define module time as
       self.period_ns = period.nanos;
       self.next_ns = first.ticks_ns;
     }
-    pub poll(mut self)(Instant now): Result<bool, String> {
+    pub poll(mut self)(borrow Instant now): Result<bool, String> {
       if !self.active; do return Ok(false); fi
       if now.clock_id != self.clock_id; do return Err("ClockDomainMismatch"); fi
       if now.ticks_ns < self.next_ns; do return Ok(false); fi

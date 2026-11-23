@@ -195,6 +195,22 @@ public final class OwnershipChecker {
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<Ast.BindingStmt, String> validatedShortAliases) {
+        return checkWithImportedClasses(program, linkedClasses, validatedShortAliases, Map.of());
+    }
+
+    /**
+     * As above, plus the qualified signatures of imported modules (keyed by
+     * local alias), so a value returned by {@code alias.f()} carries its
+     * nominal type into receiver-mutability and move checks. Foreign bodies
+     * are never re-checked here.
+     */
+    public static Ast.Program checkWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            Map<String, Ast.ModuleDecl> linkedModules) {
+        if (linkedModules == null) {
+            throw new IllegalArgumentException("linked modules cannot be null");
+        }
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
@@ -247,6 +263,20 @@ public final class OwnershipChecker {
             checker.rejectBorrowedFields(declaration);
             checker.classes.put(name, declaration);
             checker.linkedClassLayouts.add(declaration);
+        }
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            String alias = entry.getKey();
+            if (checker.modules.contains(alias)) continue; // a local module wins
+            checker.modules.add(alias);
+            for (Ast.Decl declaration : entry.getValue().declarations()) {
+                // Generic calls keep the opaque path here: the type checker
+                // already instantiated them, and ownership has no inference.
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.genericParameters().isEmpty()) {
+                    checker.putFunctionSlot(alias + "." + fn.name(), fn);
+                }
+            }
         }
         checker.validate(program);
         checker.publishTaskAdmissions();

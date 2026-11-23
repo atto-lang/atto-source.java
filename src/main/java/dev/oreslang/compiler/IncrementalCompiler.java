@@ -282,7 +282,8 @@ public final class IncrementalCompiler {
                                 strictAtto);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
-                        checked, linked.ownershipClasses(), analysis.shortInferredAliases());
+                        checked, linked.ownershipClasses(), analysis.shortInferredAliases(),
+                        linkedImportedModules(id, parsed.get(id), parsed, normalizedImportResolutions));
             } catch (IllegalArgumentException invalid) {
                 Ast.Program sourceProgram = parsed.get(id);
                 String moduleName = sourceProgram.modules().size() == 1
