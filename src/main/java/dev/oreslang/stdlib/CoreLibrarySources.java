@@ -77,7 +77,8 @@ public final class CoreLibrarySources {
             "http_response_phase_policy.atto",
             "admission_deadline_policy.atto",
             "env.atto",
-            "task.atto");
+            "task.atto",
+            "time.atto");
 
     private CoreLibrarySources() { }
 
