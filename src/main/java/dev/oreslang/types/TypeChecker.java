@@ -690,9 +690,19 @@ public final class TypeChecker {
                 // Mixed modules (classes, generic or Any signatures) keep the
                 // opaque import binding, but their concrete public functions
                 // still type `alias.f(...)` calls.
+                // Overloaded names stay opaque: a partial view could not
+                // select among slots it does not fully know.
+                Map<String, Integer> publicArity = new HashMap<>();
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && fn.visibility() == Ast.Visibility.PUBLIC) {
+                        publicArity.merge(fn.name(), 1, Integer::sum);
+                    }
+                }
                 for (Ast.Decl declaration : module.declarations()) {
                     if (declaration instanceof Ast.FunctionDecl fn
                             && fn.visibility() == Ast.Visibility.PUBLIC
+                            && publicArity.get(fn.name()) == 1
                             && concreteLinkedSignature(fn)) {
                         checker.putFunctionSlot(alias + "." + fn.name(), fn);
                         checker.partiallyLinkedModules.add(alias);

@@ -30,7 +30,7 @@ final class AttoAllocLibraryGuestTest {
                 entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(), out, err);
         assertEquals(42, status.exitStatus(), "must execute actual .atto guest");
         assertEquals("", out.toString(java.nio.charset.StandardCharsets.UTF_8));
-        assertEquals("", err.toString(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("", withoutInterpreterOnlyWarning(err.toString(java.nio.charset.StandardCharsets.UTF_8)));
     }
 
     @Test
@@ -103,5 +103,15 @@ final class AttoAllocLibraryGuestTest {
                 """);
         assertThrows(RuntimeException.class,
                 () -> LinkedProgramRunner.validate(entry, Map.of()));
+    }
+
+    /** Truffle prints a one-time fallback-runtime notice on JVMs without JVMCI. */
+    private static String withoutInterpreterOnlyWarning(String err) {
+        int start = err.indexOf("[To redirect Truffle log output");
+        if (start < 0) start = err.indexOf("[engine] WARNING: The polyglot engine uses a fallback runtime");
+        if (start < 0) return err;
+        int end = err.indexOf("WarnInterpreterOnly=false' system property.", start);
+        return end < 0 ? err : (err.substring(0, start)
+                + err.substring(end + "WarnInterpreterOnly=false' system property.".length())).strip();
     }
 }

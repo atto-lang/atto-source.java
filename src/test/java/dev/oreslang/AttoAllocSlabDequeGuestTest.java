@@ -44,7 +44,7 @@ final class AttoAllocSlabDequeGuestTest {
         // Local source graph tests independent of package namespace install.
         // A failed early return does not emit 42, preventing false-green guests.
         if (!packaged) {
-            source = source.replace(originalImport, "\"./" + module + "\"");
+            source = source.replace(originalImport, "\"./" + module + ".atto\"");
         }
         source = source.replace(ending, "  stdio.stdout.write(42);\n  return 0;\n}");
         Path entry = temp.resolve("main.atto");
@@ -110,7 +110,7 @@ final class AttoAllocSlabDequeGuestTest {
 
     @Test void slabPrivateTokenCannotBeReadByImporter() throws Exception {
         rejectPrivateField("slab", """
-                import module slab from "./slab";
+                import module slab from "./slab.atto";
                 pub fnc main(): int {
                   let mut slab.Slab slots = slab.new_slab(17, 1);
                   let slab.Handle h = slots.insert(5).unwrap();
@@ -122,7 +122,7 @@ final class AttoAllocSlabDequeGuestTest {
 
     @Test void heapPrivateTokenCannotBeReadByImporter() throws Exception {
         rejectPrivateField("actor_heap", """
-                import module actor_heap from "./actor_heap";
+                import module actor_heap from "./actor_heap.atto";
                 pub fnc main(): int {
                   let mut actor_heap.ActorHeap heap = actor_heap.new_actor_heap(19, 8, 2);
                   let actor_heap.HeapHandle h = heap.allocate(1).unwrap();
