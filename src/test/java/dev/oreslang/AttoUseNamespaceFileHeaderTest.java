@@ -36,9 +36,9 @@ final class AttoUseNamespaceFileHeaderTest {
                 "pub routine use(): void { return; }\n"));
     }
 
-    @Test void rejectsDottedNamespaceAndMissingSemicolon() {
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("use namespace guest.other;\n" + MAIN));
+    @Test void acceptsDottedNamespaceAndRejectsMissingSemicolon() {
+        org.junit.jupiter.api.Assertions.assertEquals("guest.other",
+                Parser.parse("use namespace guest.other;\n" + MAIN).namespace());
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("use namespace guest\n" + MAIN));
     }

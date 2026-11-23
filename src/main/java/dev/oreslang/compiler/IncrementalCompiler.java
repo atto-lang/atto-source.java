@@ -42,6 +42,7 @@ public final class IncrementalCompiler {
     private final Map<String, List<ImportBinding>> importBindingCache = new LinkedHashMap<>();
     private final Map<String, List<ImportBinding>> strictAttoImportBindingCache = new LinkedHashMap<>();
     private record ImportBinding(Ast.ImportDecl declaration, String resolvedTarget) { }
+    private PackageLayout layout = PackageLayout.NONE;
 
     // Raw AST is the input to semantic analysis (which expands annotations
     // itself). The expanded AST is used for graph linking and ABI indexing.
@@ -57,6 +58,24 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
+        return compileWithProfile(sources, importResolutions, false);
+    }
+
+    /**
+     * Package-aware build: units under a package root share that package's
+     * identity, and a unit without a namespace header takes its folder-path
+     * namespace (see {@link PackageLayout}).
+     */
+    public synchronized BuildResult compile(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            PackageLayout packageLayout) {
+        if (packageLayout == null) throw new IllegalArgumentException("package layout cannot be null");
+        if (!packageLayout.equals(layout)) {
+            // Namespace and package identity are part of every checked unit.
+            clear();
+            layout = packageLayout;
+        }
         return compileWithProfile(sources, importResolutions, false);
     }
 
@@ -124,9 +143,9 @@ public final class IncrementalCompiler {
                 final Ast.Program rawProgram;
                 final Ast.Program expandedProgram;
                 try {
-                    rawProgram = strictAtto
+                    rawProgram = layout.withEffectiveNamespace(id, strictAtto
                             ? Parser.parseStrictAtto(entry.getValue())
-                            : Parser.parse(entry.getValue());
+                            : Parser.parse(entry.getValue()));
                     expandedProgram = AnnotationExpander.expand(rawProgram);
                 } catch (IllegalArgumentException invalid) {
                     throw new SourceUnitDiagnosticException(id, "", "", invalid);
@@ -273,7 +292,7 @@ public final class IncrementalCompiler {
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
-                    packageId(id),
+                    layout.packageId(id),
                     checked.namespace(),
                     hashes.get(id),
                     abiHashes.get(id),
@@ -1141,6 +1160,45 @@ public final class IncrementalCompiler {
             Set<String> reusedUnits,
             List<List<String>> initializationGroups,
             Set<String> reparsedUnits) {
+        /**
+         * Interface digest per (package, namespace): the member units' ABI
+         * digests in unit order. An importer of a namespace needs re-checking
+         * only when this digest changes.
+         */
+        public Map<String, String> namespaceInterfaces() {
+            java.util.TreeMap<String, StringBuilder> grouped = new java.util.TreeMap<>();
+            for (CompiledUnit unit : new java.util.TreeMap<>(units).values()) {
+                String key = unit.packageId() + "#" + (unit.namespace() == null ? "" : unit.namespace());
+                grouped.computeIfAbsent(key, ignored -> new StringBuilder())
+                        .append(unit.unitId()).append('=').append(unit.abiDigest()).append('\n');
+            }
+            LinkedHashMap<String, String> out = new LinkedHashMap<>();
+            grouped.forEach((key, text) -> out.put(key, digest(text.toString())));
+            return Map.copyOf(out);
+        }
+
+        /** Interface digest per package, over its namespaces' interface digests. */
+        public Map<String, String> packageInterfaces() {
+            java.util.TreeMap<String, StringBuilder> grouped = new java.util.TreeMap<>();
+            for (Map.Entry<String, String> ns : new java.util.TreeMap<>(namespaceInterfaces()).entrySet()) {
+                String pkg = ns.getKey().substring(0, ns.getKey().indexOf('#'));
+                grouped.computeIfAbsent(pkg, ignored -> new StringBuilder())
+                        .append(ns.getKey()).append('=').append(ns.getValue()).append('\n');
+            }
+            LinkedHashMap<String, String> out = new LinkedHashMap<>();
+            grouped.forEach((key, text) -> out.put(key, digest(text.toString())));
+            return Map.copyOf(out);
+        }
+
+        /** (package#namespace) groups that contain a re-checked unit. */
+        public Set<String> rebuiltNamespaces() {
+            LinkedHashSet<String> out = new LinkedHashSet<>();
+            for (String id : rebuiltUnits) {
+                CompiledUnit unit = units.get(id);
+                if (unit != null) out.add(unit.packageId() + "#" + (unit.namespace() == null ? "" : unit.namespace()));
+            }
+            return Set.copyOf(out);
+        }
         public BuildResult {
             units = Map.copyOf(units);
             rebuiltUnits = Set.copyOf(rebuiltUnits);
