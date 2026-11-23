@@ -83,7 +83,7 @@ use namespace http;
 
   define pub fnc method_valid(String method): bool {
     // Fast preflight prevents unbounded scalar snapshots on invalid input.
-    if method.length == 0 || method.length > 64 then return false; fi
+    if method.codepoints().size == 0 || method.codepoints().size > 64 then return false; fi
     val points = method.codepoints();
     if points.size == 0 || points.size > 64 then return false; fi
     for (let int i = 0; i < points.size; i = i + 1) {
@@ -102,7 +102,7 @@ use namespace http;
   }
 
   define pub fnc header_name_valid(String name): bool {
-    if name.length == 0 || name.length > 1024 then return false; fi
+    if name.codepoints().size == 0 || name.codepoints().size > 1024 then return false; fi
     val points = name.codepoints();
     if points.size == 0 || points.size > 1024 then return false; fi
     for (let int i = 0; i < points.size; i = i + 1) {
@@ -115,7 +115,7 @@ use namespace http;
   // HTAB or visible ASCII only. This is a strict safe subset, not an
   // internationalized header codec. CR, LF, NUL and DEL fail closed.
   define pub fnc header_value_valid(String value): bool {
-    if value.length > 65536 then return false; fi
+    if value.codepoints().size > 65536 then return false; fi
     val points = value.codepoints();
     if points.size > 65536 then return false; fi
     for (let int i = 0; i < points.size; i = i + 1) {
@@ -131,8 +131,8 @@ use namespace http;
     if max_bytes < 2 || max_bytes > 65536 then return false; fi
     // Preflight bounded lengths before the codepoint snapshots/character
     // validation. After ASCII admission these counts equal wire bytes.
-    if name.length == 0 || name.length > max_bytes - 2 then return false; fi
-    if value.length > max_bytes - name.length - 2 then return false; fi
+    if name.codepoints().size == 0 || name.codepoints().size > max_bytes - 2 then return false; fi
+    if value.codepoints().size > max_bytes - name.codepoints().size - 2 then return false; fi
     if !header_name_valid(name) || !header_value_valid(value) then return false; fi
     val int name_bytes = name.codepoints().size;
     val int value_bytes = value.codepoints().size;
@@ -144,7 +144,7 @@ use namespace http;
   // whitespace. Raw %-escape decoding, URL normalization and host admission
   // remain transport responsibilities, never implicit network authorization.
   define pub fnc origin_target_valid(String target): bool {
-    if target.length == 0 || target.length > 8192 then return false; fi
+    if target.codepoints().size == 0 || target.codepoints().size > 8192 then return false; fi
     if !target.starts_with("/") || target.starts_with("//") then return false; fi
     val points = target.codepoints();
     if points.size == 0 || points.size > 8192 then return false; fi
@@ -164,7 +164,7 @@ use namespace http;
 
   // Single already-separated request line only, never a wire read/parser.
   define pub fnc parse_request_line(String line): Result<RequestLine, String> {
-    if line.length == 0 || line.length > 8192 then
+    if line.codepoints().size == 0 || line.codepoints().size > 8192 then
       return Err("request line size out of bounds");
     fi
     val points = line.codepoints();
@@ -299,7 +299,7 @@ use namespace http;
   // This only validates a complete, pre-bounded ASCII HTTP/1.1 status line;
   // it does not read a socket or accept HTTP/2 pseudo-headers.
   define pub fnc parse_status_line(String line): Result<int, String> {
-    if line.length < 12 || line.length > 1024 then
+    if line.codepoints().size < 12 || line.codepoints().size > 1024 then
       return Err("status line size out of bounds");
     fi
     val points = line.codepoints();
@@ -321,7 +321,7 @@ use namespace http;
     if max_body_bytes < 0 || max_body_bytes > 1073741824 then
       return Err("invalid Content-Length budget");
     fi
-    if raw.length == 0 || raw.length > 20 then
+    if raw.codepoints().size == 0 || raw.codepoints().size > 20 then
       return Err("invalid Content-Length digit count");
     fi
     val points = raw.codepoints();
