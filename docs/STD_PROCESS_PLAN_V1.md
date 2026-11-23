@@ -1,0 +1,225 @@
+# std/process — Java backend implementation (draft)
+
+
+## Restricted root-context guest bridge — source committed, NOT EXECUTED
+
+In addition to the previously documented host-only `TrustedChildProcessRunner`,
+the branch now contains a separate `NativeChildProcesses` JVM provider,
+registered on `OresContext`, with evaluator dispatch and
+`TypeChecker` signatures. The built-in **root-context** guest invocation is:
+
+```atto
+let started = await process.spawn("/absolute/executable", ["arg1"], "/absolute/cwd");
+if started.is_err() then
+  return 1;
+fi
+let child = started.unwrap();
+let output = (await child.collect_output())?;
+let status = (await child.wait())?;
+```
+
+**Asynchronous is default:** `spawn`, `collect_output`, `wait`,
+`terminate` and `kill` have no `_async` suffix; any intentionally blocking
+guest API would use `_blocking`. `try_wait` is a nonblocking poll.
+
+This root-context bridge uses real `ProcessBuilder` and `Process.onExit`,
+bounds concurrent child reservations to 16, captures up to 1 MiB per stdout
+and stderr stream with concurrent continuous drainage, closes stdin, clears
+the environment and requires absolute argv/executable/cwd. It checks
+`OresContext.requirePermission(RUN)` and `READ` on requested and canonical
+paths. It rejects actor-originating launches until actor-owned physical
+retirement and supervision are implemented. It does not grant a shell, raw PID,
+process-tree kill, arbitrary env, stdin streaming, detach, or root-free access.
+A nonzero exit status is `Ok(ExitStatus)` rather than `Err`.
+
+This is **not yet the public `.atto` `process.spawn(Command)` API**. The
+lowercase `std/process` `.atto` module currently owns a source-level Command/ExitStatus
+model; the wrapper now delegates through `std.process.spawn` to avoid
+recursion or global-name shadowing; completing the remaining contract and enforcing all stdio-mode
+options remains required. The `NativeChildProcessesTest` and
+`AttoChildProcessGuestTest` suites and
+`tests/fixtures/std-process-runtime-v1/guest.atto` are checked in but
+**NOT EXECUTED**. The new Java provider is independent from the earlier
+host-only runner whose historical smoke result is described below.
+Executable replacement after path checks, process descendant control,
+graceful escalation, cancellation after abandoned await, and Native Image
+remain unproven. Keep PR in draft until compiler, guest and security gates pass.
+
+
+## Bounded child lifetime — JDK implementation, NOT EXECUTED
+
+The Java root-context subprocess provider now enforces **five minutes maximum
+per child** by default. A per-child virtual-thread watchdog sleeps until the
+deadline, then forcibly destroys a still-live OS process. The watchdog is
+interrupted when the child exits normally; at most 16 live children are admitted.
+The host-only overload may narrow this duration to 50 milliseconds or greater
+for deterministic regression tests, but may not raise it above five minutes.
+Invalid durations fail before permission checks, process reservation, filesystem
+probing or execution.
+
+`child.wait()` and `child.collect_output()` report deadline expiration as
+`Err(ProcessError(kind: "timeout"))`; a forced shutdown by deadline is **not**
+returned as a successful `ExitStatus`. A nonblocking `try_wait()` cannot
+encode an error and returns no successful status after timeout. The pending
+tests include a silent 30-second Java child with a 150-millisecond host
+deadline, normal exit before deadline, and invalid budget admission.
+
+The explicit `child.close()` path now marks a still-live child as
+owner-cancelled before forcibly destroying it. An observed `wait()` or
+`collect_output()` reports `Err(ProcessError(kind: "cancelled"))`,
+not an ordinary exit status. Closing an already-exited child does not
+retroactively cancel its recorded outcome. Explicit `kill()` and
+`terminate()` still produce an exit status after reaping, because they
+are deliberately requested process-control operations rather than scope
+abandonment. Timeout takes priority over owner cancellation if its
+deadline already fired; output-cap violations retain their distinct
+`output_limit` result for `collect_output()`. Regression cases cover
+owner close, context shutdown, normal completion and deadline cleanup.
+
+These watchdogs bound the directly owned OS child, **not its descendant tree**.
+A subprocess that forks children holding inherited pipes may still prevent
+clean pipe retirement. JVM `ProcessBuilder.start()` has an executable
+replacement (TOCTOU) window and no portable descriptor-pinned exec guarantee.
+Root guest requests still cannot customize the lifetime; that belongs to a
+future typed `run`/`spawn` options contract. Cancellation of an abandoned
+guest await must not be claimed to retire the physical child until separately
+implemented. This is a partial fail-closed mitigation, not OS sandboxing.
+
+**Execution evidence:** JUnit and guest tests committed; current-head Java
+compiler, host subprocess, GraalVM Native Image and complete lifetime
+regressions are **NOT EXECUTED / NOT VERIFIED**.
+
+## Lowercase namespace and intrinsic precedence
+
+The source declares `define module process as`, not `define module Process as`.
+When imported, the linked module takes precedence over the ambient
+unqualified `process` intrinsic in name lookup; it explicitly delegates to
+`std.process.spawn` for the restricted host operation. Type-checking and
+runtime evaluation must resolve this consistently. Programs that need the
+ambient intrinsic without the module import may still use `process`, and
+`std.process` remains an unshadowed intrinsic path.
+
+## Public import naming
+
+The normal import is `import module process from "std/process";`.
+The explicit disambiguating import is `import module process from
+"atto.std/process";`. The two forms share one compiler-owned source and
+one linked code-unit identity. `atto.std/*` is reserved before project-file
+resolution, so a local package cannot impersonate it. The unqualified
+`std/*` spelling is supported as the normal hosted path.
+
+`ores.std/process` and `ores.std/process_policy` are **not accepted**.
+Older `ores.std/*` imports for previously shipped modules remain temporary
+compatibility aliases. Do not expand the old namespace for new modules.
+
+## Implemented in this draft
+
+- `stdlib/process_policy.atto` (`std/process_policy` or `atto.std/process_policy`): pure admission and size-policy helpers.
+- `stdlib/process.atto` (`std/process` or `atto.std/process`): `process.Command`, `process.ExitStatus`, explicit stdio modes, `command`, `command_with_args`, `with_stdio`, `valid_stdio`, and `succeeded`. These are guest-side **value contracts, not a launcher**. The host must snapshot and revalidate any mutable arrays.
+- `src/main/java/dev/oreslang/runtime/TrustedChildProcessRunner.java`: **host-only**, package-private, direct-argv `ProcessBuilder` execution; bounded 1..32 child permits, bounded reader/wait executors, concurrent stdout/stderr capture (4 MiB maximum per stream), timeout/force-kill/reap, closed stdin, explicitly supplied environment, and a mandatory host admission callback.
+- `tests/host/run-std-process-smoke.sh`: independent JDK executable smoke for real child launch/capture, host gate denial, bad argv, byte capture limit, and timeout termination; invokes `javac` and `java` without Maven. Run with `bash tests/host/run-std-process-smoke.sh`.
+- `tests/fixtures/std-process-policy-v1/main.atto` and `tests/fixtures/std-process-v1/main.atto`: **source-only** guest fixtures with expected exit 42 (NOT EXECUTED on compiler).
+
+The standalone JDK script now also compiles `CoreLibrarySources.java` and
+tests `std/*` vs `atto.std/*` source identity, path hardening, and legacy
+process import rejection. These tests are **committed but unexecuted** at the
+current exact PR head.
+
+## Future public guest API — NOT IMPLEMENTED
+
+```atto
+import module process from "std/process";
+// Planned API; the following call does NOT compile or execute yet:
+let Result<process.ChildProcess, process.ProcessError> started =
+    await process.spawn(process.command("/usr/bin/tool"));
+```
+
+Required surface: `spawn(Command) -> Future<Result<ChildProcess, ProcessError>>`,
+`run(Command, RunOptions) -> Future<Result<Output, ProcessError>>`,
+`child.wait() -> Future<Result<ExitStatus, ProcessError>>`,
+`child.terminate()`, `child.kill()`, `child.stdin()`, `child.stdout()`,
+`child.stderr()`, `child.close()`. Pipe endpoints must be ownership-checked,
+bounded asynchronous byte streams. `wait` and `run` must simultaneously
+drain both output streams. No raw PID may be treated as a kill or wait authority.
+No detach by default.
+
+**Critical security gap:** the host runner's `Admission` callback is only a
+pluggable trusted-host hook, **not** an actual `OresContext.requirePermission`
+bridge. An authoritative Atto guest provider still needs actor/isolate identity
+and incarnation binding, effective RUN permission and per-actor capability
+attenuation, command allow/deny rules, environment/cwd grants, executable
+identity, deterministic reservation and release of resource quotas, and
+revocation checks at the actual spawn boundary. Java pathname resolution and
+`ProcessBuilder.start()` are not descriptor-pinned; executable replacement
+(TOCTOU) remains a risk. Do not expose this host runner to untrusted tenants.
+
+The current Java runner returns a bounded **captured** outcome, not streaming
+pipes, and closes the child's stdin. It does not guarantee killing descendants,
+provide a shell, or claim cancellation and cleanup parity with actor task
+scopes. A shell API, inherited stdio, process-group control, detach, and raw
+OS environment must each require explicit separate authority. Full actor
+cancellation needs a generation-bound owned handle and verified physical
+resource retirement. Runner.close is a blocking host operation, never a guest
+actor carrier operation. `Output` must preserve timeout and capture-exceeded
+as distinct from ordinary nonzero exit status.
+
+**POSIX fork:** raw `fork()` must never duplicate a running multithreaded actor
+VM. Unix backends should prefer `posix_spawn()`; Windows should use
+`CreateProcess`. If a native fork/exec fallback is necessary, only async-signal
+safe work may occur between fork and exec.
+
+## Exact-source proof plan and CI governance (2026-11-22)
+
+The source-Java JVM provider now has a dedicated **no-Maven JDK 21**
+smoke (`tests/host/NativeChildProcessesSmoke.java`), compiled directly
+from the production `NativeChildProcesses.java` by
+`tests/host/run-std-process-smoke.sh`. It tests real exit status 42,
+concurrent stdout/stderr, canonical permission revocation, literal argv
+(no shell), cleared environment, infinite-output termination, bounded
+lifetime timeout, and a deterministic shutdown-vs-launch race.
+
+The `std-process-host-smoke` workflow has three independently
+named exact-head jobs:
+
+- `host-jdk21-actual-execution` — JDK 21 standalone host smoke.
+- `guest-graalvm25-process-bridge` — Maven JUnit host and genuine `.atto`
+  guest/namespace integration tests under GraalVM 25.
+- `aot-graalvm25-host-process-provider` — build and execute Native Image
+  for the standalone OS-process provider. **This does not prove full Atto
+  compiler or guest Native Image AOT**.
+
+Every job checks its actual Git commit and root tree before execution.
+A printed workflow summary or zero-step Actions failure is not an executed
+source/compiler result. None of these three latest-head jobs has an
+independently verified stepful PASS as of this writing.
+
+**Security/export admission:** `atto-lang/atto-source.java` source `main`
+currently reports `protected=false`, and its protected-main private CI
+destination allowlist has no active entries. The carrier contract only
+authorizes other PRs and does **not** include Java #1759. A *source-free*
+private carrier admission probe in
+`opto-sync-test/go-java-validation` completed as Actions run
+`45048248665` with failure and **zero job steps**; the only conclusion
+is that runner admission was not proven. No private source tree was moved
+to another organization. Source export requires independently reviewed
+source protection, the immutable destination ID, a carrier workflow/test
+plan, and an exact current-head source commit/tree approval. Do not
+override this gate by manually pushing blobs or temporary Git refs.
+
+**Known remaining safety limits:** process descendants/process groups are
+not yet managed; actor-owned subprocess launch is denied; cancellation of
+a guest await does not independently own child shutdown; and executable
+replacement between canonical permission checking and
+`ProcessBuilder.start` remains a TOCTOU hazard. Keep this PR in Draft
+until real exact-head JVM, guest, AOT and cleanup evidence exists.
+
+## Testing and evidence
+
+A previous local JDK 21 standalone run of the host prototype was reported to produce
+`STD_PROCESS_HOST_SMOKE_PASS` for capture, admission rejection, argv validation,
+capture limit and timeout. The newly changed files on this PR head have **not** been re-executed on a runner. The prior checkpoint is **not** a GitHub Actions run, full-project
+compile, or native-image test. The real compiler `.atto` guest fixture and
+GraalVM AOT have **NOT EXECUTED** on this head; do not mark PR Ready or claim
+`std/process` parity. Source-org zero-step Actions must be treated as
+`NOT_EXECUTED`. Private cross-org CI mirroring requires independent approval
+of source tree and destination, and full blob/tree verification.

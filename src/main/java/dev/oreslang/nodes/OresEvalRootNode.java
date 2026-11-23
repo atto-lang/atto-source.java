@@ -9239,6 +9239,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                // An explicitly linked lowercase module named 'process' must
+                // win over the pre-existing unqualified process intrinsic.
+                // Inside std/process.atto the intrinsic is reachable through
+                // std.process; do not recursively dispatch to this module.
+                if (name.name().equals("process") && modules.containsKey("process")) {
+                    requireLexicalNamespaceAccess(env, "process", "module");
+                    return new ModuleFacade(this, modules.get("process"));
+                }
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -10729,6 +10737,51 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
+                    // Non-parking by default. _async suffixes are not the public
+                    // convention; any future genuinely blocking API is _blocking.
+                    case "spawn" -> (Invokable) args -> {
+                        if (args.size() != 3) {
+                            throw new IllegalArgumentException(
+                                    "process.spawn requires absolute executable, string argv, absolute cwd");
+                        }
+                        if (ActorRuntime.currentActorId().isPresent()
+                                || ActorRuntime.currentActorPolicy() != null) {
+                            // Actor termination hooks must own children before
+                            // actor process launch can be admitted safely.
+                            throw new SecurityException(
+                                    "actor-owned child processes await lifecycle supervision");
+                        }
+                        String executable = requireString(args.get(0), "process.spawn executable");
+                        java.util.List<Object> raw =
+                                expandArgumentSequence(args.get(1), "process.spawn arguments");
+                        java.util.List<String> arguments = new java.util.ArrayList<>(raw.size());
+                        for (Object argument : raw) {
+                            arguments.add(requireString(argument, "process.spawn argv element"));
+                        }
+                        String cwd = requireString(args.get(2), "process.spawn cwd");
+                        try {
+                            return OresFuture.from(context.childProcesses()
+                                    .spawn(executable, arguments, cwd, (command, directory) -> {
+                                        context.requirePermission(
+                                                dev.oreslang.runtime.RuntimePermissions.Permission.RUN,
+                                                command, "process.spawn");
+                                        context.requirePermission(
+                                                dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                                directory, "process.spawn.cwd");
+                                    })
+                                    .handle((child, failure) -> failure == null
+                                            ? new ResultValue(true, child)
+                                            : new ResultValue(false,
+                                                    dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                            .from(failure))));
+                        } catch (RuntimeException failure) {
+                            // Permission denial, malformed paths, and admission
+                            // failures are ordinary typed Err outcomes.
+                            return OresFuture.completed(new ResultValue(false,
+                                    dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                            .from(failure)));
+                        }
+                    };
                     case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
                     case "sleep_async" -> (Invokable) args -> {
                         requireOne(args, "process.sleep_async");
@@ -10748,6 +10801,84 @@ public final class OresEvalRootNode extends RootNode {
                     case "gc" -> (Invokable) process::gc;
                     case "exit" -> (Invokable) process::exit;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeChildProcesses.Child child) {
+                return switch (name) {
+                    case "wait" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.wait");
+                        return OresFuture.from(child.waitForExit().handle((status, failure) ->
+                                failure == null ? new ResultValue(true, status)
+                                        : new ResultValue(false,
+                                                dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                        .from(failure))));
+                    };
+                    case "collect_output" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.collect_output");
+                        return OresFuture.from(child.collectOutput().handle((output, failure) ->
+                                failure == null ? new ResultValue(true, output)
+                                        : new ResultValue(false,
+                                                dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                        .from(failure))));
+                    };
+                    case "try_wait" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.try_wait");
+                        dev.oreslang.runtime.NativeChildProcesses.ExitStatus status = child.tryWait();
+                        return status == null ? new OptionValue(false, null)
+                                : new OptionValue(true, status);
+                    };
+                    case "terminate" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.terminate");
+                        return OresFuture.from(child.terminate().handle((status, failure) ->
+                                failure == null ? new ResultValue(true, status)
+                                        : new ResultValue(false,
+                                                dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                        .from(failure))));
+                    };
+                    case "kill" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.kill");
+                        return OresFuture.from(child.kill().handle((status, failure) ->
+                                failure == null ? new ResultValue(true, status)
+                                        : new ResultValue(false,
+                                                dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                        .from(failure))));
+                    };
+                    case "alive" -> child.alive();
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.close");
+                        child.close();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ChildProcess member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeChildProcesses.ExitStatus status) {
+                return switch (name) {
+                    case "code" -> (long) status.code();
+                    case "signaled" -> status.signaled();
+                    case "success" -> (Invokable) args -> {
+                        requireZero(args, "ExitStatus.success");
+                        return status.success();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ExitStatus member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeChildProcesses.Output output) {
+                return switch (name) {
+                    case "stdout" -> output.stdout();
+                    case "stderr" -> output.stderr();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ProcessOutput member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeChildProcesses.ProcessError failure) {
+                return switch (name) {
+                    case "kind" -> failure.kind();
+                    case "message" -> failure.message();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ProcessError member " + name);
                 };
             }
             if (receiver instanceof ActorFacade actor) {

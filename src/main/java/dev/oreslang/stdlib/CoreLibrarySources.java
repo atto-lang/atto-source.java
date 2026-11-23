@@ -79,7 +79,8 @@ public final class CoreLibrarySources {
             "env.atto",
             "task.atto",
             "time.atto",
-            "channel.atto");
+            "channel.atto",
+            "process.atto", "process_policy.atto");
 
     private CoreLibrarySources() { }
 
@@ -379,15 +380,21 @@ public final class CoreLibrarySources {
                     canonicalPathBody(importPath, ATTO_STD_IMPORT_PREFIX, STD_SOURCES));
         }
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
-            return canonicalMigratedStdPath(
+            String relative = canonicalMigratedStdPath(
                     canonicalPathBody(importPath, STD_IMPORT_PREFIX, STD_SOURCES));
+            // Do not add new modules to the legacy ores.std namespace.
+            if (relative.equals("process.atto") || relative.equals("process_policy.atto")) {
+                throw new IllegalArgumentException(
+                        "Atto process modules use 'std/' or 'atto.std/', not 'ores.std/': " + importPath);
+            }
+            return relative;
         }
         if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
             return canonicalMigratedStdPath(
                     canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX, STD_SOURCES));
         }
         throw new IllegalArgumentException(
-                "hosted std imports must start with 'ores.std/' or 'std/': " + importPath);
+                "hosted std imports must start with 'atto.std/' or 'std/': " + importPath);
     }
 
     private static String canonicalMigratedStdPath(String relative) {
