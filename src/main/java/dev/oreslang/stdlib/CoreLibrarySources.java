@@ -45,7 +45,9 @@ public final class CoreLibrarySources {
             "hash.atto",
             "cell.atto",
             "slice.atto",
-            "error.atto");
+            "error.atto",
+            "ptr.atto",
+            "atomic.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
