@@ -3060,6 +3060,8 @@ public final class ActorRuntime implements AutoCloseable {
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
+        default boolean servesUnaryHttp(String actorTypeName) { return false; }
+
         ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
@@ -7051,10 +7053,27 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             ActorCodeExecutor executor,
             String actorTypeName) {
+        return spawnCodeActor(kind, policy, executor, actorTypeName, false);
+    }
+
+    ActorRef<Object> spawnHttpCodeActor(
+            ActorKind kind, ActorCodeExecutor executor, String actorTypeName) {
+        return spawnCodeActor(kind, defaultSpawnPolicy(), executor, actorTypeName, true);
+    }
+
+    private ActorRef<Object> spawnCodeActor(
+            ActorKind kind,
+            IsolatePolicy policy,
+            ActorCodeExecutor executor,
+            String actorTypeName,
+            boolean httpBinding) {
         Objects.requireNonNull(executor, "executor");
         if (actorTypeName == null || actorTypeName.isBlank()) {
             throw new IllegalArgumentException(
                     "source actor type name cannot be blank");
+        }
+        if (!httpBinding && executor.servesUnaryHttp(actorTypeName)) {
+            throw new IllegalArgumentException("unary HTTP actors may only be spawned by an HTTP handler");
         }
         SharedCodeImageStore.CodeImage image =
                 Objects.requireNonNull(executor.codeImage(), "executor codeImage");

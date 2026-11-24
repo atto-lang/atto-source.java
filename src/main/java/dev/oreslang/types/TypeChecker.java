@@ -58,7 +58,7 @@ public final class TypeChecker {
     // trusted ActorMail/ActorOutput metadata or its instances as ActorRef.
     private static final Set<String> SEALED_ACTOR_PROTOCOL_TYPES = Set.of(
             "ActorMail", "ActorOutput", "ActorOutputStream",
-            "ActorRef", "ActorId", "ActorKind");
+            "ActorRef", "ActorId", "ActorKind", "HttpMessage", "HttpRequestView");
 
     /** Strict source-profile flag is local to this checker; never process-global. */
     private boolean strictAttoEquality;
@@ -911,6 +911,7 @@ public final class TypeChecker {
                 "SharedMutex", "Atomic", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
+                "HttpMessage", "HttpRequestView",
                 "HttpClientResponse", "HttpClientBody",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorGroup", "Topic", "Subscription", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -948,6 +949,10 @@ public final class TypeChecker {
                     nonFunctionDeclarations.add(klass.name());
                 }
                 else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    if (SEALED_ACTOR_PROTOCOL_TYPES.contains(iface.name())) {
+                        throw new IllegalArgumentException(
+                                iface.name() + " is a reserved actor protocol type");
+                    }
                     localNames.add(iface.name());
                     nonFunctionDeclarations.add(iface.name());
                 }
@@ -2042,6 +2047,9 @@ public final class TypeChecker {
                     + klass.name() + "' requires compiler-sealed state ownership "
                     + "and handle_state lowering; not yet enabled");
         Ast.ActorMessageContract protocol = klass.actorMessageContract();
+        if (klass.actorConcurrency().replyRole() == Ast.ActorReplyRole.UNARY) {
+            validateUnaryHttpActor(klass);
+        }
         if (protocol.sends() != null) {
             // Direct calls are already checked against the receiver's
             // ActorRef<ActorClass>, but a complete sends effect must also
@@ -2085,6 +2093,48 @@ public final class TypeChecker {
         } finally {
             lexicalClassOrigin = previousLexicalClass;
         }
+    }
+
+    private void validateUnaryHttpActor(Ast.ClassDecl actor) {
+        if (!actor.actorConcurrency().unaryHttp()
+                || actor.actorKind() == Ast.ActorKind.UNTRUSTED || actor.isAbstract()
+                || !actor.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "unary HTTP actors require a concrete, nongeneric shared or isolated actor");
+        }
+        if (actor.actorMessageContract().receives() != null
+                || actor.actorMessageContract().emits() != null) {
+            throw new IllegalArgumentException(
+                    "unary HTTP ingress and reply types are fixed by run(HttpMessage): HttpResponse");
+        }
+        Map<Ast.MethodArity, Ast.MethodDecl> methods =
+                effectiveInstanceMethods(actor, new LinkedHashSet<>());
+        List<Ast.MethodDecl> handlers = methods.values().stream()
+                .filter(method -> method.name().equals("run")).toList();
+        if (handlers.size() != 1
+                || methods.values().stream().anyMatch(method -> method.name().equals("receive"))
+                || actor.methods().stream().anyMatch(method -> method.isStatic() && method.name().equals("run"))) {
+            throw new IllegalArgumentException(
+                    "unary HTTP actor requires one run(HttpMessage): HttpResponse handler");
+        }
+        Ast.MethodDecl handler = handlers.getFirst();
+        if (handler.visibility() != Ast.Visibility.PRIVATE || handler.async() || handler.suspends()
+                || handler.isAbstract() || handler.structural() || !handler.genericParameters().isEmpty()
+                || handler.parameters().size() != 1
+                || !handler.parameters().getFirst().type().equals(Ast.TypeRef.simple("HttpMessage"))
+                || !handler.returnType().equals(Ast.TypeRef.simple("HttpResponse"))) {
+            throw new IllegalArgumentException(
+                    "unary HTTP actor requires private run(HttpMessage): HttpResponse with actor-turn suspension");
+        }
+    }
+
+    private static boolean unaryHttpEntry(Ast.ClassDecl actor, String name) {
+        return actor != null && actor.actorConcurrency().unaryHttp() && name.equals("run");
+    }
+
+    private static boolean containsHttpRequestCapability(Ast.TypeRef type) {
+        return type != null && (type.name().equals("HttpMessage") || type.name().equals("HttpRequestView")
+                || type.arguments().stream().anyMatch(TypeChecker::containsHttpRequestCapability));
     }
 
     /**
@@ -2544,6 +2594,10 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (containsHttpRequestCapability(field.type())) {
+                throw new IllegalArgumentException(
+                        "HTTP request capability cannot be stored in field " + klass.name() + "." + field.name());
+            }
             // Canonical class 'const' has a constexpr contract, unlike 'val'
             // and 'final'. Reject every effectful or non-provable initializer
             // before construction, even if ordinary field typing could accept
@@ -4716,6 +4770,10 @@ public final class TypeChecker {
                                 + ".receive' is runtime-only and cannot be called directly; "
                                 + "send an owned message through ActorRef.send(...)");
             }
+            if (call.callee() instanceof Ast.NameExpr name && env.lookup(name.name()) == null
+                    && unaryHttpEntry(currentClassOwner, name.name())) {
+                throw new IllegalArgumentException("unary HTTP run is a runtime-only handler");
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -6051,6 +6109,9 @@ public final class TypeChecker {
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
+                        if (unaryHttpEntry(target.owner(), method.name())) {
+                            throw new IllegalArgumentException("unary HTTP run is a runtime-only handler");
+                        }
                         // A lexical self check is insufficient: a receiver may
                         // be an alias, an inherited actor type or a value from
                         // another compilation unit. Guard the resolved symbol.
@@ -8906,6 +8967,16 @@ public final class TypeChecker {
                 default -> throw new IllegalArgumentException(
                         "unknown HttpClientBody member " + name);
             };
+            case "HttpMessage" -> switch (name) {
+                case "get_request" -> new Function(List.of(), new Named("HttpRequestView", List.of()));
+                default -> throw new IllegalArgumentException("unknown HTTP message member " + name);
+            };
+            case "HttpRequestView" -> switch (name) {
+                case "method", "target", "request_id" -> Primitive.STRING;
+                case "header", "query" -> new Function(List.of(Primitive.STRING), Primitive.STRING);
+                case "body_text" -> new Function(List.of(), new Named("Future", List.of(Primitive.STRING)));
+                default -> throw new IllegalArgumentException("unknown HTTP request view member " + name);
+            };
             case "HttpExchange" -> switch (name) {
                 case "can_respond" -> Primitive.BOOL;
                 case "method", "target", "request_id", "operation_id", "server_timing",
@@ -9090,6 +9161,7 @@ public final class TypeChecker {
         }
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+                || named.name().equals("HttpMessage") || named.name().equals("HttpRequestView")
                 || named.name().equals("HttpClientResponse") || named.name().equals("HttpClientBody")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")

@@ -826,7 +826,7 @@ public final class IncrementalCompiler {
                     .append('/').append(klass.actorConcurrency().requestConcurrency())
                     .append('/').append(klass.actorConcurrency().messageConcurrency())
                     .append('/').append(klass.actorConcurrency().serialReceive())
-                    .append('/').append(klass.actorConcurrency().explicitStream());
+                    .append('/').append(klass.actorConcurrency().replyRole());
             Ast.ActorMessageContract protocol = klass.actorMessageContract();
             if (protocol.declared()) {
                 abi.append(" receives=").append(typeRef(protocol.receives()))

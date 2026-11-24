@@ -620,6 +620,7 @@ public final class Ast {
 
     /** Connection-oriented actors have two distinct admission dimensions. */
     public enum ActorTransport { GENERIC, HTTP, TCP, WEBSOCKET }
+    public enum ActorReplyRole { INFER, STREAM, UNARY }
 
     /**
      * Declarative admission limits are VM policy, NOT mutable actor fields.
@@ -627,9 +628,10 @@ public final class Ast {
      */
     public record ActorConcurrency(
             ActorTransport transport, int requestConcurrency, int messageConcurrency,
-            boolean serialReceive, boolean explicitStream) {
+            boolean serialReceive, ActorReplyRole replyRole) {
         public ActorConcurrency {
             java.util.Objects.requireNonNull(transport, "actor transport");
+            java.util.Objects.requireNonNull(replyRole, "actor reply role");
             if (requestConcurrency < 1 || messageConcurrency < 1) {
                 throw new IllegalArgumentException(
                         "actor concurrency limits must be positive");
@@ -638,6 +640,17 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "serial receive requires one request and message lane");
             }
+        }
+
+        public boolean explicitStream() { return replyRole == ActorReplyRole.STREAM; }
+        public boolean unaryHttp() {
+            return replyRole == ActorReplyRole.UNARY && transport == ActorTransport.HTTP;
+        }
+
+        public ActorConcurrency(ActorTransport transport, int requestConcurrency,
+                                int messageConcurrency, boolean serialReceive, boolean explicitStream) {
+            this(transport, requestConcurrency, messageConcurrency, serialReceive,
+                    explicitStream ? ActorReplyRole.STREAM : ActorReplyRole.INFER);
         }
 
         public ActorConcurrency(ActorTransport transport, int requestConcurrency,
@@ -695,7 +708,7 @@ public final class Ast {
             if (actorKind == ActorKind.NONE && actorMessageContract.declared())
                 throw new IllegalArgumentException("ordinary classes cannot declare receives/sends/emits");
             if (actorKind == ActorKind.NONE && (actorConcurrency.transport() != ActorTransport.GENERIC
-                    || actorConcurrency.explicitStream()))
+                    || actorConcurrency.replyRole() != ActorReplyRole.INFER))
                 throw new IllegalArgumentException("ordinary classes cannot carry actor dispatch policy");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);

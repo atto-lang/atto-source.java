@@ -1669,9 +1669,9 @@ public final class Parser {
      * allocation primitive. Actor construction/spawn must still be lowered by
      * the runtime before source programs may instantiate actor classes.
      */
-    private record ActorPrefix(Ast.ActorTransport transport, boolean serial, boolean stream) {
+    private record ActorPrefix(Ast.ActorTransport transport, boolean serial, Ast.ActorReplyRole role) {
         private static final ActorPrefix DEFAULT =
-                new ActorPrefix(Ast.ActorTransport.GENERIC, false, false);
+                new ActorPrefix(Ast.ActorTransport.GENERIC, false, Ast.ActorReplyRole.INFER);
     }
 
     /**
@@ -1718,15 +1718,16 @@ public final class Parser {
         }
         if (recognized && !check(ACTOR) && !check(ISOACTOR))
             throw error(peek(), "actor qualifiers require an actor declaration");
-        if (unary != null) {
+        if (unary != null && transport != Ast.ActorTransport.HTTP) {
             String detail = switch (transport) {
                 case TCP, WEBSOCKET -> "requires an explicit framing and reply-correlation adapter";
-                case HTTP -> "requires typed HTTP exchange and reply lowering";
+                case HTTP -> throw new AssertionError(transport);
                 case GENERIC -> "requires typed request and reply lowering";
             };
             throw error(unary, "ACTOR_UNARY_UNSUPPORTED: unary actor " + detail);
         }
-        return new ActorPrefix(transport, serial, stream);
+        return new ActorPrefix(transport, serial, stream ? Ast.ActorReplyRole.STREAM
+                : unary == null ? Ast.ActorReplyRole.INFER : Ast.ActorReplyRole.UNARY);
     }
 
     private Ast.Decl parseDefinedActorClass(
@@ -1783,7 +1784,7 @@ public final class Parser {
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         consume(SEMICOLON, "actor declaration must end with ';'");
         return new Ast.DeclaredActorHeader(name, modifiers.visibility, kind, interfaces,
-                new Ast.ActorConcurrency(prefix.transport(), 1, 1, prefix.serial(), prefix.stream()),
+                new Ast.ActorConcurrency(prefix.transport(), 1, 1, prefix.serial(), prefix.role()),
                 protocol);
     }
 
@@ -2086,7 +2087,7 @@ public final class Parser {
             }
             if (!generics.isEmpty() || !parents.isEmpty()
                     || actorKind != Ast.ActorKind.SHARED
-                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial() || prefix.stream()) {
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial() || prefix.role() != Ast.ActorReplyRole.INFER) {
                 throw error(peek(), "semicolon actor declarations require a plain "
                         + "non-generic actor without transport or inheritance modifiers");
             }
@@ -2103,7 +2104,7 @@ public final class Parser {
                 && tokens.get(current + 2).type() == SEMICOLON) {
             if (!generics.isEmpty() || !parents.isEmpty() || !interfaces.isEmpty() || protocol.declared()
                     || actorKind != Ast.ActorKind.SHARED
-                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial() || prefix.stream()) {
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial() || prefix.role() != Ast.ActorReplyRole.INFER) {
                 throw error(peek(), "standalone actor declarations currently require a plain "
                         + "non-generic actor without transport or inheritance modifiers");
             }
@@ -2354,7 +2355,7 @@ public final class Parser {
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
-                        prefix.serial(), prefix.stream()),
+                        prefix.serial(), prefix.role()),
                 sealedStateFields, protocol);
     }
 

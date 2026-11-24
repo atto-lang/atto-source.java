@@ -105,13 +105,34 @@ final class ActorTransportConcurrencyContractTest {
     @Test void unaryRolesRequireTheirOwnReplyRuntime() {
         Map<String, String> cases = Map.of(
                 "define serial unary actor Endpoint as end", "typed request and reply",
-                "declare unary http actor Endpoint;", "typed HTTP exchange",
                 "define unary tcp actor Endpoint as end", "explicit framing and reply-correlation");
         cases.forEach((source, diagnostic) -> {
             var error = assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
             assertTrue(error.getMessage().contains("ACTOR_UNARY_UNSUPPORTED"), error::getMessage);
             assertTrue(error.getMessage().contains(diagnostic), error::getMessage);
         });
+    }
+
+    @Test void unaryHttpRequiresTheTransportOwnedRequestAndReplyHandler() {
+        String endpoint = """
+                define serial unary http actor Endpoint as
+                  run(HttpMessage mail): HttpResponse { return new HttpResponse("hello"); }
+                end
+                """;
+        assertEquals(Ast.ActorReplyRole.UNARY, actor(endpoint).actorConcurrency().replyRole());
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(endpoint)));
+        for (String invalid : new String[] {
+                endpoint.replace("run(HttpMessage", "pub run(HttpMessage"),
+                endpoint.replace("run(HttpMessage", "run(HttpExchange"),
+                endpoint.replace("run(HttpMessage", "receive(HttpMessage"),
+                endpoint.replace("as\n", "as\n  let HttpMessage saved;\n"),
+                endpoint.replace("return new", "self.run(mail); return new"),
+                endpoint.replace("return new", "mail.get_response(); return new"),
+                endpoint + "pub routine main(): void { val worker = spawn Endpoint(); }"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(invalid)),
+                    invalid);
+        }
     }
 
     @Test void parallelConfigurationParsesButCannotEscapeSingleWriterRuntimeGate() {

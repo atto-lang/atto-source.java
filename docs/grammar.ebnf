@@ -95,7 +95,7 @@ declared_actor  = "declare" visibility actor_prefix ("actor" | "isoactor") IDENT
 actor_state_attachment
                 = "define" "state" "on" "actor" IDENT "as"
                   "{" { "let" ("int" | "bool") IDENT ("=" | ":") literal ";" } "}" [ ";" ] ;
-actor_prefix    = [ "shared" | "untrusted" ] [ "serial" ] [ "stream" ]
+actor_prefix    = [ "shared" | "untrusted" ] [ "serial" ] [ "stream" | "unary" ]
                   [ "http" | "tcp" | "websocket" | "ws" ] ;
 actor_message_clause
                 = ( "receives" | "sends" | "emits" ) type_ref ;
