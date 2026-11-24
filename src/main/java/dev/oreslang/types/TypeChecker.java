@@ -704,9 +704,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "linked module was not uniquely imported: " + alias);
             }
-            // Only concrete, effect-free signatures are linked. Anything else
-            // (Any/generic/async/annotated callables, e.g. std/assert) keeps the
-            // legacy opaque import behavior instead of a nominal mis-typing.
+            // Modules can link signatures individually when other exports
+            // (for example, parameters typed Any) must remain opaque.
             Set<String> linkedNominals = linkedClasses.keySet();
             boolean allConcrete = module.declarations().stream()
                     .allMatch(d -> (d instanceof Ast.FunctionDecl fn
@@ -4868,16 +4867,19 @@ public final class TypeChecker {
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && (namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
                             || env.lookup(namespace.name()) == null)
-                    && modules.containsKey(namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
-                            ? Parser.ROOT_MODULE : namespace.name())) {
+                    && (modules.containsKey(namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                            ? Parser.ROOT_MODULE : namespace.name())
+                        || partiallyLinkedModules.contains(namespace.name())
+                            && functions.containsKey(namespace.name() + "." + qualifiedCall.member()))) {
                 boolean pkgRoot = namespace.name().equals(Parser.PKG_ROOT_NAMESPACE);
                 String moduleName = pkgRoot ? Parser.ROOT_MODULE : namespace.name();
                 if (pkgRoot && qualifiedCall.member().equals("init")) {
                     throw new IllegalArgumentException("pkg::init is a lifecycle hook, not a callable");
                 }
                 // pkg:: is not an actor capability: same-file dependencies remain forbidden.
-                if (!moduleName.equals(Parser.IMPORTS_NAMESPACE)
-                        || !linkedImportCallables.contains(qualifiedCall.member())) {
+                if (!partiallyLinkedModules.contains(moduleName)
+                        && (!moduleName.equals(Parser.IMPORTS_NAMESPACE)
+                            || !linkedImportCallables.contains(qualifiedCall.member()))) {
                     rejectUnimportedModuleNamespace(moduleName);
                 }
                 int arity = fixedCallArity(
@@ -6466,9 +6468,15 @@ public final class TypeChecker {
                         || name.name().equals("http")
                         || name.name().equals("env"))) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) {
-                if (partiallyLinkedModules.contains(name.name())) {
+                if (partiallyLinkedModules.contains(name.name()) && env.lookup(name.name()) == null) {
                     Ast.FunctionDecl linked =
                             findSingleQualifiedFunction(name.name() + "." + member.member());
+                    if (linked != null && linked.suspends()) {
+                        throw new IllegalArgumentException(
+                                "suspends function '" + name.name() + "." + member.member()
+                                        + "' cannot be used as a first-class callable until Fnc types encode suspension; "
+                                        + "invoke it directly from an async or suspends callable");
+                    }
                     if (linked != null) return trapFunctionType(linked, Set.of(), null);
                 }
                 return Unknown.INSTANCE;

@@ -80,6 +80,34 @@ final class CrossFileLinkedTypingTest {
     }
 
     @Test
+    void aPartiallyLinkedModulePreservesTheSuspendsEffect() {
+        String provider = """
+                define module timer as
+                  pub suspends fnc pause(): int {
+                    await process.sleep_async(1);
+                    return 42;
+                  }
+                  pub fnc unrelated(Any value): void { return; }
+                end
+                """;
+        String imports = "import module timer from \"./timer\";\n";
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(Map.of(
+                "timer.atto", provider,
+                "main.atto", imports + "pub susp fnc main(): int { return timer.pause(); }")));
+        IllegalArgumentException plainCaller = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(Map.of(
+                        "timer.atto", provider,
+                        "main.atto", imports + "pub fnc main(): int { return timer.pause(); }")));
+        assertTrue(plainCaller.getMessage().contains("pause") && plainCaller.getMessage().contains("suspend"),
+                plainCaller::getMessage);
+        IllegalArgumentException reified = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(Map.of(
+                        "timer.atto", provider,
+                        "main.atto", imports + "pub susp fnc main(): int { val callback = timer.pause; return 0; }")));
+        assertTrue(reified.getMessage().contains("cannot be used as a first-class callable"), reified::getMessage);
+    }
+
+    @Test
     void genericFunctionInstantiatesAtTheCallSite() {
         accepts("""
                 import module lib from "./lib.atto";
