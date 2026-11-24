@@ -1730,10 +1730,15 @@ public final class OwnershipChecker {
             ValueInfo right = checkExpr(conditional.whenFalse(), scope, consuming);
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
+            mergeBranchState(base, List.of(leftExit, rightExit));
             if (isBorrowValue(left) || isBorrowValue(right)) {
+                if (left.borrowSource != null && left.borrowSource == right.borrowSource
+                        && left.kind == right.kind && left.borrowLease == right.borrowLease
+                        && left.type.equals(right.type)) {
+                    return left;
+                }
                 throw error("conditional cannot merge borrowed values without a checked result lifetime");
             }
-            mergeBranchState(base, List.of(leftExit, rightExit));
             Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
             return new ValueInfo(
                     joinedType,

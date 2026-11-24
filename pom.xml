@@ -157,6 +157,8 @@
         <version>3.5.0</version>
         <configuration>
           <mainClass>dev.oreslang.launcher.OresMain</mainClass>
+          <!-- VM process-wide watchdog/timer daemons live until the CLI host exits. -->
+          <cleanupDaemonThreads>false</cleanupDaemonThreads>
         </configuration>
       </plugin>
       <plugin>
@@ -201,9 +203,8 @@
                 <goals><goal>exec</goal></goals>
                 <configuration>
                   <executable>sh</executable>
-                  <arguments>
-                    <argument>${project.basedir}/scripts/build-native-thread.sh</argument>
-                  </arguments>
+                  <workingDirectory>${project.basedir}</workingDirectory>
+                  <commandlineArgs>scripts/build-native-thread.sh</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
