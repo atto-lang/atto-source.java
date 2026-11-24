@@ -134,10 +134,14 @@ public final class GeneratorRuntime {
 
         private static final class Pull {
             volatile OresFuture<?> completion;
+            volatile OresFuture<Void> cancelledExit;
 
-            boolean settledWithoutCancellation() {
+            boolean allowsNextPull() {
                 OresFuture<?> future = completion;
-                return future != null && future.isDone() && !future.isCancelled();
+                if (future == null || !future.isDone()) return false;
+                if (!future.isCancelled()) return true;
+                OresFuture<Void> exit = cancelledExit;
+                return exit != null && exit.isDone();
             }
         }
 
@@ -158,7 +162,7 @@ public final class GeneratorRuntime {
                 // A successful or failed result becomes observable before
                 // its callbacks drain. A caller may already have awaited it.
                 // Cancellation still requires the physical-retirement path.
-                if (prior != null && !prior.settledWithoutCancellation()) {
+                if (prior != null && !prior.allowsNextPull()) {
                     return OresFuture.failed(new IllegalStateException(
                             "concurrent AsyncIterator.next() is not permitted; await the outstanding pull first"));
                 }
@@ -216,7 +220,11 @@ public final class GeneratorRuntime {
                         // consumer's *physical* task exit. Logical Future
                         // cancellation alone is not an exit receipt.
                         engine.requestClose();
-                        runtime.taskExitReceipt(pull).whenCompleteRuntime(
+                        OresFuture<Void> exit = runtime.taskExitReceipt(pull);
+                        // A caller can observe physical retirement before its
+                        // callbacks have removed this reservation.
+                        reservation.cancelledExit = exit;
+                        exit.whenCompleteRuntime(
                                 (ignored, exitFailure) -> pullInFlight.compareAndSet(reservation, null));
                     } else {
                         // A caller may already have replaced this reservation.
