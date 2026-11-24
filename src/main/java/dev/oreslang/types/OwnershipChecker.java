@@ -1587,12 +1587,6 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
-                    // Main permits an explicit copy from an implicit immutable self receiver
-                    // (certified immutable fields); a nested borrow inside the copied type
-                    // is still never duplicated.
-                    if (containsBorrowType(source.type)) {
-                        throw error("rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
-                    }
                     CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
                     if (projected != null && projected.noCopy()) {
                         throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy field '" + projected.origin() + "'");
@@ -1602,6 +1596,9 @@ public final class OwnershipChecker {
                         // Read the loan but return independent immutable data.
                         // The source binding keeps its existing loan/lifetime.
                         yield new ValueInfo(source.type.borrowedTarget(), ValueKind.COPY, null);
+                    }
+                    if (containsBorrowType(source.type)) {
+                        throw error("rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
                     }
                     Ast.ClassDecl sourceClass = source.type == null ? null : findClass(source.type.name());
                     if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
@@ -1693,6 +1690,9 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            if (cast.mode() == Ast.CastMode.OPTIONAL && isBorrowValue(source)) {
+                throw error("optional cast of borrowed value requires a checked Option loan lifetime");
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
@@ -1723,6 +1723,9 @@ public final class OwnershipChecker {
             ValueInfo right = checkExpr(conditional.whenFalse(), scope, consuming);
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
+            if (isBorrowValue(left) || isBorrowValue(right)) {
+                throw error("conditional cannot merge borrowed values without a checked result lifetime");
+            }
             mergeBranchState(base, List.of(leftExit, rightExit));
             Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
             return new ValueInfo(
