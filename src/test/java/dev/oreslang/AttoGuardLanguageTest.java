@@ -130,6 +130,34 @@ final class AttoGuardLanguageTest {
     }
 
     @Test
+    void explicitVoidAndCaretReturnAgreeInBothGuardForms() throws Exception {
+        assertEquals("bracekeyword", run("""
+                fnc brace(bool ready): void {
+                  guard ready { ^ void; }
+                  stdio.stdout.write("brace");
+                }
+                fnc keyword(bool ready): void {
+                  guard ready else
+                    return void;
+                  end
+                  stdio.stdout.write("keyword");
+                }
+                pub routine main(): void {
+                  brace(false);
+                  keyword(false);
+                  brace(true);
+                  keyword(true);
+                }
+                """));
+        reject("""
+                pub fnc main(): int {
+                  guard false { ^ void; }
+                  return 42;
+                }
+                """);
+    }
+
+    @Test
     void enclosingKeywordIfCanOwnElseAndFiAfterGuard() throws Exception {
         assertEquals("4279", run("""
                 fnc choose(bool ready, int x): int {

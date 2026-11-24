@@ -3543,12 +3543,7 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
-        if (attoCallableVersion != null && match(CARET)) {
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
-                    ? null : parseExpression();
-            consumeExpressionStatementTerminator(value, "caret return requires ';'");
-            return new Ast.ReturnStmt(value);
-        }
+        if (match(CARET)) return parseReturnStatement();
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
@@ -3727,9 +3722,7 @@ public final class Parser {
                 advance();
                 return parseMaybe(true);
             }
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
-            consumeExpressionStatementTerminator(value, "return statement should end with ';'");
-            return new Ast.ReturnStmt(value);
+            return parseReturnStatement();
         }
         if (match(YIELD)) {
             boolean delegated = match(STAR);
@@ -4861,6 +4854,13 @@ public final class Parser {
      * Keep Option payload refinement closed until the type checker has
      * ownership-aware, stable payload projections.
      */
+    private Ast.ReturnStmt parseReturnStatement() {
+        Ast.Expr value = match(VOID) || check(SEMICOLON) || isSafeStatementBoundary()
+                ? null : parseExpression();
+        consumeExpressionStatementTerminator(value, "return statement should end with ';'");
+        return new Ast.ReturnStmt(value);
+    }
+
     private Ast.Stmt parseGuard() {
         if (check(LBRACE) || check(ELSE)) {
             throw error(peek(), "guard requires a boolean condition");
