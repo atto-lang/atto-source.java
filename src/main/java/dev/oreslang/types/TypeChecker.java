@@ -4488,6 +4488,18 @@ public final class TypeChecker {
                     "spread expressions are only valid as arguments to a variadic callable");
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals(Ast.VerifiedI64.CHECK_REFINEMENT)) {
+                var args = runtime.arguments();
+                if (args.size() != 3 || !(args.get(1) instanceof Ast.LiteralExpr low)
+                        || !(args.get(2) instanceof Ast.LiteralExpr high)
+                        || !(low.value() instanceof Long minimum) || !(high.value() instanceof Long maximum)
+                        || minimum > maximum) {
+                    throw new IllegalArgumentException("invalid internal refinement bounds");
+                }
+                requireAssignable(typeOf(args.getFirst(), env, generics, self), Primitive.INT,
+                        "checked refinement carrier operand");
+                return Primitive.INT;
+            }
             if (runtime.operation().equals("spawn")) {
                 if (runtime.arguments().size() != 1
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {

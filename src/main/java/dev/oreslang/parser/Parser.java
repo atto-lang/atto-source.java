@@ -7581,7 +7581,7 @@ public final class Parser {
                     localName = verifiedName("expected a binding name").lexeme();
                 }
                 consume(EQUAL, "expected '=' before immutable initializer");
-                var term = parseQuantitySum(0);
+                var term = parseVerifiedExpression(0);
                 type.require(term.type(), "E_REFINEMENT_BINDING", "binding " + localName);
                 consume(SEMICOLON, "expected ';' after immutable binding");
                 var localType = new RefinedQuantity(type.unit(), term.type().range(), type.i32());
@@ -7591,7 +7591,7 @@ public final class Parser {
                 body.add(new Ast.BindingStmt(Ast.BindingKind.VAL, VERIFIED_CARRIER, localName, term.expression(), false));
             }
             consume(RETURN, "E_REFINEMENT_BODY: expected an explicit return after immutable bindings");
-            var term = parseQuantitySum(0);
+            var term = parseVerifiedExpression(0);
             returnType.require(term.type(), "E_REFINEMENT_RETURN", "return from " + name.lexeme());
             result.require(term.type(), "E_REFINEMENT_POSTCONDITION", "ensures of " + name.lexeme());
             for (int upper : upperParameters) {
@@ -7631,7 +7631,7 @@ public final class Parser {
             do {
                 int index = arguments.size();
                 if (index >= function.parameters().size()) throw error(name, "E_REFINEMENT_CALL: incorrect arity");
-                var argument = parseQuantitySum(depth + 1);
+                var argument = parseVerifiedExpression(depth + 1);
                 function.parameters().get(index).require(argument.type(),
                         "E_REFINEMENT_PRECONDITION", "argument " + (index + 1) + " of " + name.lexeme());
                 arguments.add(argument.expression());
@@ -7652,6 +7652,25 @@ public final class Parser {
             throw error(peek(), "E_UNIT_ERASURE: an unannotated int requires dimensionless scale one");
         }
         return term.expression();
+    }
+
+    private QuantityTerm parseVerifiedExpression(int depth) {
+        var term = parseQuantitySum(depth);
+        while (match(AS)) {
+            Token cast = previous();
+            if (check(QUESTION)) throw error(peek(), "E_REFINEMENT_CAST: optional refinement casts are unsupported");
+            var target = readRefinedType(consume(IDENT, "expected verified scalar type after 'as'"));
+            target.unit().requireCompatible(term.unit());
+            if (term.depth() >= MAX_UNARY_NESTING)
+                throw error(cast, "E_UNIT_LIMIT: quantity expression is too deep");
+            var range = term.type().range().onNormalResultWithin(target.range());
+            var checked = new Ast.RuntimeCallExpr(Ast.VerifiedI64.CHECK_REFINEMENT, List.of(
+                    term.expression(), new Ast.LiteralExpr(target.range().minimum()),
+                    new Ast.LiteralExpr(target.range().maximum())));
+            term = new QuantityTerm(checked, new RefinedQuantity(target.unit(), range, target.i32()),
+                    term.depth() + 1, term.upperBounds());
+        }
+        return term;
     }
 
     private QuantityTerm parseQuantitySum(int depth) {
@@ -7720,7 +7739,7 @@ public final class Parser {
     private QuantityTerm parseQuantityAtom(int depth) {
         if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
         if (match(LPAREN)) {
-            var term = parseQuantitySum(depth + 1);
+            var term = verifiedCallable ? parseVerifiedExpression(depth + 1) : parseQuantitySum(depth + 1);
             consume(RPAREN, "expected ')' after quantity expression");
             return term;
         }

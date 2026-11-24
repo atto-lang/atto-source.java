@@ -1634,6 +1634,7 @@ public final class Ast {
         public static final String MULTIPLY = "$verified_i64_multiply";
         public static final String DIVIDE = "$verified_i64_divide";
         public static final String CHECK_I32 = "$verified_check_i32";
+        public static final String CHECK_REFINEMENT = "$verified_check_refinement";
 
         private VerifiedI64() { }
     }

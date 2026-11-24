@@ -5966,12 +5966,14 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
-            if (runtime.arguments().size() != 1) {
+            boolean refinement = runtime.operation().equals(Ast.VerifiedI64.CHECK_REFINEMENT);
+            if (runtime.arguments().size() != (refinement ? 3 : 1)) {
                 continuation.accept(
                         task,
                         null,
                         new IllegalArgumentException(
-                                "rt " + runtime.operation() + " expects exactly one argument"));
+                                "rt " + runtime.operation() + " expects exactly "
+                                        + (refinement ? "three arguments" : "one argument")));
                 return;
             }
             evalSuspendableExpr(
@@ -5986,9 +5988,11 @@ public final class OresEvalRootNode extends RootNode {
                         try {
                             continuation.accept(
                                     t,
-                                    runtime.operation().equals("workflow_request")
-                                            ? submitWorkflowGuestIntrinsic(value, env)
-                                            : applyScopedMapOwnership(runtime, value, env),
+                                    switch (runtime.operation()) {
+                                        case Ast.VerifiedI64.CHECK_REFINEMENT -> checkedRefinement(runtime, value);
+                                        case "workflow_request" -> submitWorkflowGuestIntrinsic(value, env);
+                                        default -> applyScopedMapOwnership(runtime, value, env);
+                                    },
                                     null);
                         } catch (RuntimeException | Error ownershipFailure) {
                             continuation.accept(t, null, ownershipFailure);
@@ -9473,6 +9477,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                if (runtime.operation().equals(Ast.VerifiedI64.CHECK_REFINEMENT)) {
+                    return checkedRefinement(runtime, eval(runtime.arguments().getFirst(), env));
+                }
                 if (runtime.operation().equals("spawn")) {
                     if (runtime.arguments().size() != 1
                             || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
@@ -12986,6 +12993,17 @@ public final class OresEvalRootNode extends RootNode {
                 // and rejected anywhere else by the checker: never a shift.
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
+        }
+
+        private long checkedRefinement(Ast.RuntimeCallExpr cast, Object operand) {
+            long value = integralLong(operand);
+            long minimum = (Long) ((Ast.LiteralExpr) cast.arguments().get(1)).value();
+            long maximum = (Long) ((Ast.LiteralExpr) cast.arguments().get(2)).value();
+            if (value < minimum || value > maximum) {
+                throw new OresCastError("E_REFINEMENT_CHECK_FAILED: value " + value
+                        + " is outside [" + minimum + ", " + maximum + "]");
+            }
+            return value;
         }
 
         private long checkedI32(long value) {
