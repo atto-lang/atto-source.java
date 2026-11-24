@@ -1114,6 +1114,7 @@ public final class OresScheduler implements AutoCloseable {
             // suspended owner retains the updated context after this turn exits.
             TraceContext previousTraceContext = TraceContext.install(traceContext);
             try {
+                ConcurrencyTestProbe.checkpoint("task-turn");
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
                 if (resume == null) {
@@ -1347,6 +1348,7 @@ public final class OresScheduler implements AutoCloseable {
                                 OresFuture.runtimeTerminalFailure(terminal));
                         return;
                     }
+                    ConcurrencyTestProbe.deadlock("future-cycle");
                     failTerminal(new IllegalStateException(
                             "cyclic Future await dependency detected"));
                     return;

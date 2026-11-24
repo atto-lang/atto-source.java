@@ -1,0 +1,5 @@
+// Compiler-owned Java runtime allocations are NOT Atto source exports.
+// Any successful import of Loan would manufacture a privileged capability.
+import class Loan from "atto.alloc/allocator";
+
+pub fnc main(): int { return 42; }

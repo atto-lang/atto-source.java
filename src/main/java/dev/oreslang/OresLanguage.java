@@ -6,6 +6,7 @@ import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.runtime.AttoCheckedI64Profile;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -18,7 +19,7 @@ import java.nio.file.Path;
 
 @TruffleLanguage.Registration(
         id = OresLanguage.ID,
-        name = "Oreslang",
+        name = "AttoLang",
         version = "0.1.0",
         defaultMimeType = OresLanguage.MIME_TYPE,
         characterMimeTypes = OresLanguage.MIME_TYPE,
@@ -144,6 +145,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
         return singleThreaded
+                || dev.oreslang.runtime.HotReloadManager.isManagedEntryThread(thread)
                 || ActorRuntime.isActorCarrierThread()
                 || AsyncRuntime.isAsyncCarrierThread()
                 || OresScheduler.isSchedulerCarrierThread();
@@ -176,11 +178,29 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
 
+        // Source profile selection precedes parsing, even for prechecked AST leases:
+        // a host may not quietly ignore a malformed or duplicated directive.
+        boolean checkedI64 = AttoCheckedI64Profile.select(text, codeUnitId);
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
         }
-        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
+        // `use default namespace(n);` names the last n folders of this unit.
+        program = dev.oreslang.compiler.PackageLayout.NONE.withEffectiveNamespace(codeUnitId, program);
+        // No mixed-profile call graph: an unchecked imported callee could wrap
+        // inside a checked caller until the linker proves transitive profile
+        // compatibility over every source unit and pinned compiled interface.
+        // Compiler-owned core/alloc/std units and explicit .atto files are
+        // themselves checked-i64 .atto units, so the call graph stays in one
+        // profile; anything else (legacy .ores, Java, packages) still fails.
+        if (checkedI64 && program.imports().stream().anyMatch(imported ->
+                !dev.oreslang.stdlib.CoreLibrarySources.isCompilerOwnedAttoImport(imported.path())
+                        && !imported.path().endsWith(".atto"))) {
+            throw new IllegalArgumentException(
+                    "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: imports require profile-checked linking");
+        }
+        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId, checkedI64)
+                .getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
 }

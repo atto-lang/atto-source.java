@@ -68,6 +68,10 @@ public final class ExportInterfaceCollector {
                 } else if (decl instanceof Ast.InterfaceDecl iface
                         && (iface.visibility() == Ast.Visibility.PUBLIC || isExplicitPublic(checked, owner, iface.name()))) {
                     StringBuilder sig = new StringBuilder();
+                    // Preserve lexical trait/interface/contract identity in
+                    // exported ABI. Identical method shapes are not equivalent
+                    // import authorities.
+                    field(sig, iface.declarationKind().name());
                     flags(sig, iface.moduleContract());
                     strings(sig, iface.genericParameters());
                     types(sig, iface.parents());

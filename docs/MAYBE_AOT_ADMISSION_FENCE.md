@@ -1,6 +1,8 @@
 # AttoLang maybe v1: typed procedural Result/Option lowering (2026-11-10)
 
-**Candidate implementation: JAVA/GRAAL compiler execution NOT YET VERIFIED.** This draft replaces the temporary Java parser rejection with a source-to-AST lowering for a restricted but useful `maybe` subset. No result from source review or zero-step GitHub Actions establishes executed guest acceptance. It also does not establish LLVM/.NET/Wasm/Forge parity.
+**Candidate implementation: JAVA/GRAAL compiler execution NOT YET VERIFIED.**
+
+This branch composes restricted maybe with the keyword `try ... catch ... finally ... end` parser (atto-source.java#1719, merged); it does not implement the full dedicated typed MaybeStmt/MaybeExpr CFG. Tests and final cleanup semantics must be independently validated before promotion. This draft replaces the temporary Java parser rejection with a source-to-AST lowering for a restricted but useful `maybe` subset. No result from source review or zero-step GitHub Actions establishes executed guest acceptance. It also does not establish LLVM/.NET/Wasm/Forge parity.
 
 ## Implemented candidate
 

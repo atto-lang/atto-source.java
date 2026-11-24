@@ -1454,4 +1454,29 @@ final class ParserTest {
     }
 
 
+
+    @Test
+    void canonicalRemainderSourceRejectsLegacyPercentWithoutTouchingComments() {
+        for (String expression : List.of(
+                "7 % 3", "-7 % -3", "(8 % 3) * 2",
+                "-9223372036854775808 % -1",
+                "Integer.bitXor(7 % 3, 5)")) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("pub fnc main(): int { return " + expression + "; }"));
+            assertTrue(rejected.getMessage().contains("noncanonical '%' source operator"),
+                    rejected::toString);
+        }
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): int {
+                  return 7 * 6;
+                }
+                """));
+        // Lexical comments may contain percent signs without creating an
+        // arithmetic operator or modifying the parsed executable AST.
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc main(): int { return 42; } // removed % operator"));
+    }
+
 }

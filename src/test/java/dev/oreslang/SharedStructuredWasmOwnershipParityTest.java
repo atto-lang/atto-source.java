@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipDiagnosticCode;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -50,14 +51,14 @@ final class SharedStructuredWasmOwnershipParityTest {
     }
 
     @Test
-    void exactLegacyNativeMutableFixtureRejectsObsoleteSyntax() throws Exception {
+    void exactLegacyNativeMutableFixtureRejectsImmutableOwner() throws Exception {
         // Preserve historical bytes and identify the actual rejection stage.
         String source = fixture("class-mutable.ores",
                 "3cad92b8c5f7c4d5b97472a7247ab0c10455078b");
         IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
-        assertTrue(rejection.getMessage().contains("legacy 'rt borrow mut value'"),
-                rejection::getMessage);
+        assertEquals(OwnershipDiagnosticCode.E_MUTABILITY,
+                OwnershipDiagnosticCode.of(rejection.getMessage()), rejection::getMessage);
     }
 
     private static String canonicalFixture(String name) throws Exception {
@@ -73,6 +74,8 @@ final class SharedStructuredWasmOwnershipParityTest {
         var parsed = Parser.parse(canonicalFixture("immutable-owner.atto"));
         IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(parsed));
+        assertEquals(OwnershipDiagnosticCode.E_MUTABILITY,
+                OwnershipDiagnosticCode.of(rejection.getMessage()), rejection::getMessage);
         assertTrue(rejection.getMessage().contains("cannot mutably borrow immutable owner 'player'"),
                 rejection::getMessage);
     }
@@ -90,12 +93,12 @@ final class SharedStructuredWasmOwnershipParityTest {
     }
 
     @Test
-    void exactLegacyOverlapFixtureRejectsObsoleteSyntax() throws Exception {
+    void exactLegacyOverlapFixtureRejectsBeforeAcquiringMutableLoan() throws Exception {
         String source = fixture("class-overlap.ores", "2664d2fa411e4e5ea84d1c817c3f9e31ac45b511");
         RuntimeException rejected = assertThrows(RuntimeException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
-        assertTrue(rejected.getMessage().contains("legacy 'rt borrow mut value'"),
-                rejected::getMessage);
+        assertEquals(OwnershipDiagnosticCode.E_MUTABILITY,
+                OwnershipDiagnosticCode.of(rejected.getMessage()), rejected::getMessage);
     }
 
     @Test
@@ -103,8 +106,7 @@ final class SharedStructuredWasmOwnershipParityTest {
         var parsed = Parser.parse(canonicalFixture("overlap.atto"));
         RuntimeException rejected = assertThrows(RuntimeException.class,
                 () -> TypeChecker.check(parsed));
-        assertTrue(rejected.getMessage().startsWith("Atto ownership error:"),
-                rejected::getMessage);
-        assertTrue(rejected.getMessage().contains("borrow"), rejected::getMessage);
+        assertEquals(OwnershipDiagnosticCode.E_BORROW,
+                OwnershipDiagnosticCode.of(rejected.getMessage()), rejected::getMessage);
     }
 }

@@ -1,0 +1,9 @@
+# Contract: atto-common-source/contracts/alloc/ownership-parity-v1.json
+# Only seven independently checked Java logical-policy guest cases; no physical allocator, drop lowering or AOT parity.
+layout.negative_size	runtime	REJECT	tests/fixtures/alloc-java-guest/parity-v1/layout-negative-size.atto
+layout.invalid_alignment	runtime	REJECT	tests/fixtures/alloc-java-guest/parity-v1/layout-invalid-alignment.atto
+layout.overflow	runtime	REJECT	tests/fixtures/alloc-java-guest/parity-v1/layout-overflow.atto
+ledger.reserve_commit_retire	guest	PASS	tests/fixtures/alloc-java-guest/allocator-transactions-positive.atto
+ledger.over_quota	guest	REJECT	tests/fixtures/alloc-java-guest/parity-v1/ledger-over-quota.atto
+ledger.duplicate_retirement	guest	REJECT	tests/fixtures/alloc-java-guest/parity-v1/ledger-duplicate-retirement.atto
+ledger.stale_generation	guest	REJECT	tests/fixtures/alloc-java-guest/parity-v1/ledger-stale-generation.atto

@@ -1,0 +1,11 @@
+import module task_parallel_policy from "std/task_parallel_policy.atto";
+pub routine main(): void {
+  stdio.println(task_parallel_policy.valid_config(9, 3));
+  stdio.println(task_parallel_policy.next_admission_budget(9, 3, 0, 0, 0));
+  stdio.println(task_parallel_policy.next_admission_budget(9, 3, 2, 2, 0));
+  stdio.println(task_parallel_policy.next_admission_budget(100, 100, 4, 0, 31));
+  stdio.println(task_parallel_policy.next_admission_budget(100, 100, 4, 0, 32));
+  stdio.println(task_parallel_policy.next_admission_budget(9, 3, 2, 3, 0));
+  stdio.println(task_parallel_policy.valid_config(9, 0));
+  return;
+}

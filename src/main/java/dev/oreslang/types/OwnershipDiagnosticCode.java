@@ -46,6 +46,7 @@ public enum OwnershipDiagnosticCode {
     E_TYPE(false),
     E_UNKNOWN(false),
     E_DUPLICATE(false),
+    E_PRELUDE_SPOOF(false),
     E_SYNTAX(false),
     /** Constructor self is not definitely initialized. */
     E_INIT(false),

@@ -22,18 +22,53 @@ runtime intrinsics (`rt fail`, `rt take`, `rt borrow`, `rt copy`,
 `rt share`, `rt cooperate`, `spawn`), and AST node types not explicitly
 proven effect-free. Indexing is rejected even when its operands are pure,
 because bounds failure could unwind an incompletely constructed object and
-partial-construction resource cleanup remains unproven.
+partial-construction resource cleanup remains unproven. Arithmetic division
+and remainder are likewise excluded. Bit shifts (`<<`, `>>`, `>>>`) are
+also excluded: the current runtime throws on shift counts outside 0..63,
+even when both operands are well-typed integers, and evaluating an earlier
+field may already have installed an owned value. A future proven range and
+failure-cleanup analysis may narrow these exclusions.
+
+Member reads and all nonlocal runtime value names are rejected in eager
+initializers. Resolving a module export, imported namespace, host member or
+global value can execute code outside the local initializer's effect proof;
+visiting only a member receiver is not sufficient. The only admitted direct
+value-name leaves are the constructor's checked scalar parameters. An eager
+source borrow (`rt borrow` or `rt mut borrow`) cannot create a loan across construction.
+
+Runtime `is type` and `matches` predicates need their own eager effect
+proof, independently of evaluating their operands. Only direct primitive
+runtime tag checks (`int`, `bool`, `float`, `string`/`String`)
+and non-structural wildcard, literal or direct primitive type patterns
+are admitted. Structural, tuple, constructor, complement, union and
+user-defined nominal pattern/type tests may inspect nested object
+members or recursively evaluate type structure. Until they have a
+bounded effect and failure-cleanup proof, they are rejected in eager
+class initializers, but remain available in ordinary code.
+
+A verified zero-argument scalar helper may still be called, but its callable
+name must resolve to that function in the runtime lexical environment. A
+constructor parameter shadowing the callable, a same-named module that
+takes precedence over a class namespace at runtime, or a foreign/imported
+class namespace with unproven effects, cannot satisfy this exception.
 
 The synchronous scalar-helper exception requires a statically resolved
 zero-argument, non-generic, non-async, non-suspending, non-generator,
-non-trapped, non-actor-dispatched callable. Its entire body must be one
+non-trapped, non-actor-dispatched callable. Generic callables remain
+excluded even when every generic parameter has a default type or the
+caller uses an empty `<>` marker; default substitution is not a proof
+of constructor-time effect safety. Its entire body must be one
 scalar-return expression formed from literals and the supported unary and
 arithmetic operations. Abstract static methods are not admissible.
 
 The zero-argument built-in `Array` exception cannot be applied to a
-shadowing guest class of the same name. Partial-construction resource failure
-cleanup and full transitive effect summaries remain **unproven**, so these
-exceptions must not be widened without executable regressions.
+shadowing local class, an imported binding of the same name, or an
+inferred-type marker without an explicit constructor effect proof. Runtime
+dispatch treats `Array` as a built-in before ordinary class lookup; the
+checker must not silently conflate this case with arbitrary guest imports.
+Partial-construction resource failure cleanup and full transitive effect
+summaries remain **unproven**, so these exceptions must not be widened
+without executable regressions.
 
 ## Constructor self
 
@@ -44,8 +79,9 @@ all required field slots are initialized.
 
 ## Verification gate
 
-This branch is a **draft integration candidate**, not a release artifact.
-Required before merge: exact-head Maven/JDK25, GraalVM AOT and hybrid,
-Graal conformance, scheduler deadline permit retirement tests, and real
-execution of the source-identical Java/LLVM scalar-constructor guest returning
-`40`. Workflow failures with no executed steps do not prove any of these.
+Every source change requires exact-head Maven/JDK25, GraalVM native AOT
+and hybrid guest execution, Graal conformance, and the source-identical
+Java/LLVM scalar-constructor guest returning `40`. Record the source and
+mirror Git tree SHAs before reporting a pass. A workflow failure without
+executed steps is not evidence of compiler failure; a historical green run
+cannot verify a newly modified Git tree.
