@@ -52,40 +52,40 @@ final class NumericIntegerDivisionV1Test {
         };
         for (String[] testCase : cases) {
             String guest = """
-                    pub fnc remainder(int a, int b): int { return a %% b; }
+                    pub fnc remainder(int a, int b): int { return Integer.rem(a, b); }
                     pub fnc main(): int { return remainder(%s, %s); }
                     """.formatted(testCase[0], testCase[1]);
             try (Context context = Context.newBuilder(OresLanguage.ID)
                     .allowAllAccess(false).build()) {
                 assertEquals(Long.parseLong(testCase[2]),
                         context.eval(OresLanguage.ID, guest).asLong(),
-                        testCase[0] + " % " + testCase[1]);
+                        testCase[0] + " rem " + testCase[1]);
             }
         }
     }
 
     @Test
     void zeroDivisorAndZeroRemainderHaveGuestErrorIdentity() {
-        for (String operation : new String[] { "/", "%" }) {
+        for (String expression : new String[] { "a / b", "Integer.rem(a, b)", "Integer.mod(a, b)" }) {
             String guest = """
-                    pub fnc checked(int a, int b): int { return a %s b; }
+                    pub fnc checked(int a, int b): int { return %s; }
                     pub fnc main(): int {
                       try {
                         return checked(7, 0);
                       } catch (err) {
-                        if err is type DivisionByZeroError {
-                          if err is type Error { return 42; }
+                        if err is type DivisionByZeroError then
+                          if err is type Error then return 42; fi
                           return 2;
-                        }
+                        fi
                         return 1;
                       } finally {
                       }
                     }
-                    """.formatted(operation);
+                    """.formatted(expression);
             try (Context context = Context.newBuilder(OresLanguage.ID)
                     .allowAllAccess(false).build()) {
                 assertEquals(42L, context.eval(OresLanguage.ID, guest).asLong(),
-                        "guest error identity lost for " + operation);
+                        "guest error identity lost for " + expression);
             }
         }
     }
@@ -98,7 +98,7 @@ final class NumericIntegerDivisionV1Test {
                   try {
                     return checked(-9223372036854775808, -1);
                   } catch (err) {
-                    if err is type ArithmeticOverflowError { return 42; }
+                    if err is type ArithmeticOverflowError then return 42; fi
                     return 1;
                   } finally {
                   }

@@ -18,19 +18,19 @@ final class TreeShakerNumericEqualityTest {
     void distinctValuesPastBinary64PrecisionNeverFoldAsEqual() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 define module Wrong
-                  pub fnc answer(): int { return 1; }
+                  pub fnc answer(): String { return "wrong"; }
                 end
 
                 define module Correct
-                  pub fnc answer(): int { return 42; }
+                  pub fnc answer(): String { return "correct"; }
                 end
 
-                pub fnc main(): int {
-                  if 9007199254740993 == 9007199254740992.0; do
-                    return Wrong.answer();
-                  else
-                    return Correct.answer();
-                  fi
+                type Answer = typeof fnc() => String;
+                pub routine main(): void {
+                  val Answer selected = 9007199254740993 eq 9007199254740992.0
+                      ? Wrong.answer : Correct.answer;
+                  stdio.stdout.write(selected());
+                  return;
                 }
                 """, BuildOptions.executable(Map.of()));
 

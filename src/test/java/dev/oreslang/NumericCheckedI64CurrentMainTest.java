@@ -31,9 +31,9 @@ final class NumericCheckedI64CurrentMainTest {
                       try {
                         return checked(%s, %s);
                       } catch (err) {
-                        if err is type ArithmeticOverflowError {
+                        if err is type ArithmeticOverflowError then
                           return 42;
-                        }
+                        fi
                         return 1;
                       } finally {
                       }

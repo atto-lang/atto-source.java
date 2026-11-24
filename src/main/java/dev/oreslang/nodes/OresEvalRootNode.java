@@ -7972,6 +7972,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             long left = integralLong(values.get(0));
             long right = integralLong(values.get(1));
+            if (right == 0 && (operation.equals("rem") || operation.equals("mod"))) {
+                throw new DivisionByZeroError("Integer." + operation);
+            }
             return switch (operation) {
                 case "rem" -> dev.oreslang.runtime.StrictIntegerArithmetic.rem(left, right);
                 case "mod" -> dev.oreslang.runtime.StrictIntegerArithmetic.mod(left, right);
