@@ -18,6 +18,7 @@ bash ci/admission/exact-tree.sh \
   fixtures/async_v1/sync_inline_bare_typed_void.atto \
   fixtures/async_v1/inline_v2_nested.atto \
   fixtures/async_v1/inline_v2_arithmetic.atto \
+  fixtures/async_v1/inline_v2_cooperate.atto \
   fixtures/async_v1/inline_v2_bad_void.atto \
   fixtures/async_v1/inline_v2_unsupported_effect.atto \
   fixtures/async_v1/inline_v2_overflow.atto \
@@ -39,7 +40,7 @@ mkdir -p "$work/classes"
 grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=97" "$work/probe"
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoInlineTaskV2Probe \
   | tee "$work/inline-v2-probe"
-grep -Fx 'ATTO_INLINE_V2_PASS positives=20 negatives=116' "$work/inline-v2-probe"
+grep -Fx 'ATTO_INLINE_V2_PASS positives=21 negatives=116' "$work/inline-v2-probe"
 "$JAVA_HOME/bin/java" -cp "$work/classes" \
   atto.compiler.asyncv1.AttoAsyncV1CliSecurityProbe | tee "$work/cli-security"
 grep -Fx "ATTO_ASYNC_V1_CLI_SECURITY_PASS checks=10" "$work/cli-security"
@@ -173,7 +174,7 @@ done
 echo 'ATTO_SYNC_STANDALONE_REQUIRES_DO_NO_ARTIFACT=PASS'
 
 # Typed bounded inline v2: nested lexical scopes and checked integer arithmetic.
-for case in inline_v2_nested inline_v2_arithmetic; do
+for case in inline_v2_nested inline_v2_arithmetic inline_v2_cooperate; do
   mkdir -p "$work/$case/classes"
   "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1Compiler \
     "fixtures/async_v1/$case.atto" "$work/$case/AttoAsyncV1Guest.java"
