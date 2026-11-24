@@ -564,7 +564,8 @@ public final class OwnershipChecker {
                 Scope armScope = new Scope(scope);
                 definePatternAliases(arm.pattern(), subject.type, source, armScope);
                 if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
-                checkBlock(arm.body(), armScope, returnType);
+                checkBlock(arm.body(), armScope,
+                        matched.procedural() ? Ast.TypeRef.simple("void") : returnType);
                 armScope.close();
                 exits.add(stateSnapshot(scope));
             }

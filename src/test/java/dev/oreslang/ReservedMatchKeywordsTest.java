@@ -27,7 +27,7 @@ final class ReservedMatchKeywordsTest {
                 structural fnc classify(): string {
                   const account = infer struct { id: "acct_42", active: true };
                   match account over
-                    on structural { id: string, active: bool } a -> {
+                    on structural { id: string, active: bool } a when a.active -> {
                       return a.id;
                     }
                     on _ -> { return "unknown"; }

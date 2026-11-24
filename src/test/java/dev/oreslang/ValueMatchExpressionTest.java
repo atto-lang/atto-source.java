@@ -24,10 +24,12 @@ final class ValueMatchExpressionTest {
                 return result + 100;
             }
             fnc fromDo(Option<int> v): int {
+                let int result = 0;
                 do match v over {
-                    on Some(n) { return n + 1; }
-                    on None { return 0; }
+                    on Some(n) { result = n + 1; return void; }
+                    on None { ^ void; }
                 }
+                return result;
             }
             pub fnc main(): void {
                 stdio.println(fromValue(Some(41)));
@@ -70,7 +72,7 @@ final class ValueMatchExpressionTest {
     void missingValueAndMultipleStatementsFailClosed() {
         for(String arm : new String[]{
             "on Some(n) { return; }",
-            "on Some(n) { n + 1; }",
+            "on Some(n) { }",
             "on Some(n) { val int x = n; return x; }"
         }) {
             String program="fnc f(Option<int> v): int { return match v over { "+

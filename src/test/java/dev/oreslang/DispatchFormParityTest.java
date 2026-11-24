@@ -68,7 +68,7 @@ final class DispatchFormParityTest {
     }
 
     @Test
-    void valueMatchAndSwitchProduceValuesAndDoFormsReturnFromCallable() throws Exception {
+    void valueMatchAndSwitchProduceValuesAndDoMatchJoins() throws Exception {
         String program = """
             fnc viaMatch(int x): int {
               return match<int> x over
@@ -86,9 +86,10 @@ final class DispatchFormParityTest {
 
             fnc viaDoMatch(int x): int {
               do match x over
-                on 1 -> { return 50; }
-                on _ -> { return 60; }
+                on 1 -> { ^ void; }
+                on _ -> { return void; }
               end
+              return 50;
             }
 
             fnc viaDoSwitch(int x): int {
@@ -108,6 +109,33 @@ final class DispatchFormParityTest {
             """;
 
         assertEquals("10\n30\n50\n70", run(program));
+    }
+
+    @Test
+    void doMatchCleansUpBeforeJoiningAndRejectsNonVoidArmResults() throws Exception {
+        assertEquals("arm:cleanup:42", run("""
+            pub routine main(): void {
+              do match true over
+                on true -> {
+                  defer stdio.stdout.write("cleanup:");
+                  stdio.stdout.write("arm:");
+                  ^ void;
+                }
+                on false -> {}
+              end
+              stdio.stdout.write(42);
+              return;
+            }
+            """));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+            fnc invalid(): int {
+              do match true over
+                on true -> { return 42; }
+                on false -> {}
+              end
+              return 1;
+            }
+            """)));
     }
 
     @Test
@@ -167,14 +195,16 @@ final class DispatchFormParityTest {
             async fnc doMatch(): int {
               val Channel<int> values = Channel.new<int>(0);
               val writer = nb writech values, 41;
+              let int result = 0;
               do match true over
                 on true -> {
-                  val int result = await (nb readch values);
+                  result = await (nb readch values);
                   await writer;
-                  return result + 1;
+                  return;
                 }
-                on false -> { return 0; }
+                on false -> { ^ void; }
               end
+              return result + 1;
             }
 
             async fnc doSwitch(): int {

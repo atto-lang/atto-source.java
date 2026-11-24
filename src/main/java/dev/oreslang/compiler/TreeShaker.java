@@ -803,7 +803,7 @@ public final class TreeShaker {
                 return List.of(new Ast.SwitchStmt(
                         subject,
                         cases,
-                        rewriteStatements(switched.defaultBody(), module, new LinkedHashMap<>(locals))));
+                        rewriteStatements(switched.defaultBody(), module, new LinkedHashMap<>(locals)), switched.procedural()));
             }
             if (statement instanceof Ast.SelectStmt selected) {
                 List<Ast.SelectArm> arms = new ArrayList<>();
@@ -907,8 +907,8 @@ public final class TreeShaker {
                 List<Ast.SwitchValueCase> cases = new ArrayList<>();
                 for (Ast.SwitchValueCase arm : switched.cases()) {
                     List<Ast.Expr> constants = new ArrayList<>();
-                    for (Ast.Expr constant : arm.constants()) {
-                        constants.add(rewriteExpression(constant, module, locals));
+                    for (Ast.Expr testValue : arm.constants()) {
+                        constants.add(rewriteExpression(testValue, module, locals));
                     }
                     cases.add(new Ast.SwitchValueCase(
                             constants,

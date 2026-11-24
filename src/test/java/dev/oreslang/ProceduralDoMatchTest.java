@@ -51,27 +51,30 @@ final class ProceduralDoMatchTest {
     @Test
     void doMatchSupportsOverEndAndOptionalArrowInsideBraces() {
         for(String body:List.of(
-                "do match value over on Some(n) -> { return n; } on None -> { return 0; } end",
-                "do match value over { on Some(n) -> { return n; } on None -> { return 0; } }",
-                "do match value over { on Some(n) { return n; } on None { return 0; } }")) {
-            var source="fnc f(Option<int> value): int { "+body+" }";
+                "do match value over on Some(n) -> { return void; } on None -> { ^ void; } end",
+                "do match value over { on Some(n) -> { return void; } on None -> { ^ void; } }",
+                "do match value over { on Some(n) { return void; } on None { ^ void; } }")) {
+            var source="fnc f(Option<int> value): void { "+body+" }";
             var typed=TypeChecker.check(Parser.parse(source));
             assertDoesNotThrow(()->OwnershipChecker.check(typed));
         }
     }
 
     @Test
-    void armReturnExitsTheEnclosingCallableAndExecutionRemainsOrdered() throws Exception {
+    void armReturnJoinsAndExecutionRemainsOrdered() throws Exception {
         String source="""
                 fnc compute(Option<int> value): int {
+                  let int result = 0;
                   do match value over {
                     on Some(n) {
-                      return n + 1;
+                      result = n + 1;
+                      return void;
                     }
                     on None {
-                      return 0;
+                      ^ void;
                     }
                   }
+                  return result;
                 }
                 pub fnc main(): void {
                   stdio.println(compute(Some(41)));

@@ -109,6 +109,7 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    private boolean inValueDispatchArm;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -2184,7 +2185,8 @@ public final class TypeChecker {
         if (stmt instanceof Ast.MatchStmt matched) {
             Type subject = deref(typeOf(matched.subject(), env, generics, self));
             Map<Env.Binding, Set<String>> afterSubject = env.initializationSnapshot();
-            checkMatch(matched, subject, env, generics, expectedReturn, self);
+            checkMatch(matched, subject, env, generics,
+                    matched.procedural() ? Primitive.VOID : expectedReturn, self);
             // Match-arm flow is checked independently by checkMatch. Until it
             // returns per-arm state, do not let one arm establish definite
             // initialization for code after the match.
@@ -4316,6 +4318,10 @@ if (call.callee() instanceof Ast.MemberExpr console
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (inValueDispatchArm && !currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "await in a value dispatch arm requires an async or suspends callable");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
@@ -4389,6 +4395,8 @@ if (call.callee() instanceof Ast.MemberExpr console
             Type result = declaredResult;
             List<Ast.MatchArm> proofArms = new ArrayList<>();
             Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            boolean previousDispatchArm = inValueDispatchArm;
+            inValueDispatchArm = true;
             try {
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
                     env.restoreInitialization(before);
@@ -4433,6 +4441,7 @@ if (call.callee() instanceof Ast.MemberExpr console
                         subject, env, generics, result, self);
                 return result;
             } finally {
+                inValueDispatchArm = previousDispatchArm;
                 // Only the selected arm executes at runtime. Type-checking
                 // all branches cannot establish outer definite-init facts.
                 env.restoreInitialization(before);
@@ -4443,6 +4452,8 @@ if (call.callee() instanceof Ast.MemberExpr console
             Type result = null;
             Set<Object> seen = new HashSet<>();
             Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            boolean previousDispatchArm = inValueDispatchArm;
+            inValueDispatchArm = true;
             try {
                 for (Ast.SwitchValueCase arm : valueSwitch.cases()) {
                     env.restoreInitialization(before);
@@ -4496,6 +4507,7 @@ if (call.callee() instanceof Ast.MemberExpr console
                 }
                 return result;
             } finally {
+                inValueDispatchArm = previousDispatchArm;
                 env.restoreInitialization(before);
             }
         }
@@ -10124,6 +10136,7 @@ if (call.callee() instanceof Ast.MemberExpr console
                 if (allBranches) return true;
             }
             if (stmt instanceof Ast.MatchStmt matched
+                    && !matched.procedural()
                     && !matched.arms().isEmpty()
                     && matched.arms().stream().allMatch(arm -> definitelyReturns(arm.body()))) return true;
             if (stmt instanceof Ast.SwitchStmt switched

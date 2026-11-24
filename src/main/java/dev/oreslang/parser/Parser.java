@@ -2248,8 +2248,9 @@ public final class Parser {
         if (check(LBRACE) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
-        if (match(RETURN)) {
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
+        if (match(RETURN, CARET)) {
+            Ast.Expr value = match(VOID) || check(SEMICOLON) || isSafeStatementBoundary()
+                    ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
@@ -2322,12 +2323,12 @@ public final class Parser {
         // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
             if (match(MATCH)) return parseMatch(true);
-            if (match(SWITCH)) return parseSwitch();
+            if (match(SWITCH)) return parseSwitch(true);
             throw error(previous(), "'do' requires match, switch, or a braced select");
         }
         // Legacy statement syntax remains accepted during migration.
         if (match(MATCH)) return parseMatch(false);
-        if (match(SWITCH)) return parseSwitch();
+        if (match(SWITCH)) return parseSwitch(false);
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
@@ -3608,7 +3609,7 @@ public final class Parser {
         throw error(peek(), "expected match pattern");
     }
 
-    private Ast.SwitchStmt parseSwitch() {
+    private Ast.SwitchStmt parseSwitch(boolean procedural) {
         Ast.Expr subject = parseExpression();
         match(SEMICOLON);
         List<Ast.SwitchCase> cases = new ArrayList<>();
@@ -3641,7 +3642,7 @@ public final class Parser {
         }
 
         consume(END, "expected 'end' to close switch");
-        return new Ast.SwitchStmt(subject, cases, defaultBody);
+        return new Ast.SwitchStmt(subject, cases, defaultBody, procedural);
     }
 
     private Ast.TryStmt parseTry() {
@@ -3921,6 +3922,9 @@ public final class Parser {
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
+            if (check(MATCH) || check(SWITCH)) {
+                throw error(peek(), "'nb match' and 'nb switch' are invalid");
+            }
             if (check(LBRACE)) {
                 return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), true);
             }

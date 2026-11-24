@@ -2969,6 +2969,10 @@ public final class OresEvalRootNode extends RootNode {
                 int index,
                 Ast.MatchArm fallback,
                 SourceFlowCont continuation) {
+            SourceFlowCont armExit = matched.procedural()
+                    ? (t, flow) -> continuation.accept(t, flow.kind() == SourceFlowKind.RETURN
+                            ? SourceFlow.normal() : flow)
+                    : continuation;
             if (index >= matched.arms().size()) {
                 if (fallback == null) {
                     continuation.accept(
@@ -3001,7 +3005,7 @@ public final class OresEvalRootNode extends RootNode {
                         task,
                         fallback.body(),
                         selectedEnv,
-                        continuation);
+                        armExit);
                 return;
             }
 
@@ -3051,7 +3055,7 @@ public final class OresEvalRootNode extends RootNode {
                         task,
                         arm.body(),
                         armEnv,
-                        continuation);
+                        armExit);
                 return;
             }
 
@@ -3069,7 +3073,7 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     arm.body(),
                                     armEnv,
-                                    continuation);
+                                    armExit);
                         } else {
                             runMatchArms(
                                     t,
@@ -6165,6 +6169,19 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private void executeMatchArm(Ast.MatchStmt matched, List<Ast.Stmt> body,
+                Env env, boolean tailBarrier) {
+            if (!matched.procedural()) {
+                executeBlock(body, env, tailBarrier);
+                return;
+            }
+            try {
+                executeBlock(body, env, true);
+            } catch (ReturnSignal armExit) {
+                // The void exit reaches the match join after arm cleanup.
+            }
+        }
+
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             executeBlock(statements, parent, false);
         }
@@ -6391,7 +6408,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
 
                     if (matched.ordered()) {
-                        executeBlock(
+                        executeMatchArm(matched,
                                 arm.body(),
                                 armEnv,
                                 inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
@@ -6422,7 +6439,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env selectedEnv = new Env(env);
                 selectedBindings.forEach((name, value) ->
                         selectedEnv.define(name, value, Ast.BindingKind.VAL));
-                executeBlock(
+                executeMatchArm(matched,
                         selected.body(),
                         selectedEnv,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());

@@ -843,7 +843,8 @@ public final class Ast {
     /**
      * Match arms use source order: the first matching arm wins. The ordered
      * flag is retained for AST compatibility; canonical source syntax is
-     * always ordered and the parser emits true.
+     * always ordered and the parser emits true. Explicit do-match arms join
+     * with void. The legacy statement form retains its callable returns.
      */
     public record MatchStmt(
             Expr subject, boolean ordered, List<MatchArm> arms, boolean procedural) implements Stmt {
@@ -862,7 +863,11 @@ public final class Ast {
         }
     }
 
-    public record SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) implements Stmt {
+    public record SwitchStmt(Expr subject, List<SwitchCase> cases,
+            List<Stmt> defaultBody, boolean procedural) implements Stmt {
+        public SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) {
+            this(subject, cases, defaultBody, false);
+        }
         public SwitchStmt {
             cases = List.copyOf(cases);
             defaultBody = List.copyOf(defaultBody);
