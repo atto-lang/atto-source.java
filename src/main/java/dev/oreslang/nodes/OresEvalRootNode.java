@@ -449,7 +449,7 @@ public final class OresEvalRootNode extends RootNode {
 
             // Concurrency is immutable actor admission metadata, not a
             // runtime-adjustable field. It does not increase guest parallelism.
-            int concurrencyLimit = 1;
+            int concurrencyLimit = ActorRuntime.DEFAULT_SOURCE_MESSAGE_CONCURRENCY;
             for (Ast.FieldDecl field : classFields) {
                 if (!field.name().equals("concurrency")) continue;
                 if (field.initializer() instanceof Ast.LiteralExpr literal

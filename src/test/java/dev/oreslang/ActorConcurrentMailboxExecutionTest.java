@@ -16,9 +16,18 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorConcurrentMailboxExecutionTest {
     @Test
     void fiveActiveMessageCapacityStillUsesOneExecutionLane() throws Exception {
+        assertInterleavedActorReceives("int concurrency: 5;");
+    }
+
+    @Test
+    void ordinaryActorInterleavesReceivesWithoutConcurrencyDeclaration() throws Exception {
+        assertInterleavedActorReceives("");
+    }
+
+    private static void assertInterleavedActorReceives(String declaration) throws Exception {
         String source = """
                 define actor Worker as
-                  int concurrency: 5;
+                  %s
                   let Channel<int> release;
 
                   on_start(): void {
@@ -70,7 +79,7 @@ final class ActorConcurrentMailboxExecutionTest {
                   await worker.done;
                   return;
                 }
-                """;
+                """.formatted(declaration);
         assertEquals("first-start:0|second:1|first-finish:0",
                 run(source, "interleaved-actor-mail.ores"));
     }

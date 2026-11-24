@@ -29,7 +29,7 @@ TurnExecutor/Truffle carrier boundary returns.
 
 ```oreslang
 define actor Worker as
-  int concurrency: 5;  // Immutable declaration metadata; default is 1.
+  int concurrency: 5;  // Overrides the runtime's default live-receive limit.
 
   receive(ActorMail<String> m): void {
     m.send("progress");  // One output correlated with m.
@@ -55,18 +55,16 @@ releases the slot sooner and prohibits subsequent `m.send` or `self.send`
 for that same message. A queued continuation after explicit completion finishes
 quietly without resurrecting the message.
 
-## Default and explicit interleaving
+## Ordinary and serial admission
 
-The default limit is one unfinished receive. A suspended receive retains
-its logical turn. Later DATA stays queued while the physical carrier is
-available to other actors. The continuation reacquires execution authority
-for the same incarnation when it resumes. Explicit `concurrency: N`
-with `N > 1` opts into bounded interleaving. Profiles that lack that
-capability must reject the setting before actor admission.
-
-The default matches [.NET #153](https://github.com/atto-lang/atto-source.net/pull/153)
-and the [cross-backend decisions](https://github.com/atto-lang/atto-spec/pull/151).
-Track the interleaving profile and its state-safety proof separately.
+Ordinary actors can admit a second DATA receive while an earlier one is
+suspended. This Java source-actor profile defaults to 32 live receives and
+allows an immutable `concurrency: N` declaration to choose another bounded
+limit. The continuation reacquires execution authority for the same actor
+incarnation and resumes the original message. A `serial` actor has one live
+receive through suspension and leaves later DATA queued until it retires.
+That declaration is specified in the [cross-backend decisions](https://github.com/atto-lang/atto-spec/pull/151)
+and is handled separately from this historical source-actor branch.
 
 ## Admission / fairness / quotas
 

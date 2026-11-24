@@ -59,6 +59,7 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
+    public static final int DEFAULT_SOURCE_MESSAGE_CONCURRENCY = 32;
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
