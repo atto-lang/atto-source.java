@@ -3536,18 +3536,18 @@ public final class TypeChecker {
      * Inspect the underlying expression rather than blanket-rejecting the
      * copy/take syntax that v1 explicitly supports.
      */
-    private boolean withReceiverMaySuspend(Ast.Expr source) {
+    private boolean withReceiverMaySuspend(Ast.Expr source, Env env) {
         if (source instanceof Ast.RuntimeCallExpr runtime
                 && (runtime.operation().equals("copy") || runtime.operation().equals("take"))) {
             return runtime.arguments().size() != 1
-                    || withReceiverMaySuspend(runtime.arguments().getFirst());
+                    || withReceiverMaySuspend(runtime.arguments().getFirst(), env);
         }
         if (source instanceof Ast.WithExpr nested) {
-            return withReceiverMaySuspend(nested.source())
+            return withReceiverMaySuspend(nested.source(), env)
                     || nested.changes().stream().anyMatch(
-                            change -> fieldInitializerMaySuspend(change.value()));
+                            change -> fieldInitializerMaySuspend(change.value(), env));
         }
-        return fieldInitializerMaySuspend(source);
+        return fieldInitializerMaySuspend(source, env);
     }
 
     private boolean withCopyEligibleClass(Ast.ClassDecl klass) {
@@ -3583,7 +3583,7 @@ public final class TypeChecker {
                     "NAMED_ARGUMENT_OUTSIDE_CALL: a named argument must remain attached to its call site");
         }
         if (expr instanceof Ast.WithExpr update) {
-            if (withReceiverMaySuspend(update.source())) {
+            if (withReceiverMaySuspend(update.source(), env)) {
                 throw new IllegalArgumentException(
                         "with receiver must be a synchronous, effect-safe value source; "
                                 + "await, calls with unproven effects and side effects are not admitted");
@@ -3636,7 +3636,7 @@ public final class TypeChecker {
                 }
                 // Only synchronous/pure RHSs may participate in the first
                 // class/record reconstruction slice.
-                if (fieldInitializerMaySuspend(change.value())) {
+                if (fieldInitializerMaySuspend(change.value(), env)) {
                     throw new IllegalArgumentException(
                             "with field '" + change.name()
                                     + "' requires a non-suspending, effect-safe value expression");
@@ -6450,6 +6450,8 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.TaskExpr task) {
+            if (task.payloadType() != null)
+                return checkTaskExpression(task, resolve(task.payloadType(), generics, self), env, generics, self);
             // A value-producing task needs contextual Future<T> information so
             // every return path can be checked without guessing a result type.
             // A no-value task is unambiguously Future<void>.
@@ -7415,6 +7417,11 @@ public final class TypeChecker {
                 && expected instanceof Named future
                 && future.name().equals("Future")
                 && future.arguments().size() == 1) {
+            if (task.payloadType() != null) {
+                Type actual = typeOf(task, env, generics, self);
+                requireAssignable(actual, future, "declared task payload");
+                return actual;
+            }
             Type result = future.arguments().getFirst();
             checkTaskExpression(task, result, env, generics, self);
             return future;

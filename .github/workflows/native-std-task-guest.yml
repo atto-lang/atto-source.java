@@ -5,6 +5,7 @@ on:
       - 'stdlib/task.atto'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/test/resources/stdlib-parity/task-v1.atto'
+      - 'src/test/resources/stdlib-parity/typed-task-main.atto'
       - 'src/test/java/dev/oreslang/runtime/NativeTaskAttoStdlibTest.java'
       - '.github/workflows/native-std-task-guest.yml'
   workflow_dispatch:
@@ -31,9 +32,10 @@ jobs:
           test -s src/test/resources/stdlib-parity/task-v1.atto
           test "$(git rev-parse 'HEAD:stdlib/task.atto')" = "$(git hash-object --no-filters stdlib/task.atto)"
           test "$(git rev-parse 'HEAD:src/test/resources/stdlib-parity/task-v1.atto')" = "$(git hash-object --no-filters src/test/resources/stdlib-parity/task-v1.atto)"
+          test "$(git rev-parse 'HEAD:src/test/resources/stdlib-parity/typed-task-main.atto')" = "$(git hash-object --no-filters src/test/resources/stdlib-parity/typed-task-main.atto)"
           echo "TASK_SOURCE_HEAD=$EXPECTED_HEAD"
           echo "TASK_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
-          sha256sum stdlib/task.atto src/test/resources/stdlib-parity/task-v1.atto
+          sha256sum stdlib/task.atto src/test/resources/stdlib-parity/task-v1.atto src/test/resources/stdlib-parity/typed-task-main.atto
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           java-version: '25'

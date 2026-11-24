@@ -3623,6 +3623,21 @@ public final class Parser {
         }
     }
 
+    private boolean looksLikeTypedTask() {
+        if (!checkNext(LT)) return false;
+        int depth = 0;
+        for (int i = current + 1; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LT) depth++;
+            else if (type == GT && --depth == 0) {
+                return i + 1 < tokens.size() && tokens.get(i + 1).type() == LBRACE;
+            } else if (type == SEMICOLON || type == LBRACE || type == RBRACE || type == EOF) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     /**
      * Named binding signatures are type ascriptions, not generic declaration
      * parameters. 'const callback<(int, int) => int> = ...' is equivalent to
@@ -6694,9 +6709,14 @@ public final class Parser {
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
 
         // task is contextual: task(...) and identifiers named task remain legal.
-        if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
+        if (check(IDENT) && peek().lexeme().equals("task") && (checkNext(LBRACE) || looksLikeTypedTask())) {
             advance();
-            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), false);
+            Ast.TypeRef payload = null;
+            if (match(LT)) {
+                payload = parseTypeRef();
+                consume(GT, "expected '>' after task payload type");
+            }
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), false, payload);
         }
         if (match(CPU, GPU)) {
             Token domainToken = previous();
@@ -7977,7 +7997,7 @@ public final class Parser {
     // 'suspend' is an alias of 'suspends' only in modifier position; preserve
     // instance methods actually named suspend(...).
     private boolean matchContextualSuspendModifier() {
-        if (!isContextualIdentifier("suspend")) return false;
+        if (!isContextualIdentifier("suspend") && !isContextualIdentifier("susp")) return false;
         if (!checkNext(IDENT) && !checkNext(FNC)) return false;
         advance();
         return true;

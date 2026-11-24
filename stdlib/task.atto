@@ -108,7 +108,7 @@ define module task_api as
   // Generic TaskFuture<T> ownership adapters remain compiler-gated, not
   // speculatively emulated with mutable class wrappers or borrowed handles.
   pub async fnc run_int_task(int value): int {
-    let Future<int> child = task { return value; };
+    let Future<int> child = task<int> { return value; };
     return await child;
   }
 end

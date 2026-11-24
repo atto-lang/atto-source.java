@@ -25,6 +25,7 @@ pub async fnc main(): void {
   if !group.finish(5); do rt fail("second completion"); fi
   if group.finish(5); do rt fail("duplicate completion"); fi
   if !group.ready_to_retire(); do rt fail("retirement not reached"); fi
-  stdio.stdout.write(await task_api.run_int_task(42));
+  let Future<int> child = task_api.run_int_task(42);
+  stdio.stdout.write(await child);
   return;
 }

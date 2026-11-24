@@ -218,7 +218,7 @@ public final class SealedActorScalarMirV1 {
                     || context.codeImage().orElse(null) != codeImage) {
                 throw new SecurityException("scalar actor source/code-image mismatch");
             }
-            return SealedActorStateRegion.allocateFromSealedDeclaration(plan.actor());
+            return SealedActorStateRegion.allocateFromSealedDeclaration(plan.actor);
         }
 
         @Override

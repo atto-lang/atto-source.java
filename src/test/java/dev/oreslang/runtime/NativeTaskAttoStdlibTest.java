@@ -1,10 +1,15 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.OresLanguage;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import static org.junit.jupiter.api.Assertions.*;
@@ -38,5 +43,21 @@ final class NativeTaskAttoStdlibTest {
                 "std/task must be compiled from .atto, never substituted by Java");
         assertEquals("42", output.toString(StandardCharsets.UTF_8).trim(),
                 () -> errors.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void explicitTaskPayloadProducesAnAwaitableFuture() throws Exception {
+        Path path = Path.of("src/test/resources/stdlib-parity/typed-task-main.atto");
+        String text = Files.readString(path);
+        OresCompiler.parseAndTypeCheck(text);
+        try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            var source = Source.newBuilder(OresLanguage.ID, text, path.getFileName().toString())
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertEquals(42L, context.eval(source).asLong());
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(text.replace("task<int>", "task<bool>")));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(text.replace("val Future<int>", "val Future<bool>")));
     }
 }
