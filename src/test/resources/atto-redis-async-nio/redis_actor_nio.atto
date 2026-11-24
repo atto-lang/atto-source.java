@@ -10,7 +10,7 @@ define actor RedisKvNioActor as
   let int phase = 0;
 
   on_start(): void {
-    self.values = ~map<string,string>();
+    self.values = Map.of<string,string>();
     return;
   }
 

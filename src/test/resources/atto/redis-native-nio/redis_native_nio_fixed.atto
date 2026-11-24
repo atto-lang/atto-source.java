@@ -5,7 +5,7 @@
 define actor NativeNioKvActor as
   let Map<string,string> values;
   on_start(): void {
-    self.values = ~map<string,string>();
+    self.values = Map.of<string,string>();
     return;
   }
   receive(ActorMail<string> mail): void {

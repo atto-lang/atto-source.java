@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Timeout;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Executes the exact Redis-repo .atto byte-prefix RESP2 actor on genuine async NIO2. */
+/** Executes the Redis byte-prefix RESP2 actor on async TCP using current Atto syntax. */
 final class AttoRedisNativeNioFixedGuestTest {
     private static final String RESOURCE = "/atto/redis-native-nio/redis_native_nio_fixed.atto";
     private static final int PORT = 16398;
@@ -26,7 +26,7 @@ final class AttoRedisNativeNioFixedGuestTest {
     void attoOwnsKvAndParsesFragmentedAndPipelinedRespOnAsyncNio() throws Exception {
         String code;
         try (InputStream file = getClass().getResourceAsStream(RESOURCE)) {
-            assertNotNull(file, "must mirror canonical Redis .atto guest");
+            assertNotNull(file, "missing packaged Redis guest fixture");
             code = new String(file.readAllBytes(), StandardCharsets.UTF_8);
         }
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(code),
