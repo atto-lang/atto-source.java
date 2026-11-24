@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Objects;
@@ -17,7 +16,7 @@ import java.util.Objects;
  * append/insert/reservation leaves the elements and logical capacity intact.
  * Allocator failures are propagated before the logical reserve is published.</p>
  */
-public final class OresVector extends ArrayList<Object> {
+public final class OresVector extends OresSequence {
     /** ArrayList's largest practical backing allocation bound. */
     public static final int MAX_CAPACITY = Integer.MAX_VALUE - 8;
 
@@ -25,7 +24,6 @@ public final class OresVector extends ArrayList<Object> {
     private int reservedCapacity;
 
     public OresVector(int maxCapacity, int inlineCapacity) {
-        super(0);
         if (maxCapacity < 0 || maxCapacity > MAX_CAPACITY) {
             throw new IllegalArgumentException("Vector max_capacity out of range: " + maxCapacity);
         }
@@ -44,6 +42,8 @@ public final class OresVector extends ArrayList<Object> {
         return reservedCapacity;
     }
 
+    @Override public String kind() { return "Vector"; }
+
     public void reserve(int requiredCapacity) {
         if (requiredCapacity < 0 || requiredCapacity > maxCapacity) {
             throw new IllegalArgumentException(
@@ -51,8 +51,13 @@ public final class OresVector extends ArrayList<Object> {
         }
         if (requiredCapacity <= reservedCapacity) return;
         // Only commit the logical reservation after allocation succeeds.
-        super.ensureCapacity(requiredCapacity);
-        reservedCapacity = requiredCapacity;
+        acquireWrite();
+        try {
+            super.ensureCapacity(requiredCapacity);
+            reservedCapacity = requiredCapacity;
+        } finally {
+            releaseWrite();
+        }
     }
 
     @Override
