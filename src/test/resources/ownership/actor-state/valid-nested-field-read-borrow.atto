@@ -1,8 +1,5 @@
-define class Position as
-  pub let int x;
-end
 define actor Tracker as
-  state { let Position point; }
+  state { let {x: int} point; }
   inspect(): void {
     val borrow int read = rt borrow self.point.x;
     return;
