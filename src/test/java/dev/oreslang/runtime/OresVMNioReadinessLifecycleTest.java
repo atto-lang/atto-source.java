@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.Pipe;
 import java.nio.channels.SelectionKey;
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -89,5 +90,35 @@ final class OresVMNioReadinessLifecycleTest {
         assertTrue(readiness.awaitStopped(0, TimeUnit.SECONDS));
         assertEquals(0, readiness.pendingCount());
         assertEquals(0, vm.controlCarrierCount(), "VM close joins the shared root carriers");
+    }
+
+    @Test
+    void sharedSelectorHandsCarrierBackWhileMoreDescriptorsAreReady() throws Exception {
+        var pipes = new ArrayList<Pipe>();
+        var pending = new ArrayList<OresFuture<Integer>>();
+        try (var readiness = new NioReadinessGroup(() -> { })) {
+            for (int i = 0; i < 80; i++) {
+                Pipe pipe = Pipe.open();
+                pipes.add(pipe);
+                pending.add(readiness.watch(pipe.source(), SelectionKey.OP_READ));
+            }
+            // Install every watch before making any descriptors ready.
+            for (int i = 0; i < 3; i++) readiness.pollShared(false);
+            for (Pipe pipe : pipes) pipe.sink().write(ByteBuffer.wrap(new byte[] {1}));
+
+            assertTrue(readiness.pollShared(false));
+            long firstTurn = pending.stream().filter(OresFuture::isDone).count();
+            assertTrue(firstTurn > 0 && firstTurn < pending.size(),
+                    "a shared selector turn should leave time for queued scheduler work");
+            for (int i = 0; i < pending.size() && readiness.pollShared(false); i++) { }
+            for (var future : pending) {
+                assertEquals(SelectionKey.OP_READ, future.get(1, TimeUnit.SECONDS));
+            }
+        } finally {
+            for (Pipe pipe : pipes) {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
     }
 }

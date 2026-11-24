@@ -41,6 +41,7 @@ final class NioReadinessGroup implements AutoCloseable {
     private static final int DEFAULT_MAX_PENDING = 4_096;
     private static final int DEFAULT_COMMAND_CAPACITY = 4_096;
     private static final int SHARED_COMMAND_BATCH = 64;
+    private static final int SHARED_READY_BATCH = 64;
     private static final long SHARED_POLL_MILLIS = 5;
 
     private final Object lifecycle = new Object();
@@ -273,7 +274,7 @@ final class NioReadinessGroup implements AutoCloseable {
                     else if (wait < 0) selector.select();
                     else selector.select(wait);
                 }
-                processSelected();
+                processSelected(Integer.MAX_VALUE);
                 expireWatches();
             }
             drainCommands(Integer.MAX_VALUE);
@@ -343,7 +344,10 @@ final class NioReadinessGroup implements AutoCloseable {
                             selector.selectNow();
                         }
                     }
-                    processSelected();
+                    // A full ready set can contain thousands of sockets.
+                    // Leave its remaining keys selected for the next poll
+                    // so application turns get their carrier back promptly.
+                    processSelected(SHARED_READY_BATCH);
                     expireWatches();
                 } catch (IOException | RuntimeException failure) {
                     failAllFromReactor(failure);
@@ -400,9 +404,9 @@ final class NioReadinessGroup implements AutoCloseable {
         }
     }
 
-    private void processSelected() {
+    private void processSelected(int limit) {
         Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
-        while (keys.hasNext()) {
+        for (int count = 0; count < limit && keys.hasNext(); count++) {
             SelectionKey key = keys.next();
             keys.remove();
             List<Watch> selected;
