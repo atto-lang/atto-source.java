@@ -8110,6 +8110,7 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, actorRemaining);
             } catch (IllegalStateException tooLarge) {
+                if (cell.stopped.get()) throw terminated(ref);
                 throw new IllegalStateException(
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
                         tooLarge);
@@ -8144,6 +8145,9 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 reservation = cell.memorySlice.reserveMailbox(prepared);
             } catch (IllegalStateException exceeded) {
+                // STOP can retire the slice while the detached snapshot is
+                // being prepared. Surface the lifecycle failure to the sender.
+                if (cell.stopped.get()) throw terminated(ref);
                 throw new IllegalStateException(
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
                         exceeded);
