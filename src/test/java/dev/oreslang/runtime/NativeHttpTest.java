@@ -16,6 +16,38 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test
+    @org.junit.jupiter.api.Timeout(20)
+    void realSocketHandoffAndShutdownNotifyOutsideListenerLock() throws Exception {
+        try (var actors = new ActorRuntime(); var http = new NativeHttp(actors);
+                var client = HttpClient.newHttpClient()) {
+            var server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+            var accepted = server.accept();
+            var acceptCallbackHeldLock = new CompletableFuture<Boolean>();
+            accepted.whenCompleteRuntime((value, failure) ->
+                    acceptCallbackHeldLock.complete(Thread.holdsLock(server)));
+
+            var response = client.sendAsync(HttpRequest.newBuilder(
+                    URI.create("http://127.0.0.1:" + server.port() + "/")).build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var exchange = (NativeHttp.Exchange) accepted.get(5, TimeUnit.SECONDS);
+            assertFalse(acceptCallbackHeldLock.get(5, TimeUnit.SECONDS));
+            exchange.respond(200, "text/plain", "ready").get(5, TimeUnit.SECONDS);
+            assertEquals("ready", response.get(5, TimeUnit.SECONDS).body());
+
+            var pending = server.accept();
+            var closeCallbackHeldLock = new CompletableFuture<Boolean>();
+            pending.whenCompleteRuntime((value, failure) ->
+                    closeCallbackHeldLock.complete(Thread.holdsLock(server)));
+            server.shutdown(0).get(5, TimeUnit.SECONDS);
+            assertFalse(closeCallbackHeldLock.get(5, TimeUnit.SECONDS));
+            assertTrue(pending.isCompletedExceptionally());
+            assertEquals(0, server.active());
+            assertEquals(1, server.accepted());
+            assertEquals(server.accepted(), server.completed());
+        }
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
@@ -277,10 +309,6 @@ class NativeHttpTest {
         String output = run("""
             define actor Reused as
               receive(ActorMail<String> mail): void {
-                if mail.value == "stop"; do
-                  self.end();
-                  return;
-                fi
                 val exchange = http.claim(mail.value);
                 await exchange.start(200, "text/plain");
                 await exchange.write(exchange.target);
@@ -293,8 +321,7 @@ class NativeHttpTest {
             pub async routine main(): void {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
-              val worker = spawn Reused();
-              await worker.ready;
+              val handler = http.handler("Reused").pooled(1);
 
               // Keep both requests admitted before delivering either to
               // the shared actor. Response envelopes must not cross streams.
@@ -302,14 +329,12 @@ class NativeHttpTest {
               val second = await server.accept();
               val firstDone = first.completion;
               val secondDone = second.completion;
-              worker.send(first.move_to(worker));
-              worker.send(second.move_to(worker));
+              handler.dispatch(rt mut borrow first);
+              handler.dispatch(rt mut borrow second);
               stdio.println(await firstDone);
               stdio.println(await secondDone);
               stdio.println(server.active);
 
-              worker.send("stop");
-              await worker.done;
               await server.shutdown(0);
               return;
             }
@@ -333,10 +358,6 @@ class NativeHttpTest {
         String output = run("""
             define actor Reused as
               receive(ActorMail<String> mail): void {
-                if mail.value == "stop"; do
-                  self.end();
-                  return;
-                fi
                 val exchange = http.claim(mail.value);
                 if exchange.target == "/abort"; do
                   exchange.abort();
@@ -349,23 +370,22 @@ class NativeHttpTest {
             pub async routine main(): void {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
-              val worker = spawn Reused();
-              await worker.ready;
+              val handler = http.handler("Reused").pooled(1);
 
               val first = await server.accept();
               val firstDone = first.completion;
-              worker.send(first.move_to(worker));
+              handler.dispatch(rt mut borrow first);
               stdio.println(await firstDone);
 
               val second = await server.accept();
               val secondDone = second.completion;
-              worker.send(second.move_to(worker));
+              handler.dispatch(rt mut borrow second);
               stdio.println(await secondDone);
               stdio.println(server.active);
 
-              worker.send("stop");
-              await worker.done;
               await server.shutdown(0);
+              stdio.println(handler.created);
+              stdio.println(handler.reused);
               return;
             }
             """, port -> {
@@ -374,7 +394,7 @@ class NativeHttpTest {
             assertEquals(200, second.statusCode());
             assertEquals("/alive", second.body());
         });
-        assertTrue(output.contains("500\n200\n0"), output);
+        assertTrue(output.endsWith("500\n200\n0\n1\n1\n"), output);
     }
 
     @Test void persistentActorReleasesSingleListenerSlotAcrossManyRequests() throws Exception {
@@ -384,17 +404,13 @@ class NativeHttpTest {
                 .mapToObj(i -> """
                     val exchange%d = await server.accept();
                     val completed%d = exchange%d.completion;
-                    worker.send(exchange%d.move_to(worker));
+                    handler.dispatch(rt mut borrow exchange%d);
                     await completed%d;
                     """.formatted(i, i, i, i, i))
                 .collect(java.util.stream.Collectors.joining());
         String output = run("""
             define actor Persistent as
               receive(ActorMail<String> mail): void {
-                if mail.value == "stop"; do
-                  self.end();
-                  return;
-                fi
                 val exchange = http.claim(mail.value);
                 await exchange.respond(200, "text/plain", exchange.target);
                 return;
@@ -405,14 +421,12 @@ class NativeHttpTest {
               // mistakenly held until a persistent actor exits.
               val server = http.listen("127.0.0.1", 0, 1, 1024, 10000);
               stdio.println(server.port);
-              val worker = spawn Persistent();
-              await worker.ready;
+              val handler = http.handler("Persistent").pooled(1);
               __STEPS__
-              stdio.println("reused-20");
-              stdio.println(server.active);
-              worker.send("stop");
-              await worker.done;
               await server.shutdown(0);
+              stdio.println(handler.created);
+              stdio.println(handler.reused);
+              stdio.println(server.active);
               return;
             }
             """.replace("__STEPS__", steps), port -> {
@@ -423,11 +437,7 @@ class NativeHttpTest {
                 assertEquals(target, response.body(), target);
             }
         });
-        // All 20 client responses are asserted above. With listener capacity
-        // one, this cannot succeed if a request holds its permit until the
-        // persistent actor dies. Do not assert on an async stdout epilogue:
-        // Context.eval may return before its final print is captured.
-        assertFalse(output.isBlank(), "the listener must have published its port");
+        assertTrue(output.endsWith("1\n19\n0\n"), output);
     }
 
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
@@ -541,7 +551,7 @@ class NativeHttpTest {
                     val response = http.response(201, "text/plain; charset=utf-8", "hello from Oreslang");
                     await request.respond_response(response);
                     try {
-                      await request.respond_response(response);
+                      await request.respond_response(new HttpResponse("duplicate"));
                       stdio.println("DUPLICATE RESPONSE ACCEPTED");
                     } catch (failure) {
                       stdio.println("duplicate-response-rejected");
@@ -554,9 +564,9 @@ class NativeHttpTest {
                   val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
                   stdio.println(server.port);
                   val request = await server.accept();
-                  val done = request.completion;
+                  val receipt = request.completion;
                   http.handler("Hello").dispatch(rt mut borrow request);
-                  stdio.println(await done);
+                  stdio.println(await receipt);
                   await server.shutdown(0);
                   return;
                 }
