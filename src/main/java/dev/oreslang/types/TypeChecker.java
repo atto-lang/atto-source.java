@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.ExceptionalTrait;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -193,7 +194,7 @@ public final class TypeChecker {
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
-                "TrapResult", "TrapError", "RecoverySignal", "Error", "self", "null"));
+                "TrapResult", "TrapError", "RecoverySignal", "Error", "Throwable", "Raisable", "Panicable", "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -250,7 +251,8 @@ public final class TypeChecker {
     }
 
     private void rejectCompilerOwnedTypeName(String name) {
-        if (Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
+        if (ExceptionalTrait.find(name) != null
+                || Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
             throw new IllegalArgumentException(
                     "'" + name + "' is a compiler-owned type name and cannot be declared by user code");
         }
@@ -1802,18 +1804,18 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ThrowStmt thrown) {
-            requireOwnedErrorPayload(
-                    typeOf(thrown.value(), env, generics, self), "throw");
+            requireExceptionalPayload(
+                    typeOf(thrown.value(), env, generics, self), "throw", ExceptionalTrait.THROWABLE);
             return;
         }
         if (stmt instanceof Ast.RaiseStmt raised) {
-            requireOwnedErrorPayload(
-                    typeOf(raised.value(), env, generics, self), "raise");
+            requireExceptionalPayload(
+                    typeOf(raised.value(), env, generics, self), "raise", ExceptionalTrait.RAISABLE);
             return;
         }
         if (stmt instanceof Ast.PanicStmt panicked) {
-            requireOwnedErrorPayload(
-                    typeOf(panicked.value(), env, generics, self), "panic");
+            requireExceptionalPayload(
+                    typeOf(panicked.value(), env, generics, self), "panic", ExceptionalTrait.PANICABLE);
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
@@ -2289,8 +2291,8 @@ public final class TypeChecker {
             Type inner = typeOf(trapped.expression(), env, generics, self);
             if (inner instanceof Borrow)
                 throw new IllegalArgumentException(
-                        "trap cannot wrap a borrowed value without a proven Option loan lifetime");
-            return new Named("Option", List.of(inner));
+                        "trap cannot wrap a borrowed value without a proven Result loan lifetime");
+            return trapResult(true, inner);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -4919,9 +4921,12 @@ public final class TypeChecker {
         }
         if (receiver instanceof Named named) {
             if (named.name().equals("Error") && findClass("Error") == null) {
-                if (writing) throw new IllegalArgumentException("Error.message is immutable");
-                if (member.member().equals("message")) return Primitive.STRING;
-                throw new IllegalArgumentException("unknown Error member '" + member.member() + "'");
+                if (writing) throw new IllegalArgumentException("Error fields are immutable");
+                return switch (member.member()) {
+                    case "message" -> Primitive.STRING;
+                    case "payload" -> Unknown.INSTANCE;
+                    default -> throw new IllegalArgumentException("unknown Error member '" + member.member() + "'");
+                };
             }
             if (named.name().equals("TrapError")) {
                 if (writing) throw new IllegalArgumentException("TrapError fields are immutable");
@@ -4934,6 +4939,7 @@ public final class TypeChecker {
                 if (writing) throw new IllegalArgumentException("RecoverySignal fields are immutable");
                 return switch (member.member()) {
                     case "kind", "message" -> Primitive.STRING;
+                    case "payload" -> Unknown.INSTANCE;
                     default -> throw new IllegalArgumentException("unknown RecoverySignal member '" + member.member() + "'");
                 };
             }
@@ -6934,15 +6940,33 @@ public final class TypeChecker {
     }
 
     private Type trapResult(boolean trapped, Type result) {
-        return trapped ? new Named("Option", List.of(result)) : result;
+        if (!trapped) return result;
+        Named errorType = new Named("Error", List.of());
+        if (result instanceof Named value && value.name().equals("Result")
+                && value.arguments().size() == 2) {
+            Type error = value.arguments().get(1);
+            if (error == Unknown.INSTANCE || assignable(errorType, error)) return value;
+            return new Named("Result", List.of(value.arguments().get(0),
+                    Types.unionOf(error, errorType)));
+        }
+        return new Named("Result", List.of(result, errorType));
     }
 
-    private void requireOwnedErrorPayload(Type type, String keyword) {
-        // The linked std/error hierarchy needs a separate nominal identity proof.
-        if (!(type instanceof Named named) || !named.name().equals("Error")
-                || !named.arguments().isEmpty() || findClass("Error") != null) {
-            throw new IllegalArgumentException(keyword + " requires an owned compiler-provided Error");
+    private void requireExceptionalPayload(Type type, String keyword, ExceptionalTrait trait) {
+        String marker = trait.declaration().name();
+        if (!hasExceptionalTrait(type, new Named(marker, List.of()))) {
+            throw new IllegalArgumentException(keyword + " requires an owned " + marker + " value");
         }
+    }
+
+    private boolean hasExceptionalTrait(Type type, Named marker) {
+        if (type instanceof Union union) {
+            return union.options().stream().allMatch(option -> hasExceptionalTrait(option, marker));
+        }
+        if (!(type instanceof Named named)) return false;
+        if (named.name().equals("Error") && named.arguments().isEmpty()) return true;
+        return classTypeImplements(named, marker, new LinkedHashSet<>())
+                || interfaceTypeExtends(named, marker, new LinkedHashSet<>());
     }
 
     private boolean containsNestedDestructure(Ast.DestructurePattern pattern) {
@@ -8120,7 +8144,7 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 yield new Named("Option", List.of(element));
             }
-            case "TrapResult", "TrapError" -> throw new IllegalArgumentException("trap callables return Option<T>");
+            case "TrapResult", "TrapError" -> throw new IllegalArgumentException("trap callables return Result<T, Error>");
             case "RecoverySignal", "Error" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
@@ -8283,6 +8307,9 @@ public final class TypeChecker {
         }
 
         if (Types.isAssignable(actual, expected)) return true;
+        if (actual instanceof Named error && error.name().equals("Error") &&
+                expected instanceof Named marker && marker.arguments().isEmpty()
+                && ExceptionalTrait.find(marker.name()) != null) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
             Ast.InterfaceDecl actualContract = findInterface(actualNamed.name());
@@ -8473,6 +8500,8 @@ public final class TypeChecker {
     }
 
     private Ast.InterfaceDecl findInterface(String name) {
+        Ast.InterfaceDecl marker = ExceptionalTrait.find(name);
+        if (marker != null) return marker;
         if (ambiguousInterfaces.contains(name)) throw new IllegalArgumentException("ambiguous interface name '" + name + "'; qualify it with its module");
         return interfaces.get(name);
     }
@@ -8485,7 +8514,8 @@ public final class TypeChecker {
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
         for (String name : names) {
-            if (Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
+            if (ExceptionalTrait.find(name) != null
+                || Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
                 throw new IllegalArgumentException(
                         "'" + name + "' is compiler-owned and cannot be used as a generic parameter in " + owner);
             }

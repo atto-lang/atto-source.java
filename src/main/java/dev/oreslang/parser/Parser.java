@@ -3289,8 +3289,7 @@ public final class Parser {
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
-        // Expression-level trap is a typed Option boundary; the declaration
-        // modifier "trap fnc" remains a distinct grammar production.
+        // Both trap spellings produce the same checked Result expression.
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 

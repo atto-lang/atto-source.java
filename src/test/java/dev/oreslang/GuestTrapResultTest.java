@@ -17,10 +17,10 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-final class TrapOptionSemanticsTest {
+final class GuestTrapResultTest {
 
     @Test
-    void trappedCallsPreserveNestedOptionAndVoidSuccess() throws Exception {
+    void trappedCallsPreserveOptionalDataAndVoidSuccess() throws Exception {
         String program = """
                 trap fnc value(): int { return 7; }
                 trap fnc present(): Option<int> { return Some(9); }
@@ -28,19 +28,19 @@ final class TrapOptionSemanticsTest {
                 trap routine done(): void { return; }
 
                 pub fnc main(): void {
-                  val Option<int> number = value();
-                  val Option<Option<int>> nested = present();
-                  val Option<Option<int>> nested_none = missing();
-                  val Option<void> done_result = done();
+                  val Result<int, Error> number = value();
+                  val Result<Option<int>, Error> nested = present();
+                  val Result<Option<int>, Error> nested_none = missing();
+                  val Result<void, Error> done_result = done();
                   stdio.stdout.write(number.unwrap());
                   stdio.stdout.write(":");
                   stdio.stdout.write(nested.unwrap().unwrap());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(nested_none.is_some());
+                  stdio.stdout.write(nested_none.is_ok());
                   stdio.stdout.write(":");
                   stdio.stdout.write(nested_none.unwrap().is_none());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(done_result.is_some());
+                  stdio.stdout.write(done_result.is_ok());
                   return;
                 }
                 """;
@@ -48,18 +48,21 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void ordinaryThrowBecomesNoneAndCanBeDiscarded() throws Exception {
+    void ordinaryThrowRetainsItsErrorAndResultCanBeDiscarded() throws Exception {
         String program = """
-                fnc helper(): int { throw new Error("missing user"); }
+                fnc helper(): int { throw! new Error("missing user"); }
                 trap fnc load(): int { return helper(); }
                 pub fnc main(): void {
-                  val Option<int> result = load();
+                  val Result<int, Error> result = load();
                   load();
-                  stdio.stdout.write(result.is_none());
+                  match result over
+                    on Ok(number) -> { stdio.stdout.write(number); }
+                    on Err(failure) -> { stdio.stdout.write(failure.message); }
+                  end
                   return;
                 }
                 """;
-        assertEquals("true", run(program));
+        assertEquals("missing user", run(program));
     }
 
     @Test
@@ -89,7 +92,7 @@ final class TrapOptionSemanticsTest {
                 }
                 pub fnc main(): void {
                   recover {
-                    stdio.stdout.write(ordinary().is_none());
+                    stdio.stdout.write(ordinary().is_err());
                   } catch (signal) {
                     stdio.stdout.write("unexpected recovery");
                   }
@@ -100,11 +103,11 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void trapFunctionValuesKeepOptionReturnType() throws Exception {
+    void trapFunctionValuesKeepResultReturnType() throws Exception {
         String program = """
                 trap fnc value(int x): int { return x + 1; }
                 pub fnc main(): void {
-                  val Fnc<int, Option<int>> callback = value;
+                  val Fnc<int, Result<int, Error>> callback = value;
                   stdio.stdout.write(value(9).unwrap());
                   stdio.stdout.write(":");
                   stdio.stdout.write(callback(9).unwrap());
@@ -122,13 +125,13 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void moduleTrapCallsReturnOption() throws Exception {
+    void moduleTrapCallsReturnResult() throws Exception {
         String program = """
                 define module safely as
                   pub trap fnc value(): int { return 23; }
                 end
                 pub fnc main(): void {
-                  val Option<int> result = safely.value();
+                  val Result<int, Error> result = safely.value();
                   stdio.stdout.write(result.unwrap());
                   return;
                 }
@@ -349,7 +352,7 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void bareSuccessTypeAndUnshippedTrapResultAreRejected() {
+    void bareSuccessAndOptionReturnTypesAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 trap fnc value(): int { return 7; }
                 fnc bad(): void {
@@ -360,10 +363,31 @@ final class TrapOptionSemanticsTest {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 trap fnc value(): int { return 7; }
                 fnc hold(): void {
-                  val TrapResult<int> result = value();
+                  val Option<int> result = value();
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void bangTrapKeepsPreexistingResultsAndPreservesWidenedErrorData() throws Exception {
+        String source = """
+                fnc good(): Result<int, String> { return Ok(42); }
+                fnc bad(): Result<int, String> { return Err("existing error"); }
+                trap! fnc wrapped(): Result<int, String> { return bad(); }
+                pub fnc main(): void {
+                  val Result<int, String | Error> existing = trap! good();
+                  val Result<int, String | Error> denied = wrapped();
+                  stdio.stdout.write(existing.unwrap());
+                  stdio.stdout.write(":");
+                  match denied over
+                    on Ok(number) -> { stdio.stdout.write(number); }
+                    on Err(reason) -> { stdio.stdout.write(reason); }
+                  end
+                  return;
+                }
+                """;
+        assertEquals("42:existing error", run(source));
     }
 
     @Test
@@ -394,8 +418,60 @@ final class TrapOptionSemanticsTest {
             var failure = assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(program));
             assertTrue(failure.getMessage().contains(keyword
-                    + " requires an owned compiler-provided Error"), failure::getMessage);
+                    + " requires an owned "), failure::getMessage);
         }
+    }
+
+    @Test
+    void nominalMarkersKeepCustomPayloadAcrossTrapAndRecover() throws Exception {
+        String source = """
+                define class Fault implements Throwable as
+                  pub val int code = 42;
+                end
+                define class Missing extends Fault as end
+                define class Escalation implements Raisable as
+                  pub val int code = 17;
+                end
+                fnc fail_now(): int { throw! new Missing(); }
+                pub routine main(): void {
+                  val Result<int, Error> failed = trap! fail_now();
+                  match failed over
+                    on Ok(number) -> { stdio.stdout.write(number); }
+                    on Err(error) -> {
+                      val Missing original = error.payload as Missing;
+                      stdio.stdout.write(original.code);
+                    }
+                  end
+                  stdio.stdout.write(":");
+                  recover {
+                    raise! new Escalation();
+                  } catch (signal) {
+                    val Escalation original = signal.payload as Escalation;
+                    stdio.stdout.write(original.code);
+                  }
+                  return;
+                }
+                """;
+        assertEquals("42:17", run(source));
+    }
+
+    @Test
+    void exceptionalMarkersAreIndependentAndNominal() {
+        var declarations = """
+                define class Ordinary implements Throwable as end
+                define class Fatal implements Panicable as end
+                define class Plain as end
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(declarations
+                + "fnc fail(): void { panic! new Fatal(); }"));
+        for (String control : java.util.List.of(
+                "raise! new Ordinary();", "panic! new Ordinary();",
+                "throw! new Fatal();", "throw! new Plain();")) {
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                    declarations + "fnc invalid(): void { " + control + " }"), control);
+        }
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "define interface Throwable as end"));
     }
 
     @Test

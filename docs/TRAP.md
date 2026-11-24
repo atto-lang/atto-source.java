@@ -1,4 +1,4 @@
-# `trap`: Option-valued non-throwing callables
+# `trap!` and `trap` Result boundaries
 
 This document defines the Oreslang contract for the `trap` callable modifier
 and its interaction with `throw`, `raise`, `panic`, async/Future execution,
@@ -7,16 +7,24 @@ select, actors, and runtime cancellation.
 The central rule is intentionally small:
 
 > A call to a `trap` callable never exposes an ordinary `throw` to its caller.
-> Success is `Some(value)`; an uncaught ordinary throw is `None`.
+> Success is `Ok(value)`. An escaping ordinary throw produces `Err(error)`.
 
 `raise`, `panic`, runtime cancellation, forced termination, and fatal host
-failures are not ordinary throws and are not converted to `None`.
+failures bypass the ordinary throw boundary.
 
 ## Java draft coverage
 
-This branch implements the Option result for top-level and module callable declarations, function values and expression `trap`. A synchronous callable whose body suspends keeps the same trap boundary when its task resumes. Explicit async trap declarations, generators, actor callables and method modifiers remain gated in this branch.
+This branch implements the Result boundary for top-level and module callable declarations, function values and expression `trap!` or `trap`. A synchronous callable whose body suspends keeps the same trap boundary when its task resumes. Explicit async trap declarations, generators, actor callables and method modifiers remain gated in this branch.
 
-The experimental explicit `throw`, `raise`, `panic` and `recover { ... } catch (...)` forms use the compiler-provided `Error`. This recovery block handles explicit raises and lets panic escape. Canonical std/error subclass resolution, escalation at the invocation boundary and guest supervisor delivery remain pending.
+The `throw!`, `raise!` and `panic!` forms admit owned values with the nominal
+`Throwable`, `Raisable` and `Panicable` markers, respectively. The unadorned
+spellings are aliases. The built-in `Error` supports all three effects. A
+typed guest throw preserves its `Error` value. For a custom nominal payload,
+`Err(error)` retains that value in `error.payload`, and ordinary catch
+receives the original payload. Explicit recovery exposes the original raise
+payload in `signal.payload`. A panic bypasses ordinary catch, trap and
+recovery. Linked std/error subclass resolution and guest supervisor delivery
+remain separate integration work.
 
 ## Surface syntax
 
@@ -46,112 +54,16 @@ tree shaking, JIT/AOT lowering, and interop metadata.
 
 ## Call result type
 
-The declared return type remains the success type.
+The declared return type remains the success type. A trapped callable returning
+`T` has call type `Result<T, Error>`. A successful `Option<T>` remains an
+Option inside `Ok`. A successful void call produces `Ok(void)`.
 
-For a synchronous trap callable:
+A value of type `Result<T, E>` passes through without another Result layer.
+Its original `Ok` or `Err` payload remains intact. The compiler admits the
+additional `Error` variant in the error type when needed for a trapped throw.
 
-```text
-trap fnc(): T
-```
-
-the call expression type is:
-
-```text
-Option<T>
-```
-
-Example:
-
-```ores
-const user: Option<User> = load_user(id);
-```
-
-There is no two-slot trap tuple and no compiler-owned `TrapResult<T>` wrapper.
-
-### Nested Option is deliberate
-
-If the successful value is already optional, the trap layer does not flatten it:
-
-```ores
-trap fnc lookup(UserId id): Option<User> {
-  ...
-}
-
-const result: Option<Option<User>> = lookup(id);
-```
-
-The meanings are distinct:
-
-```text
-None             => the trapped computation threw
-Some(None)       => the computation succeeded and returned no user
-Some(Some(user)) => the computation succeeded and returned a user
-```
-
-Automatic flattening would destroy that information and is forbidden.
-
-### Void
-
-A `trap fnc ...: void` has call type `Option<void>`.
-
-The compiler/runtime may represent successful void internally as a unit/null
-payload, but the language-level states are still:
-
-```text
-Some(void) => completed successfully
-None       => ordinary throw escaped the function body
-```
-
-`Option<void>` is therefore a valid compiler-produced type. The type system
-must support observing it with `is_some()` / `is_none()`; no useful value is
-produced by unwrapping it.
-
-## Control-flow channels
-
-Oreslang keeps three exceptional control effects distinct:
-
-```text
-throw  -> ordinary recoverable error
-raise  -> deliberate non-trappable exceptional escape
-panic  -> invariant/runtime non-trappable escape
-```
-
-The trap rule is:
-
-```text
-ordinary return -> Some(value)
-uncaught throw  -> None
-raise           -> bypass trap
-panic           -> bypass trap
-cancellation    -> bypass trap
-termination     -> bypass trap
-```
-
-A local explicit `try/catch` may consume a throw before it reaches the trap
-boundary.
-
-Returning an `Error`, `Result.Err`, or any other error-looking value is still
-ordinary data. Only the control-flow `throw` effect becomes `None`.
-
-## Error detail is intentionally not carried by trap
-
-`trap` is the concise, lossy "did this complete normally?" boundary.
-
-Code that needs error details should use an explicit typed `Result<T, E>`,
-an explicit `try/catch`, or another API whose return type carries structured
-error data.
-
-This avoids the old awkward shape:
-
-```ores
-[const [result], const err] = foo();
-```
-
-and replaces it with ordinary Option handling:
-
-```ores
-const result: Option<User> = foo();
-```
+An ordinary error handled by a lexical catch never reaches the trap. Raise,
+panic, cancellation and termination use their existing control channels.
 
 ## Async trap
 
@@ -166,25 +78,25 @@ pub async trap fnc fetch(): Payload {
 the call expression type is:
 
 ```text
-Future<Option<Payload>>
+Future<Result<Payload, Error>>
 ```
 
 The trap boundary spans the complete asynchronous computation, including code
 resumed after every `await`.
 
-- success settles the Future with `Some(payload)`;
+- success settles the Future with `Ok(payload)`;
 - an ordinary uncaught throw before or after suspension settles the Future
-  successfully with `None`;
+  with `Err(error)`;
 - `raise` and `panic` bypass trap and retain their distinct control identity;
-- runtime cancellation stays cancellation rather than becoming `None`;
+- runtime cancellation stays cancellation and bypasses trap;
 - forced actor/isolate/sandbox termination stays a supervision/termination
-  outcome rather than becoming `None`.
+  outcome and bypasses trap.
 
 Awaiting an async trap Future re-emits any non-trappable raise/panic/cancellation
 according to the normal runtime rules.
 
 A trap callable whose declared success type is already `Option<T>` therefore
-returns `Future<Option<Option<T>>>` when async.
+returns `Future<Result<Option<T>, Error>>` when async.
 
 ## Future composition
 
@@ -238,7 +150,7 @@ Its selected arm is required to be non-throwing at the arm boundary.
 
 - a throw handled by a local `try/catch` is allowed;
 - a call to a `trap` function is allowed because the throw is converted to
-  Option data before returning to the arm;
+  Result data before returning to the arm;
 - an ordinary throw that can escape the selected arm is a compile-time error;
 - `raise` bypasses select and continues to the nearest matching recover boundary;
 - `panic` bypasses select and follows panic/recover/supervision policy;
@@ -250,7 +162,7 @@ preserving explicit nonlocal control effects.
 ## Cleanup
 
 `defer` / `finally` run during unwinding before a trap boundary produces
-`None`.
+`Err(error)`.
 
 Cleanup must not downgrade stronger control signals. The runtime preserves the
 ordering:
@@ -260,8 +172,8 @@ fatal/termination > panic > raise > throw > return
 ```
 
 A cleanup throw may replace a normal return, and the nearest trap may then turn
-that throw into `None`. A cleanup throw must not convert an in-flight
-raise/panic/cancellation into `None`.
+that throw into `Err(error)`. An in-flight raise, panic or cancellation
+retains its control channel.
 
 ## Callable compatibility
 
@@ -274,7 +186,7 @@ fnc(): T
 trap fnc(): T
 ```
 
-At the call site they expose `T` and `Option<T>` respectively.
+At the call site they expose `T` and `Result<T, Error>` respectively.
 
 V1 should require exact trap compatibility for overrides/interface slots and
 function-value assignments unless an explicit safe adapter is defined.
@@ -290,8 +202,8 @@ Untrusted actor resource cancellation/termination cannot be swallowed by
 
 ## Host/native failures
 
-Only failures explicitly classified as ordinary Ores `throw` may become
-`None`.
+Only failures explicitly classified as ordinary guest errors may become
+`Err(error)`. Mapped runtime failures use an inert compiler-owned Error.
 
 VM-fatal errors, OOM/stack corruption, process termination, scheduler
 interruption/cancellation, and unknown native failures must not be blanket
@@ -301,12 +213,12 @@ converted by a broad `catch (Throwable)`.
 
 1. reserve and parse `trap` on supported callables;
 2. store trap metadata in AST/symbol/callable types;
-3. type synchronous trap calls as `Option<T>`;
-4. preserve nested Option without flattening;
-5. support compiler-produced `Option<void>`;
-6. lower ordinary uncaught throw at the boundary to `None`;
-7. lower successful return to `Some(value)`;
-8. type async trap calls as `Future<Option<T>>`;
+3. type synchronous trap calls as `Result<T, Error>`;
+4. preserve Option payloads and pass through existing Results;
+5. support compiler-produced `Result<void, Error>`;
+6. lower ordinary uncaught throw at the boundary to `Err(error)`;
+7. lower successful return to `Ok(value)`;
+8. type async trap calls as `Future<Result<T, Error>>`;
 9. preserve raise/panic/cancellation/termination as distinct bypass channels;
 10. enforce trap compatibility across function values/interfaces/overrides/imports;
 11. reject escaping ordinary throw from static select arms;
@@ -316,19 +228,19 @@ converted by a broad `catch (Throwable)`.
 
 Compile/runtime coverage must include:
 
-- trap success -> `Some(value)`;
-- trapped ordinary throw -> `None`;
-- `trap fnc(): Option<T>` -> `Option<Option<T>>`;
-- trapped void -> `Option<void>`;
-- async trap success -> `Future<Option<T>>`;
-- throw after await -> Future settles with `None`;
+- trap success -> `Ok(value)`;
+- trapped ordinary throw -> `Err(error)`;
+- `trap fnc(): Option<T>` -> `Result<Option<T>, Error>`;
+- trapped void -> `Result<void, Error>`;
+- async trap success -> `Future<Result<T, Error>>`;
+- throw after await -> Future settles with `Err(error)`;
 - raise/panic bypass sync and async trap;
 - cancellation bypasses trap;
 - local try/catch inside trap handles throw before the boundary;
 - returned Error/Result values remain data;
 - interface/override/function-value trap compatibility;
 - static select arm rejects an escaping ordinary throw;
-- static select arm permits locally caught throw and handled trap Option;
+- static select arm permits locally caught throw and handled trap Result;
 - raise/panic in a select arm bypass select;
 - dynamic select returns `Option<SelectResult>`;
 - `nb select` returns `Future<Option<SelectResult>>`;
@@ -338,10 +250,10 @@ Compile/runtime coverage must include:
 ## Core invariant
 
 ```text
-throw  -> nearest catch, otherwise nearest trap -> None
+throw  -> nearest catch, otherwise nearest trap -> Err(error)
 raise  -> bypass catch/trap/select -> nearest recover/supervision
 panic  -> bypass catch/trap/select -> nearest recover/supervision
-cancel -> runtime cancellation channel, never None
+cancel -> runtime cancellation channel
 ```
 
 That distinction is semantic and must not be erased by parsing, optimization,

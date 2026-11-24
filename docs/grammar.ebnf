@@ -193,9 +193,9 @@ statement       = binding_decl
                 | expression stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
-throw_stmt      = "throw" expression stmt_terminator ;
-raise_stmt      = "raise" expression stmt_terminator ;
-panic_stmt      = "panic" expression stmt_terminator ;
+throw_stmt      = ("throw" | "throw!") expression stmt_terminator ;
+raise_stmt      = ("raise" | "raise!") expression stmt_terminator ;
+panic_stmt      = ("panic" | "panic!") expression stmt_terminator ;
 recover_stmt    = "recover" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 defer_stmt      = "defer" expression stmt_terminator ;
 block_stmt      = "block" block ;

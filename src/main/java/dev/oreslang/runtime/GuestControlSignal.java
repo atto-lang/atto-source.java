@@ -4,7 +4,7 @@ package dev.oreslang.runtime;
  * Guest-language exceptional control channels.
  *
  * <p>Throw is an ordinary guest error and may be handled by try/catch or
- * converted to None at a trap boundary. Raise and Panic are deliberate
+ * returned in Err at a trap boundary. Raise and Panic are deliberate
  * non-trappable control signals. The draft recovery block accepts explicit raises only.
  * Runtime-enforced cancellation and termination use separate runtime signals.
  */
