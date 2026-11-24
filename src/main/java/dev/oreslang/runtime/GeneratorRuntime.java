@@ -129,8 +129,17 @@ public final class GeneratorRuntime {
         // serializes execution, but admitting an unbounded number of runtime
         // tasks that merely wait on its monitor would turn concurrent next()
         // calls into a resource-amplification path.
-        private final AtomicBoolean pullInFlight = new AtomicBoolean();
+        private final AtomicReference<Pull> pullInFlight = new AtomicReference<>();
         private OresFuture<Void> closeFuture;
+
+        private static final class Pull {
+            volatile OresFuture<?> completion;
+
+            boolean settledWithoutCancellation() {
+                OresFuture<?> future = completion;
+                return future != null && future.isDone() && !future.isCancelled();
+            }
+        }
 
         private AsyncGenerator(AsyncRuntime runtime, Engine<T> engine) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -143,9 +152,17 @@ public final class GeneratorRuntime {
          * of admitting another runtime task that would wait behind the first.
          */
         public OresFuture<Step<T>> nextStep() {
-            if (!pullInFlight.compareAndSet(false, true)) {
-                return OresFuture.failed(new IllegalStateException(
-                        "concurrent AsyncIterator.next() is not permitted; await the outstanding pull first"));
+            Pull reservation = new Pull();
+            while (true) {
+                Pull prior = pullInFlight.get();
+                // A successful or failed result becomes observable before
+                // its callbacks drain. A caller may already have awaited it.
+                // Cancellation still requires the physical-retirement path.
+                if (prior != null && !prior.settledWithoutCancellation()) {
+                    return OresFuture.failed(new IllegalStateException(
+                            "concurrent AsyncIterator.next() is not permitted; await the outstanding pull first"));
+                }
+                if (pullInFlight.compareAndSet(prior, reservation)) break;
             }
 
             // Only a *settled* terminal generator can return an immediate
@@ -155,7 +172,7 @@ public final class GeneratorRuntime {
                 // A producer admission denial remains an exceptional async
                 // result across repeated pulls; never launder it into DONE.
                 Throwable rejected = engine.terminalFailure();
-                pullInFlight.set(false);
+                pullInFlight.compareAndSet(reservation, null);
                 return rejected == null
                         ? OresFuture.completed(Step.doneStep())
                         : OresFuture.failed(rejected);
@@ -186,11 +203,12 @@ public final class GeneratorRuntime {
                         pullState.set(2);
                     }
                 });
+                reservation.completion = pull;
                 pull.whenCompleteRuntime((value, failure) -> {
                     // Completion/cancellation before entry cannot have
                     // consumed a yield and releases admission immediately.
                     if (pullState.compareAndSet(0, 3)) {
-                        pullInFlight.set(false);
+                        pullInFlight.compareAndSet(reservation, null);
                     } else if (pull.isCancelled()) {
                         // An admitted pull has no remaining observer. Revoke
                         // producer authority without parking the callback,
@@ -199,21 +217,18 @@ public final class GeneratorRuntime {
                         // cancellation alone is not an exit receipt.
                         engine.requestClose();
                         runtime.taskExitReceipt(pull).whenCompleteRuntime(
-                                (ignored, exitFailure) -> pullInFlight.set(false));
+                                (ignored, exitFailure) -> pullInFlight.compareAndSet(reservation, null));
                     } else {
-                        // Successful/failed Future settlement means the
-                        // uncancelled backing turn has finished engine.next().
-                        // Prevent a second pull from observing an unclaimed
-                        // yield between engine return and Future settlement.
-                        pullInFlight.set(false);
+                        // A caller may already have replaced this reservation.
+                        pullInFlight.compareAndSet(reservation, null);
                     }
                 });
                 return pull;
             } catch (java.util.concurrent.RejectedExecutionException rejected) {
-                pullInFlight.set(false);
+                pullInFlight.compareAndSet(reservation, null);
                 return OresFuture.failed(rejected);
             } catch (RuntimeException | Error failure) {
-                pullInFlight.set(false);
+                pullInFlight.compareAndSet(reservation, null);
                 throw failure;
             }
         }
