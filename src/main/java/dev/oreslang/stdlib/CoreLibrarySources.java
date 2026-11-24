@@ -331,6 +331,14 @@ public final class CoreLibrarySources {
         return STD_UNIT_PREFIX + relative;
     }
 
+    /** Canonical Atto modules whose linked unit IDs retain a legacy suffix. */
+    public static boolean isMigratedAttoUnitId(String unitId) {
+        if (unitId.equals(CORE_UNIT_PREFIX + "numeric.ores")) return true;
+        if (!unitId.startsWith(STD_UNIT_PREFIX) || !unitId.endsWith(".ores")) return false;
+        String stem = unitId.substring(STD_UNIT_PREFIX.length(), unitId.length() - ".ores".length());
+        return MIGRATED_STD_STEMS.contains(stem) && STD_SOURCES.contains(stem + ".atto");
+    }
+
     public static String source(String importPath) throws IOException {
         String relative = canonicalStdRelativePath(importPath);
         if (!STD_SOURCES.contains(relative)) {

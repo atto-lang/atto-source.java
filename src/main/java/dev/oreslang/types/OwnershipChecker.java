@@ -360,6 +360,7 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        rejectBorrowedSuspensionParameters(fn.suspends(), fn.parameters());
         Scope scope = new Scope(null, fn.nonLexical());
         if (borrowMirAudit != null) {
             borrowMirAudit.beginFunction(fn.name(),
@@ -474,6 +475,7 @@ public final class OwnershipChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            rejectBorrowedSuspensionParameters(method.suspends(), method.parameters());
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -1690,8 +1692,13 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
-            if (cast.mode() == Ast.CastMode.OPTIONAL && isBorrowValue(source)) {
-                throw error("optional cast of borrowed value requires a checked Option loan lifetime");
+            if (isBorrowValue(source)) {
+                if (cast.mode() == Ast.CastMode.OPTIONAL) {
+                    throw error("optional cast of borrowed value requires a checked Option loan lifetime");
+                }
+                if (!cast.targetType().isBorrow()) {
+                    throw error("borrowed value cannot be bound as an owned type through a cast");
+                }
             }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
@@ -4288,6 +4295,15 @@ public final class OwnershipChecker {
     private void rejectBorrowedFutureResult(Ast.TypeRef type) {
         if (type != null && type.name().equals("Future") && containsBorrowType(type)) {
             throw error("cannot suspend on a Future containing borrowed data");
+        }
+    }
+
+    private void rejectBorrowedSuspensionParameters(boolean suspends, List<Ast.Param> parameters) {
+        if (!suspends) return;
+        for (Ast.Param parameter : parameters) {
+            if (containsBorrowType(parameter.type())) {
+                throw error("suspending callable cannot take borrowed parameter '" + parameter.name() + "'");
+            }
         }
     }
 

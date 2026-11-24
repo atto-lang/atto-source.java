@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.stdlib.CoreLibrarySources;
+
 /**
  * Checked-i64 source admission. Canonical .atto code units are checked by
  * default; historical .ores units retain wrapping arithmetic unless the exact
@@ -57,9 +59,9 @@ public final class AttoCheckedI64Profile {
             }
             i++;
         }
-        // Only the complete canonical source extension enables this by default.
-        // Relative or absolute code-unit names are supplied by the trusted host
-        // parse boundary; source text cannot masquerade as a filename.
-        return enabled || (codeUnitId != null && codeUnitId.endsWith(".atto"));
+        // Migrated packaged modules use canonical source with stable legacy
+        // identities. Other code units select the profile from their suffix.
+        return enabled || (codeUnitId != null && (codeUnitId.endsWith(".atto")
+                || CoreLibrarySources.isMigratedAttoUnitId(codeUnitId)));
     }
 }
