@@ -3236,6 +3236,20 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** The publication and STOP fences share one actor lifecycle monitor. */
+    boolean tryPublishProtocolState(ProtocolActorMir.State state, int destination) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.codeActorState != state)
+            throw new SecurityException("protocol state requires its owning actor turn");
+        synchronized (cell.lifecycleLock) {
+            if (!currentThreadOwnsActorExecutionLease())
+                throw new SecurityException("protocol state requires the current actor execution lease");
+            if (cell.stopped.get() || cell.forceKillFenced || cell.finalized || closed.get()) return false;
+            state.publish(destination);
+            return true;
+        }
+    }
+
     public ContinuationTarget captureCurrentContinuationTarget() {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {

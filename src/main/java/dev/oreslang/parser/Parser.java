@@ -195,6 +195,11 @@ public final class Parser {
         return new Parser(new Lexer(source).scan()).parseProgram();
     }
 
+    /** Closed-file protocol actor compilation may omit the enclosing scalar entry point. */
+    public static Ast.Program parseProtocolActors(String source) {
+        return new Parser(new Lexer(source).scan()).parseProgram(true);
+    }
+
     /** Explicit draft v1/v2 source grammar. This is a real parser entrypoint,
      * not a completed package-edition/Truffle guest integration. Unsupported
      * compound/effectful comma body shapes fail before AST emission. */
@@ -321,6 +326,10 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        return parseProgram(false);
+    }
+
+    private Ast.Program parseProgram(boolean protocolActorsRequired) {
         // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
         // execution regions and quantum fail-closed, but allow canonical task
         // forms (plus legacy nb aliases) to reach typed lowering. GPU task is
@@ -449,10 +458,12 @@ public final class Parser {
             if (namespace != null || !imports.isEmpty() || !exports.isEmpty()) {
                 throw error(peek(), "E_REFINEMENT_SCOPE: Verified Core requires a standalone source file");
             }
-            var declarations = parseVerifiedFunctions();
+            var declarations = parseVerifiedFunctions(protocolActorsRequired);
             return new Ast.Program(null, List.of(),
                     List.of(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), declarations)), List.of());
         }
+        if (protocolActorsRequired)
+            throw error(peek(), "E_PROTOCOL_ACTOR: expected a file-local verified protocol actor");
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
@@ -7645,7 +7656,7 @@ public final class Parser {
         return new Ast.ProtocolActorDecl(name.lexeme(), protocol, handlers);
     }
 
-    private List<Ast.Decl> parseVerifiedFunctions() {
+    private List<Ast.Decl> parseVerifiedFunctions(boolean protocolActorsRequired) {
         while (atRefinedQuantityAlias()) parseRefinedQuantityAlias();
         List<Ast.Decl> declarations = new ArrayList<>();
         Map<String, Ast.ProtocolDecl> protocols = new HashMap<>();
@@ -7657,6 +7668,9 @@ public final class Parser {
         }
         Set<String> actorNames = new HashSet<>();
         while (atProtocolActor()) declarations.add(parseProtocolActor(protocols, actorNames));
+        if (protocolActorsRequired && actorNames.isEmpty())
+            throw error(peek(), "E_PROTOCOL_ACTOR: expected a file-local verified protocol actor");
+        if (protocolActorsRequired && check(EOF)) return declarations;
         verifiedCallable = true;
         boolean mainSeen = false;
         while (!check(EOF)) {
