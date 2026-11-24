@@ -7,12 +7,10 @@ define module cooperation_policy as
     return prior + 1;
   }
 
-  // Java polls at every 64th completed backedge or after the 512th.
-  // Division/multiplication avoids source-language remainder/bitwise ops.
+  // Java grants one poll per 128 committed backedges, even past the dispatch cap.
   pub fnc needs_poll(int completed): bool {
     if completed < 1; do return false; fi
-    if completed >= 512; do return true; fi
-    return (completed / 64) * 64 == completed;
+    return Integer.rem(completed, 128) == 0;
   }
 
   // elapsed_ns is a host-sampled monotonic delta, NOT a guest clock.

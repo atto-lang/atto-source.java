@@ -2,10 +2,11 @@ import module cooperation_policy from "std/cooperation_policy.atto";
 pub routine main(): void {
   stdio.println(cooperation_policy.needs_poll(1));
   stdio.println(cooperation_policy.needs_poll(64));
-  stdio.println(cooperation_policy.needs_poll(65));
+  stdio.println(cooperation_policy.needs_poll(128));
   stdio.println(cooperation_policy.needs_poll(511));
   stdio.println(cooperation_policy.needs_poll(512));
   stdio.println(cooperation_policy.needs_poll(513));
+  stdio.println(cooperation_policy.needs_poll(640));
   stdio.println(cooperation_policy.next_backedge_count(0));
   stdio.println(cooperation_policy.next_backedge_count(9223372036854775807));
   stdio.println(cooperation_policy.should_cooperate(false, 64, 1999999));

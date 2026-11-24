@@ -74,7 +74,7 @@ pub fnc entry_with_fields(int severity, String target, String message,
                       field2_key, field2_value);
 }
 
-pub fnc valid_entry(LogEntry record) -> bool {
+pub fnc valid_entry(borrow LogEntry record) -> bool {
   if !valid_severity(record.severity); do return false; fi
   if record.timestamp_ns < 0 || record.actor_id < 0
       || record.trace_id < 0 || record.span_id < 0; do
@@ -88,6 +88,12 @@ pub fnc valid_entry(LogEntry record) -> bool {
   fi
   // Strings are opaque; the sink enforces UTF-8 size and redaction.
   return true;
+}
+
+fnc snapshot(borrow LogEntry record) -> LogEntry {
+  return new LogEntry(record.severity, record.target, record.message,
+                      record.timestamp_ns, record.actor_id, record.trace_id, record.span_id,
+                      record.field1_key, record.field1_value, record.field2_key, record.field2_value);
 }
 
 // Overflow-safe policy for a trusted sink that has computed authoritative
@@ -128,7 +134,7 @@ pub define class Buffer as
     self.threshold = threshold;
   }
 
-  pub offer(mut self)(LogEntry record) -> int {
+  pub offer(mut self)(borrow LogEntry record) -> int {
     if self.closed; do return 3; fi
     if !valid_entry(record); do return 4; fi
     if !enabled(record.severity, self.threshold); do return 0; fi
@@ -150,7 +156,7 @@ pub define class Buffer as
       fi
       return 2;
     fi
-    self.items.add(record);
+    self.items.add(snapshot(record));
     return 1;
   }
 
@@ -181,7 +187,8 @@ pub define class Buffer as
     if self.head >= self.items.size; do
       rt fail("Log.Buffer: peek of empty queue");
     fi
-    return self.items.get(self.head);
+    val record = self.items.get(self.head);
+    return snapshot(rt borrow record);
   }
 
   pub ack_one(mut self) -> bool {

@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,8 +18,11 @@ final class CanonicalCoreLibraryTest {
 
     @Test
     void packagedCoreIdentityAndClosedRegistry() throws Exception {
-        assertEquals(Set.of("numeric.atto", "protocols.atto", "collections.atto"),
-                CoreLibrarySources.packagedCorePaths());
+        try (var files = Files.list(Path.of("src/main/resources/dev/oreslang/core"))) {
+            assertEquals(files.filter(Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .collect(Collectors.toSet()), CoreLibrarySources.packagedCorePaths());
+        }
         assertEquals("@ores.core/collections.atto",
                 CoreLibrarySources.oresCoreUnitId("ores.core/collections"));
         assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/collections"),

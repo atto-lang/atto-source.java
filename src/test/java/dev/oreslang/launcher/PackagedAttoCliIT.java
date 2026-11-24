@@ -142,6 +142,50 @@ final class PackagedAttoCliIT {
         assertTrue(diagnostic().contains("ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED"), this::diagnostic);
     }
 
+    @Test
+    void executableLinksLoggingAndPerformanceLibrariesAcrossAnAwait() throws Exception {
+        Path source = Files.writeString(directory.resolve("log.atto"), """
+                import * as journal from "atto.std/log";
+                import * as sink from "atto.std/log_sink";
+                import module Perf from "atto.std/perf";
+                import module PerfIds from "atto.std/perf_ids";
+
+                pub susp fnc main(): void {
+                  if !Perf.should_sample(9223372036854775806, 2)
+                      || Perf.should_sample(9223372036854775807, 2)
+                      || Perf.should_sample(9, 0)
+                      || Perf.begin_ns(false) != 0 then
+                    rt fail("invalid perf sampling");
+                  fi
+                  let mut counters = Perf.buffer(1);
+                  if !counters.record_counter(true, 34, PerfIds.scheduler_turn_queue(), 1)
+                      || counters.count() != 1 then
+                    rt fail("counter was not recorded");
+                  fi
+
+                  let mut logger = journal.buffer(1, 30);
+                  val entry = journal.entry(30, "scheduler", "resumed", 0, 12, 34, 56);
+                  if logger.offer(rt borrow entry) != 1 then rt fail("admission failed"); fi
+                  if !await sink.write_record(logger.peek()) then rt fail("log write failed"); fi
+                  if !logger.ack_one() || !logger.is_drained() then rt fail("log was retained"); fi
+                  val forged = journal.entry(30, "scheduler", "one\\ntwo", 0, 12, 34, 56);
+                  if await sink.write_record(forged) then rt fail("multiline log admitted"); fi
+                  return;
+                }
+                """);
+        assertEquals(0, run("--check", "--platform=server", source.toString()), this::diagnostic);
+        Process guest = launch(false, "--platform=server", source.toString());
+        try {
+            assertTrue(guest.waitFor(5, TimeUnit.SECONDS), this::diagnostic);
+            assertEquals(0, guest.exitValue(), this::diagnostic);
+            String lines = new String(guest.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals("severity=INFO|target=scheduler|message=resumed|actor_id=12"
+                    + "|trace_id=34|span_id=56|field1=:|field2=:\n", lines);
+        } finally {
+            guest.destroyForcibly();
+        }
+    }
+
     private int run(String... arguments) throws Exception {
         Process process = launch(false, arguments);
         try {

@@ -48,7 +48,7 @@ test('native module exposes typed immutable logging records and factories', () =
   assert.match(source, /pub define class LogEntry as/);
   assert.equal((source.match(/pub val /g) || []).length,11);
   assert.match(source, /pub fnc entry_with_fields\(/);
-  assert.match(source, /pub fnc valid_entry\(LogEntry record\)/);
+  assert.match(source, /pub fnc valid_entry\(borrow LogEntry record\)/);
   for (const attr of ['timestamp_ns','actor_id','trace_id','span_id']) {
     assert.match(source, new RegExp('record\\.' + attr + ' < 0'));
   }
@@ -85,7 +85,8 @@ test('one-consumer peek/ack retains entries until acknowledged and then resets',
   assert.ok(ack.indexOf('self.head = self.head + 1') <
     ack.indexOf('if self.head == self.items.size'));
   assert.match(ack,/self.items = new Array<LogEntry>\(\)/);
-  assert.match(source,/return self.items.get\(self.head\)/);
+  assert.match(source,/val record = self.items.get\(self.head\)/);
+  assert.match(source,/return snapshot\(rt borrow record\)/);
   assert.match(source,/return self.items.size - self.head/);
 });
 

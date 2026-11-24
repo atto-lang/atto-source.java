@@ -1,5 +1,7 @@
 // CPU sizing arithmetic extracted from CpuCarrierBudget.java.
 // OS/cgroup reads, runner affinity, and actual worker admission stay host-only.
+import module num from "atto.core/num";
+
 define module cpu_budget_policy as
   pub fnc clamp_processors(int available, int cpuset, int quota): int {
     let int result = available;
@@ -13,7 +15,7 @@ define module cpu_budget_policy as
   // Java's positive long quota is ceil(amount / period), saturated to i32.
   pub fnc quota_ceil(int amount, int period): int {
     if amount <= 0 || period <= 0; do return 0; fi
-    val int whole = amount / period;
+    val int whole = num.checked_div(amount, period).unwrap();
     let int result = whole;
     if amount > whole * period; do result = result + 1; fi
     if result > 2147483647; do return 2147483647; fi
@@ -24,7 +26,7 @@ define module cpu_budget_policy as
     if budget > 2147483647; do return -1; fi
     let int capacity = budget;
     if capacity < 1; do capacity = 1; fi
-    let int workers = capacity / 4;
+    let int workers = num.checked_div(capacity, 4).unwrap();
     if workers < 1; do workers = 1; fi
     return workers;
   }

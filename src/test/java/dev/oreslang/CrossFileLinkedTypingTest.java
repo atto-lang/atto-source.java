@@ -254,6 +254,33 @@ final class CrossFileLinkedTypingTest {
     }
 
     @Test
+    void asyncNamespaceSignatureUsesTheImportedTypeFromTheResolvedFile() {
+        String token = """
+                pub define class Token as
+                  pub val int value;
+                end
+                pub fnc make(): Token { return new Token(17); }
+                """;
+        String sink = """
+                import * as model from "./model.atto";
+                pub async fnc write(model.Token token): int { return token.value; }
+                """;
+        String main = """
+                import * as actual from "./model.atto";
+                import * as model from "./decoy.atto";
+                import * as sink from "./sink.atto";
+                pub async fnc main(): int { return await sink.write(actual.make()); }
+                """;
+        var compiler = new IncrementalCompiler();
+        assertDoesNotThrow(() -> compiler.compile(Map.of(
+                "model.atto", token, "decoy.atto", token, "sink.atto", sink, "main.atto", main)));
+        var failure = assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(
+                "model.atto", token, "decoy.atto", token, "sink.atto", sink,
+                "main.atto", main.replace("actual.make()", "model.make()"))));
+        assertTrue(failure.getMessage().contains("argument 1"), failure::getMessage);
+    }
+
+    @Test
     void importedFunctionBindingsAreTypedThroughImports() {
         assertDoesNotThrow(() -> compileWithRoot("""
                 import fnc twice from "./geo.atto";

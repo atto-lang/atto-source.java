@@ -4,9 +4,9 @@
 define module region_policy as
   // Modes: 1=READ, 2=WRITE, 3=DISCARD, 4=REDUCE, 5=ATOMIC.
   pub fnc valid_access(int rows, int fields, int field,
-                       int begin, int end, int mode): bool {
+                       int begin, int end_row, int mode): bool {
     return rows >= 0 && fields > 0 && field >= 0 && field < fields &&
-           begin >= 0 && begin <= end && end <= rows &&
+           begin >= 0 && begin <= end_row && end_row <= rows &&
            mode >= 1 && mode <= 5;
   }
 
