@@ -75,6 +75,7 @@ final class AsyncNioResp2Test {
         assertArrayEquals(ascii(":0\r\n"),AsyncNioResp2.encode("ZERO",""));
         assertThrows(IOException.class,()->AsyncNioResp2.encode("VALUE","f"));
         assertThrows(IOException.class,()->AsyncNioResp2.encode("VALUE","zz"));
+        assertThrows(IOException.class,()->AsyncNioResp2.encode("OK","00"));
         assertThrows(IOException.class,()->AsyncNioResp2.encode("DANGEROUS",""));
     }
 

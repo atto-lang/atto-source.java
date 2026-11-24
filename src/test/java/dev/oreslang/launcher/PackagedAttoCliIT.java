@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -140,6 +141,34 @@ final class PackagedAttoCliIT {
         assertTrue(diagnostic().contains("ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED"), this::diagnostic);
         assertEquals(1, run(source.toString()));
         assertTrue(diagnostic().contains("ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED"), this::diagnostic);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = { false, true })
+    void closingListenerWithPendingAcceptReleasesThePort(boolean sharedSelector) throws Exception {
+        int port;
+        try (ServerSocket probe = new ServerSocket()) {
+            probe.bind(new InetSocketAddress("127.0.0.1", 0));
+            port = probe.getLocalPort();
+        }
+        Path source = Files.writeString(directory.resolve("close-listener.atto"), """
+                pub susp fnc main(): void {
+                  val listener = await network.listen_async("127.0.0.1", %d);
+                  val incoming = listener.accept_async();
+                  await listener.close_async();
+                  val replacement = await network.listen_async("127.0.0.1", %d);
+                  await replacement.close_async();
+                  return;
+                }
+                """.formatted(port, port));
+        Process guest = launch(sharedSelector, "--allow-net=127.0.0.1:" + port,
+                source.toString());
+        try {
+            assertTrue(guest.waitFor(5, TimeUnit.SECONDS), this::diagnostic);
+            assertEquals(0, guest.exitValue(), this::diagnostic);
+        } finally {
+            guest.destroyForcibly();
+        }
     }
 
     @Test

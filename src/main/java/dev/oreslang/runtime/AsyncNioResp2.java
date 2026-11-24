@@ -147,7 +147,10 @@ final class AsyncNioResp2 {
 
     /** Encode an owned binary value directly into a RESP frame, without hex. */
     static byte[] encodeBinary(String status, OresBytes payload) throws IOException {
-        if (!"VALUE".equals(status)) return encode(status, "");
+        if (!"VALUE".equals(status)) {
+            if (payload != null) throw new IOException("only VALUE can carry a RESP payload");
+            return encode(status, "");
+        }
         if (payload == null) throw new IOException("VALUE needs owned byte payload");
         try (OresBytes.ReadLease lease = payload.readLease()) {
             ByteBuffer value = lease.buffer();
@@ -185,6 +188,9 @@ final class AsyncNioResp2 {
     static byte[] encode(String status, String hexPayload) throws IOException {
         if (status == null) throw new IOException("missing RESP status");
         if (hexPayload == null) hexPayload = "";
+        if (!"VALUE".equals(status) && !hexPayload.isEmpty()) {
+            throw new IOException("only VALUE can carry a RESP payload");
+        }
         return switch (status) {
             case "OK" -> "+OK\r\n".getBytes(StandardCharsets.US_ASCII);
             case "PONG" -> "+PONG\r\n".getBytes(StandardCharsets.US_ASCII);

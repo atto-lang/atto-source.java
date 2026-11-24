@@ -155,6 +155,11 @@ public final class AsyncNioTcp {
             }
         }
 
+        /**
+         * Host cancellation closes the listener, since a posted NIO2
+         * completion-handler accept cannot be withdrawn independently.
+         * Guest code revokes the pending accept through listener.close_async().
+         */
         public OresFuture<Connection> acceptAsync() {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "listener.accept_async");
@@ -191,6 +196,8 @@ public final class AsyncNioTcp {
                     accepting.set(false);
                     callback.reject(failure);
                 }
+            }, () -> {
+                try { close(); } catch (IOException ignored) { }
             });
         }
 

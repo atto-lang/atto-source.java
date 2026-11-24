@@ -1,7 +1,10 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.runtime.AsyncNioTcp;
+import dev.oreslang.runtime.OresContext;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.ExecutorService;
@@ -18,6 +21,33 @@ import static org.junit.jupiter.api.Assertions.*;
  * calls. Java's test client uses a Socket; guest and compiler transport do not.
  */
 final class AttoAsyncNioTcpGuestTest {
+    @Test
+    void hostCancellationOfPendingAcceptRetiresTheListener() throws Exception {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .arguments(OresLanguage.ID, new String[] {"--ores-capabilities=NETWORK"})
+                .build()) {
+            context.initialize(OresLanguage.ID);
+            OresContext runtime;
+            context.enter();
+            try {
+                runtime = OresContext.get(null);
+            } finally {
+                context.leave();
+            }
+            try (var listener = AsyncNioTcp.listenAsync(runtime, "127.0.0.1", 0)
+                    .get(3, TimeUnit.SECONDS)) {
+                int port = listener.port();
+                var accept = listener.acceptAsync();
+                assertTrue(accept.cancel(false));
+                assertThrows(IllegalStateException.class, listener::port);
+                try (ServerSocket replacement = new ServerSocket()) {
+                    replacement.bind(new InetSocketAddress("127.0.0.1", port));
+                }
+            }
+        }
+    }
+
     @Test void realAttoGuestEchoesBinaryOverAsyncNioListener() throws Exception {
         int port;
         try (ServerSocket probe = new ServerSocket(0, 1,
