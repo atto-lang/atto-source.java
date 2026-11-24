@@ -659,8 +659,9 @@ public final class LinkedProgramRunner {
 
     /**
      * Collects compiler-owned hosted source under ores.std/* (and the temporary
-     * legacy std/* spelling). Hosted std may depend on ores.core or ores.std,
-     * but never on application/ambient modules or Java source islands.
+     * legacy std/* spelling). Hosted std may depend on registered library
+     * units, while application imports and Java source islands stay outside
+     * the packaged library graph.
      */
     private static void collectStdImportClosure(
             String importPath,
@@ -692,6 +693,10 @@ public final class LinkedProgramRunner {
                         "ores.std cannot import Java host classes: "
                                 + importPath + " -> " + imported.path());
             }
+            if (CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
+                CoreLibrarySources.libraryUnit(imported.path());
+                continue;
+            }
             if (CoreLibrarySources.isStdImport(imported.path())) {
                 CoreLibrarySources.unitId(imported.path());
                 continue;
@@ -707,6 +712,14 @@ public final class LinkedProgramRunner {
 
         units.put(id, mixed);
         for (Ast.ImportDecl imported : program.imports()) {
+            if (CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
+                CoreLibrarySources.LibraryUnit library =
+                        CoreLibrarySources.libraryUnit(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), library.unitId());
+                collectLayeredLibraryClosure(library, units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
             if (CoreLibrarySources.isStdImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
