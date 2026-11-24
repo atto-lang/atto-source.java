@@ -7590,11 +7590,73 @@ public final class Parser {
         return payload;
     }
 
+    private boolean atProtocolActor() {
+        return check(DEFINE) && checkNext(ACTOR) && current + 3 < tokens.size()
+                && tokens.get(current + 3).type() == IMPLEMENTS;
+    }
+
+    private Ast.ProtocolActorDecl parseProtocolActor(
+            Map<String, Ast.ProtocolDecl> protocols, Set<String> actorNames) {
+        consume(DEFINE, "expected 'define'");
+        consume(ACTOR, "expected 'actor'");
+        Token name = readProtocolName("E_PROTOCOL_ACTOR: expected an actor name");
+        if (actorNames.size() >= 64) throw error(name, "E_PROTOCOL_LIMIT: too many protocol actors");
+        if (protocols.containsKey(name.lexeme()) || refinementAliases.containsKey(name.lexeme())
+                || !actorNames.add(name.lexeme())) {
+            throw error(name, "E_PROTOCOL_ACTOR: duplicate actor name");
+        }
+        consume(IMPLEMENTS, "E_PROTOCOL_ACTOR: expected 'implements'");
+        Token target = readProtocolName("E_PROTOCOL_ACTOR: expected a protocol name");
+        var protocol = protocols.get(target.lexeme());
+        if (protocol == null) throw error(target, "E_PROTOCOL_ACTOR: unknown local protocol");
+        consume(AS, "E_PROTOCOL_ACTOR: expected 'as' after protocol name");
+
+        Map<String, Ast.ProtocolEdge> messages = new HashMap<>();
+        Set<String> stateDependentDestinations = new HashSet<>();
+        for (var edge : protocol.edges()) {
+            var existing = messages.putIfAbsent(edge.message(), edge);
+            if (existing != null && !existing.target().equals(edge.target()))
+                stateDependentDestinations.add(edge.message());
+        }
+        List<Ast.ProtocolHandler> handlers = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        while (!match(END)) {
+            Token message = readProtocolName("E_PROTOCOL_HANDLER: expected a protocol handler or 'end'");
+            var edge = messages.get(message.lexeme());
+            if (edge == null) throw error(message, "E_PROTOCOL_HANDLER: actor handles an undeclared message");
+            if (!seen.add(message.lexeme())) throw error(message, "E_PROTOCOL_HANDLER: duplicate protocol handler");
+            if (!check(LPAREN)) throw error(peek(), "E_PROTOCOL_HANDLER: expected a parameter list");
+            var parameters = parseProtocolPayload();
+            if (!parameters.stream().map(Ast.ProtocolField::type).toList()
+                    .equals(edge.payload().stream().map(Ast.ProtocolField::type).toList()))
+                throw error(message, "E_PROTOCOL_PAYLOAD: handler parameter types differ from the message");
+            consume(ARROW, "E_PROTOCOL_HANDLER: expected '-> void' after handler parameters");
+            consume(VOID, "E_PROTOCOL_HANDLER: expected void handler result");
+            consume(LBRACE, "E_PROTOCOL_HANDLER: expected a handler body");
+            consumeContextualIdentifier("transition", "E_PROTOCOL_TRANSITION: expected a terminal transition");
+            Token destination = readProtocolName("E_PROTOCOL_TRANSITION: expected a destination state");
+            if (stateDependentDestinations.contains(message.lexeme()) || !edge.target().equals(destination.lexeme()))
+                throw error(destination, "E_PROTOCOL_TRANSITION: handler destination must match every edge for its message");
+            consume(SEMICOLON, "E_PROTOCOL_TRANSITION: expected ';' after transition");
+            consume(RBRACE, "E_PROTOCOL_TRANSITION: transition must be the only statement in this handler");
+            handlers.add(new Ast.ProtocolHandler(message.lexeme(), parameters, destination.lexeme()));
+        }
+        if (seen.size() != messages.size()) throw error(name, "E_PROTOCOL_HANDLER: missing protocol handler");
+        return new Ast.ProtocolActorDecl(name.lexeme(), protocol, handlers);
+    }
+
     private List<Ast.Decl> parseVerifiedFunctions() {
         while (atRefinedQuantityAlias()) parseRefinedQuantityAlias();
         List<Ast.Decl> declarations = new ArrayList<>();
-        Set<String> protocolNames = new HashSet<>();
-        while (atProtocolDeclaration()) declarations.add(parseProtocolDeclaration(protocolNames));
+        Map<String, Ast.ProtocolDecl> protocols = new HashMap<>();
+        Set<String> names = new HashSet<>();
+        while (atProtocolDeclaration()) {
+            var protocol = parseProtocolDeclaration(names);
+            protocols.put(protocol.name(), protocol);
+            declarations.add(protocol);
+        }
+        Set<String> actorNames = new HashSet<>();
+        while (atProtocolActor()) declarations.add(parseProtocolActor(protocols, actorNames));
         verifiedCallable = true;
         boolean mainSeen = false;
         while (!check(EOF)) {

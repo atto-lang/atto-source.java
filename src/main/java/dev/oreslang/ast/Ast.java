@@ -80,7 +80,7 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, SingletonDecl, ProtocolDecl { }
+            ExternalActorMethodDecl, SingletonDecl, ProtocolDecl, ProtocolActorDecl { }
 
     /** Verified file-local state machine. Declaring it creates no actor or mailbox. */
     public record ProtocolDecl(String name, String initialState, Set<String> terminalStates,
@@ -98,6 +98,15 @@ public final class Ast {
     public record ProtocolScalar(boolean i32, long minimum, long maximum, Map<String, Integer> dimension,
                                  BigInteger scaleNumerator, BigInteger scaleDenominator) {
         public ProtocolScalar { dimension = Map.copyOf(dimension); }
+    }
+
+    /** Source-checked handler bindings awaiting mailbox lowering. */
+    public record ProtocolActorDecl(String name, ProtocolDecl protocol, List<ProtocolHandler> handlers)
+            implements Decl {
+        public ProtocolActorDecl { handlers = List.copyOf(handlers); }
+    }
+    public record ProtocolHandler(String message, List<ProtocolField> parameters, String destination) {
+        public ProtocolHandler { parameters = List.copyOf(parameters); }
     }
 
     /**
