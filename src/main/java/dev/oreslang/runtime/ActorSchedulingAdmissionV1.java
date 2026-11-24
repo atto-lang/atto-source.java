@@ -20,8 +20,11 @@ import java.util.Set;
 public final class ActorSchedulingAdmissionV1 implements AutoCloseable {
     public enum Affinity { NONE, STICKY, PINNED, DEDICATED }
     public static final int POOL_SIZE = -1;
+    public static final int MAX_WORKER_SLOTS = 256;
 
     private final long incarnation;
+    private final long poolAuthority;
+    private final long poolGeneration;
     private final int requestedMax;
     private final int actorLimit;
     private final int tenantLimit;
@@ -29,6 +32,7 @@ public final class ActorSchedulingAdmissionV1 implements AutoCloseable {
     private final Affinity affinity;
     private final boolean dedicatedReserved;
     private final Map<Integer, Long> healthy = new HashMap<>();
+    private final long[] highestWorkerGeneration = new long[MAX_WORKER_SLOTS];
     private final Set<Integer> occupiedLanes = new HashSet<>();
     private final Set<Lease> active = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private int homeLane = -1;
@@ -37,10 +41,12 @@ public final class ActorSchedulingAdmissionV1 implements AutoCloseable {
     private int peak;
     private boolean closed;
 
-    public ActorSchedulingAdmissionV1(long incarnation, int requestedMax,
+    public ActorSchedulingAdmissionV1(long incarnation, long poolAuthority, long poolGeneration,
+            int requestedMax,
             boolean serial, Affinity affinity, boolean dedicatedReserved,
             int actorLimit, int tenantLimit, int globalLimit) {
-        if (incarnation <= 0 || (requestedMax != POOL_SIZE && requestedMax < 1)
+        if (incarnation <= 0 || poolAuthority <= 0 || poolGeneration <= 0
+                || (requestedMax != POOL_SIZE && requestedMax < 1)
                 || actorLimit < 1 || tenantLimit < 1 || globalLimit < 1)
             throw new IllegalArgumentException("E_ACTOR_PARALLELISM_CAP");
         this.affinity = Objects.requireNonNull(affinity);
@@ -48,6 +54,8 @@ public final class ActorSchedulingAdmissionV1 implements AutoCloseable {
         if ((affinity == Affinity.PINNED || affinity == Affinity.DEDICATED) && requestedMax != 1)
             throw new IllegalArgumentException("E_AFFINITY_REQUIRES_ONE");
         this.incarnation = incarnation;
+        this.poolAuthority = poolAuthority;
+        this.poolGeneration = poolGeneration;
         this.requestedMax = requestedMax;
         this.dedicatedReserved = dedicatedReserved;
         this.actorLimit = actorLimit;
@@ -59,17 +67,28 @@ public final class ActorSchedulingAdmissionV1 implements AutoCloseable {
     public synchronized void updateHealthyWorkers(Map<Integer, Long> workers) {
         if (closed) throw new IllegalStateException("actor admission retired");
         Objects.requireNonNull(workers);
+        if (workers.size() > MAX_WORKER_SLOTS) throw new IllegalArgumentException("E_WORKER_LIMIT");
         Map<Integer, Long> next = new HashMap<>();
         for (var entry : workers.entrySet()) {
-            if (entry.getKey() == null || entry.getKey() < 0
-                    || entry.getValue() == null || entry.getValue() <= 0)
+            Integer lane = entry.getKey();
+            Long generation = entry.getValue();
+            if (lane == null || lane < 0 || lane >= MAX_WORKER_SLOTS ||
+                    generation == null || generation <= 0)
                 throw new IllegalArgumentException("invalid worker generation");
-            next.put(entry.getKey(), entry.getValue());
+            if (generation < highestWorkerGeneration[lane])
+                throw new IllegalArgumentException("E_STALE_WORKER_INVENTORY");
+            next.put(lane, generation);
         }
+        // Only a fully valid snapshot advances the generation watermark.
         healthy.clear();
         healthy.putAll(next);
+        next.forEach((lane, generation) -> highestWorkerGeneration[lane] = generation);
         // PINNED never migrates while an old lease is physically outstanding.
         // A replacement lane is selected only by a new successful admission.
+        resetRetiredHomeIfQuiescent();
+    }
+
+    private void resetRetiredHomeIfQuiescent() {
         if (active.isEmpty() && !Objects.equals(healthy.get(homeLane), homeGeneration)) {
             homeLane = -1;
             homeGeneration = 0;
@@ -90,8 +109,11 @@ public final class ActorSchedulingAdmissionV1 implements AutoCloseable {
      * Nonblocking exact-worker admission. The caller must be the trusted
      * scheduler; acquiring this lease never grants actor-state authority.
      */
-    public synchronized Lease tryEnter(long actorIncarnation, int lane, long workerGeneration) {
-        if (actorIncarnation != incarnation) throw new SecurityException("stale actor incarnation");
+    public synchronized Lease tryEnter(long actorIncarnation, long callerPoolAuthority,
+            long callerPoolGeneration, int lane, long workerGeneration) {
+        if (actorIncarnation != incarnation || callerPoolAuthority != poolAuthority ||
+                callerPoolGeneration != poolGeneration)
+            throw new SecurityException("E_STALE_ACTOR_OR_POOL");
         if (closed) return null;
         if (workerGeneration <= 0 || !Objects.equals(healthy.get(lane), workerGeneration)) return null;
         if (active.size() >= maximumNow() || occupiedLanes.contains(lane)) return null;
@@ -134,10 +156,7 @@ public final class ActorSchedulingAdmissionV1 implements AutoCloseable {
                 retired = true;
                 if (!active.remove(this)) throw new IllegalStateException("foreign actor lease");
                 if (!occupiedLanes.remove(lane)) throw new IllegalStateException("physical lane underflow");
-                if (active.isEmpty() && !Objects.equals(healthy.get(homeLane), homeGeneration)) {
-                    homeLane = -1;
-                    homeGeneration = 0;
-                }
+                resetRetiredHomeIfQuiescent();
             }
         }
     }
@@ -146,5 +165,6 @@ public final class ActorSchedulingAdmissionV1 implements AutoCloseable {
     @Override public synchronized void close() {
         closed = true;
         healthy.clear();
+        resetRetiredHomeIfQuiescent();
     }
 }
