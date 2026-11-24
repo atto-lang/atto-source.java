@@ -2524,13 +2524,8 @@ public final class Ast {
         }
     }
 
-    /** Caller-side failure capture. Historical bare trap is Option<T>; canonical
-     *  trap! is a distinct Result<T,Error> target. Preserve this spelling
-     *  distinction all the way to type admission so unsupported Result
-     *  lowering cannot silently execute an Option-producing guest node. */
-    public record TrapExpr(Expr expression, boolean canonicalBangResult) implements Expr {
-        public TrapExpr(Expr expression) { this(expression, false); }
-    }
+    /** Caller-side capture of ordinary failure as a Result. */
+    public record TrapExpr(Expr expression) implements Expr { }
 
     public record ChannelOpExpr(
             ChannelOperation operation,
