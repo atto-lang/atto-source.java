@@ -15,7 +15,6 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
 import java.time.Duration;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -627,7 +626,9 @@ final class SelectorTransportConnection implements AutoCloseable {
                         + (remaining % 1_000_000L == 0 ? 0 : 1);
                 long millis = Math.max(
                         1L, Math.min(Integer.MAX_VALUE, roundedMillis));
-                int ready = selector.select(millis);
+                // Only this channel and operation are registered. Consume
+                // readiness within select so close cannot race a key iterator.
+                int ready = selector.select(ignored -> { }, millis);
                 if (Thread.currentThread().isInterrupted()) {
                     throw new IOException(
                             "pinned HTTP "
@@ -636,23 +637,9 @@ final class SelectorTransportConnection implements AutoCloseable {
                 }
                 if (ready == 0) continue;
 
-                boolean matched = false;
-                Iterator<SelectionKey> selected =
-                        selector.selectedKeys().iterator();
-                while (selected.hasNext()) {
-                    SelectionKey candidate = selected.next();
-                    selected.remove();
-                    if (candidate == key
-                            && candidate.isValid()
-                            && (candidate.readyOps()
-                                    & operation) != 0) {
-                        matched = true;
-                    }
-                }
-                if (matched) {
-                    key.interestOps(0);
-                    return;
-                }
+                requireOpen();
+                key.interestOps(0);
+                return;
             } catch (ClosedSelectorException
                     | CancelledKeyException closedRace) {
                 if (closed.get()
