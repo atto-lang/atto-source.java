@@ -35,7 +35,7 @@ final class KeywordTailExecutionTest {
     }
 
     @Test
-    void explicitAndImplicitReturnExecuteEquivalently() throws Exception {
+    void explicitConditionalValueAndImperativeReturnAgree() throws Exception {
         String explicit = """
                 fnc answer(): int {
                   if true then
@@ -45,17 +45,13 @@ final class KeywordTailExecutionTest {
                   fi
                 }
                 """;
-        String implicit = """
+        String functional = """
                 fnc answer(): int {
-                  if true then
-                    42;
-                  else
-                    1;
-                  fi
+                  return if true then 42 else 1 fi;
                 }
                 """;
         assertEquals("42", run(explicit));
-        assertEquals(run(explicit), run(implicit));
+        assertEquals(run(explicit), run(functional));
     }
 
     @Test
@@ -64,9 +60,9 @@ final class KeywordTailExecutionTest {
                 fnc answer(): int {
                   if true then
                     let int val = 5,
-                    val + 42
+                    return val + 42;
                   else
-                    1
+                    return 1;
                   fi
                 }
                 """));
@@ -76,11 +72,7 @@ final class KeywordTailExecutionTest {
     void nonTailIfContinuesWithoutImplicitFunctionReturn() throws Exception {
         assertEquals("99", run("""
                 fnc answer(): int {
-                  if true then
-                    42;
-                  else
-                    1;
-                  fi
+                  return if true then 42 else 1 fi;
                   return 99;
                 }
                 """));

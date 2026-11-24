@@ -12,9 +12,11 @@ final class KeywordTailValueContractTest {
     }
 
     @Test
-    void explicitAndImplicitKeywordReturnsTypecheck() {
+    void namedFunctionRequiresAnExplicitReturn() {
         assertDoesNotThrow(() -> check("if true then return 42; else return 1; fi"));
-        assertDoesNotThrow(() -> check("if true then 42; else 1; fi"));
+        assertThrows(IllegalArgumentException.class, () -> check("if true then 42; else 1; fi"));
+        assertThrows(IllegalArgumentException.class, () -> check("42;"));
+        assertDoesNotThrow(() -> check("return if true then 42 else 1 fi;"));
     }
 
     @Test
@@ -22,9 +24,9 @@ final class KeywordTailValueContractTest {
         assertDoesNotThrow(() -> check("""
             if true then
               let int val = 5,
-              val + 42
+              return val + 42;
             else
-              1
+              return 1;
             fi
             """));
     }

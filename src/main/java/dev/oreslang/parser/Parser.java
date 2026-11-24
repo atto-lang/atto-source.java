@@ -22,6 +22,7 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    private boolean strictConditionalSyntax;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
     private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
             new java.util.ArrayDeque<>();
@@ -80,7 +81,9 @@ public final class Parser {
                         + ": template interpolation requires profile-preserving typed lowering");
             }
         }
-        return new Parser(scanned).parseProgram();
+        Parser parser = new Parser(scanned);
+        parser.strictConditionalSyntax = true;
+        return parser.parseProgram();
     }
 
 
@@ -697,7 +700,7 @@ public final class Parser {
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
             Ast.EffectSpec effects = parseCheckedEffects();
-            List<Ast.Stmt> body = lowerCallableTail(parseBlock(), returnType, modifiers.generator);
+            List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body, specs, effects);
         }
@@ -709,9 +712,7 @@ public final class Parser {
         boolean arrowReturn = check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        List<Ast.Stmt> body = lowerCallableTail(
-                parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE),
-                returnType, modifiers.generator);
+        List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
     }
@@ -1715,7 +1716,7 @@ public final class Parser {
             body = new ArrayList<>();
             while (!check(END) && !check(EOF)) body.add(parseStatement());
             consume(END, "expected 'end' to close method '" + name + "'");
-        } else body = lowerCallableTail(parseBlock(), returnType, false);
+        } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
     }
@@ -2687,44 +2688,6 @@ public final class Parser {
         }
     }
 
-    // A callable's final keyword-delimited if may yield a value. Braced if
-    // remains imperative, even when its branches have final expressions.
-    private final java.util.Set<Ast.IfStmt> keywordIfStatements =
-            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-
-    private List<Ast.Stmt> lowerCallableTail(
-            List<Ast.Stmt> statements, Ast.TypeRef returnType, boolean generator) {
-        if (generator || returnType == null || "void".equals(returnType.name())) return statements;
-        return lowerTailStatements(statements);
-    }
-
-    private List<Ast.Stmt> lowerTailStatements(List<Ast.Stmt> statements) {
-        if (statements.isEmpty()) return statements;
-        List<Ast.Stmt> result = new ArrayList<>(statements);
-        int last = result.size() - 1;
-        result.set(last, lowerTailStatement(result.get(last)));
-        return List.copyOf(result);
-    }
-
-    private Ast.Stmt lowerTailStatement(Ast.Stmt statement) {
-        if (statement instanceof Ast.ExprStmt expression)
-            return new Ast.ReturnStmt(expression.expression());
-        if (statement instanceof Ast.BlockStmt block)
-            return new Ast.BlockStmt(lowerTailStatements(block.body()));
-        if (statement instanceof Ast.IfStmt conditional &&
-                keywordIfStatements.contains(conditional)) {
-            List<Ast.IfBranch> branches = new ArrayList<>();
-            for (Ast.IfBranch branch : conditional.branches())
-                branches.add(new Ast.IfBranch(branch.condition(), lowerTailStatements(branch.body())));
-            return new Ast.IfStmt(branches, lowerTailStatements(conditional.elseBody()));
-        }
-        if (statement instanceof Ast.TryStmt attempt)
-            return new Ast.TryStmt(lowerTailStatements(attempt.body()),
-                    attempt.errorName(), lowerTailStatements(attempt.catchBody()),
-                    attempt.finallyBody());
-        return statement;
-    }
-
     // The comma form sequences statements inside a then/fi arm only; commas
     // are never a tuple operator or an implicit terminator inside braces.
     private int ifCommaArmDepth = 0;
@@ -2951,7 +2914,7 @@ public final class Parser {
         if (check(LBRACE) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
-        if (match(RETURN)) {
+        if (match(RETURN, CARET)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
@@ -3014,7 +2977,12 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(GUARD)) return parseGuard();
-        if (match(IF)) return parseIf();
+        if (check(DO) && checkNext(IF)) {
+            advance();
+            advance();
+            return parseIf(true);
+        }
+        if (match(IF)) return parseIf(false);
         if ((check(NB)
                 || (check(IDENT) && peek().lexeme().equals("task")))
                 && current + 2 < tokens.size()
@@ -4017,7 +3985,7 @@ public final class Parser {
         return false;
     }
 
-    private Ast.Stmt parseIf() {
+    private Ast.Stmt parseIf(boolean explicitImperative) {
         List<Ast.IfBranch> branches = new ArrayList<>();
         List<Ast.BindingStmt> bindings = new ArrayList<>();
         ConditionHead head = parseConditionHead(false);
@@ -4036,7 +4004,24 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
-            return lowerConditionBindings(branches, bindings, elseBody, false);
+            return lowerConditionBindings(branches, bindings, elseBody);
+        }
+
+        if (strictConditionalSyntax && !explicitImperative) {
+            consume(THEN, "bare keyword if requires 'then'");
+            if (check(RETURN) || check(CARET)) {
+                Ast.Expr value = parseConditionalValueArm();
+                if (match(FI)) {
+                    return lowerConditionBindings(
+                            List.of(new Ast.IfBranch(condition, List.of(new Ast.ExprStmt(value)))),
+                            bindings, List.of());
+                }
+                if (head.binding() != null) {
+                    throw error(peek(), "functional if requires an unbound condition");
+                }
+                return new Ast.ExprStmt(parseValueIfElse(condition, value));
+            }
+            return parseActionIf(condition, head.binding());
         }
 
         // Canonical keyword-delimited form:
@@ -4067,7 +4052,34 @@ public final class Parser {
         List<Ast.Stmt> elseBody = List.of();
         if (match(ELSE)) elseBody = parseKeywordIfArm(FI);
         consume(FI, "expected 'fi' to close if");
-        return lowerConditionBindings(branches, bindings, elseBody, true);
+        return lowerConditionBindings(branches, bindings, elseBody);
+    }
+
+    private Ast.Stmt parseActionIf(Ast.Expr condition, Ast.BindingStmt binding) {
+        List<Ast.IfBranch> branches = new ArrayList<>();
+        List<Ast.BindingStmt> bindings = new ArrayList<>();
+        branches.add(new Ast.IfBranch(condition, parseConditionalActions()));
+        bindings.add(binding);
+        while (matchConditionalBranch()) {
+            ConditionHead head = parseConditionHead(false);
+            consume(THEN, "expected 'then' after elif condition");
+            branches.add(new Ast.IfBranch(head.predicate(), parseConditionalActions()));
+            bindings.add(head.binding());
+        }
+        List<Ast.Stmt> otherwise = match(ELSE) ? parseConditionalActions() : List.of();
+        consume(FI, "expected 'fi' to close imperative if");
+        return lowerConditionBindings(branches, bindings, otherwise);
+    }
+
+    private List<Ast.Stmt> parseConditionalActions() {
+        List<Ast.Stmt> body = new ArrayList<>();
+        do {
+            consume(DO, "bare imperative if arms require 'do action'; use 'do if' for unmarked statement arms");
+            Ast.Expr action = parseExpression();
+            consumeExpressionStatementTerminator(action, "conditional action should end with ';'");
+            body.add(new Ast.ExprStmt(action));
+        } while (check(DO));
+        return body;
     }
 
     private void consumeConditionalThen(String branch) {
@@ -4172,19 +4184,15 @@ public final class Parser {
     }
 
     private Ast.Stmt lowerConditionBindings(List<Ast.IfBranch> branches,
-            List<Ast.BindingStmt> bindings, List<Ast.Stmt> elseBody,
-            boolean keywordDelimited) {
+            List<Ast.BindingStmt> bindings, List<Ast.Stmt> elseBody) {
         if (bindings.stream().allMatch(java.util.Objects::isNull)) {
-            Ast.IfStmt result = new Ast.IfStmt(branches, elseBody);
-            if (keywordDelimited) keywordIfStatements.add(result);
-            return result;
+            return new Ast.IfStmt(branches, elseBody);
         }
         // A later initializer is evaluated only if every preceding test failed.
         List<Ast.Stmt> fallback = elseBody;
         Ast.Stmt result = null;
         for (int i = branches.size() - 1; i >= 0; i--) {
             Ast.IfStmt conditional = new Ast.IfStmt(List.of(branches.get(i)), fallback);
-            if (keywordDelimited) keywordIfStatements.add(conditional);
             result = conditional;
             if (bindings.get(i) != null) {
                 result = new Ast.BlockStmt(List.of(bindings.get(i), result));
@@ -5500,7 +5508,31 @@ public final class Parser {
         }
     }
 
+    private Ast.Expr parseValueIf() {
+        Ast.Expr condition = parseCondition();
+        consume(THEN, "value-producing 'if' requires 'then'");
+        return parseValueIfElse(condition, parseConditionalValueArm());
+    }
+
+    private Ast.Expr parseValueIfElse(Ast.Expr condition, Ast.Expr whenTrue) {
+        consume(ELSE, "value-producing 'if' requires an 'else' value; use 'do if' for statements");
+        Ast.Expr whenFalse = parseConditionalValueArm();
+        consume(FI, "expected 'fi' to close value-producing 'if'");
+        return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    private Ast.Expr parseConditionalValueArm() {
+        boolean explicitResult = match(RETURN, CARET);
+        if (check(BREAK) || check(CONTINUE) || check(DO) || check(SEMICOLON)) {
+            throw error(peek(), "value-producing 'if' branch must produce a value; use 'do if' for imperative control flow");
+        }
+        Ast.Expr value = parseExpression();
+        if (explicitResult) match(SEMICOLON);
+        return value;
+    }
+
     private Ast.Expr parsePrimary() {
+        if (match(IF)) return parseValueIf();
         // One semantic constructor path: reuse the old array/tuple AST.
         // Explicit typed value constructors and other aggregate families
         // remain unavailable until their runtime/type-witness reviews.
