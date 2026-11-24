@@ -34,6 +34,8 @@ public enum OwnershipDiagnosticCode {
     E_TASK_CAPTURE(true),
     /** Copy of a move-only value without a checked copy contract. */
     E_COPY_SHALLOW_ALIAS(true),
+    /** Deep copy requires an independently provable copied value or graph. */
+    E_COPY_GRAPH_UNPROVEN(true),
     /** Sharing a move-only value without the owning shared convergence. */
     E_SHARE_ALIAS(true),
 

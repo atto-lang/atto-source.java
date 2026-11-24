@@ -4560,6 +4560,14 @@ public final class TypeChecker {
                 case "borrow" -> operand instanceof Borrow existing
                         ? new Borrow(existing.target(), false) : new Borrow(operand, false);
                 case "take" -> operand;
+                case "copy!!" -> {
+                    if (operand != Primitive.INT && operand != Primitive.BOOL
+                            && !(operand instanceof Types.BoolLiteral)) {
+                        throw new IllegalArgumentException(
+                                "E_COPY_GRAPH_UNPROVEN: copy!! requires an int or bool value");
+                    }
+                    yield operand;
+                }
                 case "copy", "share" -> {
                     if (containsUnprovenAtomicCell(operand, 0)) {
                         throw new IllegalArgumentException(

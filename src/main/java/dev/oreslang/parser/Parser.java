@@ -6654,7 +6654,11 @@ public final class Parser {
         boolean mutableBorrow = check(MUT);
         if (mutableBorrow) advance();
         String operation = advance().lexeme();
-        consume(BANG, "expected '!' attached to ownership operation");
+        Token marker = consume(BANG, "expected '!' attached to ownership operation");
+        if (operation.equals("copy") && check(BANG) && adjacent(marker, peek())) {
+            advance();
+            operation = "copy!!";
+        }
         // Canonical borrow! mut and compatibility mut borrow! lower to the
         // SAME checked &mut AST. 'mutfoo' remains an ordinary identifier.
         // The qualifier is consumed only after the complete attached verb!.
