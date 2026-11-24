@@ -217,7 +217,7 @@ final class ScopedTaskReadAuthorityV2Test {
                 "PROCESS", "root", 41, 1, true);
 
         var shared = new Types.Named("SharedMutex", List.of(Types.Primitive.INT));
-        for (Types.Type type : List.of(
+        for (Types.Named type : List.of(
                 shared,
                 new Types.Named("Option", List.of(shared)),
                 new Types.Named("Result", List.of(Types.Primitive.INT, shared)),
@@ -225,8 +225,10 @@ final class ScopedTaskReadAuthorityV2Test {
                 new Types.Named("Arc", List.of(Types.Primitive.INT)),
                 new Types.Named("Weak", List.of(Types.Primitive.INT)),
                 new Types.Named("Box", List.of(Types.Primitive.INT)))) {
-            assertTrue(TypeAutoTraits.inferClosed(type).sync(),
-                    () -> "regression case no longer exercises general Sync: " + type);
+            // The allocator wrappers now fail general Sync admission too.
+            boolean generalSync = !List.of("Arc", "Weak", "Box").contains(type.name());
+            assertEquals(generalSync, TypeAutoTraits.inferClosed(type).sync(),
+                    () -> "unexpected general Sync admission: " + type);
             assertFalse(ThreadSafetyTraits.has(type,
                     ThreadSafetyTraits.Trait.SYNC, (named, trait) -> false));
             var error = assertThrows(IllegalArgumentException.class,
