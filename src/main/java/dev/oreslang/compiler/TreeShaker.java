@@ -671,13 +671,16 @@ public final class TreeShaker {
                             method.isStatic(),
                             method.isAbstract(),
                             method.async(),
+                            method.suspends(),
                             method.structural(),
                             method.explicitReceiverType(),
                             method.genericParameters(),
                             method.parameters(),
                             method.returnType(),
                             method.annotations(),
-                            rewriteStatements(method.body(), module, locals)));
+                            rewriteStatements(method.body(), module, locals),
+                            method.effects(),
+                            method.critical()));
                 }
                 return new Ast.ClassDecl(
                         klass.name(),
@@ -690,7 +693,10 @@ public final class TreeShaker {
                         fields,
                         constructor,
                         methods,
-                        klass.actorConcurrency());
+                        klass.actorConcurrency(),
+                        klass.sealedStateFields(),
+                        klass.annotations(),
+                        klass.actorMessageContract());
             }
             return declaration;
         }
@@ -1251,6 +1257,15 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 for (Ast.TypeRef parent : klass.parents()) scanType(parent);
                 for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
+                Ast.ActorMessageContract protocol = klass.actorMessageContract();
+                scanType(protocol.receives());
+                scanType(protocol.sends());
+                scanType(protocol.emits());
+                for (Ast.ProtectedStateField field : klass.sealedStateFields()) {
+                    scanType(field.type());
+                    scanExpression(module, field.initializer(), Set.of("self"));
+                }
+                for (Ast.Annotation annotation : klass.annotations()) scanAnnotation(annotation);
                 for (Ast.FieldDecl field : klass.fields()) {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));

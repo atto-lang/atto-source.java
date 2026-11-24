@@ -220,6 +220,11 @@ public final class TypeChecker {
         ActorReceiverBinder.bind(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.DeclaredActorHeader
+                        || declaration instanceof Ast.ActorStateAttachment) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_ATTACHMENT_NOT_ASSEMBLED: actor declarations require lexical assembly");
+                }
                 if (declaration instanceof Ast.SingletonDecl) {
                     throw new IllegalArgumentException(
                             "ORES-SINGLETON-UNSUPPORTED: semantic check-only AST is not runtime-lowered");
@@ -2067,6 +2072,15 @@ public final class TypeChecker {
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
+            if (klass.actorConcurrency().explicitStream()) {
+                actorMailboxPayloadType(new Named("ActorRef", List.of(nominalClassType(klass))));
+                if (effectiveInstanceMethods(klass, new LinkedHashSet<>()).keySet().stream()
+                        .anyMatch(method -> method.name().equals("run"))) {
+                    throw new IllegalArgumentException(
+                            "stream actor '" + klass.name() + "' cannot declare or inherit run");
+                }
+            }
+            actorOutputPayloadType(klass, nominalClassType(klass));
             checkClassBody(module, klass);
         } finally {
             lexicalClassOrigin = previousLexicalClass;
@@ -2446,7 +2460,7 @@ public final class TypeChecker {
                 }
                 continue;
             }
-            resolve(parent, classGenerics, self);
+            Type parentType = resolve(parent, classGenerics, self);
             Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
             if (resolvedParent != null && klass.actorKind() != resolvedParent.actorKind()) {
                 throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
@@ -2460,6 +2474,13 @@ public final class TypeChecker {
                         + "be preserved across inheritance: " + klass.name() + " has "
                         + klass.actorConcurrency() + " but parent "
                         + resolvedParent.name() + " has " + resolvedParent.actorConcurrency());
+            }
+            if (resolvedParent != null && klass.actorKind() != Ast.ActorKind.NONE
+                    && !actorOutputPayloadType(klass, self)
+                            .equals(actorOutputPayloadType(resolvedParent, parentType))) {
+                throw new IllegalArgumentException(
+                        "actor emits contract must be preserved across inheritance: "
+                                + klass.name() + " extends " + resolvedParent.name());
             }
             if (resolvedParent != null && resolvedParent.constructor() != null) {
                 throw new IllegalArgumentException(
@@ -5366,6 +5387,11 @@ public final class TypeChecker {
                                 false,
                                 "self.send outbound value");
                         if (currentClassOwner != null) {
+                            Type declared = actorOutputPayloadType(currentClassOwner, self);
+                            if (declared != Unknown.INSTANCE) {
+                                requireAssignable(payload, declared,
+                                        "emits contract of actor '" + currentClassOwner.name() + "'");
+                            }
                             StreamPorts ports = streamPortsForClass(
                                     currentClassOwner, nominalClassType(currentClassOwner));
                             if (ports != null) {
@@ -6275,7 +6301,7 @@ public final class TypeChecker {
             if (futureMember != null) return futureMember;
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
-                actorClassForRef(actorRef);
+                Ast.ClassDecl actorClass = actorClassForRef(actorRef);
                 return switch (member.member()) {
                     case "get_ready", "get_done" ->
                             throw new IllegalArgumentException(
@@ -6286,7 +6312,7 @@ public final class TypeChecker {
                                     "ActorRef lifecycle futures are methods: use get_ready() or get_done()");
                     case "outputs" -> new Named(
                             "ActorOutputStream",
-                            List.of(Unknown.INSTANCE));
+                            List.of(actorOutputPayloadType(actorClass, actorRef.arguments().getFirst())));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
                     case "send", "try_send", "send_async", "stop", "cancel", "kill" ->
@@ -8575,6 +8601,22 @@ public final class TypeChecker {
                             + "' is not a known actor class");
         }
         return actorClass;
+    }
+
+    private Type actorOutputPayloadType(Ast.ClassDecl actor, Type actorType) {
+        Ast.TypeRef emits = actor.actorMessageContract().emits();
+        if (emits == null) return Unknown.INSTANCE;
+        Type output = resolve(emits, Set.copyOf(actor.genericParameters()), actorType);
+        if (actorType instanceof Named concrete) {
+            output = substituteGenerics(output, classGenericBindings(actor, concrete));
+        }
+        if (output == Primitive.VOID || containsUnknown(output)) {
+            throw new IllegalArgumentException(
+                    "emits requires a known value type on actor '" + actor.name() + "'");
+        }
+        validateActorCallableBoundaryType(output, actor.actorKind(), false,
+                "emits contract of actor '" + actor.name() + "'");
+        return output;
     }
 
     private static Type builtinIoMember(Type receiver, String name) {

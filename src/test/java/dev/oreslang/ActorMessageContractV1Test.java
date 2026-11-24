@@ -6,6 +6,8 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Stage 1: executable receives checking, parsed but denied sends effects. */
@@ -92,6 +94,58 @@ final class ActorMessageContractV1Test {
                 "define actor Worker receives String receives int as end"));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
                 "define actor Worker sends String sends int as end"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "declare actor Worker emits String emits int;"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "define actor Worker receives String;"));
+    }
+
+    @Test void declaredActorPreservesAllContractTypesAndStillChecksSends() {
+        String source = """
+                declare actor Router sends bool emits int receives String;
+                mtd (Router self) receive(ActorMail<String> mail): void { self.send(1); }
+                """;
+        Ast.ActorMessageContract protocol = actor(source).actorMessageContract();
+        assertEquals("String", protocol.receives().name());
+        assertEquals("bool", protocol.sends().name());
+        assertEquals("int", protocol.emits().name());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(denied.getMessage().contains("ACTOR_SENDS_EFFECT_UNSUPPORTED"));
+    }
+
+    @Test void emitsChecksTheValueAndTypesTheConsumerSide() {
+        String source = """
+                define actor Worker emits int as
+                  receive(ActorMail<String> mail): void { self.send(4); }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val ActorOutputStream<int> outputs = worker.outputs;
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source.replace("self.send(4)", "self.send(\"bad\")"))));
+        assertTrue(denied.getMessage().contains("emits contract"));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                source.replace("ActorOutputStream<int>", "ActorOutputStream<String>"))));
+    }
+
+    @Test void inheritedOutputContractCannotBeErasedOrInvented() {
+        String source = """
+                define actor Base emits int as
+                  receive(ActorMail<String> mail): void { self.send(4); }
+                end
+                define actor Child emits int extends Base as end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        for (String child : List.of("Child", "Child emits String")) {
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source.replace("Child emits int", child))));
+            assertTrue(denied.getMessage().contains("emits contract must be preserved"));
+        }
     }
 
     @Test void annotationsDoNotDiscardProtocolMetadata() {

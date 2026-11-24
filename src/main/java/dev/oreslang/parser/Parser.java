@@ -4,7 +4,9 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.StaticProxySynthesis;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static dev.oreslang.parser.Token.Type.*;
 
@@ -442,7 +444,11 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (isContextualIdentifier("declare")) {
-                rootForwards.add(parseForwardType(annotations, modifiers));
+                if (isDeclaredActorHead()) {
+                    rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
+                } else {
+                    rootForwards.add(parseForwardType(annotations, modifiers));
+                }
                 continue;
             }
 
@@ -492,6 +498,10 @@ public final class Parser {
                 }
                 if (isExternalActorMethodHead()) {
                     rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                    continue;
+                }
+                if (isActorStateAttachmentHead()) {
+                    rootDeclarations.add(parseActorStateAttachment(annotations, modifiers));
                     continue;
                 }
                 if (isProtectedDeclarationHead()) {
@@ -567,6 +577,7 @@ public final class Parser {
             rootDeclarations.add(declaration);
         }
 
+        rootDeclarations = assembleDeclaredActors(rootDeclarations);
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         validateExports(exports, rootDeclarations);
         if (!rootDeclarations.isEmpty()) {
@@ -836,6 +847,7 @@ public final class Parser {
                 if (declaration != null) declarations.add(declaration);
             }
             consume(END, "expected 'end' to close module " + name);
+            declarations = assembleDeclaredActors(declarations);
             validateForwardTypes(forwards, declarations, "module " + name);
         } finally {
             moduleForwards = enclosing;
@@ -900,6 +912,7 @@ public final class Parser {
         }
 
         if (isContextualIdentifier("declare")) {
+            if (isDeclaredActorHead()) return parseDeclaredActor(annotations, modifiers);
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
             return null;
@@ -950,6 +963,9 @@ public final class Parser {
             }
             if (isExternalActorMethodHead()) {
                 return parseExternalActorMethod(annotations, modifiers);
+            }
+            if (isActorStateAttachmentHead()) {
+                return parseActorStateAttachment(annotations, modifiers);
             }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
@@ -1007,9 +1023,7 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         rejectUnsupportedAcceleratorSyntax();
-        // Allow 'pub mtd (Actor self) method(...)' without a redundant
-        // 'define'. Bare 'mtd' stays contextual, not a new global keyword.
-        if (modifiers.visibilitySeen && isExternalActorMethodHead()) {
+        if (isExternalActorMethodHead()) {
             return parseExternalActorMethod(annotations, modifiers);
         }
         if (isLegacyFnSpelling()) {
@@ -1325,15 +1339,16 @@ public final class Parser {
         consume(LPAREN, "external receiver method requires '(Actor receiver)'");
         Ast.TypeRef receiverType = parseTypeRef();
         if (receiverType.inferArguments() || !receiverType.arguments().isEmpty()
-                || receiverType.isBorrow()) {
+                || receiverType.isBorrow() || receiverType.isUnion()) {
             throw error(previous(), "external receiver must be a non-generic nominal actor");
         }
-        String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
+        String receiverName = match(SELF) ? previous().lexeme()
+                : consume(IDENT, "expected external receiver binding name").lexeme();
         consume(RPAREN, "expected ')' after external actor receiver");
         if (receiverFirst) {
             name = consumeCallableName("expected external actor method name after receiver");
         }
-        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
+        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_throws", "on_raise",
                 "on_recover").contains(name)) {
             throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
         }
@@ -1654,9 +1669,9 @@ public final class Parser {
      * allocation primitive. Actor construction/spawn must still be lowered by
      * the runtime before source programs may instantiate actor classes.
      */
-    private record ActorPrefix(Ast.ActorTransport transport, boolean serial) {
+    private record ActorPrefix(Ast.ActorTransport transport, boolean serial, boolean stream) {
         private static final ActorPrefix DEFAULT =
-                new ActorPrefix(Ast.ActorTransport.GENERIC, false);
+                new ActorPrefix(Ast.ActorTransport.GENERIC, false, false);
     }
 
     /**
@@ -1666,12 +1681,22 @@ public final class Parser {
      */
     private ActorPrefix parseActorPrefix() {
         boolean serial = false;
+        boolean stream = false;
+        Token unary = null;
         Ast.ActorTransport transport = Ast.ActorTransport.GENERIC;
         boolean recognized = false;
         for (;;) {
             if (matchContextualIdentifier("serial")) {
                 if (serial) throw error(previous(), "duplicate serial actor modifier");
                 serial = true;
+                recognized = true;
+            } else if (matchContextualIdentifier("stream")) {
+                if (stream || unary != null) throw error(previous(), "actor requires one reply role");
+                stream = true;
+                recognized = true;
+            } else if (matchContextualIdentifier("unary")) {
+                if (unary != null || stream) throw error(previous(), "actor requires one reply role");
+                unary = previous();
                 recognized = true;
             } else if (matchContextualIdentifier("http")) {
                 if (transport != Ast.ActorTransport.GENERIC)
@@ -1692,8 +1717,16 @@ public final class Parser {
             } else break;
         }
         if (recognized && !check(ACTOR) && !check(ISOACTOR))
-            throw error(peek(), "serial/http/tcp/websocket modifiers require an actor declaration");
-        return new ActorPrefix(transport, serial);
+            throw error(peek(), "actor qualifiers require an actor declaration");
+        if (unary != null) {
+            String detail = switch (transport) {
+                case TCP, WEBSOCKET -> "requires an explicit framing and reply-correlation adapter";
+                case HTTP -> "requires typed HTTP exchange and reply lowering";
+                case GENERIC -> "requires typed request and reply lowering";
+            };
+            throw error(unary, "ACTOR_UNARY_UNSUPPORTED: unary actor " + detail);
+        }
+        return new ActorPrefix(transport, serial, stream);
     }
 
     private Ast.Decl parseDefinedActorClass(
@@ -1713,6 +1746,120 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
         return parseActorClass(kind, modifiers.visibility, prefix);
+    }
+
+    private boolean isDeclaredActorHead() {
+        int next = current + 1;
+        while (next < tokens.size()) {
+            Token token = tokens.get(next++);
+            if (token.type() == ACTOR || token.type() == ISOACTOR) return true;
+            if (token.type() != PUB && token.type() != PRIVATE
+                    && !java.util.Set.of("serial", "http", "tcp", "websocket", "ws",
+                            "shared", "untrusted", "unary", "stream", "proxy", "virtual",
+                            "supervisor").contains(token.lexeme())) return false;
+        }
+        return false;
+    }
+
+    private Ast.DeclaredActorHeader parseDeclaredActor(List<Ast.Annotation> annotations,
+                                                      Modifiers before) {
+        advance(); // declare
+        validateNoModifiers(before, "actor declarations before 'declare'");
+        Modifiers modifiers = parseModifiers();
+        rejectUnloweredRuntimeEntityDeclaration();
+        ActorPrefix prefix = parseActorPrefix();
+        if (!match(ACTOR, ISOACTOR)) throw error(peek(), "expected actor after 'declare'");
+        Token actor = previous();
+        Ast.ActorKind kind = resolveActorKind(actor, actor.type() == ISOACTOR, modifiers);
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                || modifiers.isAbstract) {
+            throw error(actor, "actor declarations accept only visibility and actor-kind modifiers");
+        }
+        rejectCallableStructuralAnnotation(annotations, "actor declarations");
+        rejectDiscardedDeclarationAnnotations(annotations, "actor declarations");
+        String name = consumeTypeDeclarationName("expected actor name");
+        Ast.ActorMessageContract protocol = parseActorMessageContract();
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        consume(SEMICOLON, "actor declaration must end with ';'");
+        return new Ast.DeclaredActorHeader(name, modifiers.visibility, kind, interfaces,
+                new Ast.ActorConcurrency(prefix.transport(), 1, 1, prefix.serial(), prefix.stream()),
+                protocol);
+    }
+
+    private boolean isActorStateAttachmentHead() {
+        return isContextualIdentifier("state") && current + 1 < tokens.size()
+                && tokens.get(current + 1).lexeme().equals("on");
+    }
+
+    private Ast.ActorStateAttachment parseActorStateAttachment(List<Ast.Annotation> annotations,
+                                                              Modifiers modifiers) {
+        validateNoModifiers(modifiers, "actor state attachments");
+        rejectDiscardedDeclarationAnnotations(annotations, "actor state attachments");
+        advance(); // state
+        advance(); // on
+        consume(ACTOR, "expected 'actor' after 'define state on'");
+        String name = consumeTypeDeclarationName("expected actor name after 'define state on actor'");
+        consume(AS, "expected 'as' before attached actor state");
+        List<Ast.ProtectedStateField> fields = parseSealedActorState();
+        match(SEMICOLON);
+        return new Ast.ActorStateAttachment(name, fields);
+    }
+
+    private List<Ast.Decl> assembleDeclaredActors(List<Ast.Decl> declarations) {
+        Map<String, Ast.DeclaredActorHeader> headers = new LinkedHashMap<>();
+        for (Ast.Decl declaration : declarations) {
+            if (declaration instanceof Ast.DeclaredActorHeader header
+                    && headers.putIfAbsent(header.name(), header) != null) {
+                throw error(previous(), "duplicate actor declaration '" + header.name() + "'");
+            }
+        }
+        Map<String, Ast.ActorStateAttachment> state = new LinkedHashMap<>();
+        Map<String, List<Ast.MethodDecl>> methods = new LinkedHashMap<>();
+        List<Ast.Decl> assembled = new ArrayList<>(declarations.size());
+        for (Ast.Decl declaration : declarations) {
+            if (declaration instanceof Ast.ActorStateAttachment attachment) {
+                if (!headers.containsKey(attachment.actorName())) {
+                    throw error(previous(), "state attachment requires 'declare actor "
+                            + attachment.actorName() + "' in the same scope");
+                }
+                if (state.putIfAbsent(attachment.actorName(), attachment) != null) {
+                    throw error(previous(), "duplicate sealed actor state for '" + attachment.actorName() + "'");
+                }
+            } else if (declaration instanceof Ast.ExternalActorMethodDecl method
+                    && headers.containsKey(method.actorName())) {
+                if (!method.receiverName().equals("self")) {
+                    throw error(previous(), "methods on a declared actor require a 'self' receiver");
+                }
+                if (method.name().equals("tear_down")) {
+                    throw error(previous(), "attached actor tear_down requires checked lifecycle lowering");
+                }
+                methods.computeIfAbsent(method.actorName(), ignored -> new ArrayList<>())
+                        .add(new Ast.MethodDecl(method.name(), method.visibility(), false, false,
+                                false, false, null, List.of(), method.parameters(),
+                                method.returnType(), List.of(), method.body()));
+            } else {
+                String name = switch (declaration) {
+                    case Ast.ClassDecl klass -> klass.name();
+                    case Ast.InterfaceDecl iface -> iface.name();
+                    case Ast.TypeAliasDecl alias -> alias.name();
+                    case Ast.StandaloneActorDecl actor -> actor.name();
+                    default -> null;
+                };
+                if (name != null && headers.containsKey(name)) {
+                    throw error(previous(), "duplicate actor/type identity '" + name + "'");
+                }
+                assembled.add(declaration);
+            }
+        }
+        return assembled.stream().map(declaration -> {
+            if (!(declaration instanceof Ast.DeclaredActorHeader header)) return declaration;
+            Ast.ActorStateAttachment attached = state.get(header.name());
+            return new Ast.ClassDecl(header.name(), header.visibility(), false, header.kind(),
+                    List.of(), List.of(), header.interfaces(), List.of(), null,
+                    methods.getOrDefault(header.name(), List.of()), header.concurrency(),
+                    attached == null ? List.of() : attached.fields(), header.messageContract());
+        }).toList();
     }
 
     /** Preserve first-class syntax; executable lowering stays type-gated. */
@@ -1918,22 +2065,7 @@ public final class Parser {
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
-        // 'receives' and 'sends' are contextual actor-header keywords. Do
-        // not steal existing method, local or field identifiers in unrelated
-        // syntax; declaration order is arbitrary but duplicates are errors.
-        Ast.TypeRef receives = null;
-        Ast.TypeRef sends = null;
-        while (isContextualIdentifier("receives") || isContextualIdentifier("sends")) {
-            Token clause = advance();
-            Ast.TypeRef declared = parseTypeRef();
-            if (clause.lexeme().equals("receives")) {
-                if (receives != null) throw error(clause, "duplicate actor receives clause");
-                receives = declared;
-            } else {
-                if (sends != null) throw error(clause, "duplicate actor sends clause");
-                sends = declared;
-            }
-        }
+        Ast.ActorMessageContract protocol = parseActorMessageContract();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         // Actors have one runtime-owned mailbox, one lifecycle and one state
         // ownership domain. Multiple actor superclasses would merge those
@@ -1949,9 +2081,12 @@ public final class Parser {
         // without defining an implicit runtime actor, empty class or alias.
         // Actual actor-contract conformance remains a separate checked gate.
         if (check(SEMICOLON)) {
+            if (protocol.declared()) {
+                throw error(peek(), "message clauses on a semicolon actor require 'declare actor'");
+            }
             if (!generics.isEmpty() || !parents.isEmpty()
                     || actorKind != Ast.ActorKind.SHARED
-                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial() || prefix.stream()) {
                 throw error(peek(), "semicolon actor declarations require a plain "
                         + "non-generic actor without transport or inheritance modifiers");
             }
@@ -1966,9 +2101,9 @@ public final class Parser {
         if (check(AS) && current + 2 < tokens.size()
                 && tokens.get(current + 1).type() == IDENT
                 && tokens.get(current + 2).type() == SEMICOLON) {
-            if (!generics.isEmpty() || !parents.isEmpty() || !interfaces.isEmpty()
+            if (!generics.isEmpty() || !parents.isEmpty() || !interfaces.isEmpty() || protocol.declared()
                     || actorKind != Ast.ActorKind.SHARED
-                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial() || prefix.stream()) {
                 throw error(peek(), "standalone actor declarations currently require a plain "
                         + "non-generic actor without transport or inheritance modifiers");
             }
@@ -1996,9 +2131,9 @@ public final class Parser {
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
-            Modifiers mods = parseModifiers();
+            Modifiers mods = parseModifiers(true);
             if (match(DEFINE)) {
-                mods = mergeModifiers(mods, parseModifiers());
+                mods = mergeModifiers(mods, parseModifiers(true));
             }
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
                 if (declaredSealedState)
@@ -2010,36 +2145,7 @@ public final class Parser {
                     throw error(peek(), "sealed actor state cannot have modifiers or annotations");
                 declaredSealedState = true;
                 advance(); // contextual 'state', not an actor field
-                consume(LBRACE, "expected '{' after actor state");
-                while (!check(RBRACE) && !check(EOF)) {
-                    if (sealedStateFields.size() >= 64)
-                        throw error(peek(), "sealed actor state exceeds 64-field bound");
-                    consume(LET, "sealed actor state requires private 'let' fields");
-                    Ast.TypeRef type = parseTypeRef();
-                    if (!type.arguments().isEmpty()
-                            || (!type.name().equals("int") && !type.name().equals("bool")))
-                        throw error(previous(), "sealed actor state v1 requires scalar int/bool fields");
-                    String fieldName = consume(IDENT, "expected sealed actor state field name").lexeme();
-                    if (sealedStateFields.stream().anyMatch(x -> x.name().equals(fieldName)))
-                        throw error(previous(), "duplicate sealed actor state field '" + fieldName + "'");
-                    if (!match(EQUAL, COLON))
-                        throw error(peek(), "sealed actor state field needs a literal initializer");
-                    Ast.Expr initializer = parseExpression();
-                    if (!(initializer instanceof Ast.LiteralExpr literal))
-                        throw error(previous(), "sealed actor state initializer must be a literal");
-                    // A literal AST node alone is not enough: it could hold
-                    // a String, float or bool in an int slot (or vice versa).
-                    // With the physical state layout still unlowered, enforce
-                    // the exact supported scalar representation at admission.
-                    Object initialValue = literal.value();
-                    if ((type.name().equals("int") && !(initialValue instanceof Long))
-                            || (type.name().equals("bool") && !(initialValue instanceof Boolean)))
-                        throw error(previous(), "sealed actor state initializer type must match "
-                                + type.name());
-                    consume(SEMICOLON, "sealed actor state field requires ';'");
-                    sealedStateFields.add(new Ast.ProtectedStateField(fieldName, type, initializer));
-                }
-                consume(RBRACE, "unterminated sealed actor state container");
+                sealedStateFields.addAll(parseSealedActorState());
                 if (sealedStateFields.isEmpty())
                     throw error(previous(), "sealed actor state must contain at least one field");
                 continue;
@@ -2248,8 +2354,57 @@ public final class Parser {
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
-                        prefix.serial()),
-                sealedStateFields, new Ast.ActorMessageContract(receives, sends));
+                        prefix.serial(), prefix.stream()),
+                sealedStateFields, protocol);
+    }
+
+    private Ast.ActorMessageContract parseActorMessageContract() {
+        // These remain identifiers outside actor headers.
+        Map<String, Ast.TypeRef> clauses = new LinkedHashMap<>();
+        while (isContextualIdentifier("receives") || isContextualIdentifier("sends")
+                || isContextualIdentifier("emits")) {
+            Token clause = advance();
+            if (clauses.putIfAbsent(clause.lexeme(), parseTypeRef()) != null) {
+                throw error(clause, "duplicate actor " + clause.lexeme() + " clause");
+            }
+        }
+        return new Ast.ActorMessageContract(clauses.get("receives"), clauses.get("sends"),
+                clauses.get("emits"));
+    }
+
+    private List<Ast.ProtectedStateField> parseSealedActorState() {
+        List<Ast.ProtectedStateField> sealedStateFields = new ArrayList<>();
+        consume(LBRACE, "expected '{' after actor state");
+        while (!check(RBRACE) && !check(EOF)) {
+            if (sealedStateFields.size() >= 64)
+                throw error(peek(), "sealed actor state exceeds 64-field bound");
+            consume(LET, "sealed actor state requires private 'let' fields");
+            Ast.TypeRef type = parseTypeRef();
+            if (type.isBorrow() || !type.arguments().isEmpty()
+                    || (!type.name().equals("int") && !type.name().equals("bool")))
+                throw error(previous(), "sealed actor state v1 requires scalar int/bool fields");
+            String fieldName = consume(IDENT, "expected sealed actor state field name").lexeme();
+            if (sealedStateFields.stream().anyMatch(x -> x.name().equals(fieldName)))
+                throw error(previous(), "duplicate sealed actor state field '" + fieldName + "'");
+            if (!match(EQUAL, COLON))
+                throw error(peek(), "sealed actor state field needs a literal initializer");
+            Ast.Expr initializer = parseExpression();
+            if (!(initializer instanceof Ast.LiteralExpr literal))
+                throw error(previous(), "sealed actor state initializer must be a literal");
+            // A literal AST node alone is not enough: it could hold
+            // a String, float or bool in an int slot (or vice versa).
+            // With the physical state layout still unlowered, enforce
+            // the exact supported scalar representation at admission.
+            Object initialValue = literal.value();
+            if ((type.name().equals("int") && !(initialValue instanceof Long))
+                    || (type.name().equals("bool") && !(initialValue instanceof Boolean)))
+                throw error(previous(), "sealed actor state initializer type must match "
+                        + type.name());
+            consume(SEMICOLON, "sealed actor state field requires ';'");
+            sealedStateFields.add(new Ast.ProtectedStateField(fieldName, type, initializer));
+        }
+        consume(RBRACE, "unterminated sealed actor state container");
+        return sealedStateFields;
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -2921,6 +3076,10 @@ public final class Parser {
     }
 
     private Modifiers parseModifiers() {
+        return parseModifiers(false);
+    }
+
+    private Modifiers parseModifiers(boolean actorMember) {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean suspends = false;
@@ -2953,7 +3112,7 @@ public final class Parser {
             // fall-through parse error or a silently unsynchronized function.
             // A method literally named critical(...) is left to the normal
             // callable-name path during migration.
-            if (isContextualIdentifier("critical") && !checkNext(LPAREN)) {
+            if (!actorMember && isContextualIdentifier("critical") && !checkNext(LPAREN)) {
                 if (suspends || checkNext(SUSPENDS)) {
                     throw error(peek(), "E_CALLABLE_MODIFIERS: critical suspends callable is forbidden");
                 }

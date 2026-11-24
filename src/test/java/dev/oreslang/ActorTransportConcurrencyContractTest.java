@@ -6,6 +6,8 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorTransportConcurrencyContractTest {
@@ -98,6 +100,18 @@ final class ActorTransportConcurrencyContractTest {
                 actor("define ws actor Socket as end").actorConcurrency().transport());
         assertEquals(Ast.ActorTransport.GENERIC,
                 actor("define actor Socket as end").actorConcurrency().transport());
+    }
+
+    @Test void unaryRolesRequireTheirOwnReplyRuntime() {
+        Map<String, String> cases = Map.of(
+                "define serial unary actor Endpoint as end", "typed request and reply",
+                "declare unary http actor Endpoint;", "typed HTTP exchange",
+                "define unary tcp actor Endpoint as end", "explicit framing and reply-correlation");
+        cases.forEach((source, diagnostic) -> {
+            var error = assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+            assertTrue(error.getMessage().contains("ACTOR_UNARY_UNSUPPORTED"), error::getMessage);
+            assertTrue(error.getMessage().contains(diagnostic), error::getMessage);
+        });
     }
 
     @Test void parallelConfigurationParsesButCannotEscapeSingleWriterRuntimeGate() {

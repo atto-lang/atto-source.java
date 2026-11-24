@@ -95,6 +95,43 @@ final class SourceActorOutputStreamExecutionTest {
                 run(program, "source-actor-output-for-await.ores"));
     }
 
+    @Test
+    void inlineAndDeclaredSerialStreamActorsHaveTheSameGuestLifecycleAndOutput() throws Exception {
+        String inline = """
+                define serial stream actor Worker receives int emits int as
+                  double_value(int input): int { return input * 2; }
+                  receive(ActorMail<int> mail): void {
+                    self.send(self.double_value(mail.value));
+                    self.end();
+                  }
+                end
+                """;
+        String split = """
+                mtd (Worker self) double_value(int input): int { return input * 2; }
+                declare serial stream actor Worker emits int receives int;
+                define state on actor Worker as {}
+                mtd (Worker self) receive(ActorMail<int> mail): void {
+                  self.send(self.double_value(mail.value));
+                  self.end();
+                }
+                """;
+        String main = """
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send(21);
+                  val ActorOutputStream<int> outputs = worker.outputs;
+                  val step = await outputs.next();
+                  stdio.stdout.write(step.value.unwrap().value);
+                  await worker.get_done();
+                  val terminal = await outputs.next();
+                  stdio.stdout.write(terminal.done);
+                }
+                """;
+        assertEquals("42true", run(inline + main, "inline-serial-stream.atto"));
+        assertEquals("42true", run(split + main, "declared-serial-stream.atto"));
+    }
+
     private static String run(String program, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
