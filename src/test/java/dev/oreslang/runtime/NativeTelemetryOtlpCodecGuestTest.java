@@ -27,12 +27,12 @@ final class NativeTelemetryOtlpCodecGuestTest {
                         "0123456789abcdef0123456789abcdef",
                         "1111111111111111", "",
                         201, 2, 1780000000000000000, 1780000000000000100, 200, false);
-                      val actor = telemetry.completed_span(
+                      val actor_span = telemetry.completed_span(
                         "0123456789abcdef0123456789abcdef",
                         "2222222222222222", "1111111111111111",
                         501, 1, 1780000000000000010, 1780000000000000090, 0, true);
                       batch.offer(server);
-                      batch.offer(actor);
+                      batch.offer(actor_span);
                       stdio.println(batch.to_otlp_json());
                       stdio.println(batch.count());
                       batch.clear_acked();

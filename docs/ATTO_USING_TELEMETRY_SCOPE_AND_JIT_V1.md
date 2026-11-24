@@ -215,9 +215,10 @@ cancellation. GET/HEAD remain supported without bodies. A true native
 canonical loopback are still separate compatibility/security gates.
 
 The native `ores.std/telemetry` module now provides a **pure**
-OTLP/HTTP protobuf-JSON encoder (`CompletedSpan.to_otlp_span_json`,
-`SpanBatch.to_otlp_json` for batches of 1..64) and
-`post_otlp_json_async(endpoint, json)`. The encoder emits lowercase
+OTLP/HTTP protobuf-JSON encoder (`CompletedSpan.to_otlp_span_json` and
+`SpanBatch.to_otlp_json` for batches of 1..64). To post an encoded batch,
+import `post_otlp_json_async(endpoint, json)` from `atto.std/telemetry_http`.
+Only callers that import the transport need HTTP authority. The encoder emits lowercase
 hex W3C IDs, numeric span kinds and **quoted decimal** nanosecond times per
 the [current OTLP JSON specification](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding).
 It fixes low-cardinality operation names and carries no free-form attributes,

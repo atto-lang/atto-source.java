@@ -1,0 +1,12 @@
+// Explicit network transport for callers exporting encoded telemetry batches.
+define module telemetry_http as
+  // A collector must check OTLP partialSuccess before acknowledging a batch.
+  // This helper reports the HTTP status under the caller's network policy.
+  pub async fnc post_otlp_json_async(String endpoint, String json): int {
+    val response = await http.request("POST", endpoint,
+        [("Content-Type", "application/json")], json);
+    val int status = response.status;
+    await response.close();
+    return status;
+  }
+end

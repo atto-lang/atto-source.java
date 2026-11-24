@@ -54,10 +54,11 @@ final class NativeTelemetryActorOtlpGuestTest {
             Path source = root.resolve("native-collector-once.atto");
             Files.writeString(source, """
                     import module telemetry from "ores.std/telemetry";
+                    import fnc post_otlp_json_async from "atto.std/telemetry_http";
 
                     define actor TelemetryCollector as
                       receive(ActorMail<String> mail): void {
-                        val code = await telemetry.post_otlp_json_async(
+                        val code = await imports::post_otlp_json_async(
                           "http://127.0.0.1:%d/v1/traces", mail.value);
                         stdio.println(code);
                         self.end();

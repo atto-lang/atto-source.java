@@ -47,7 +47,7 @@ final class GeneratorLanguageTest {
                   }
                   return;
                 }
-                pub async routine main(): void {
+                pub susp fnc main(): void {
                   for await const item of values() {
                     stdio.stdout.write(item);
                     break;
