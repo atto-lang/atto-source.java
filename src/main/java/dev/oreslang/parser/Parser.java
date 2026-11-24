@@ -2,6 +2,7 @@ package dev.oreslang.parser;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.StaticProxySynthesis;
+import dev.oreslang.types.RefinementProofs.Interval;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -34,6 +35,11 @@ public final class Parser {
     private final Map<String, VerifiedQuantityUnit> dimensions = new HashMap<>();
     private final Map<String, VerifiedQuantityUnit> units = new HashMap<>();
     private final Set<String> canonicalUnitDimensions = new HashSet<>();
+    private final Map<String, RefinedQuantity> refinementAliases = new HashMap<>();
+    private final Map<String, VerifiedFunction> verifiedFunctions = new HashMap<>();
+    private final Map<String, RefinedQuantity> verifiedLocals = new HashMap<>();
+    private final Map<String, Set<String>> verifiedUpperBounds = new HashMap<>();
+    private boolean verifiedCallable;
     private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
     private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
@@ -439,6 +445,14 @@ public final class Parser {
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
         parseQuantityDeclarations();
+        if (atRefinedQuantityAlias()) {
+            if (namespace != null || !imports.isEmpty()) {
+                throw error(peek(), "E_REFINEMENT_SCOPE: refined quantities currently require a standalone source file");
+            }
+            var declarations = parseVerifiedFunctions();
+            return new Ast.Program(null, List.of(),
+                    List.of(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), declarations)), List.of());
+        }
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
@@ -7361,7 +7375,261 @@ public final class Parser {
         return false;
     }
 
-    private record QuantityTerm(Ast.Expr expression, VerifiedQuantityUnit unit, int depth) { }
+    private static final Ast.TypeRef VERIFIED_CARRIER = Ast.TypeRef.simple("int");
+
+    private record RefinedQuantity(VerifiedQuantityUnit unit, Interval range) {
+        private static final RefinedQuantity SCALAR =
+                new RefinedQuantity(VerifiedQuantityUnit.SCALAR, Interval.anyI64());
+
+        RefinedQuantity constrain(String operator, long bound) {
+            return new RefinedQuantity(unit, range.constrain(operator, bound));
+        }
+
+        void require(RefinedQuantity actual, String category, String operation) {
+            if (unit.equals(VerifiedQuantityUnit.SCALAR) && !actual.unit.equals(unit)) {
+                throw new IllegalArgumentException("E_UNIT_ERASURE: " + operation + " requires dimensionless scale one");
+            }
+            unit.requireCompatible(actual.unit);
+            if (!actual.range.entails(range)) {
+                throw new IllegalArgumentException(category + ": " + operation
+                        + " requires " + range + " but only " + actual.range + " is proven");
+            }
+        }
+    }
+
+    private record VerifiedFunction(String loweredName, List<RefinedQuantity> parameters,
+                                    RefinedQuantity result, List<Integer> upperParameters) { }
+
+    private record QuantityTerm(Ast.Expr expression, RefinedQuantity type, int depth,
+                                Set<String> upperBounds) {
+        QuantityTerm(Ast.Expr expression, RefinedQuantity type, int depth) {
+            this(expression, type, depth, Set.of());
+        }
+        VerifiedQuantityUnit unit() { return type.unit(); }
+    }
+
+    private boolean atRefinedQuantityAlias() {
+        return check(TYPE) && current + 4 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == EQUAL
+                && tokens.get(current + 3).lexeme().equals("int")
+                && tokens.get(current + 4).lexeme().equals("where");
+    }
+
+    private void parseRefinedQuantityAlias() {
+        consume(TYPE, "expected 'type'");
+        Token name = consume(IDENT, "expected refinement name");
+        consume(EQUAL, "expected '=' before refinement carrier");
+        consumeContextualIdentifier("int", "expected signed-i64 refinement carrier");
+        consumeContextualIdentifier("where", "expected 'where' before refinement");
+        VerifiedQuantityUnit unit = null;
+        var range = Interval.anyI64();
+        do {
+            if (isContextualIdentifier("units")) {
+                if (unit != null) throw error(peek(), "E_UNIT_DUPLICATE: repeated unit clause");
+                advance();
+                consumeContextualIdentifier("in", "expected 'in' after units");
+                unit = readQuantityUnit();
+            } else {
+                consume(SELF, "E_REFINEMENT_PREDICATE: expected self");
+                String operator = readQuantityComparison();
+                range = range.constrain(operator, readSignedQuantityInteger());
+            }
+            if (!isContextualIdentifier("and")) break;
+            advance();
+        } while (true);
+        consume(SEMICOLON, "expected ';' after refinement");
+        if (refinementAliases.size() >= 128) throw error(name, "E_REFINEMENT_LIMIT: too many aliases");
+        if (name.lexeme().equals("int") || refinementAliases.putIfAbsent(name.lexeme(),
+                new RefinedQuantity(unit == null ? VerifiedQuantityUnit.SCALAR : unit, range)) != null) {
+            throw error(name, "E_REFINEMENT_DUPLICATE: duplicate refinement name");
+        }
+    }
+
+    private String readQuantityComparison() {
+        if (match(GT, GTE, LT, LTE, EQ)) return previous().lexeme();
+        throw error(peek(), "E_REFINEMENT_PREDICATE: expected a signed interval comparison");
+    }
+
+    private long readSignedQuantityInteger() {
+        boolean negative = match(MINUS);
+        Token number = consume(INT, "expected an integer constant");
+        return negative ? parseSignedI64(new Token(INT, "-" + number.lexeme(), number.line(), number.column()))
+                : parseSignedI64(number);
+    }
+
+    private RefinedQuantity readRefinedType(Token name) {
+        if (name.lexeme().equals("int")) return RefinedQuantity.SCALAR;
+        var type = refinementAliases.get(name.lexeme());
+        if (type == null) throw error(name, "E_REFINEMENT_NAME: unknown verified scalar type");
+        return type;
+    }
+
+    private RefinedQuantity readVerifiedBound(RefinedQuantity type, String operator) {
+        long value = readSignedQuantityInteger();
+        Token number = previous();
+        var unit = VerifiedQuantityUnit.SCALAR;
+        if (check(LT) && adjacent(number, peek())) {
+            advance();
+            unit = readQuantityUnit();
+            consume(GT, "expected '>' after contract unit");
+        }
+        type.unit().requireCompatible(unit);
+        return type.constrain(operator, value);
+    }
+
+    private Token verifiedName(String description) {
+        Token name = consume(IDENT, description);
+        if (name.type() != IDENT)
+            throw error(name, description);
+        return name;
+    }
+
+    private List<Ast.Decl> parseVerifiedFunctions() {
+        while (atRefinedQuantityAlias()) parseRefinedQuantityAlias();
+        List<Ast.Decl> functions = new ArrayList<>();
+        verifiedCallable = true;
+        boolean mainSeen = false;
+        while (!check(EOF)) {
+            if (functions.size() >= 64) throw error(peek(), "E_REFINEMENT_LIMIT: too many verified functions");
+            if (mainSeen) throw error(peek(), "E_REFINEMENT_SCOPE: main must be the final verified function");
+            boolean isPublic = match(PUB);
+            if (!isPublic) match(PRIVATE);
+            consume(FNC, "E_REFINEMENT_SCOPE: expected a verified function declaration");
+            Token name = verifiedName("expected a function name");
+            boolean isMain = name.lexeme().equals("main");
+            if (isPublic != isMain) {
+                throw error(name, "E_REFINEMENT_EXPORT: only the scalar main may be public");
+            }
+            if (verifiedFunctions.containsKey(name.lexeme())) {
+                throw error(name, "E_REFINEMENT_DUPLICATE: duplicate verified function");
+            }
+            verifiedLocals.clear();
+            verifiedUpperBounds.clear();
+            consume(LPAREN, "expected '('");
+            List<Ast.Param> parameters = new ArrayList<>();
+            if (!check(RPAREN)) {
+                do {
+                    if (parameters.size() >= 16) throw error(peek(), "E_REFINEMENT_LIMIT: too many parameters");
+                    var type = readRefinedType(consume(IDENT, "expected a parameter type"));
+                    Token param = verifiedName("expected a parameter name");
+                    if (verifiedLocals.putIfAbsent(param.lexeme(), type) != null)
+                        throw error(param, "E_REFINEMENT_DUPLICATE: duplicate parameter");
+                    verifiedUpperBounds.put(param.lexeme(), Set.of(param.lexeme()));
+                    parameters.add(new Ast.Param(VERIFIED_CARRIER, param.lexeme()));
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')'");
+            consume(ARROW, "expected '->' before verified result");
+            var result = readRefinedType(consume(IDENT, "expected a result type"));
+            if (isMain && (!parameters.isEmpty() || !result.equals(RefinedQuantity.SCALAR))) {
+                throw error(name, "E_REFINEMENT_EXPORT: main must have signature () -> int");
+            }
+            while (isContextualIdentifier("requires")) {
+                if (isMain) throw error(peek(), "E_REFINEMENT_EXPORT: main cannot require caller facts");
+                advance();
+                Token param = verifiedName("expected a parameter name in requires");
+                var type = verifiedLocals.get(param.lexeme());
+                if (type == null) throw error(param, "E_REFINEMENT_NAME: requires must name a parameter");
+                verifiedLocals.put(param.lexeme(), readVerifiedBound(type, readQuantityComparison()));
+            }
+            List<RefinedQuantity> required = parameters.stream()
+                    .map(param -> verifiedLocals.get(param.name())).toList();
+            final RefinedQuantity returnType = result;
+            List<Integer> upperParameters = new ArrayList<>();
+            while (isContextualIdentifier("ensures")) {
+                advance();
+                consumeContextualIdentifier("result", "E_REFINEMENT_PREDICATE: ensures must constrain result");
+                String comparison = readQuantityComparison();
+                if (comparison.equals("<=") && check(IDENT)) {
+                    Token param = verifiedName("expected a parameter name in ensures");
+                    int index = parameters.stream().map(Ast.Param::name).toList().indexOf(param.lexeme());
+                    if (index < 0) throw error(param, "E_REFINEMENT_NAME: ensures must name a parameter");
+                    result.unit().requireCompatible(required.get(index).unit());
+                    upperParameters.add(index);
+                } else {
+                    result = readVerifiedBound(result, comparison);
+                }
+            }
+
+            consume(LBRACE, "expected '{' after verified signature");
+            List<Ast.Stmt> body = new ArrayList<>();
+            while (match(VAL)) {
+                if (body.size() >= 128) throw error(peek(), "E_REFINEMENT_LIMIT: too many immutable bindings");
+                Token first = consume(IDENT, "expected a binding type or name");
+                String localName;
+                RefinedQuantity type;
+                if (match(COLON)) {
+                    localName = first.lexeme();
+                    type = readRefinedType(consume(IDENT, "expected a binding type"));
+                } else {
+                    type = readRefinedType(first);
+                    localName = verifiedName("expected a binding name").lexeme();
+                }
+                consume(EQUAL, "expected '=' before immutable initializer");
+                var term = parseQuantitySum(0);
+                type.require(term.type(), "E_REFINEMENT_BINDING", "binding " + localName);
+                consume(SEMICOLON, "expected ';' after immutable binding");
+                if (verifiedLocals.putIfAbsent(localName, term.type()) != null)
+                    throw error(first, "E_REFINEMENT_DUPLICATE: duplicate verified binding");
+                verifiedUpperBounds.put(localName, term.upperBounds());
+                body.add(new Ast.BindingStmt(Ast.BindingKind.VAL, VERIFIED_CARRIER, localName, term.expression(), false));
+            }
+            consume(RETURN, "E_REFINEMENT_BODY: expected an explicit return after immutable bindings");
+            var term = parseQuantitySum(0);
+            returnType.require(term.type(), "E_REFINEMENT_RETURN", "return from " + name.lexeme());
+            result.require(term.type(), "E_REFINEMENT_POSTCONDITION", "ensures of " + name.lexeme());
+            for (int upper : upperParameters) {
+                String parameter = parameters.get(upper).name();
+                if (!term.upperBounds().contains(parameter) && !term.type().range().atMost(required.get(upper).range())) {
+                    throw error(name, "E_REFINEMENT_POSTCONDITION: cannot prove result <= " + parameter);
+                }
+            }
+            consume(SEMICOLON, "expected ';' after return");
+            consume(RBRACE, "expected '}' after verified return");
+            body.add(new Ast.ReturnStmt(term.expression()));
+
+            String lowered = isMain ? "main" : "$verified$" + name.lexeme();
+            functions.add(new Ast.FunctionDecl(lowered, Ast.CallableKind.FNC,
+                    isPublic ? Ast.Visibility.PUBLIC : Ast.Visibility.PRIVATE, false,
+                    Ast.ActorKind.NONE, List.of(), parameters, VERIFIED_CARRIER, List.of(), body));
+            verifiedFunctions.put(name.lexeme(), new VerifiedFunction(lowered, required, result, List.copyOf(upperParameters)));
+            mainSeen = isMain;
+        }
+        if (!mainSeen) throw error(peek(), "E_REFINEMENT_EXPORT: verified source requires a public main");
+        return functions;
+    }
+
+    private QuantityTerm verifiedReference(int depth) {
+        Token name = verifiedName("expected an immutable value or a verified function name");
+        if (!match(LPAREN)) {
+            var type = verifiedLocals.get(name.lexeme());
+            if (type == null) throw error(name, "E_REFINEMENT_NAME: unknown immutable value");
+            return new QuantityTerm(new Ast.NameExpr(name.lexeme()), type, 0, verifiedUpperBounds.get(name.lexeme()));
+        }
+        var function = verifiedFunctions.get(name.lexeme());
+        if (function == null) throw error(name, "E_REFINEMENT_CALL: expected an earlier verified function");
+        List<Ast.Expr> arguments = new ArrayList<>();
+        Set<String> upperBounds = new HashSet<>();
+        int height = 1;
+        if (!check(RPAREN)) {
+            do {
+                int index = arguments.size();
+                if (index >= function.parameters().size()) throw error(name, "E_REFINEMENT_CALL: incorrect arity");
+                var argument = parseQuantitySum(depth + 1);
+                function.parameters().get(index).require(argument.type(),
+                        "E_REFINEMENT_PRECONDITION", "argument " + (index + 1) + " of " + name.lexeme());
+                arguments.add(argument.expression());
+                if (function.upperParameters().contains(index)) upperBounds.addAll(argument.upperBounds());
+                height = Math.max(height, argument.depth() + 1);
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after verified arguments");
+        if (arguments.size() != function.parameters().size()) throw error(name, "E_REFINEMENT_CALL: incorrect arity");
+        if (height > MAX_UNARY_NESTING) throw error(name, "E_UNIT_LIMIT: quantity expression is too deep");
+        return new QuantityTerm(new Ast.CallExpr(new Ast.NameExpr(function.loweredName()), arguments),
+                function.result(), height, Set.copyOf(upperBounds));
+    }
 
     private Ast.Expr parseQuantityReturn() {
         var term = parseQuantitySum(0);
@@ -7403,7 +7671,24 @@ public final class Parser {
                                         QuantityTerm right, VerifiedQuantityUnit unit) {
         int depth = Math.max(left.depth(), right.depth()) + 1;
         if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
-        return new QuantityTerm(new Ast.BinaryExpr(operator, left.expression(), right.expression()), unit, depth);
+        var leftRange = left.type().range();
+        var rightRange = right.type().range();
+        var range = switch (operator) {
+            case Ast.VerifiedI64.ADD -> leftRange.plusOnNormalResult(rightRange);
+            case Ast.VerifiedI64.SUBTRACT -> leftRange.minusOnNormalResult(rightRange);
+            case Ast.VerifiedI64.MULTIPLY -> leftRange.timesOnNormalResult(rightRange);
+            case Ast.VerifiedI64.DIVIDE -> leftRange.divideOnNormalResult(rightRange);
+            default -> throw new AssertionError("unexpected verified operator");
+        };
+        boolean boundedByLeft = switch (operator) {
+            case Ast.VerifiedI64.ADD -> rightRange.nonpositive();
+            case Ast.VerifiedI64.SUBTRACT -> rightRange.nonnegative();
+            case Ast.VerifiedI64.DIVIDE -> leftRange.nonnegative() && rightRange.positive()
+                    && right.unit().equals(VerifiedQuantityUnit.SCALAR);
+            default -> false;
+        };
+        return new QuantityTerm(new Ast.BinaryExpr(operator, left.expression(), right.expression()),
+                new RefinedQuantity(unit, range), depth, boundedByLeft ? left.upperBounds() : Set.of());
     }
 
     private QuantityTerm parseQuantityAtom(int depth) {
@@ -7421,9 +7706,10 @@ public final class Parser {
             }
             var term = parseQuantityAtom(depth + 1);
             return quantityBinary(Ast.VerifiedI64.SUBTRACT,
-                    new QuantityTerm(new Ast.LiteralExpr(0L), term.unit(), 0), term, term.unit());
+                    new QuantityTerm(new Ast.LiteralExpr(0L), new RefinedQuantity(term.unit(), Interval.exactly(0)), 0), term, term.unit());
         }
-        Token number = consume(INT, "E_UNIT_EXPRESSION: expected a closed integer quantity expression");
+        if (verifiedCallable && check(IDENT)) return verifiedReference(depth);
+        Token number = consume(INT, "E_UNIT_EXPRESSION: expected an integer quantity expression");
         return readQuantityLiteral(number, parseSignedI64(number));
     }
 
@@ -7444,7 +7730,7 @@ public final class Parser {
                 unit = target;
             }
         }
-        return new QuantityTerm(new Ast.LiteralExpr(value), unit, 0);
+        return new QuantityTerm(new Ast.LiteralExpr(value), new RefinedQuantity(unit, Interval.exactly(value)), 0);
     }
 
     private Ast.Expr parsePrimary() {
