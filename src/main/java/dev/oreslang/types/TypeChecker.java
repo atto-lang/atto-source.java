@@ -4416,6 +4416,12 @@ public final class TypeChecker {
             }
             Type right = typeOf(binary.right(), env, generics, self);
             return switch (binary.operator()) {
+                case Ast.VerifiedI64.ADD, Ast.VerifiedI64.SUBTRACT,
+                        Ast.VerifiedI64.MULTIPLY, Ast.VerifiedI64.DIVIDE -> {
+                    requireAssignable(left, Primitive.INT, "checked i64 left operand");
+                    requireAssignable(right, Primitive.INT, "checked i64 right operand");
+                    yield Primitive.INT;
+                }
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
                     requireAssignable(right, Primitive.BOOL, "logical operand");

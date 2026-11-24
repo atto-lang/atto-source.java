@@ -1626,6 +1626,16 @@ public final class Ast {
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
+
+    /** Internal scalar operations produced after quantity checking and unit erasure. */
+    public static final class VerifiedI64 {
+        public static final String ADD = "$verified_i64_add";
+        public static final String SUBTRACT = "$verified_i64_subtract";
+        public static final String MULTIPLY = "$verified_i64_multiply";
+        public static final String DIVIDE = "$verified_i64_divide";
+
+        private VerifiedI64() { }
+    }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }

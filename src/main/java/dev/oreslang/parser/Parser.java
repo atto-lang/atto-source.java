@@ -4,7 +4,11 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.StaticProxySynthesis;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static dev.oreslang.parser.Token.Type.*;
 
@@ -27,6 +31,9 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    private final Map<String, VerifiedQuantityUnit> dimensions = new HashMap<>();
+    private final Map<String, VerifiedQuantityUnit> units = new HashMap<>();
+    private final Set<String> canonicalUnitDimensions = new HashSet<>();
     private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
     private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
@@ -431,6 +438,7 @@ public final class Parser {
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
+        parseQuantityDeclarations();
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
@@ -4179,7 +4187,8 @@ public final class Parser {
                 advance();
                 return parseMaybe(true);
             }
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
+            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null
+                    : hasQuantitySuffixInReturn() ? parseQuantityReturn() : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
@@ -7271,6 +7280,171 @@ public final class Parser {
         } catch (NumberFormatException invalid) {
             throw error(token, "integer literal overflows signed 64-bit: " + literal);
         }
+    }
+
+    private void parseQuantityDeclarations() {
+        while (check(DEFINE) && checkNext(IDENT)
+                && (tokens.get(current + 1).lexeme().equals("dimension")
+                    || tokens.get(current + 1).lexeme().equals("unit"))) {
+            advance();
+            boolean dimension = advance().lexeme().equals("dimension");
+            Token declaration = consume(IDENT, "E_UNIT_NAME: expected a quantity name");
+            String name = declaration.lexeme();
+            if (dimensions.size() + units.size() >= 128) {
+                throw error(declaration, "E_UNIT_LIMIT: more than 128 quantity declarations");
+            }
+            if (dimensions.containsKey(name) || units.containsKey(name)) {
+                throw error(declaration, "E_UNIT_DUPLICATE: quantity name is already declared");
+            }
+            if (dimension) {
+                consume(SEMICOLON, "expected ';' after dimension declaration");
+                dimensions.put(name, VerifiedQuantityUnit.base(name));
+                continue;
+            }
+            consume(COLON, "expected ':' before a unit's dimension");
+            Token dimensionName = consume(IDENT, "E_UNIT_NAME: expected the declared dimension");
+            var base = dimensions.get(dimensionName.lexeme());
+            if (base == null) throw error(dimensionName, "E_UNIT_NAME: unknown dimension");
+            var unit = base;
+            if (match(EQUAL)) {
+                if (check(INT)) {
+                    long factor = readQuantityFactor();
+                    consume(STAR, "expected '*' after a unit scale factor");
+                    unit = readQuantityUnit().scale(factor, false);
+                } else {
+                    unit = readQuantityUnit();
+                    if (match(SLASH, STAR)) {
+                        boolean divide = previous().type() == SLASH;
+                        unit = unit.scale(readQuantityFactor(), divide);
+                    }
+                }
+                if (!unit.sameDimension(base)) {
+                    throw error(dimensionName, "E_UNIT_DIMENSION: derived unit has the wrong dimension");
+                }
+            } else if (!canonicalUnitDimensions.add(dimensionName.lexeme())) {
+                throw error(dimensionName, "E_UNIT_DUPLICATE: dimension already has a canonical unit");
+            }
+            consume(SEMICOLON, "expected ';' after unit declaration");
+            units.put(name, unit);
+        }
+    }
+
+    private VerifiedQuantityUnit readQuantityUnit() {
+        Token name = consume(IDENT, "E_UNIT_NAME: expected a unit name");
+        var unit = units.get(name.lexeme());
+        if (unit == null) throw error(name, "E_UNIT_NAME: unknown unit '" + name.lexeme() + "'");
+        return unit;
+    }
+
+    private long readQuantityFactor() {
+        Token factor = consume(INT, "E_UNIT_SCALE: expected a positive signed i64 factor");
+        long value;
+        try {
+            value = parseSignedI64(factor);
+        } catch (IllegalArgumentException malformed) {
+            throw error(factor, "E_UNIT_SCALE: expected a positive signed i64 factor");
+        }
+        if (value <= 0) throw error(factor, "E_UNIT_SCALE: expected a positive signed i64 factor");
+        return value;
+    }
+
+    private boolean hasQuantitySuffixInReturn() {
+        if (dimensions.isEmpty()) return false;
+        for (int i = current; i + 3 < tokens.size(); i++) {
+            Token token = tokens.get(i);
+            if (token.type() == SEMICOLON || token.type() == LBRACE || token.type() == RBRACE
+                    || token.type() == END || token.type() == RETURN) break;
+            if (token.type() == INT && tokens.get(i + 1).type() == LT
+                    && adjacent(token, tokens.get(i + 1))
+                    && tokens.get(i + 2).type() == IDENT && tokens.get(i + 3).type() == GT) return true;
+        }
+        return false;
+    }
+
+    private record QuantityTerm(Ast.Expr expression, VerifiedQuantityUnit unit, int depth) { }
+
+    private Ast.Expr parseQuantityReturn() {
+        var term = parseQuantitySum(0);
+        if (!term.unit().equals(VerifiedQuantityUnit.SCALAR)) {
+            throw error(peek(), "E_UNIT_ERASURE: an unannotated int requires dimensionless scale one");
+        }
+        return term.expression();
+    }
+
+    private QuantityTerm parseQuantitySum(int depth) {
+        var left = parseQuantityProduct(depth);
+        while (match(PLUS, MINUS)) {
+            Token op = previous();
+            var right = parseQuantityProduct(depth);
+            left.unit().requireCompatible(right.unit());
+            left = quantityBinary(op.type() == PLUS ? Ast.VerifiedI64.ADD : Ast.VerifiedI64.SUBTRACT,
+                    left, right, left.unit());
+        }
+        return left;
+    }
+
+    private QuantityTerm parseQuantityProduct(int depth) {
+        var left = parseQuantityAtom(depth);
+        while (match(STAR, SLASH)) {
+            Token op = previous();
+            var right = parseQuantityAtom(depth);
+            boolean divide = op.type() == SLASH;
+            if (divide && left.unit().equals(VerifiedQuantityUnit.SCALAR)
+                    && right.unit().equals(VerifiedQuantityUnit.SCALAR)) {
+                throw error(op, "E_UNIT_SCALAR_DIVISION: two plain int operands use ordinary division");
+            }
+            left = quantityBinary(divide ? Ast.VerifiedI64.DIVIDE : Ast.VerifiedI64.MULTIPLY,
+                    left, right, left.unit().combine(right.unit(), divide));
+        }
+        return left;
+    }
+
+    private QuantityTerm quantityBinary(String operator, QuantityTerm left,
+                                        QuantityTerm right, VerifiedQuantityUnit unit) {
+        int depth = Math.max(left.depth(), right.depth()) + 1;
+        if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
+        return new QuantityTerm(new Ast.BinaryExpr(operator, left.expression(), right.expression()), unit, depth);
+    }
+
+    private QuantityTerm parseQuantityAtom(int depth) {
+        if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
+        if (match(LPAREN)) {
+            var term = parseQuantitySum(depth + 1);
+            consume(RPAREN, "expected ')' after quantity expression");
+            return term;
+        }
+        if (match(PLUS)) return parseQuantityAtom(depth + 1);
+        if (match(MINUS)) {
+            if (check(INT) && !peek().lexeme().endsWith("_") && !peek().lexeme().contains("__")
+                    && peek().lexeme().replace("_", "").matches("0*9223372036854775808")) {
+                return readQuantityLiteral(advance(), Long.MIN_VALUE);
+            }
+            var term = parseQuantityAtom(depth + 1);
+            return quantityBinary(Ast.VerifiedI64.SUBTRACT,
+                    new QuantityTerm(new Ast.LiteralExpr(0L), term.unit(), 0), term, term.unit());
+        }
+        Token number = consume(INT, "E_UNIT_EXPRESSION: expected a closed integer quantity expression");
+        return readQuantityLiteral(number, parseSignedI64(number));
+    }
+
+    private QuantityTerm readQuantityLiteral(Token number, long value) {
+        var unit = VerifiedQuantityUnit.SCALAR;
+        if (check(LT) && adjacent(number, peek())) {
+            advance();
+            unit = readQuantityUnit();
+            consume(GT, "expected '>' after unit");
+            if (match(DOT)) {
+                consumeContextualIdentifier("to_unit", "expected '.to_unit' after quantity literal");
+                consume(LT, "expected '<' before conversion target");
+                var target = readQuantityUnit();
+                consume(GT, "expected '>' after conversion target");
+                consume(LPAREN, "expected '(' after conversion type");
+                consume(RPAREN, "expected ')' after conversion call");
+                value = unit.convertExact(value, target);
+                unit = target;
+            }
+        }
+        return new QuantityTerm(new Ast.LiteralExpr(value), unit, 0);
     }
 
     private Ast.Expr parsePrimary() {

@@ -12974,6 +12974,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object binary(String op, Object left, Object right) {
             return switch (op) {
+                case Ast.VerifiedI64.ADD, Ast.VerifiedI64.SUBTRACT, Ast.VerifiedI64.MULTIPLY,
+                        Ast.VerifiedI64.DIVIDE -> verifiedI64(op, integralLong(left), integralLong(right));
                 case "+" -> add(left, right); case "-" -> numeric(left, right, '-'); case "*" -> numeric(left, right, '*');
                 case "/" -> numeric(left, right, '/'); case "%" -> numeric(left, right, '%');
                 case "eq", "==" -> valueEquals(left, right);
@@ -12991,6 +12993,22 @@ public final class OresEvalRootNode extends RootNode {
                 // and rejected anywhere else by the checker: never a shift.
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
+        }
+
+        private long verifiedI64(String op, long left, long right) {
+            if (op.equals(Ast.VerifiedI64.DIVIDE) && right == 0)
+                throw new ArithmeticException("E_I64_DIV_ZERO: signed division by zero");
+            try {
+                return switch (op) {
+                    case Ast.VerifiedI64.ADD -> Math.addExact(left, right);
+                    case Ast.VerifiedI64.SUBTRACT -> Math.subtractExact(left, right);
+                    case Ast.VerifiedI64.MULTIPLY -> Math.multiplyExact(left, right);
+                    case Ast.VerifiedI64.DIVIDE -> Math.divideExact(left, right);
+                    default -> throw new AssertionError("unexpected verified i64 operator");
+                };
+            } catch (ArithmeticException overflow) {
+                throw new ArithmeticException("E_I64_OVERFLOW: checked signed i64 arithmetic");
+            }
         }
 
         private boolean identityEquals(Object left, Object right) {
