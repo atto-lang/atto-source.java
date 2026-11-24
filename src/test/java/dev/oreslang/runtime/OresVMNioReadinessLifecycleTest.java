@@ -5,7 +5,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.Pipe;
 import java.nio.channels.SelectionKey;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -13,7 +15,7 @@ import org.junit.jupiter.api.Timeout;
 final class OresVMNioReadinessLifecycleTest {
     @Test
     void vmOwnsLazyReadinessAndClosesReactorBeforeReturning() throws Exception {
-        OresVM vm = OresVM.create(Runnable::run);
+        OresVM vm = OresVM.createConfigured(Runnable::run, null, "2", false);
         NioReadinessGroup readiness = vm.nioReadiness();
         Pipe pipe = Pipe.open();
         try (Pipe.SourceChannel source = pipe.source();
@@ -51,5 +53,41 @@ final class OresVMNioReadinessLifecycleTest {
         } finally {
             vm.close();
         }
+    }
+
+    @Test
+    void sharedSelectorRunsBetweenRootCarrierTurns() throws Exception {
+        OresVM vm = OresVM.createConfigured(Runnable::run, null, "1", true);
+        NioReadinessGroup readiness = vm.nioReadiness();
+        Pipe pipe = Pipe.open();
+        try (vm; Pipe.SourceChannel source = pipe.source(); Pipe.SinkChannel sink = pipe.sink()) {
+            OresFuture<Integer> ready = readiness.watch(source, SelectionKey.OP_READ);
+            AtomicReference<Thread> selectorCarrier = new AtomicReference<>();
+            ready.whenCompleteRuntime((mask, failure) -> {
+                if (OresVM.onNioWorker()) selectorCarrier.set(Thread.currentThread());
+            });
+            CountDownLatch started = new CountDownLatch(1);
+            OresFuture<Thread> task = vm.rootScheduler().start(resume -> {
+                assertFalse(OresVM.onNioWorker(), "a task turn must not inherit reactor authority");
+                if (resume.initial()) {
+                    started.countDown();
+                    return new OresScheduler.Await<>(ready);
+                }
+                assertNull(resume.failure());
+                assertEquals(SelectionKey.OP_READ, resume.value());
+                return new OresScheduler.Done<>(Thread.currentThread());
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            assertFalse(task.isDone());
+            sink.write(ByteBuffer.wrap(new byte[] {7}));
+            Thread resumed = task.get(5, TimeUnit.SECONDS);
+            assertSame(selectorCarrier.get(), resumed);
+            assertTrue(resumed.getName().startsWith("ores-control-plane-"));
+            assertEquals(0, vm.nioReactorCount());
+            assertFalse(vm.nioCompletionGroupLive());
+        }
+        assertTrue(readiness.awaitStopped(0, TimeUnit.SECONDS));
+        assertEquals(0, readiness.pendingCount());
+        assertEquals(0, vm.controlCarrierCount(), "VM close joins the shared root carriers");
     }
 }

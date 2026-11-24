@@ -64,8 +64,8 @@ final class VmNioTcpListenerTest {
                                     .get(5, TimeUnit.SECONDS));
                     assertEquals(74, peer2.getInputStream().read());
 
-                    assertEquals(1, vm.nioReactorCount(),
-                            "all VM listeners must share one selector reactor");
+                    assertEquals(vm.nioReadiness().shared() ? 0 : 1, vm.nioReactorCount(),
+                            "all VM listeners must share one readiness domain");
                 } finally {
                     server1.closeAsync().get(5, TimeUnit.SECONDS);
                     server2.closeAsync().get(5, TimeUnit.SECONDS);

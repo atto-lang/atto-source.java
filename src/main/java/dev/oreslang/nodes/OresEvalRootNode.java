@@ -10247,6 +10247,9 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(args.get(1) instanceof Number port) || !isIntegral(port)) {
                             throw new IllegalArgumentException("listener port must be integer");
                         }
+                        if (port.longValue() < 0 || port.longValue() > 65535) {
+                            throw new IllegalArgumentException("listener port must be in 0..65535");
+                        }
                         return dev.oreslang.runtime.AsyncNioTcp.listenAsync(
                                 context, host, port.intValue());
                     };
@@ -11971,6 +11974,11 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "import target '" + imported.path() + "' for '" + codeUnitId
                                 + "' is not linked yet; all members of an import cycle must be linked before init");
+            }
+            if (checkedI64Arithmetic && !evaluator.checkedI64Arithmetic) {
+                throw new IllegalArgumentException(
+                        "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: import '" + imported.path()
+                                + "' resolves to a source unit outside the checked-i64 profile");
             }
             return evaluator;
         }

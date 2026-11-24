@@ -32,6 +32,14 @@
   "resources": [
     {
       "module": "dev.oreslang",
+      "glob": "dev/oreslang/lib/**/*.atto"
+    },
+    {
+      "module": "dev.oreslang",
+      "glob": "dev/oreslang/alloc/*.atto"
+    },
+    {
+      "module": "dev.oreslang",
       "glob": "dev/oreslang/std/*.ores"
     },
     {

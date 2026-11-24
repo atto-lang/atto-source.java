@@ -69,6 +69,7 @@ final class LocalityCarrierPool extends AbstractExecutorService {
 
     private final Worker[] workers;
     private final ThreadFactory factory;
+    private final NioReadinessGroup sharedNio;
     private final ConcurrentLinkedQueue<Entry> shared = new ConcurrentLinkedQueue<>();
     /** Global submission order across the shared queue and every local deque. */
     private final java.util.concurrent.atomic.AtomicLong submissions = new java.util.concurrent.atomic.AtomicLong();
@@ -95,12 +96,23 @@ final class LocalityCarrierPool extends AbstractExecutorService {
     }
 
     LocalityCarrierPool(int carriers, int queueCapacity, ThreadFactory factory,
+                        NioReadinessGroup sharedNio) {
+        this(carriers, queueCapacity, factory, DEFAULT_GRACE_NANOS, DEFAULT_LOCAL_SLACK, sharedNio);
+    }
+
+    LocalityCarrierPool(int carriers, int queueCapacity, ThreadFactory factory,
                         long graceNanos, int localSlack) {
+        this(carriers, queueCapacity, factory, graceNanos, localSlack, null);
+    }
+
+    private LocalityCarrierPool(int carriers, int queueCapacity, ThreadFactory factory,
+                                long graceNanos, int localSlack, NioReadinessGroup sharedNio) {
         if (carriers < 1) throw new IllegalArgumentException("carrier count must be positive");
         if (queueCapacity < 1) throw new IllegalArgumentException("queue capacity must be positive");
         if (graceNanos < 0) throw new IllegalArgumentException("grace must be non-negative");
         if (localSlack < 1) throw new IllegalArgumentException("local slack must be positive");
         this.factory = Objects.requireNonNull(factory, "factory");
+        this.sharedNio = sharedNio;
         this.queueSlots = new Semaphore(queueCapacity);
         this.graceNanos = graceNanos;
         this.localSlack = localSlack;
@@ -204,6 +216,7 @@ final class LocalityCarrierPool extends AbstractExecutorService {
                     // take the entry only if it is still queued after the grace.
                     wakeIdle(home);
                 }
+                if (sharedNio != null) sharedNio.wakeShared();
                 return;
             }
             home.localSize.decrementAndGet();
@@ -215,6 +228,11 @@ final class LocalityCarrierPool extends AbstractExecutorService {
             queueSlots.release();
             throw new RejectedExecutionException("carrier pool is shut down");
         }
+        wakeIdle(null);
+        if (sharedNio != null) sharedNio.wakeShared();
+    }
+
+    void signalExternalWork() {
         wakeIdle(null);
     }
 
@@ -233,6 +251,7 @@ final class LocalityCarrierPool extends AbstractExecutorService {
     }
 
     private void wakeAll(boolean interrupt) {
+        if (sharedNio != null) sharedNio.wakeShared();
         for (Worker worker : workers) {
             Thread thread = worker.thread;
             if (thread == null) continue;
@@ -328,6 +347,10 @@ final class LocalityCarrierPool extends AbstractExecutorService {
             try {
                 while (true) {
                     if (runState.get() == STOP) break;
+                    if (sharedNio != null && tick == SHARED_CHECK_INTERVAL - 1
+                            && runState.get() == RUNNING) {
+                        sharedNio.pollShared(false);
+                    }
                     Runnable task = next();
                     if (task == null) {
                         if (runState.get() != RUNNING && !hasAnyQueued()) break;
@@ -460,6 +483,7 @@ final class LocalityCarrierPool extends AbstractExecutorService {
                 // A pending interrupt makes park return at once; while the
                 // pool runs, an interrupt left by a task must not cause a spin.
                 Thread.interrupted();
+                if (sharedNio != null && sharedNio.pollShared(wait == 0)) return;
                 if (wait == 0) LockSupport.park(this);
                 else LockSupport.parkNanos(this, wait);
             } finally {

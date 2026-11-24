@@ -135,6 +135,7 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
+        requireCheckedImportProfiles(sources, programs, importResolutions);
         if (policy != null) {
             for (Ast.Program program : programs.values()) {
                 CapabilityChecker.check(program, policy, permissionCheckMode);
@@ -301,6 +302,7 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
+        requireCheckedImportProfiles(sources, programs, importResolutions);
         int exitStatus = 0;
         String entryId = unitId(entry);
         MixedSourceUnit entryUnit = units.get(entryId);
@@ -347,6 +349,7 @@ public final class LinkedProgramRunner {
                         IncrementalCompiler.CompiledUnit unit = build.units().get(id);
                         Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
                                 .mimeType(OresLanguage.MIME_TYPE)
+                                .cached(false)
                                 .buildLiteral();
                         try (OresLanguage.PrecheckedProgramScope ignored =
                                 OresLanguage.openPrecheckedProgram(
@@ -482,6 +485,33 @@ public final class LinkedProgramRunner {
             programs.put(source.getKey(), Parser.parse(source.getValue()));
         }
         return programs;
+    }
+
+    /** Validate resolved providers, including extensionless paths and packaged libraries. */
+    private static void requireCheckedImportProfiles(Map<String, String> sources,
+            Map<String, Ast.Program> programs, Map<String, Map<String, String>> importResolutions) {
+        Set<String> checked = new LinkedHashSet<>();
+        for (Map.Entry<String, String> source : sources.entrySet()) {
+            try {
+                if (AttoCheckedI64Profile.select(source.getValue(), source.getKey())) {
+                    checked.add(source.getKey());
+                }
+            } catch (IllegalArgumentException invalid) {
+                throw new SourceUnitDiagnosticException(source.getKey(), "", "", invalid);
+            }
+        }
+        for (String id : checked) {
+            Map<String, String> resolutions = importResolutions.getOrDefault(id, Map.of());
+            for (Ast.ImportDecl imported : programs.get(id).imports()) {
+                String provider = resolutions.get(imported.path());
+                if (provider == null || !checked.contains(provider)) {
+                    throw new SourceUnitDiagnosticException(id, "", "",
+                            new IllegalArgumentException(
+                                    "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: import '"
+                                            + imported.path() + "' requires a resolved checked-i64 source unit"));
+                }
+            }
+        }
     }
 
     private static Map<String, String> oresSources(Map<String, MixedSourceUnit> units) {

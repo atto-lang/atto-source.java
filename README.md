@@ -27,7 +27,45 @@ Repository initialization and implementation status should be checked against th
 
 ## Development
 
-See the repository's source tree, workflows, and contribution documentation for verified build and test instructions. Do not assume cross-backend parity without executed conformance results.
+### Build and run the Java CLI
+
+Use Maven with `JAVA_HOME` pointing to GraalVM 25.3.4.1 (JDK 25.0.4.1), matching the Truffle components in `pom.xml`. For a distributable JVM launch, keep `target/lib/` beside the JAR.
+
+```sh
+mvn -DskipTests package
+"$JAVA_HOME/bin/java" --enable-native-access=ALL-UNNAMED \
+  -jar target/oreslang-source-0.1.0-hotload-SNAPSHOT.jar \
+  --check tests/fixtures/suspends-await-v1/inline-nested-defer.atto
+"$JAVA_HOME/bin/java" --enable-native-access=ALL-UNNAMED \
+  -jar target/oreslang-source-0.1.0-hotload-SNAPSHOT.jar \
+  tests/fixtures/suspends-await-v1/inline-nested-defer.atto
+```
+
+Both commands check the linked source graph and ownership rules. The second command resumes the nested guest continuation and prints `defer:42|root`. In callable declarations, `susp` and `suspends` mark an inline suspension effect. An `async` function call starts a task and returns a `Future`. An explicit `await` consumes its completion in the caller.
+
+To run with Maven directly:
+
+```sh
+mvn compile exec:java '-Dexec.args=tests/fixtures/suspends-await-v1/inline-nested-defer.atto'
+```
+
+To build a standalone GraalVM Native Image executable:
+
+```sh
+mvn -DskipTests -Pnative-aot package
+target/ores-aot tests/fixtures/suspends-await-v1/inline-nested-defer.atto
+```
+
+### TCP reactor and scheduler
+
+`network.listen_async` uses VM-owned NIO2 completion workers by default. Set `-Dores.runtime.nio.shared-selector=true` before `-jar` to run TCP readiness polling between turns on the root scheduler carriers. For the native executable, put the same property before the guest arguments. A selector poll can settle a Future, and the owning scheduler resumes the guest continuation on a later turn. `--control-workers=N` configures the root and CONTROL carriers. Shared, isolated and untrusted actor dispatch each have their own pool. Spin's `http.listen` uses the JDK HTTP server.
+
+The packaged CLI integration tests exercise both TCP modes and check that borrow and numeric-profile diagnostics agree between `--check` and execution.
+
+```sh
+mvn -Dtest=BorrowedOperandSuspensionAuditTest,OresVMNioReadinessLifecycleTest,AttoLibrariesV1Test \
+  -Dit.test=PackagedAttoCliIT verify
+```
 
 ## Repository ownership and contribution routing
 

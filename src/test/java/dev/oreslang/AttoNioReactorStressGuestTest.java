@@ -14,6 +14,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -39,9 +40,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * The test proves:</p>
  * <ul>
  *   <li>every byte is echoed exactly once, in order, per connection;</li>
- *   <li>guest code never executes on an NIO reactor or completion thread: a
- *       sampler inspects their stacks throughout the run and fails on any
- *       guest (Truffle node or call target) frame;</li>
+ *   <li>guest code never executes inline with an NIO poll or completion:
+ *       a sampler inspects host stacks throughout the run;</li>
  *   <li>after the guest finishes and its context closes, no NIO reactor or
  *       completion thread is left alive (VM close quiescence).</li>
  * </ul>
@@ -159,6 +159,7 @@ final class AttoNioReactorStressGuestTest {
         String source = SERVER.formatted(port, connections);
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         Set<String> before = liveNioThreads();
+        boolean sharedSelector = Boolean.getBoolean("ores.runtime.nio.shared-selector");
 
         List<String> violations = new CopyOnWriteArrayList<>();
         Set<String> sampledNioThreads = ConcurrentHashMap.newKeySet();
@@ -167,9 +168,15 @@ final class AttoNioReactorStressGuestTest {
             while (sampling.get()) {
                 for (Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
                     Thread thread = entry.getKey();
-                    if (!isNioThread(thread) || before.contains(thread.getName())) continue;
-                    sampledNioThreads.add(thread.getName());
-                    for (StackTraceElement frame : entry.getValue()) {
+                    StackTraceElement[] frames = entry.getValue();
+                    boolean dedicated = isNioThread(thread) && !before.contains(thread.getName());
+                    boolean polling = thread.getName().startsWith("ores-control-plane-")
+                            && Arrays.stream(frames).anyMatch(frame ->
+                                    frame.getClassName().equals("dev.oreslang.runtime.NioReadinessGroup")
+                                            && frame.getMethodName().equals("pollShared"));
+                    if (dedicated) sampledNioThreads.add(thread.getName());
+                    if (!dedicated && !polling) continue;
+                    for (StackTraceElement frame : frames) {
                         if (isGuestFrame(frame)) {
                             violations.add(thread.getName() + " ran guest frame " + frame);
                             break;
@@ -212,9 +219,13 @@ final class AttoNioReactorStressGuestTest {
             sampler.join(5_000);
         }
 
-        assertEquals(List.of(), violations, "guest code must never run on NIO threads");
-        assertTrue(sampledNioThreads.stream().anyMatch(n -> n.startsWith("ores-nio-completion-")),
-                "the sampler must have observed the VM's completion carriers: " + sampledNioThreads);
+        assertEquals(List.of(), violations, "guest code must never run inline with readiness");
+        if (sharedSelector) {
+            assertEquals(Set.of(), sampledNioThreads, "shared TCP uses only root carriers");
+        } else {
+            assertTrue(sampledNioThreads.stream().anyMatch(n -> n.startsWith("ores-nio-completion-")),
+                    "the sampler must have observed the VM's completion carriers: " + sampledNioThreads);
+        }
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         Set<String> leaked;
         do {
