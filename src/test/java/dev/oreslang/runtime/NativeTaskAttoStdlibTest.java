@@ -12,6 +12,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Actual compiler-linked Atto std/task module, not a host policy simulation. */
@@ -59,5 +60,35 @@ final class NativeTaskAttoStdlibTest {
                 () -> OresCompiler.parseAndTypeCheck(text.replace("task<int>", "task<bool>")));
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(text.replace("val Future<int>", "val Future<bool>")));
+    }
+
+    @Test
+    void checkedEntryDoesNotAdmitAnUncheckedLinkedDependency(@TempDir Path root) throws Exception {
+        Path dependency = root.resolve("helper.ores");
+        Files.writeString(dependency, "define module helper as pub fnc answer(): int { return 42; } end");
+        Path main = root.resolve("main.atto");
+        Files.writeString(main, """
+                import module helper from "./helper.ores";
+                pub fnc main(): int { return 42; }
+                """);
+        var failure = assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.run(
+                main, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(failure.getMessage().contains("must resolve to a checked Atto source unit"),
+                failure::getMessage);
+
+        Path bridge = root.resolve("bridge.atto");
+        Files.writeString(bridge, """
+                import module helper from "./helper.ores";
+                define module bridge as pub fnc answer(): int { return 42; } end
+                """);
+        Files.writeString(main, """
+                import module bridge from "./bridge.atto";
+                pub fnc main(): int { return 42; }
+                """);
+        var transitive = assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.run(
+                main, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(transitive.getMessage().contains("checked import './helper.ores'"), transitive::getMessage);
     }
 }

@@ -7,6 +7,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.runtime.AttoCheckedI64Profile;
+import dev.oreslang.runtime.LinkedProgramRunner.CheckedImportProof;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -45,15 +46,18 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         private final String codeUnitId;
         private final String sourceText;
         private final Ast.Program program;
+        private final CheckedImportProof checkedImports;
         private boolean consumed;
 
         private PrecheckedProgramLease(
                 String codeUnitId,
                 String sourceText,
-                Ast.Program program) {
+                Ast.Program program,
+                CheckedImportProof checkedImports) {
             this.codeUnitId = codeUnitId;
             this.sourceText = sourceText;
             this.program = program;
+            this.checkedImports = checkedImports;
         }
     }
 
@@ -91,6 +95,14 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             String codeUnitId,
             String sourceText,
             Ast.Program program) {
+        return openPrecheckedProgram(codeUnitId, sourceText, program, null);
+    }
+
+    public static PrecheckedProgramScope openPrecheckedProgram(
+            String codeUnitId,
+            String sourceText,
+            Ast.Program program,
+            CheckedImportProof checkedImports) {
         java.util.Objects.requireNonNull(codeUnitId, "code unit id");
         java.util.Objects.requireNonNull(sourceText, "source text");
         java.util.Objects.requireNonNull(program, "prechecked program");
@@ -102,7 +114,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                     "nested prechecked Oreslang program leases are not supported");
         }
         PrecheckedProgramLease lease = new PrecheckedProgramLease(
-                codeUnitId, sourceText, program);
+                codeUnitId, sourceText, program, checkedImports);
         PRECHECKED_PROGRAM.set(lease);
         return new PrecheckedProgramScope(lease);
     }
@@ -181,14 +193,14 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // Source profile selection precedes parsing, even for prechecked AST leases:
         // a host may not quietly ignore a malformed or duplicated directive.
         boolean checkedI64 = AttoCheckedI64Profile.select(text, codeUnitId);
+        PrecheckedProgramLease lease = PRECHECKED_PROGRAM.get();
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
         }
-        // No mixed-profile call graph: an unchecked imported callee could wrap
-        // inside a checked caller until the linker proves transitive profile
-        // compatibility over every source unit and pinned compiled interface.
-        if (checkedI64 && !program.imports().isEmpty()) {
+        // Import execution requires the linker's proof over the identical unit.
+        if (checkedI64 && !program.imports().isEmpty()
+                && (lease == null || lease.checkedImports == null || !lease.checkedImports.matches(codeUnitId, text, program))) {
             throw new IllegalArgumentException(
                     "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: imports require profile-checked linking");
         }

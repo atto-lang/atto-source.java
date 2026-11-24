@@ -45,6 +45,46 @@ public final class LinkedProgramRunner {
     /** Host-owned exit status: embedding callers must never be forcibly terminated. */
     public record RunResult(IncrementalCompiler.BuildResult build, int exitStatus) { }
 
+    /** Permission for the exact checked unit in an all-checked import closure. */
+    public static final class CheckedImportProof {
+        private final IncrementalCompiler.CompiledUnit unit;
+
+        private CheckedImportProof(IncrementalCompiler.CompiledUnit unit) { this.unit = unit; }
+
+        public boolean matches(String id, String text, Ast.Program program) {
+            return unit.unitId().equals(id) && unit.sourceText().equals(text) && unit.program() == program;
+        }
+    }
+
+    private static Map<String, CheckedImportProof> verifyCheckedImports(
+            Map<String, IncrementalCompiler.CompiledUnit> compiled,
+            Map<String, MixedSourceUnit> sources,
+            Map<String, Map<String, String>> resolutions) {
+        var checked = new LinkedHashSet<String>();
+        for (var unit : compiled.values()) {
+            if (AttoCheckedI64Profile.select(unit.sourceText(), unit.unitId())) checked.add(unit.unitId());
+        }
+        var proofs = new LinkedHashMap<String, CheckedImportProof>();
+        for (String id : checked) {
+            var unit = compiled.get(id);
+            if (unit.program().imports().isEmpty()) continue;
+            var resolved = resolutions.getOrDefault(id, Map.of());
+            for (var imported : unit.program().imports()) {
+                String target = resolved.get(imported.path());
+                var importerSource = sources.get(id);
+                var targetSource = target == null ? null : sources.get(target);
+                if (target == null || !checked.contains(target) || !unit.dependencies().contains(target)
+                        || importerSource == null || importerSource.hasJavaSource()
+                        || targetSource == null || targetSource.hasJavaSource()) {
+                    throw new IllegalArgumentException("ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: "
+                            + "checked import '" + imported.path() + "' must resolve to a checked Atto source unit");
+                }
+            }
+            proofs.put(id, new CheckedImportProof(unit));
+        }
+        return Map.copyOf(proofs);
+    }
+
     /** Parses/type-checks the reachable Ores graph and javac-checks mixed Java source. */
     public static IncrementalCompiler.BuildResult validate(Path entryFile) throws IOException {
         return validate(entryFile, System.getenv());
@@ -86,6 +126,7 @@ public final class LinkedProgramRunner {
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
+        verifyCheckedImports(build.units(), units, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         if (policy != null) {
             for (Ast.Program program : programs.values()) {
@@ -252,6 +293,7 @@ public final class LinkedProgramRunner {
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
+        var checkedImports = verifyCheckedImports(build.units(), units, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         int exitStatus = 0;
         String entryId = unitId(entry);
@@ -295,10 +337,11 @@ public final class LinkedProgramRunner {
                         IncrementalCompiler.CompiledUnit unit = build.units().get(id);
                         Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
                                 .mimeType(OresLanguage.MIME_TYPE)
+                                .cached(!checkedImports.containsKey(id))
                                 .buildLiteral();
                         try (OresLanguage.PrecheckedProgramScope ignored =
                                 OresLanguage.openPrecheckedProgram(
-                                        id, unit.sourceText(), unit.program())) {
+                                        id, unit.sourceText(), unit.program(), checkedImports.get(id))) {
                             parsedUnits.put(id, context.parse(source));
                         }
                     }
