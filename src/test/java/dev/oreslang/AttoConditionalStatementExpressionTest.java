@@ -74,7 +74,7 @@ final class AttoConditionalStatementExpressionTest {
     }
 
     @Test
-    void valueBranchesCannotReturnControlFlowStatements() {
+    void valueBranchesCannotUseVoidReturnOrLoopExits() {
         for (String control : new String[] { "break", "continue", "return" }) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parseStrictAtto("fnc choose(): int { return if true then "
@@ -286,7 +286,7 @@ final class AttoConditionalStatementExpressionTest {
     }
 
     @Test
-    void actualTruffleAttoEntrypointRejectsBareImperativeIf() throws Exception {
+    void actualTruffleAttoEntrypointRequiresExplicitBareIfActions() throws Exception {
         String oldImperative = """
                 pub routine main(): void {
                     if true then stdio.stdout.write(3); fi
@@ -298,6 +298,36 @@ final class AttoConditionalStatementExpressionTest {
         // Migration remains explicit: .ores callers are not silently
         // reinterpreted as strict Atto compilation units.
         assertEquals("3", runNamed("legacy-conditional.ores", oldImperative));
+    }
+
+    @Test
+    void bareActionArmsAndFunctionalReturnsHaveDistinctJoinPoints() throws Exception {
+        assertEquals("42:7", runNamed("strict-if-actions.atto", """
+                fnc choose(bool ready): int {
+                    if true then return false; fi
+                    if ready then return 1; else ^ 2; fi
+                    return if ready then return 42; else ^ 7; fi;
+                }
+                pub routine main(): void {
+                    if true then
+                        do stdio.stdout.write(choose(true));
+                        do stdio.stdout.write(":");
+                    else
+                        do stdio.stdout.write("unreachable");
+                    fi
+                    do if true then stdio.stdout.write(choose(false)); fi
+                }
+                """));
+    }
+
+    @Test
+    void unusedFunctionalIfCannotSupplyANamedCallableReturn() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parseStrictAtto("""
+                        fnc choose(): int {
+                            if true then return 42; else ^ 7; fi
+                        }
+                        """)));
     }
 
     @Test

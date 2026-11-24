@@ -4109,7 +4109,20 @@ public final class Parser {
         }
 
         if (strictConditionalSyntax && !explicitImperative) {
-            throw error(peek(), "'if ... then ... fi' produces a value; use 'do if ... then ... fi' for imperative control flow");
+            consume(THEN, "bare keyword if requires 'then'");
+            if (check(RETURN) || check(CARET)) {
+                Ast.Expr value = parseConditionalValueArm();
+                if (match(FI)) {
+                    return lowerConditionBindings(
+                            List.of(new Ast.IfBranch(condition, List.of(new Ast.ExprStmt(value)))),
+                            bindings, List.of());
+                }
+                if (head.binding() != null) {
+                    throw error(peek(), "functional if requires an unbound condition");
+                }
+                return new Ast.ExprStmt(parseValueIfElse(condition, value));
+            }
+            return parseActionIf(condition, head.binding());
         }
 
         // Legacy keyword-delimited form, or explicit imperative 'do if':
@@ -4141,6 +4154,33 @@ public final class Parser {
         if (match(ELSE)) elseBody = parseUntil(FI);
         consume(FI, "expected 'fi' to close if");
         return lowerConditionBindings(branches, bindings, elseBody);
+    }
+
+    private Ast.Stmt parseActionIf(Ast.Expr condition, Ast.BindingStmt binding) {
+        List<Ast.IfBranch> branches = new ArrayList<>();
+        List<Ast.BindingStmt> bindings = new ArrayList<>();
+        branches.add(new Ast.IfBranch(condition, parseConditionalActions()));
+        bindings.add(binding);
+        while (matchConditionalBranch()) {
+            ConditionHead head = parseConditionHead(false);
+            consume(THEN, "expected 'then' after elif condition");
+            branches.add(new Ast.IfBranch(head.predicate(), parseConditionalActions()));
+            bindings.add(head.binding());
+        }
+        List<Ast.Stmt> otherwise = match(ELSE) ? parseConditionalActions() : List.of();
+        consume(FI, "expected 'fi' to close imperative if");
+        return lowerConditionBindings(branches, bindings, otherwise);
+    }
+
+    private List<Ast.Stmt> parseConditionalActions() {
+        List<Ast.Stmt> body = new ArrayList<>();
+        do {
+            consume(DO, "bare imperative if arms require 'do action'; use 'do if' for unmarked statement arms");
+            Ast.Expr action = parseExpression();
+            consumeExpressionStatementTerminator(action, "conditional action should end with ';'");
+            body.add(new Ast.ExprStmt(action));
+        } while (check(DO));
+        return body;
     }
 
     private List<Ast.Stmt> parseConditionalBraceBody() {
@@ -4927,7 +4967,10 @@ public final class Parser {
         Ast.Expr condition = inverted
                 ? new Ast.UnaryExpr("!", predicate) : predicate;
         consume(THEN, "value-producing 'if' requires 'then'");
-        Ast.Expr whenTrue = parseConditionalValueArm();
+        return parseValueIfElse(condition, parseConditionalValueArm());
+    }
+
+    private Ast.Expr parseValueIfElse(Ast.Expr condition, Ast.Expr whenTrue) {
         consume(ELSE, "value-producing 'if' requires an 'else' value; use 'do if' for statements");
         Ast.Expr whenFalse = parseConditionalValueArm();
         consume(FI, "expected 'fi' to close value-producing 'if'");
@@ -4935,10 +4978,13 @@ public final class Parser {
     }
 
     private Ast.Expr parseConditionalValueArm() {
-        if (check(BREAK) || check(CONTINUE) || check(RETURN)) {
-            throw error(peek(), "value-producing 'if' branch must produce a value; break/continue/return require 'do if'");
+        boolean explicitResult = match(RETURN, CARET);
+        if (check(BREAK) || check(CONTINUE) || check(DO) || check(SEMICOLON)) {
+            throw error(peek(), "value-producing 'if' branch must produce a value; use 'do if' for imperative control flow");
         }
-        return parseExpression();
+        Ast.Expr value = parseExpression();
+        if (explicitResult) match(SEMICOLON);
+        return value;
     }
 
     private Ast.Expr parseConditional() {
