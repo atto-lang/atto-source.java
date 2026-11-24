@@ -5,8 +5,10 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -174,11 +176,7 @@ final class OtpSupervisorCommandDispatchTest {
             runtime.submitSupervisorCommand(actor, 1,
                     ActorRuntime.SupervisorOperation.PREPARE_UPGRADE, DIGEST);
             assertEquals(1, runtime.supervisorCommandStatsFor(actor).queued());
-            try {
-                actor.stop();
-            } finally {
-                release.countDown();
-            }
+            stopAndReleaseCallback(actor, release);
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0, observed.get(),
                     "retired actor must not run a quarantined upgrade command");
@@ -207,19 +205,35 @@ final class OtpSupervisorCommandDispatchTest {
             runtime.submitSupervisorCommand(actor, 1,
                     ActorRuntime.SupervisorOperation.PREPARE_UPGRADE, DIGEST);
             assertTrue(commandEntered.await(10, TimeUnit.SECONDS));
-            try {
-                actor.stop(); // Concurrent stop revokes in-flight command lease.
-            } finally {
-                releaseCommand.countDown();
-            }
+            var readStats = runtime.supervisorCommandStatsReaderFor(actor);
+            stopAndReleaseCallback(actor, releaseCommand);
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
-            var stats = runtime.supervisorCommandStatsFor(actor);
+            var stats = readStats.get();
             assertEquals(1, stats.quarantined());
             assertEquals(0, stats.acknowledged(),
                     "stopped actor must never ACK an uncommitted upgrade");
             assertEquals(0, stats.outstanding());
             assertEquals(0, stats.inFlight());
         }
+    }
+
+    private static void stopAndReleaseCallback(ActorRuntime.ActorRef<?> actor, CountDownLatch release)
+            throws Exception {
+        FutureTask<Void> stop = new FutureTask<>(() -> {
+            actor.stop();
+            return null;
+        });
+        Thread.ofPlatform().daemon().start(stop);
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (actor.isAlive() && System.nanoTime() - deadline < 0) {
+                LockSupport.parkNanos(TimeUnit.MICROSECONDS.toNanos(100));
+            }
+            assertFalse(actor.isAlive(), "stop must close admission before the callback returns");
+        } finally {
+            release.countDown();
+        }
+        stop.get(5, TimeUnit.SECONDS);
     }
 
     @Test
@@ -260,6 +274,7 @@ final class OtpSupervisorCommandDispatchTest {
                                     ActorRuntime.ActorContext<String> context) { }
                         });
                 actor.ready().get(5, TimeUnit.SECONDS);
+                var readStats = runtime.supervisorCommandStatsReaderFor(actor);
                 CountDownLatch start = new CountDownLatch(1);
                 java.util.concurrent.atomic.AtomicBoolean admitted =
                         new java.util.concurrent.atomic.AtomicBoolean();
@@ -284,7 +299,7 @@ final class OtpSupervisorCommandDispatchTest {
                 submitter.get(5, TimeUnit.SECONDS);
                 stopper.get(5, TimeUnit.SECONDS);
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
-                var snap = runtime.supervisorCommandStatsFor(actor);
+                var snap = readStats.get();
                 assertEquals(0, snap.outstanding());
                 assertEquals(0, snap.queued());
                 assertEquals(0, snap.inFlight());

@@ -935,6 +935,19 @@ public final class ActorRuntime implements AutoCloseable {
 
     /** Host-only diagnostics; no guest command-capability access. */
     OtpSupervisorCommandLaneV1.Snapshot supervisorCommandStatsFor(ActorRef<?> target) {
+        return supervisorCommandLaneFor(target).snapshot();
+    }
+
+    /** Retains one incarnation's diagnostics across retirement without keeping the actor registered. */
+    Supplier<OtpSupervisorCommandLaneV1.Snapshot> supervisorCommandStatsReaderFor(ActorRef<?> target) {
+        OtpSupervisorCommandLaneV1 lane = supervisorCommandLaneFor(target);
+        return () -> {
+            requireRawFailureHostAccess("inspect supervisor upgrade CONTROL");
+            return lane.snapshot();
+        };
+    }
+
+    private OtpSupervisorCommandLaneV1 supervisorCommandLaneFor(ActorRef<?> target) {
         requireRawFailureHostAccess("inspect supervisor upgrade CONTROL");
         Objects.requireNonNull(target, "target");
         if (!target.ownedBy(this))
@@ -942,7 +955,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "supervisor command target belongs to a different ActorRuntime");
         ActorCell<?> cell = actors.get(target.id());
         if (cell == null || cell.ref != target) throw terminated(target);
-        return cell.upgradeCommands.snapshot();
+        return cell.upgradeCommands;
     }
 
     public ActorControlStats supervisionStatsFor(ActorRef<?> ref) {

@@ -178,7 +178,7 @@ final class ActorSupervisorControlV2Test {
                                 ActorRuntime.ActorContext<String> context) throws Exception {
                             if ("spawn".equals(message)) {
                                 childRef.set(context.runtime().spawnShared(
-                                        () -> (m, c) -> {
+                                        factory -> (m, c) -> {
                                             throw new IllegalArgumentException("child");
                                         }));
                                 spawned.countDown();
@@ -264,7 +264,7 @@ final class ActorSupervisorControlV2Test {
             var parent = runtime.<String>spawnShared(
                     () -> (message, context) -> {
                         var child = context.runtime().<String>spawnShared(
-                                () -> (m, c) -> {
+                                factory -> (m, c) -> {
                                     throw new IllegalStateException("secret child diagnostic");
                                 });
                         childRef.set(child);
@@ -403,9 +403,11 @@ final class ActorSupervisorControlV2Test {
                                 String message,
                                 ActorRuntime.ActorContext<String> context) throws Exception {
                             if ("spawn".equals(message)) {
+                                // Keep the children off the carrier pool where
+                                // the fixture parks their parent.
                                 for (int i = 0; i < children; ++i) {
-                                    childRefs.add(context.runtime().spawnShared(
-                                            () -> (m, c) -> {
+                                    childRefs.add(context.runtime().spawnPrivate(
+                                            factory -> (m, c) -> {
                                                 throw new IllegalStateException("child");
                                             }));
                                 }
@@ -470,7 +472,7 @@ final class ActorSupervisorControlV2Test {
                                 String message,
                                 ActorRuntime.ActorContext<String> context) {
                             childRef.set(context.runtime().spawnShared(
-                                    () -> (m, c) -> { }));
+                                    factory -> (m, c) -> { }));
                             spawned.countDown();
                         }
 
