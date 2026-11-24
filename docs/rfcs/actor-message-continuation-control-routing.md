@@ -59,12 +59,25 @@ Supervisor traffic must not compete for ordinary mailbox capacity. Specify bound
 - Await registration and completion must be race-safe: no lost wakeups when completion races registration.
 - Only one terminal completion outcome wins (success/error/cancel/timeout), with idempotent wake behavior.
 - A task must not be executing on two workers concurrently; duplicate wakes coalesce.
-- An actor must obey single-flight or explicitly permitted concurrency/critical-read/critical-write semantics.
+- Hold one logical receive turn across suspension by default. Pending DATA remains queued until that turn retires. Acquire a fresh physical lease for the same turn when a continuation resumes, potentially on another worker. At most one worker may execute an incarnation at a time. Critical state permissions govern access within a turn. Any future interleaving policy needs an explicit declaration and its own state-safety proof.
 - No callback may run user code on the NIO selector thread.
 - Late completions must not resurrect retired tasks or freed actor arenas; use generation/lifetime checks.
 - Supervisor events retain child identity, causal trace, kind and parent identity.
 - Preserve backpressure and FIFO/priority ordering contracts; CONTROL priority must not permanently starve data work.
 - Await across borrowed/critical state must be validated by compiler/runtime ownership checks.
+
+## Cross-backend actor schedule
+
+Run the same ordered events in Java and .NET. Use barriers or a scheduler oracle to control suspension, wake, worker retirement and restart.
+
+| Schedule | Required observation |
+| --- | --- |
+| Receive A awaits a pending completion. Admit B as DATA. Wake A. | B stays queued until A finishes its logical turn. A may resume on a different current worker. |
+| Release worker W1 and resume on W2. Deliver an old W1 wake or release. | The stale generation cannot enter guest code or clear W2's current lease. |
+| Fill DATA and leave an internal dispatch receipt behind a DATA head. Publish a fatal child notification. | Reserved supervisor CONTROL reaches the direct parent independently of both queues, once for this child generation. |
+| Pause after a wake is queued, STOP and restart, then release the old worker. | No stale execution in either incarnation and no revival of an old frame. |
+
+Treat [Java #574](https://github.com/atto-lang/atto-source.java/pull/574) as an opt-in interleaving candidate. Use [Java #612](https://github.com/atto-lang/atto-source.java/pull/612) and [.NET #153](https://github.com/atto-lang/atto-source.net/pull/153) for the default logical-turn invariant. [.NET #158](https://github.com/atto-lang/atto-source.net/pull/158) tests internal FIFO-head dispatch receipts. The separate supervisor failure lane follows [the reconciliation spec](https://github.com/atto-lang/atto-spec/pull/151).
 
 ## Required executable tests before implementation is declared complete
 
