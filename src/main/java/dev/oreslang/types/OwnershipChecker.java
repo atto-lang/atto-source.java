@@ -606,8 +606,6 @@ public final class OwnershipChecker {
                     int previousLoopDepth = loopDepth;
                     boolean previousDiscard = discardingSelectReturn;
                     loopDepth = 0;
-                    // Only detached do nb select can discard a return. Blocking
-                    // do select is procedural and returns from its parent callable.
                     discardingSelectReturn = selected.explicitDo();
                     try {
                         checkBlock(arm.body(), armScope,
@@ -620,10 +618,13 @@ public final class OwnershipChecker {
                     }
                 } else if (selected.explicitDo()) {
                     int previousLoopDepth = loopDepth;
+                    boolean previousDiscard = discardingSelectReturn;
                     loopDepth = 0;
+                    discardingSelectReturn = true;
                     try {
-                        checkBlock(arm.body(), armScope, returnType);
+                        checkBlock(arm.body(), armScope, Ast.TypeRef.simple("void"));
                     } finally {
+                        discardingSelectReturn = previousDiscard;
                         loopDepth = previousLoopDepth;
                     }
                 } else {

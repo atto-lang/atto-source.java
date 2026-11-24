@@ -15,7 +15,7 @@ final class SelectReturnWarningCliTest {
                 fnc check(): int {
                   do select {
                     default: {
-                      return 7;
+                      return void;
                     }
                   }
                   return 9;

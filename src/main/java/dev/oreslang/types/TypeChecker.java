@@ -1760,14 +1760,14 @@ public final class TypeChecker {
                     }
                 } else {
                     if (selected.explicitDo()) {
-                        // Procedural do select returns from its enclosing callable.
-                        // Keep existing select-arm loop-control isolation: a break/
-                        // continue cannot target an enclosing loop from inside an arm.
                         int previousLoopDepth = loopDepth;
+                        boolean previousDiscard = inDiscardingSelectArm;
                         loopDepth = 0;
+                        inDiscardingSelectArm = false;
                         try {
-                            checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                            checkBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
                         } finally {
+                            inDiscardingSelectArm = previousDiscard;
                             loopDepth = previousLoopDepth;
                         }
                     } else {

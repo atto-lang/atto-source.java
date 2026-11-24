@@ -1743,8 +1743,9 @@ public final class Parser {
         if (check(LBRACE) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
-        if (match(RETURN)) {
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
+        if (match(RETURN, CARET)) {
+            Ast.Expr value = match(VOID) || check(SEMICOLON) || isSafeStatementBoundary()
+                    ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }

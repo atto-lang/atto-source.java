@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectNestedReturnContractTest {
     @Test
-    void evaluatesProceduralReturnOnceAndReturnsItsValue() throws Exception {
+    void fallthroughArmEvaluatesAnActionOnce() throws Exception {
         String source = """
                 pub fnc produce(): int {
                   stdio.stdout.write("evaluated:");
@@ -22,10 +22,10 @@ final class SelectNestedReturnContractTest {
                 pub fnc compute(): int {
                   do select {
                     default: {
-                      return produce();
+                      produce();
                     }
                   }
-                  stdio.stdout.write("unreachable");
+                  stdio.stdout.write("after:");
                   return 41;
                 }
                 pub fnc main(): void {
@@ -34,11 +34,11 @@ final class SelectNestedReturnContractTest {
                 }
                 """;
         assertWarnings(source, 0);
-        assertEquals("evaluated:9", run(source));
+        assertEquals("evaluated:after:41", run(source));
     }
 
     @Test
-    void nestedProceduralSelectionsReturnFromSameContainingFunction() throws Exception {
+    void nestedVoidExitsResumeAfterTheirNearestSelect() throws Exception {
         String source = """
                 pub fnc compute(): int {
                   do select {
@@ -46,14 +46,14 @@ final class SelectNestedReturnContractTest {
                       do select {
                         default: {
                           stdio.stdout.write("inner:");
-                          return 1;
+                          ^ void;
                         }
                       }
-                      stdio.stdout.write("unreachable-outer:");
-                      return 2;
+                      stdio.stdout.write("outer:");
+                      return void;
                     }
                   }
-                  stdio.stdout.write("unreachable-done");
+                  stdio.stdout.write("done:");
                   return 3;
                 }
                 pub fnc main(): void {
@@ -62,11 +62,11 @@ final class SelectNestedReturnContractTest {
                 }
                 """;
         assertWarnings(source, 0);
-        assertEquals("inner:1", run(source));
+        assertEquals("inner:outer:done:3", run(source));
     }
 
     @Test
-    void proceduralReturnIsTypeCheckedAgainstEnclosingFunction() {
+    void proceduralArmCanOnlyReturnVoid() {
         String source = """
                 pub fnc compute(): int {
                   do select {

@@ -800,9 +800,8 @@ public final class Ast {
 
     /**
      * Static select carries an explicitDo source marker for procedural dispatch.
-     * Blocking do select returns from the enclosing callable; detached do nb
-     * select retains its arm-local return boundary. Historical select/nb select
-     * statement syntax remains accepted.
+     * Blocking do select joins after a void arm exit. A detached do nb select
+     * also has an arm-local boundary. Historical select forms stay distinct.
      */
     public record SelectStmt(
             WaitMode mode,

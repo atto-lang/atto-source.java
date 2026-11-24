@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class DoSelectReturnScopeTest {
     @Test
-    void blockingDoSelectReturnExitsContainingFunction() throws Exception {
+    void blockingDoSelectCaretVoidExitsOnlyItsArm() throws Exception {
         String program = """
                 pub fnc compute(): int {
                   val Channel<int> incoming = Channel.new<int>(1);
@@ -21,10 +21,10 @@ final class DoSelectReturnScopeTest {
                   do select {
                     case readch incoming: val number {
                       stdio.stdout.write("selected:");
-                      return number * 2;
+                      ^ void;
                     }
                   }
-                  stdio.stdout.write("unreachable");
+                  stdio.stdout.write("after:");
                   return 99;
                 }
                 pub fnc main(): void {
@@ -36,7 +36,7 @@ final class DoSelectReturnScopeTest {
         OresCompiler.AnalysisResult result =
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
         assertTrue(result.warnings().isEmpty(), result.warnings().toString());
-        assertEquals("selected:14", run(program));
+        assertEquals("selected:after:99", run(program));
     }
 
     @Test
@@ -59,7 +59,7 @@ final class DoSelectReturnScopeTest {
     }
 
     @Test
-    void bareReturnInBlockingDoSelectExitsCallable() throws Exception {
+    void bareReturnInBlockingDoSelectExitsOnlyItsArm() throws Exception {
         String program = """
                 pub fnc main(): void {
                   val Channel<int> incoming = Channel.new<int>(1);
@@ -69,23 +69,23 @@ final class DoSelectReturnScopeTest {
                       return;
                     }
                   }
-                  stdio.stdout.write("unreachable");
+                  stdio.stdout.write("after");
                   return;
                 }
                 """;
         OresCompiler.AnalysisResult result =
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
         assertTrue(result.warnings().isEmpty(), result.warnings().toString());
-        assertEquals("", run(program));
+        assertEquals("after", run(program));
     }
 
     @Test
-    void blockingDoSelectReturnMustMatchEnclosingFunctionType() {
+    void blockingDoSelectRejectsEvenTheEnclosingCallableReturnType() {
         String source = """
                 pub fnc compute(): int {
                   do select {
                     default: {
-                      return "not an integer";
+                      return 42;
                     }
                   }
                   return 12;

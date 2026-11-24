@@ -13,17 +13,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectSourceFlowSafetyTest {
     @Test
-    void proceduralReturnRunsArmDeferThenExitsContainingFunction() throws Exception {
+    void proceduralReturnRunsArmDeferBeforeJoining() throws Exception {
         String source = """
                 pub fnc compute(): int {
                   do select {
                     default: {
                       defer stdio.stdout.write("cleanup:");
                       stdio.stdout.write("arm:");
-                      return 77;
+                      return void;
                     }
                   }
-                  stdio.stdout.write("unreachable");
+                  stdio.stdout.write("after:");
                   return 99;
                 }
                 pub fnc main(): void {
@@ -32,7 +32,7 @@ final class SelectSourceFlowSafetyTest {
                 }
                 """;
         assertWarnings(source, 0);
-        assertEquals("arm:cleanup:77", run(source));
+        assertEquals("arm:cleanup:after:99", run(source));
     }
 
     @Test
@@ -62,14 +62,14 @@ final class SelectSourceFlowSafetyTest {
     }
 
     @Test
-    void proceduralArmReturnPreservesTryFinallyBeforeCallableExit() throws Exception {
+    void proceduralArmReturnPreservesTryFinallyBeforeJoining() throws Exception {
         String source = """
                 pub fnc compute(): int {
                   do select {
                     default: {
                       try {
                         stdio.stdout.write("arm:");
-                        return 11;
+                        ^ void;
                       } catch (err) {
                         stdio.stdout.write("unexpected:");
                       } finally {
@@ -77,7 +77,7 @@ final class SelectSourceFlowSafetyTest {
                       }
                     }
                   }
-                  stdio.stdout.write("unreachable");
+                  stdio.stdout.write("after:");
                   return 99;
                 }
                 pub fnc main(): void {
@@ -86,7 +86,7 @@ final class SelectSourceFlowSafetyTest {
                 }
                 """;
         assertWarnings(source, 0);
-        assertEquals("arm:finally:11", run(source));
+        assertEquals("arm:finally:after:99", run(source));
     }
 
     @Test

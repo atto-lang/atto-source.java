@@ -2456,8 +2456,8 @@ public final class OresEvalRootNode extends RootNode {
          * A selected branch is a source block, not an exception boundary. Run
          * it on the resumable source frame so RETURN/BREAK/CONTINUE propagate
          * as SourceFlow rather than escaping as host RuntimeExceptions.
-         * Only detached do nb select suppresses an arm-local RETURN; blocking
-         * do select propagates RETURN through the parent callable's source flow.
+         * Explicit do-select arms consume their local return after block
+         * cleanup. Other flow still reaches the surrounding continuation.
          */
         private void runSelectedArmSuspendable(
                 SourceTask task,
@@ -2479,9 +2479,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             runBlock(task, arm.body(), armEnv, (t, flow) ->
                     continuation.accept(t,
-                            select.explicitDo()
-                                    && select.mode() == Ast.WaitMode.NONBLOCKING
-                                    && flow.kind() == SourceFlowKind.RETURN
+                            select.explicitDo() && flow.kind() == SourceFlowKind.RETURN
                                     ? SourceFlow.normal()
                                     : flow));
         }
@@ -5397,10 +5395,15 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (!detached) {
-                // Blocking do select has the same callable-return semantics as
-                // procedural do match/do switch. The containing callable owns
-                // ReturnSignal and TailCallSignal, including defers/finally.
-                executeBlock(arm.body(), armEnv, tailBarrier);
+                if (selected.explicitDo()) {
+                    try {
+                        executeBlock(arm.body(), armEnv, true);
+                    } catch (ReturnSignal armExit) {
+                        // executeBlock has already run arm defers.
+                    }
+                } else {
+                    executeBlock(arm.body(), armEnv, tailBarrier);
+                }
                 return;
             }
 
