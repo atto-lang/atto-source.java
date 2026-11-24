@@ -445,9 +445,9 @@ public final class Parser {
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
         parseQuantityDeclarations();
-        if (atRefinedQuantityAlias()) {
-            if (namespace != null || !imports.isEmpty()) {
-                throw error(peek(), "E_REFINEMENT_SCOPE: refined quantities currently require a standalone source file");
+        if (atRefinedQuantityAlias() || atProtocolDeclaration()) {
+            if (namespace != null || !imports.isEmpty() || !exports.isEmpty()) {
+                throw error(peek(), "E_REFINEMENT_SCOPE: Verified Core requires a standalone source file");
             }
             var declarations = parseVerifiedFunctions();
             return new Ast.Program(null, List.of(),
@@ -7499,13 +7499,106 @@ public final class Parser {
         return name;
     }
 
+    private boolean atProtocolDeclaration() {
+        return check(DEFINE) && checkNext(IDENT) && tokens.get(current + 1).lexeme().equals("protocol");
+    }
+
+    private Token readProtocolName(String description) {
+        Token name = consume(IDENT, description);
+        if (isVerifiedCarrier(name.lexeme())) throw error(name, description);
+        return name;
+    }
+
+    private Ast.ProtocolDecl parseProtocolDeclaration(Set<String> protocolNames) {
+        consume(DEFINE, "expected 'define'");
+        consumeContextualIdentifier("protocol", "expected 'protocol'");
+        Token name = consume(IDENT, "E_PROTOCOL_SYNTAX: expected a protocol name");
+        if (protocolNames.size() >= 64) throw error(name, "E_PROTOCOL_LIMIT: too many protocols");
+        if (isVerifiedCarrier(name.lexeme()) || refinementAliases.containsKey(name.lexeme())
+                || !protocolNames.add(name.lexeme())) {
+            throw error(name, "E_PROTOCOL_DUPLICATE: duplicate protocol name");
+        }
+        consume(AS, "E_PROTOCOL_SYNTAX: expected 'as' after protocol name");
+
+        String initial = null;
+        Set<String> states = new HashSet<>();
+        Set<String> terminals = new HashSet<>();
+        List<Ast.ProtocolEdge> edges = new ArrayList<>();
+        Map<String, Set<String>> outgoing = new HashMap<>();
+        Map<String, List<Ast.ProtocolScalar>> signatures = new HashMap<>();
+        while (!check(END)) {
+            Token first = consume(IDENT, "E_PROTOCOL_SYNTAX: expected a protocol clause or 'end'");
+            if (!check(ARROW) && first.lexeme().equals("initial")) {
+                if (initial != null) throw error(first, "E_PROTOCOL_INITIAL: duplicate initial state");
+                initial = readProtocolName("E_PROTOCOL_SYNTAX: expected an initial state").lexeme();
+                states.add(initial);
+            } else if (!check(ARROW) && first.lexeme().equals("terminal")) {
+                String terminal = readProtocolName("E_PROTOCOL_SYNTAX: expected a terminal state").lexeme();
+                if (!terminals.add(terminal))
+                    throw error(first, "E_PROTOCOL_TERMINAL: duplicate terminal state");
+                if (terminals.size() > 128) throw error(first, "E_PROTOCOL_LIMIT: too many terminal states");
+            } else {
+                if (edges.size() >= 256) throw error(first, "E_PROTOCOL_LIMIT: too many protocol edges");
+                consume(ARROW, "E_PROTOCOL_SYNTAX: expected '->' after source state");
+                if (isVerifiedCarrier(first.lexeme()))
+                    throw error(first, "E_PROTOCOL_SYNTAX: expected a source state");
+                String target = readProtocolName("E_PROTOCOL_SYNTAX: expected a destination state").lexeme();
+                consumeContextualIdentifier("on", "E_PROTOCOL_SYNTAX: expected 'on' after destination state");
+                Token message = readProtocolName("E_PROTOCOL_SYNTAX: expected a message name");
+                var source = first.lexeme();
+                states.add(source);
+                states.add(target);
+                if (!outgoing.computeIfAbsent(source, ignored -> new HashSet<>()).add(message.lexeme()))
+                    throw error(message, "E_PROTOCOL_DUPLICATE: duplicate source state and message edge");
+                var payload = parseProtocolPayload();
+                var signature = payload.stream().map(Ast.ProtocolField::type).toList();
+                var existing = signatures.putIfAbsent(message.lexeme(), signature);
+                if (existing != null && !existing.equals(signature))
+                    throw error(message, "E_PROTOCOL_PAYLOAD: inconsistent message payload type");
+                edges.add(new Ast.ProtocolEdge(source, target, message.lexeme(), payload));
+            }
+            if (states.size() > 128) throw error(first, "E_PROTOCOL_LIMIT: too many protocol states");
+            consume(SEMICOLON, "E_PROTOCOL_SYNTAX: expected ';' after protocol clause");
+        }
+        advance(); // end
+        if (initial == null) throw error(name, "E_PROTOCOL_INITIAL: missing initial state");
+        if (!states.containsAll(terminals)) throw error(name, "E_PROTOCOL_TERMINAL: unknown terminal state");
+        if (terminals.stream().anyMatch(outgoing::containsKey))
+            throw error(name, "E_PROTOCOL_TERMINAL: terminal state has outgoing edges");
+        return new Ast.ProtocolDecl(name.lexeme(), initial, terminals, edges);
+    }
+
+    private List<Ast.ProtocolField> parseProtocolPayload() {
+        var payload = new ArrayList<Ast.ProtocolField>();
+        if (!match(LPAREN)) return payload;
+        var names = new HashSet<String>();
+        if (!check(RPAREN)) {
+            do {
+                Token typeName = consume(IDENT, "E_PROTOCOL_PAYLOAD: expected a scalar payload type");
+                if (payload.size() >= 16) throw error(typeName, "E_PROTOCOL_LIMIT: too many payload fields");
+                if (!isVerifiedCarrier(typeName.lexeme()) && !refinementAliases.containsKey(typeName.lexeme()))
+                    throw error(typeName, "E_PROTOCOL_PAYLOAD: unknown scalar payload type");
+                var type = readRefinedType(typeName);
+                Token field = readProtocolName("E_PROTOCOL_PAYLOAD: expected a payload field name");
+                if (!names.add(field.lexeme())) throw error(field, "E_PROTOCOL_PAYLOAD: duplicate payload field name");
+                payload.add(new Ast.ProtocolField(field.lexeme(), new Ast.ProtocolScalar(
+                        type.i32(), type.range().minimum(), type.range().maximum(),
+                        type.unit().powers(), type.unit().numerator(), type.unit().denominator())));
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "E_PROTOCOL_PAYLOAD: expected ')' after protocol payload");
+        return payload;
+    }
+
     private List<Ast.Decl> parseVerifiedFunctions() {
         while (atRefinedQuantityAlias()) parseRefinedQuantityAlias();
-        List<Ast.Decl> functions = new ArrayList<>();
+        List<Ast.Decl> declarations = new ArrayList<>();
+        Set<String> protocolNames = new HashSet<>();
+        while (atProtocolDeclaration()) declarations.add(parseProtocolDeclaration(protocolNames));
         verifiedCallable = true;
         boolean mainSeen = false;
         while (!check(EOF)) {
-            if (functions.size() >= 64) throw error(peek(), "E_REFINEMENT_LIMIT: too many verified functions");
+            if (verifiedFunctions.size() >= 64) throw error(peek(), "E_REFINEMENT_LIMIT: too many verified functions");
             if (mainSeen) throw error(peek(), "E_REFINEMENT_SCOPE: main must be the final verified function");
             boolean isPublic = match(PUB);
             if (!isPublic) match(PRIVATE);
@@ -7605,14 +7698,14 @@ public final class Parser {
             body.add(new Ast.ReturnStmt(term.expression()));
 
             String lowered = isMain ? "main" : "$verified$" + name.lexeme();
-            functions.add(new Ast.FunctionDecl(lowered, Ast.CallableKind.FNC,
+            declarations.add(new Ast.FunctionDecl(lowered, Ast.CallableKind.FNC,
                     isPublic ? Ast.Visibility.PUBLIC : Ast.Visibility.PRIVATE, false,
                     Ast.ActorKind.NONE, List.of(), parameters, VERIFIED_CARRIER, List.of(), body));
             verifiedFunctions.put(name.lexeme(), new VerifiedFunction(lowered, required, result, List.copyOf(upperParameters)));
             mainSeen = isMain;
         }
         if (!mainSeen) throw error(peek(), "E_REFINEMENT_EXPORT: verified source requires a public main");
-        return functions;
+        return declarations;
     }
 
     private QuantityTerm verifiedReference(int depth) {

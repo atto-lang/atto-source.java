@@ -1,7 +1,10 @@
 package dev.oreslang.ast;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 public final class Ast {
     private Ast() { }
@@ -77,7 +80,25 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, SingletonDecl { }
+            ExternalActorMethodDecl, SingletonDecl, ProtocolDecl { }
+
+    /** Verified file-local state machine. Declaring it creates no actor or mailbox. */
+    public record ProtocolDecl(String name, String initialState, Set<String> terminalStates,
+                               List<ProtocolEdge> edges) implements Decl {
+        public ProtocolDecl {
+            terminalStates = Set.copyOf(terminalStates);
+            edges = List.copyOf(edges);
+        }
+    }
+
+    public record ProtocolEdge(String source, String target, String message, List<ProtocolField> payload) {
+        public ProtocolEdge { payload = List.copyOf(payload); }
+    }
+    public record ProtocolField(String name, ProtocolScalar type) { }
+    public record ProtocolScalar(boolean i32, long minimum, long maximum, Map<String, Integer> dimension,
+                                 BigInteger scaleNumerator, BigInteger scaleDenominator) {
+        public ProtocolScalar { dimension = Map.copyOf(dimension); }
+    }
 
     /**
      * Parsed singleton for the opt-in semantic check-only path. No runtime or
