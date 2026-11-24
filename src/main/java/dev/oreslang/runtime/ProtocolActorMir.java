@@ -14,9 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.CancellationException;
 import java.util.stream.Stream;
 
 /** Closed-file protocol actors lowered to the existing serial JVM DATA lane. */
@@ -45,41 +43,95 @@ public final class ProtocolActorMir {
         return new Plan(program, Map.copyOf(actors));
     }
 
-    public static long executeGuest(Ast.ProtocolGuestDecl guest, ActorRuntime runtime,
-            SharedCodeImageStore.CodeImage image) {
-        Plan plan = lower(image.program());
-        var actor = plan.spawn(runtime, image, guest.actor());
-        long result = 0;
-        try {
-            actor.ready().get(15, TimeUnit.SECONDS);
-            for (int i = 0; i < guest.turns().size(); i++) {
-                var turn = guest.turns().get(i);
-                long[] payload = turn.payload().stream().mapToLong(Long::longValue).toArray();
-                actor.send(plan.encode(guest.actor(), turn.message(), payload));
-                var next = actor.outputs().next().get(15, TimeUnit.SECONDS);
-                if (next.done() || !next.value().actorId().equals(actor.id()))
-                    throw new IllegalStateException("Missing protocol guest receipt");
-                Receipt receipt = Receipt.decode(next.value().value());
-                if (receipt.turn() != i + 1L)
-                    throw new IllegalStateException("Unexpected protocol guest receipt order");
-                if (i == guest.result()) result = receipt.status().code;
-            }
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Protocol guest interrupted", interrupted);
-        } catch (ExecutionException | TimeoutException failure) {
-            throw new IllegalStateException("Protocol guest receipt failed", failure);
-        } finally {
-            actor.stop();
+    static OresFuture<Long> startGuest(Ast.ProtocolGuestDecl guest, ActorRuntime runtime,
+            SharedCodeImageStore.CodeImage image, OresScheduler scheduler) {
+        if (image.program().modules().stream().flatMap(module -> module.declarations().stream())
+                .noneMatch(declaration -> declaration == guest))
+            throw new SecurityException("protocol guest code image identity mismatch");
+        var task = new GuestTask(guest, runtime, image, lower(image.program()));
+        return scheduler.start(task, task::requestStop);
+    }
+
+    private static final class GuestTask implements OresScheduler.CleanupAwareTask<Long> {
+        private final Ast.ProtocolGuestDecl guest;
+        private final ActorRuntime runtime;
+        private final SharedCodeImageStore.CodeImage image;
+        private final Plan plan;
+        private ActorRuntime.ActorRef<Object> actor;
+        private int turn;
+        private long result;
+        private boolean stopping;
+        private boolean cancellationObserved;
+        private Throwable failure;
+
+        GuestTask(Ast.ProtocolGuestDecl guest, ActorRuntime runtime,
+                  SharedCodeImageStore.CodeImage image, Plan plan) {
+            this.guest = guest;
+            this.runtime = runtime;
+            this.image = image;
+            this.plan = plan;
         }
-        try {
-            actor.getDone().get(15, TimeUnit.SECONDS);
-            return result;
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Protocol guest stop interrupted", interrupted);
-        } catch (ExecutionException | TimeoutException failure) {
-            throw new IllegalStateException("Protocol guest stop failed", failure);
+
+        @Override public OresScheduler.Step<Long> resume(OresScheduler.Resume resumed) throws Exception {
+            if (resumed.failure() instanceof CancellationException
+                    && OresScheduler.cancellationCleanupTurn() && !cancellationObserved) {
+                cancellationObserved = true;
+                return awaitStop();
+            }
+            if (stopping) {
+                Throwable stopFailure = resumed.failure();
+                if (failure != null) {
+                    if (stopFailure != null && failure != stopFailure) failure.addSuppressed(stopFailure);
+                    throw asException(failure);
+                }
+                if (stopFailure != null) throw asException(stopFailure);
+                return OresScheduler.done(result);
+            }
+            try {
+                if (resumed.initial()) {
+                    actor = plan.spawn(runtime, image, guest.actor());
+                    return OresScheduler.await(actor.ready());
+                }
+                if (resumed.failure() != null) throw asException(resumed.failure());
+                if (turn != 0) acceptReceipt(resumed.value());
+                if (turn == guest.turns().size()) return awaitStop();
+                var outgoing = guest.turns().get(turn++);
+                long[] payload = outgoing.payload().stream().mapToLong(Long::longValue).toArray();
+                actor.send(plan.encode(guest.actor(), outgoing.message(), payload));
+                return OresScheduler.await(actor.outputs().next());
+            } catch (Exception dispatchFailure) {
+                if (actor == null) throw dispatchFailure;
+                failure = dispatchFailure;
+                return awaitStop();
+            }
+        }
+
+        private void acceptReceipt(Object value) {
+            if (!(value instanceof GeneratorRuntime.Step<?> next) || next.done()
+                    || !(next.value() instanceof ActorRuntime.ActorOutput<?> output)
+                    || !output.actorId().equals(actor.id()))
+                throw new IllegalStateException("Missing protocol guest receipt");
+            Receipt receipt = Receipt.decode(output.value());
+            if (receipt.turn() != turn || output.sequence() + 1 != turn)
+                throw new IllegalStateException("Unexpected protocol guest receipt order");
+            if (turn - 1 == guest.result()) result = receipt.status().code;
+        }
+
+        private OresScheduler.Step<Long> awaitStop() {
+            requestStop();
+            return OresScheduler.await(actor.getDone());
+        }
+
+        private void requestStop() {
+            if (actor == null || stopping) return;
+            stopping = true;
+            runtime.requestProtocolGuestStop(actor);
+        }
+
+        private static Exception asException(Throwable failure) {
+            if (failure instanceof Error fatal) throw fatal;
+            if (failure instanceof Exception exception) return exception;
+            return new IllegalStateException("Protocol guest failed", failure);
         }
     }
 

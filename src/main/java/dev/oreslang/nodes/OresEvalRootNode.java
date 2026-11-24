@@ -37,7 +37,6 @@ import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.SourceActorPubSub;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
-import dev.oreslang.runtime.ProtocolActorMir;
 import dev.oreslang.runtime.GeneratorRuntime;
 import dev.oreslang.runtime.Utf8StringAbi;
 import dev.oreslang.types.NumericValueEquality;
@@ -138,10 +137,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return context.runRootMain(() -> {
-                try { return current.executeMain(new Object[0], true); }
-                catch (ProcessExitSignal exit) { return exit.exitStatus(); }
-            });
+            return current.runMain(new Object[0], true);
         }
         if (arguments.length >= 2
                 && INVOKE_ROOT_PUBLIC_COMMAND.equals(arguments[0])
@@ -161,7 +157,7 @@ public final class OresEvalRootNode extends RootNode {
         // link/init/main commands to install a full import graph before init.
         current.link();
         current.initialize();
-        return context.runRootMain(() -> current.executeMain(arguments, false));
+        return current.runMain(arguments, false);
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -1036,7 +1032,7 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private Object executeMain(Object[] arguments, boolean requireMain) {
+        private Object runMain(Object[] arguments, boolean requireMain) {
             if (startupPhase != StartupPhase.READY) {
                 throw new IllegalStateException(
                         "main cannot run before successful initialization of code unit "
@@ -1047,10 +1043,18 @@ public final class OresEvalRootNode extends RootNode {
                     if (declaration instanceof Ast.ProtocolGuestDecl guest) {
                         if (arguments.length != 0)
                             throw new IllegalArgumentException("Protocol guest main takes no arguments");
-                        return ProtocolActorMir.executeGuest(guest, context.actors(), codeImage());
+                        return context.runProtocolGuest(guest, codeImage());
                     }
                 }
             }
+            if (!requireMain) return context.runRootMain(() -> executeMain(arguments, false));
+            return context.runRootMain(() -> {
+                try { return executeMain(arguments, true); }
+                catch (ProcessExitSignal exit) { return exit.exitStatus(); }
+            });
+        }
+
+        private Object executeMain(Object[] arguments, boolean requireMain) {
             Ast.FunctionDecl main = findQualifiedFunction(Parser.ROOT_MODULE + ".main", 0);
             if (main == null) main = findFunction("main", 0);
             if (main == null) {

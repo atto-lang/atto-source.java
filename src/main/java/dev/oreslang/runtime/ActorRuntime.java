@@ -7792,27 +7792,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public void stop(ActorRef<?> ref) {
-        requireCallerRuntimeAffinity("stop actors");
-        Objects.requireNonNull(ref);
-        if (!ref.ownedBy(this)) {
-            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
-        }
-        requireActorLifecycleAuthority(ref, "stop");
-        ActorCell<?> caller = currentActor.get();
-        if (caller != null
-                && caller.kind == ActorKind.UNTRUSTED
-                && !caller.ref.id().equals(ref.id())) {
-            throw new SecurityException("untrusted actors cannot stop other actors");
-        }
-        ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return;
-
-        cell.stop();
-
-        // Only a host/supervisor stop is a synchronization point. Actor turns
-        // may stop self/descendants but must never park a bounded carrier while
-        // waiting for another actor to finalize.
-        if (currentActor.get() != null) return;
+        ActorCell<?> cell = requestStop(ref);
+        // Host stop waits for physical exit. Root tasks await the same
+        // lifecycle through getDone() instead of parking a scheduler carrier.
+        if (cell == null || currentActor.get() != null) return;
 
         try {
             cell.awaitFinalized(CLOSE_WAIT_NANOS);
@@ -7827,6 +7810,28 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor " + ref.id()
                             + " or one of its child actors did not finalize within the stop deadline");
         }
+    }
+
+    void requestProtocolGuestStop(ActorRef<?> ref) {
+        requestStop(ref);
+    }
+
+    private ActorCell<?> requestStop(ActorRef<?> ref) {
+        requireCallerRuntimeAffinity("stop actors");
+        Objects.requireNonNull(ref);
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+        }
+        requireActorLifecycleAuthority(ref, "stop");
+        ActorCell<?> caller = currentActor.get();
+        if (caller != null
+                && caller.kind == ActorKind.UNTRUSTED
+                && !caller.ref.id().equals(ref.id())) {
+            throw new SecurityException("untrusted actors cannot stop other actors");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell != null) cell.stop();
+        return cell;
     }
 
     public boolean cancel(ActorRef<?> ref) {

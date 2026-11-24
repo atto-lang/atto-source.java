@@ -174,7 +174,9 @@ public final class CapabilityChecker {
 
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn) {
+                if (declaration instanceof Ast.ProtocolGuestDecl) {
+                    require(policy, IsolatePolicy.Capability.ACTOR_SPAWN, "protocol guest actor spawn");
+                } else if (declaration instanceof Ast.FunctionDecl fn) {
                     IsolatePolicy actorPolicy = actorPolicy(fn.actorKind(), policy);
                     if (fn.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
