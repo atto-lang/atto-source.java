@@ -215,6 +215,46 @@ final class PackagedAttoCliIT {
         }
     }
 
+    @Test
+    void awaitProjectsOneFutureLayerFromAResumableMethod() throws Exception {
+        Path source = Files.writeString(directory.resolve("has-future.atto"), """
+                define trait HasFuture<T> as
+                  get_future(): Future<T>;
+                end
+
+                async fnc seed(): int {
+                  await process.sleep_async(5);
+                  return 41;
+                }
+
+                async fnc leaf(int value): int { return value + 1; }
+
+                define class Operation implements HasFuture<Future<int>> as
+                  pub get_future(): Future<Future<int>> {
+                    stdio.stdout.write("P");
+                    return seed().map(|int value| -> { return leaf(value); });
+                  }
+                end
+
+                pub susp fnc main(): void {
+                  val operation = new Operation();
+                  val Future<int> projected = await operation;
+                  val Future<int> incremented = projected.map(|int value| -> { return value + 1; });
+                  stdio.println(await incremented);
+                  return;
+                }
+                """);
+        Process guest = launch(false, "--platform=server", source.toString());
+        try {
+            assertTrue(guest.waitFor(5, TimeUnit.SECONDS), this::diagnostic);
+            assertEquals(0, guest.exitValue(), this::diagnostic);
+            assertEquals("P43\n",
+                    new String(guest.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        } finally {
+            guest.destroyForcibly();
+        }
+    }
+
     private int run(String... arguments) throws Exception {
         Process process = launch(false, arguments);
         try {

@@ -6989,14 +6989,7 @@ public final class OresEvalRootNode extends RootNode {
                                             ? detachAsyncArguments(normalized, fn.parameters())
                                             : normalized);
 
-                    if (fn.async()) {
-                        return future;
-                    }
-
-                    if (fn.returnType().name().equals("Future")) {
-                        return chainFuture(future, values -> values.getFirst(), true, false);
-                    }
-                    return returnSourceTaskResult(future, false);
+                    return returnSourceTaskResult(future, fn.async(), fn.returnType());
                 }
 
                 return callFunctionBodyRaw(fn, normalized);
@@ -7027,9 +7020,7 @@ public final class OresEvalRootNode extends RootNode {
                                                         fn,
                                                         delivered)));
 
-                return fn.async()
-                        ? completion
-                        : returnSourceTaskResult(completion, false);
+                return returnSourceTaskResult(completion, fn.async(), fn.returnType());
             }
 
             return context.actors().invoke(
@@ -7041,12 +7032,16 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object returnSourceTaskResult(
                 OresFuture<?> future,
-                boolean declaredFuture) {
-            if (declaredFuture
-                    || ActorRuntime.inActorExecution()
-                    || OresScheduler.current() != null) {
-                return future;
+                boolean asynchronous,
+                Ast.TypeRef resultType) {
+            if (asynchronous) return future;
+            if (resultType.name().equals("Future")) {
+                // A synchronous callable can use a source task for fairness.
+                // Hide that task's Future so the caller sees the declared
+                // Future, with any nesting in its payload intact.
+                return chainFuture(future, values -> values.getFirst(), true, false);
             }
+            if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) return future;
             return future.join();
         }
 
@@ -7301,7 +7296,7 @@ public final class OresEvalRootNode extends RootNode {
                                 fn.async()
                                         ? detachAsyncArguments(args, fn.parameters())
                                         : args);
-                return returnSourceTaskResult(future, fn.async());
+                return returnSourceTaskResult(future, fn.async(), fn.returnType());
             }
 
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
@@ -7404,7 +7399,7 @@ public final class OresEvalRootNode extends RootNode {
             if (method.async() || methodContainsPotentialSuspension(method)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(method, receiver, args);
-                return returnSourceTaskResult(future, method.async());
+                return returnSourceTaskResult(future, method.async(), method.returnType());
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
@@ -11819,7 +11814,7 @@ public final class OresEvalRootNode extends RootNode {
                                 fn.async()
                                         ? detachAsyncArguments(args, fn.parameters())
                                         : args);
-                return returnSourceTaskResult(future, fn.async());
+                return returnSourceTaskResult(future, fn.async(), fn.returnType());
             }
             return callStaticFunctionBodyRaw(fn, args);
         }
