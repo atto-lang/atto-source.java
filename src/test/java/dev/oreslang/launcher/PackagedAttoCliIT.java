@@ -255,6 +255,77 @@ final class PackagedAttoCliIT {
         }
     }
 
+    @Test
+    void cancellationUnwindsAnImportedSuspendingCallBeforeCompleting() throws Exception {
+        Files.writeString(directory.resolve("worker.atto"), """
+                define module worker as
+                  pub suspends fnc wait_for_cancel(Channel<int> entered): void {
+                    defer stdio.stdout.write("cleanup|");
+                    await (nb writech entered, 1);
+                    await process.sleep_async(30_000);
+                    return;
+                  }
+                end
+                """);
+        Path source = Files.writeString(directory.resolve("main.atto"), """
+                import module worker from "./worker";
+                pub susp fnc main(): void {
+                  val Channel<int> entered = Channel.new<int>(1);
+                  task scope {
+                    let Future<void> child = task {
+                      worker.wait_for_cancel(entered);
+                      return;
+                    };
+                    await (nb readch entered);
+                    if !child.cancel() then rt fail("task finished before cancellation"); fi
+                    stdio.stdout.write(await child.get_done());
+                  }
+                  stdio.println("|scope exited");
+                  return;
+                }
+                """);
+        Process guest = launch(false, "--platform=server", source.toString());
+        try {
+            assertTrue(guest.waitFor(5, TimeUnit.SECONDS), this::diagnostic);
+            assertEquals(0, guest.exitValue(), this::diagnostic);
+            assertEquals("cleanup|#cancelled|scope exited\n",
+                    new String(guest.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        } finally {
+            guest.destroyForcibly();
+        }
+    }
+
+    @Test
+    void rejectsABorrowAcrossAnImportedSuspendingCall() throws Exception {
+        Files.writeString(directory.resolve("timer.atto"), """
+                define module timer as
+                  pub susp fnc pause(): void {
+                    await process.sleep_async(1);
+                    return;
+                  }
+                end
+                """);
+        Path source = Files.writeString(directory.resolve("main.atto"), """
+                import module timer from "./timer";
+                define class Box as
+                  pub let int value = 42;
+                end
+                pub suspends fnc main(): void {
+                  let Box box = new Box();
+                  val borrow Box view = rt borrow box;
+                  timer.pause();
+                  stdio.println(view.value);
+                  return;
+                }
+                """);
+        assertEquals(1, run("--check", source.toString()));
+        assertTrue(diagnostic().contains("suspends call timer.pause while an ordinary borrow is live"),
+                this::diagnostic);
+        assertEquals(1, run(source.toString()));
+        assertTrue(diagnostic().contains("suspends call timer.pause while an ordinary borrow is live"),
+                this::diagnostic);
+    }
+
     private int run(String... arguments) throws Exception {
         Process process = launch(false, arguments);
         try {

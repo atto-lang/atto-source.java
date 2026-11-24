@@ -271,18 +271,19 @@ public final class IncrementalCompiler {
                 }
             }
             try {
+                Map<String, Ast.ModuleDecl> linkedModules =
+                        linkedImportedModules(id, parsed.get(id), parsed, normalizedImportResolutions);
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                                 stagedParsed.get(id).rawProgram(),
                                 linked.classes(), linked.aliases(), contracts,
-                                linkedImportedModules(id, parsed.get(id), parsed,
-                                        normalizedImportResolutions),
+                                linkedModules,
                                 linkedImportedFunctions(id, parsed.get(id), parsed,
                                         normalizedImportResolutions),
                                 strictAtto);
                 checked = analysis.program();
-                OwnershipChecker.checkWithImportedClasses(
-                        checked, linked.ownershipClasses(), analysis.shortInferredAliases());
+                OwnershipChecker.checkWithLinkedMetadata(
+                        checked, linked.ownershipClasses(), analysis.shortInferredAliases(), linkedModules);
             } catch (IllegalArgumentException invalid) {
                 Ast.Program sourceProgram = parsed.get(id);
                 String moduleName = sourceProgram.modules().size() == 1

@@ -6063,14 +6063,16 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            Invocation invocation;
                             try {
-                                Invocation invocation = prepareExplicitImportInvocation(
+                                invocation = prepareExplicitImportInvocation(
                                         imported.member(), args);
-                                completeSourceInvocation(t, invocation,
-                                        invocationDeclaresAsync(invocation), env, continuation);
                             } catch (RuntimeException | Error failure2) {
                                 continuation.accept(t, null, failure2);
+                                return;
                             }
+                            completeSourceInvocation(t, invocation,
+                                    invocationDeclaresAsync(invocation), env, continuation);
                         });
                 return;
             }
@@ -6093,13 +6095,9 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
-                            try {
-                                Invocation invocation = functionInvocation(fn, args);
-                                completeSourceInvocation(t, invocation,
-                                        invocationDeclaresAsync(invocation), env, continuation);
-                            } catch (RuntimeException | Error failure2) {
-                                continuation.accept(t, null, failure2);
-                            }
+                            Invocation invocation = functionInvocation(fn, args);
+                            completeSourceInvocation(t, invocation,
+                                    invocationDeclaresAsync(invocation), env, continuation);
                         });
                 return;
             }
@@ -6206,16 +6204,6 @@ public final class OresEvalRootNode extends RootNode {
                             (t, values, failure) -> {
                                 if (failure != null) {
                                     continuation.accept(t, null, failure);
-                                    return;
-                                }
-                                // A suspends function is a *call in the same
-                                // logical execution*, not a new Task/Future.
-                                // Keep its live source continuation in the
-                                // caller's heap-owned SourceTask across await.
-                                if (direct.suspends()
-                                        && direct.actorKind() == Ast.ActorKind.NONE) {
-                                    runInlineSuspendsFunction(
-                                            t, direct, values, continuation);
                                     return;
                                 }
                                 Invocation invocation;
@@ -6349,6 +6337,23 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation,
                 boolean tail) {
+            if (invocation.kind() == InvocationKind.FUNCTION
+                    && invocation.target() instanceof Ast.FunctionDecl function
+                    && function.suspends() && !function.generator()
+                    && function.actorKind() == Ast.ActorKind.NONE
+                    && !function.name().equals("init")) {
+                if (env.hasLiveMutexGuards()) {
+                    task.dispatchImmediateSourceCallback(
+                            () -> continuation.accept(task, null, new IllegalStateException(
+                                    "cannot call a suspends function while holding a live MutexGuard")));
+                    return;
+                }
+                // Enter the callee's lexical environment on the caller's task,
+                // including calls resolved in another source unit.
+                task.dispatchImmediateSourceCallback(() -> invocation.owner().runInlineSuspendsFunction(
+                        task, function, invocation.arguments(), continuation));
+                return;
+            }
             // Separate callee exceptions from consumer exceptions. Dispatching
             // the consumer within an invocation catch would deliver a failure
             // twice if downstream threw during synchronous completion.

@@ -83,6 +83,7 @@ public final class OwnershipChecker {
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    private final Map<String, Set<Integer>> linkedSuspendingFunctions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     // Ownership must agree with the typed nominal HasFuture<T> projection:
@@ -195,6 +196,14 @@ public final class OwnershipChecker {
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<Ast.BindingStmt, String> validatedShortAliases) {
+        return checkWithLinkedMetadata(program, linkedClasses, validatedShortAliases, Map.of());
+    }
+
+    /** Imported modules supply suspension boundaries after linked type checking. */
+    public static Ast.Program checkWithLinkedMetadata(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            Map<String, Ast.ModuleDecl> linkedModules) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
@@ -247,6 +256,17 @@ public final class OwnershipChecker {
             checker.rejectBorrowedFields(declaration);
             checker.classes.put(name, declaration);
             checker.linkedClassLayouts.add(declaration);
+        }
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            for (Ast.Decl declaration : entry.getValue().declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.suspends() && !fn.generator()) {
+                    checker.linkedSuspendingFunctions
+                            .computeIfAbsent(entry.getKey() + "." + fn.name(), ignored -> new HashSet<>())
+                            .add(fn.parameters().size());
+                }
+            }
         }
         checker.validate(program);
         checker.publishTaskAdmissions();
@@ -2684,8 +2704,14 @@ public final class OwnershipChecker {
 
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
+            String name = namespace.name() + "." + qualified.member();
+            Set<Integer> linkedArities = linkedSuspendingFunctions.get(name);
+            if (linkedArities != null && scope.lookup(namespace.name()) == null
+                    && linkedArities.contains(syntacticCallArgumentTypes(call.arguments(), scope).size())) {
+                checkSuspensionBorrows(scope, "suspends call " + name);
+            }
             Ast.FunctionDecl fn = findFunction(
-                    namespace.name() + "." + qualified.member(),
+                    name,
                     syntacticCallArgumentTypes(call.arguments(), scope).size());
             if (fn != null) {
                 CallSignature signature = specializeCall(
