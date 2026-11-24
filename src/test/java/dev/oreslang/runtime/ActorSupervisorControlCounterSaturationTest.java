@@ -45,8 +45,8 @@ final class ActorSupervisorControlCounterSaturationTest {
 
     @Test
     void transferTelemetrySaturatesAtLongMax() throws Exception {
-        var source = new ActorSupervisorControlLane(1);
         var root = new ActorSupervisorControlLane(1);
+        var source = root.childLane();
         var child = ActorRuntime.ActorId.create();
 
         source.reserve(child, 7);
@@ -54,12 +54,46 @@ final class ActorSupervisorControlCounterSaturationTest {
         source.publish(notice(child, 7, 1));
         setLongField(source, "transferred", Long.MAX_VALUE);
 
-        source.transferPublishedTo(root);
+        source.transferPublishedToRoot();
 
         assertEquals(Long.MAX_VALUE, source.snapshot().transferred());
         assertEquals(0, source.snapshot().reserved());
         assertEquals(1, root.snapshot().pending());
         assertEquals(child, root.poll().orElseThrow().actor());
+    }
+
+    @Test
+    void fallbackMovesInFlightAndQueuedNoticesTogetherAfterValidatingEveryReservation() {
+        var root = new ActorSupervisorControlLane(3);
+        var source = root.childLane();
+        var inFlight = ActorRuntime.ActorId.create();
+        var queued = ActorRuntime.ActorId.create();
+        var live = ActorRuntime.ActorId.create();
+        source.reserve(inFlight, 7);
+        source.reserve(queued, 8);
+        source.reserve(live, 9);
+        root.reserve(inFlight, 7);
+        source.publish(notice(inFlight, 7, 1));
+        source.publish(notice(queued, 8, 2));
+        assertEquals(inFlight, source.poll().orElseThrow().actor());
+
+        assertThrows(IllegalStateException.class, root::transferPublishedToRoot);
+        assertThrows(IllegalStateException.class, source::childLane);
+        assertThrows(IllegalStateException.class, source::transferPublishedToRoot);
+        assertEquals(0, root.pendingCount());
+        assertEquals(1, source.snapshot().inFlight());
+        assertEquals(1, source.pendingCount());
+
+        root.reserve(queued, 8);
+        source.transferPublishedToRoot();
+        assertEquals(1, source.snapshot().reserved());
+        assertEquals(0, source.snapshot().inFlight());
+        assertEquals(0, source.pendingCount());
+        assertEquals(inFlight, root.poll().orElseThrow().actor());
+        root.ack(inFlight, 7);
+        assertEquals(queued, root.poll().orElseThrow().actor());
+        root.ack(queued, 8);
+        source.retireGracefully(live, 9);
     }
 
     private static ActorRuntime.ActorFailureNotice notice(

@@ -758,39 +758,6 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure, int preferredCarrier) {
-        Objects.requireNonNull(turn, "turn");
-        Objects.requireNonNull(afterTurn, "afterTurn");
-        ensureOpen();
-        Runnable carrierTurn = () -> {
-            ThreadState state = state();
-            boolean priorCarrier = Boolean.TRUE.equals(state.schedulerCarrier);
-            OresScheduler previousCarrierScheduler = state.carrierScheduler;
-            state.schedulerCarrier = Boolean.TRUE;
-            state.carrierScheduler = this;
-            try {
-                turnExecutor.execute(() -> runBound(turn));
-            } catch (RuntimeException | Error failure) {
-                // Context admission can fail before runTurn starts. Settle the
-                // owning task instead of leaving the host waiting forever.
-                admissionFailure.accept(failure);
-                if (failure instanceof VirtualMachineError fatal) throw fatal;
-                if (failure instanceof ThreadDeath fatal) throw fatal;
-                if (failure instanceof LinkageError fatal) throw fatal;
-            } finally {
-                try {
-                    afterTurn.run();
-                } finally {
-                    state.carrierScheduler = previousCarrierScheduler;
-                    state.schedulerCarrier = priorCarrier ? Boolean.TRUE : null;
-                }
-            }
-        };
-        if (localityPool != null) localityPool.executeNear(carrierTurn, preferredCarrier);
-        else executor.execute(carrierTurn);
-    }
-
     private void ensureTaskAdmissionOpen() {
         ensureOpen();
         if (actorStopSealed.get()) {
@@ -879,12 +846,6 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
-        /**
-         * Accepted dispatches include queued carrier wrappers that have not
-         * entered the guest context yet. Cancellation cannot publish physical
-         * quiescence while one of those wrappers could still enter it.
-         */
-        private final AtomicInteger acceptedDispatches = new AtomicInteger();
         /**
          * Guest cancellation checkpoints are observed during the turn, but
          * host Future subscribers must be notified after the guest execution
@@ -1015,58 +976,60 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void scheduleInitial() {
-            acceptedDispatches.incrementAndGet();
             if (!phase.compareAndSet(NEW, QUEUED)) {
-                releaseAcceptedDispatch();
                 throw new IllegalStateException("scheduler task was already started");
             }
             enqueueTurn();
         }
 
-        /** An accepted queued wrapper is still a physical lease until it exits. */
-        private void releaseAcceptedDispatch() {
-            int remaining = acceptedDispatches.decrementAndGet();
-            if (remaining < 0) {
-                physicalRetirementFailure.compareAndSet(null,
-                        new IllegalStateException("scheduler accepted dispatch underflow"));
-                throw new IllegalStateException("scheduler accepted dispatch underflow");
-            }
-            retireWhenQuiescent();
-            publishTerminalIfReady();
-        }
-
         private void enqueueTurn() {
-            // Each scheduled dispatch owns its own carrier-lease bit. A stale
-            // or duplicate dispatch must never clear another running dispatch's
-            // executing flag, watchdog identity or quota-retirement barrier.
-            AtomicBoolean ownsExecution = new AtomicBoolean();
-            AtomicBoolean reservationReleased = new AtomicBoolean();
-            Runnable release = () -> {
-                if (reservationReleased.compareAndSet(false, true)) {
-                    releaseAcceptedDispatch();
-                }
-            };
             try {
-                executeTurn(() -> {
-                    // Remember this carrier so the next turn (a resumed
-                    // continuation) prefers it. A hint never grants authority.
-                    if (localityPool != null) preferredCarrier = localityPool.currentSlot();
-                    try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
-                        runTurn(ownsExecution);
-                    }
-                }, () -> {
-                    try {
-                        afterCarrierTurn(ownsExecution.get());
-                    } finally {
-                        // Preserve the actual-carrier locality hint above.
-                        // Retire only after the executor has exited Truffle.
-                        release.run();
-                    }
-                }, this::failTerminal, nextCarrierHint());
+                ensureOpen();
+                if (localityPool != null) localityPool.executeNear(this::runOnCarrier, nextCarrierHint());
+                else executor.execute(this::runOnCarrier);
             } catch (RuntimeException | Error rejected) {
-                release.run();
                 failTerminal(rejected);
                 throw rejected;
+            }
+        }
+
+        private void runOnCarrier() {
+            // Claim the physical lease before entering the context. A cancelled
+            // queued Task can retire immediately because this wrapper cannot
+            // enter the context after TERMINAL has won the phase transition.
+            if (phase.get() != QUEUED || !executing.compareAndSet(false, true)) return;
+            if (!phase.compareAndSet(QUEUED, RUNNING)) {
+                executing.set(false);
+                retireWhenQuiescent();
+                publishTerminalIfReady();
+                return;
+            }
+
+            ThreadState state = state();
+            Boolean priorCarrier = state.schedulerCarrier;
+            OresScheduler priorCarrierScheduler = state.carrierScheduler;
+            state.schedulerCarrier = Boolean.TRUE;
+            state.carrierScheduler = OresScheduler.this;
+            try {
+                if (localityPool != null) preferredCarrier = localityPool.currentSlot();
+                turnExecutor.execute(() -> runBound(() -> {
+                    try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
+                        runTurn();
+                    }
+                }));
+            } catch (RuntimeException | Error failure) {
+                // Context admission itself can fail before running guest code.
+                failTerminal(failure);
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                try {
+                    afterCarrierTurn();
+                } finally {
+                    state.carrierScheduler = priorCarrierScheduler;
+                    state.schedulerCarrier = priorCarrier;
+                }
             }
         }
 
@@ -1088,21 +1051,7 @@ public final class OresScheduler implements AutoCloseable {
             return hint != LocalityCarrierPool.NO_PREFERENCE ? hint : localityPool.currentSlot();
         }
 
-        private void runTurn(AtomicBoolean ownsExecution) {
-            // Claim the physical guest execution lease BEFORE transitioning to
-            // RUNNING. Otherwise cancellation can observe RUNNING with
-            // executing=false, announce quiescence and release actor memory
-            // while this carrier is about to begin task.resume().
-            if (!executing.compareAndSet(false, true)) {
-                // A stale/duplicate dispatch lost the physical lease. It
-                // does not own the current turn and MUST NOT fail, retire or
-                // publish any outcome for the legitimate running dispatch.
-                // Its afterTurn callback also receives ownsExecution=false.
-                return;
-            }
-            ownsExecution.set(true);
-            if (!phase.compareAndSet(QUEUED, RUNNING)) return;
-
+        private void runTurn() {
             ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(onWatchdogOverrun);
             watchdogLease = lease;
             final ThreadState state = state();
@@ -1228,13 +1177,7 @@ public final class OresScheduler implements AutoCloseable {
          * task Future earlier can let a host close its Polyglot Context while
          * this carrier is still executing guest continuation code.
          */
-        private void afterCarrierTurn(boolean ownsExecution) {
-            if (!ownsExecution) {
-                // This carrier never owned the physical lease; another
-                // dispatch may still be inside guest code. Never clear it.
-                retireWhenQuiescent();
-                return;
-            }
+        private void afterCarrierTurn() {
             ActorTurnWatchdog.Lease lease = watchdogLease;
             watchdogLease = null;
             if (lease != null) lease.close();
@@ -1441,19 +1384,12 @@ public final class OresScheduler implements AutoCloseable {
         private void scheduleReadyResume() {
             if (executing.get()) return;
             if (pendingResume.get() == null) return;
-            // The reservation precedes WAITING -> QUEUED, just as initial
-            // admission does. A cancel/close racing the CAS cannot publish
-            // getDone while the accepted turn may still enter Truffle.
-            acceptedDispatches.incrementAndGet();
-            if (!phase.compareAndSet(WAITING, QUEUED)) {
-                releaseAcceptedDispatch();
-                return;
-            }
+            if (!phase.compareAndSet(WAITING, QUEUED)) return;
 
             try {
                 enqueueTurn();
             } catch (RejectedExecutionException rejected) {
-                // enqueueTurn already failed the task and released admission.
+                // enqueueTurn already failed the task.
             }
         }
 
@@ -1585,7 +1521,7 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
             if (phase.get() != TERMINAL
-                    || executing.get() || acceptedDispatches.get() != 0
+                    || executing.get()
                     || !quiescenceState.compareAndSet(0, 1))
                 return;
             cancelWallDeadline();

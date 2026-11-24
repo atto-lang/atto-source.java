@@ -10332,8 +10332,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         /** Separate pre-reserved child terminal CONTROL plane. */
-        private final ActorSupervisorControlLane childControl =
-                new ActorSupervisorControlLane(dispatcherConfig.maxActors());
+        private final ActorSupervisorControlLane childControl = rootSupervisionControl.childLane();
         private final AtomicLong supervisorFairnessYields = new AtomicLong();
         private int consecutiveSupervisorControls;
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -12412,7 +12411,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Once a parent is stopping, it cannot safely invoke another
                 // child-failure callback. Move every already-published event
                 // into its independently pre-reserved root fallback slot.
-                childControl.transferPublishedTo(rootSupervisionControl);
+                childControl.transferPublishedToRoot();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.

@@ -45,11 +45,12 @@ final class ActorSupervisorControlLane {
     }
 
     private final int capacity;
+    private final ActorSupervisorControlLane fallback;
     private final Map<ActorRuntime.ActorId, Slot> slots = new HashMap<>();
     private Slot head;
     private Slot tail;
     private int pending;
-    private int inFlight;
+    private Slot inFlight;
     private long published;
     private long acknowledged;
     private long retried;
@@ -58,10 +59,22 @@ final class ActorSupervisorControlLane {
     private long duplicatePublishRejected;
 
     ActorSupervisorControlLane(int capacity) {
+        this(capacity, null);
+    }
+
+    private ActorSupervisorControlLane(int capacity, ActorSupervisorControlLane fallback) {
         if (capacity <= 0) {
             throw new IllegalArgumentException("CONTROL capacity must be positive");
         }
         this.capacity = capacity;
+        this.fallback = fallback;
+    }
+
+    ActorSupervisorControlLane childLane() {
+        if (fallback != null) {
+            throw new IllegalStateException("only the root CONTROL lane can supply fallback slots");
+        }
+        return new ActorSupervisorControlLane(capacity, this);
     }
 
     synchronized void reserve(ActorRuntime.ActorId child, long generation) {
@@ -94,7 +107,7 @@ final class ActorSupervisorControlLane {
     }
 
     synchronized Optional<ActorRuntime.ActorFailureNotice> poll() {
-        if (inFlight != 0) {
+        if (inFlight != null) {
             throw new IllegalStateException("overlapping supervisor CONTROL admissions");
         }
         if (head == null) return Optional.empty();
@@ -104,7 +117,7 @@ final class ActorSupervisorControlLane {
         slot.next = null;
         slot.queued = false;
         slot.inFlight = true;
-        inFlight = 1;
+        inFlight = slot;
         pending--;
         return Optional.of(slot.notice);
     }
@@ -117,7 +130,7 @@ final class ActorSupervisorControlLane {
         slots.remove(child);
         slot.inFlight = false;
         slot.notice = null;
-        inFlight = 0;
+        inFlight = null;
         acknowledged = saturatingIncrement(acknowledged);
     }
 
@@ -127,7 +140,7 @@ final class ActorSupervisorControlLane {
             throw new IllegalStateException("CONTROL event is not in flight");
         }
         slot.inFlight = false;
-        inFlight = 0;
+        inFlight = null;
         retried = saturatingIncrement(retried);
         enqueue(slot);
     }
@@ -144,43 +157,47 @@ final class ActorSupervisorControlLane {
     /**
      * Transfer every published event to pre-reserved root slots. Unpublished
      * reservations stay local because their child generations are still alive.
-     * Failed target publication leaves the source slot untouched.
+     * Validate the complete transfer before making any notice visible at root.
      */
-    synchronized void transferPublishedTo(ActorSupervisorControlLane root) {
-        Objects.requireNonNull(root, "root");
-        if (root == this) {
-            throw new IllegalArgumentException("cannot transfer CONTROL to its own lane");
+    synchronized void transferPublishedToRoot() {
+        if (fallback == null) {
+            throw new IllegalStateException("the root CONTROL lane has no fallback");
         }
+        if (inFlight == null && head == null) return;
+        // Nested locks always go from a child lane to its fixed root.
+        synchronized (fallback) {
+            if (inFlight != null) validateFallbackSlot(inFlight);
+            for (Slot slot = head; slot != null; slot = slot.next) validateFallbackSlot(slot);
 
-        for (var iterator = slots.values().iterator(); iterator.hasNext();) {
-            Slot slot = iterator.next();
-            if (slot.inFlight) {
-                if (!root.publish(slot.notice)) {
-                    throw new IllegalStateException(
-                            "duplicate root CONTROL publication for " + slot.child);
-                }
-                iterator.remove();
+            if (inFlight != null) {
+                Slot slot = inFlight;
+                fallback.publish(slot.notice);
+                slots.remove(slot.child);
                 slot.inFlight = false;
-                inFlight = 0;
+                inFlight = null;
                 transferred = saturatingIncrement(transferred);
-                break; // single-flight invariant means at most one
             }
-        }
 
-        while (head != null) {
-            Slot slot = head;
-            if (!root.publish(slot.notice)) {
-                throw new IllegalStateException(
-                        "duplicate root CONTROL publication for " + slot.child);
+            while (head != null) {
+                Slot slot = head;
+                fallback.publish(slot.notice);
+                head = slot.next;
+                slot.next = null;
+                slot.queued = false;
+                pending--;
+                slots.remove(slot.child);
+                transferred = saturatingIncrement(transferred);
             }
-            head = slot.next;
-            slot.next = null;
-            slot.queued = false;
-            pending--;
-            slots.remove(slot.child);
-            transferred = saturatingIncrement(transferred);
+            tail = null;
         }
-        tail = null;
+    }
+
+    private void validateFallbackSlot(Slot source) {
+        Slot reserved = fallback.required(source.child, source.generation);
+        if (reserved.notice != null) {
+            throw new IllegalStateException(
+                    "duplicate root CONTROL publication for " + source.child);
+        }
     }
 
     synchronized int pendingCount() {
@@ -196,7 +213,7 @@ final class ActorSupervisorControlLane {
                 capacity,
                 slots.size(),
                 pending,
-                inFlight,
+                inFlight == null ? 0 : 1,
                 published,
                 acknowledged,
                 retried,
