@@ -2697,6 +2697,15 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (expressionContainsPotentialSuspension(call.callee(), seen)) return true;
                 if (call.callee() instanceof Ast.MemberExpr member) {
+                    // A module-qualified function can need a continuation even
+                    // when the caller and callee are both declared synchronous.
+                    // In particular, recursive calls already use heap frames.
+                    if (member.receiver() instanceof Ast.NameExpr receiver
+                            && modules.containsKey(receiver.name())) {
+                        Ast.FunctionDecl target = findQualifiedFunction(
+                                receiver.name() + "." + member.member(), call.arguments().size());
+                        if (callableMaySuspend(target, seen)) return true;
+                    }
                     // Resolve local method families conservatively across
                     // overrides, without turning every builtin call into a task.
                     // Declaration aliases refer to the same AST object. Structural
@@ -2744,17 +2753,8 @@ public final class OresEvalRootNode extends RootNode {
                         // a first-class Future.
                         return true;
                     }
-                    Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
-                    if (target != null) {
-                        // Creating a generator activation does not pull or await it.
-                        if (target.generator()) return false;
-                        return target.async() || target.suspends()
-                                || target.actorKind() != Ast.ActorKind.NONE
-                                || (!target.async()
-                                        && functionContainsPotentialSuspension(
-                                                target,
-                                                seen));
-                    }
+                    return callableMaySuspend(
+                            findFunction(name.name(), call.arguments().size()), seen);
                 }
                 return false;
             }
@@ -2832,6 +2832,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean functionNameBoundLocally(String name) {
             return false;
+        }
+
+        private boolean callableMaySuspend(Ast.FunctionDecl target, Set<Object> seen) {
+            // Creating a generator activation does not pull or await it.
+            return target != null && !target.generator()
+                    && (target.async() || target.suspends() || target.actorKind() != Ast.ActorKind.NONE
+                            || functionContainsPotentialSuspension(target, seen));
         }
 
         private void runBlock(
