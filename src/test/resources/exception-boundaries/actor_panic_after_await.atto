@@ -1,0 +1,29 @@
+define actor FaultWorker as
+  static async fnc release_after_yield(): int {
+    rt cooperate;
+    return 42;
+  }
+
+  receive(ActorMail<String> mail): void {
+    defer stdio.stdout.write("outer|");
+    try {
+      defer stdio.stdout.write("inner|");
+      val int code = await FaultWorker.release_after_yield();
+      stdio.stdout.write("resumed|");
+      panic new Error("panic after await");
+    } catch (ordinary) {
+      stdio.stdout.write("caught|");
+    }
+    stdio.stdout.write("continued|");
+    return;
+  }
+end
+
+pub routine main(): void {
+  val child = spawn FaultWorker();
+  await child.get_ready();
+  child.send("go");
+  await child.get_done();
+  stdio.stdout.write("completed|");
+  return;
+}

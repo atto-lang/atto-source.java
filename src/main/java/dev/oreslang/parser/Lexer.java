@@ -237,7 +237,14 @@ public final class Lexer {
             tokens.add(new Token(SELECT, "select", line, keywordColumn));
             return;
         }
-        add(KEYWORDS.getOrDefault(text, IDENT));
+        Token.Type type = KEYWORDS.getOrDefault(text, IDENT);
+        boolean notEqual = source.startsWith("!eq", current)
+                && (current + 3 == source.length() || !isIdentPart(source.charAt(current + 3)));
+        if ((type == TRAP || type == THROW || type == RAISE || type == PANIC)
+                && peek() == '!' && peekNext() != '=' && !notEqual) {
+            advance();
+        }
+        add(type);
     }
 
     private boolean isAtEnd() { return current >= source.length(); }

@@ -1,111 +1,36 @@
-# Expression `trap` and `unwrap()` — shared source contract
+# Expression trap and extraction
 
-**Status:** Approved language-design target / **not implemented** as expression syntax.
-The Java/GraalVM frontend currently implements synchronous **callable** `trap`,
-not `trap expression`. The LLVM frontend reserves `trap` and rejects the
-unsupported syntax. This file does not claim executable cross-backend parity.
+`trap! expression` and `trap expression` evaluate the operand once. Success
+produces `Ok(value)`. An escaping ordinary throw runs lexical cleanup
+and produces `Err(error)`. An existing Result passes its success or error
+through, and the error type widens when needed to accommodate `Error`.
+An optional value stays optional within `Ok`.
 
-## One rule: catch ordinary `throw`, never panic
+`trap` binds as a prefix unary operator, including member calls.
+`trap! (left() + right())` covers the complete sum evaluation.
 
-`trap expr` is a separate proposed unary expression operator; it does not
-share the callable `trap fnc` ABI. Callable traps return opaque
-`TrapResult<T>` values with success and error projections, while this
-unimplemented expression form is designed to yield `Option<T>`:
-
-- Evaluate `expr` exactly once.
-- If it completes normally with value `v: T`, yield `Some(v): Option<T>`.
-- If an ordinary Ores `throw` escapes during that evaluation, run lexical
-  cleanup and yield `None: Option<T>`.
-- `panic`, `raise`, cancellation, forced termination, VM-fatal errors and
-  unknown native/host failures **bypass** `trap`; never reclassify them as
-  `None`.
-- `trap` is not an implicit `Result`-to-`Option` conversion. Values such
-  as `Err(e)` and `None` are ordinary successful values of their own type.
-- No flattening: `trap expr` always adds one `Option` layer, even if
-  `expr: Option<T>`, `expr: Result<T, E>`, or `expr: void`.
-
-Proposed static typing: `Gamma |- e: T` implies
-`Gamma |- trap e: Option<T>`. The ordinary-throw effect of `e` is
-eliminated at the boundary; other exceptional/control effects are preserved.
-For `void`, the proposed expression-level result is `Option<void>`. This is
-independent of the callable `TrapResult<void>` contract described in
-[TRAP.md](TRAP.md).
-
-`trap` binds as a prefix unary operator, including member calls: `trap
-account.try_lock().unwrap()` traps the full `unwrap()` call, **not** a
-larger surrounding binary expression. Use `trap (a() + b())` to trap
-both operands. Parentheses do not change which *kinds* of failure it traps.
-
-## `unwrap()` remains an assertion, not a recoverable failure
-
-`Option<T>.unwrap(): T` returns the `Some` payload or **panics** on
-`None`. `Result<T, E>.unwrap(): T` returns the `Ok` payload or
-**panics** on `Err`. Expression `trap` must never special-case an
-`unwrap()` invocation or silently downgrade that panic.
-
-Assuming the account's `try_lock(): Option<Guard<Balance>>`:
-
-```ores
-let mut balance = account.try_lock().unwrap();
-    // Guard<Balance>. None -> panic.
-
-let mut balance = trap account.try_lock().unwrap();
-    // Option<Guard<Balance>>. Some(guard) on normal success.
-    // None from try_lock().unwrap() -> PANIC, not trapped None.
-    // An ordinary throw during evaluation -> trapped None.
-
-let mut balance = account.try_lock();
-    // Option<Guard<Balance>>. None remains ordinary data.
-
-let safe = account.try_lock().unwrap_safe();
-    // Result<Guard<Balance>, OptionUnwrapError>.
-```
-
-For a `lock()` API that already returns `Option<Guard>`, the same
-types apply. For Oreslang's built-in `Mutex<T>.lock()`, which currently
-returns a `MutexGuard<T>` directly, appending `.unwrap()` is a type error;
-`try_lock()` is the built-in optional acquisition path.
-
-Examples that must not be confused:
-
-| Expression | Type | On `None` from `try_lock()` |
+| Operand | Trap type | Result when the operand is absent |
 | --- | --- | --- |
-| `account.try_lock()` | `Option<Guard>` | `None` |
-| `account.try_lock().unwrap()` | `Guard` | `panic` |
-| `trap account.try_lock()` | `Option<Option<Guard>>` | `Some(None)` |
-| `trap account.try_lock().unwrap()` | `Option<Guard>` | `panic` |
-| `account.try_lock().unwrap_safe()` | `Result<Guard, OptionUnwrapError>` | `Err(...)` |
-| `trap account.try_lock().unwrap_safe()` | `Option<Result<Guard, OptionUnwrapError>>` | `Some(Err(...))` |
+| `try_lock()` | `Result<Option<Guard>, Error>` | `Ok(None)` |
+| `try_lock().unwrap()` | `Result<Guard, Error>` | Panic bypasses trap |
+| `try_lock().unwrap_safe()` | `Result<Guard, OptionUnwrapError \| Error>` | Original Err passes through |
 
-If the design goal is to represent lock unavailability as `None`, retain
-the original `Option` instead of inserting `unwrap()`. Do not introduce
-a context-dependent version of `unwrap()` inside `trap`.
+The table's `Guard` is illustrative. Where the checker lacks a proven loan
+lifetime, it rejects using `trap` to wrap an existing borrow.
 
-## Ownership, execution, and fail-closed rollout
+`unwrap()` panics for both `None` and `Err`. Raise, panic, cancellation,
+forced termination and unclassified host failures bypass trap. A successful
+evaluation retains its side effects, and cleanup runs once on unwind.
+A trap stays in its admitted execution domain and has no authority to
+capture a detached task's exception.
 
-`Option<Guard>` is still affine when `Guard` is affine. Converting a
-trapped successful evaluation to `Some(guard)` must transfer the guard
-exactly once. Failure paths must unwind and release any acquired resources
-exactly once. The trap boundary cannot outlive its permitted actor/isolate
-execution domain or silently capture a detached task's exception.
+See the [callable and effect contract](TRAP.md) for ownership, suspension
+and coverage requirements.
 
-The first implementation should support only synchronous expressions and
-reject suspending/async `trap` expressions until continuation ownership,
-cleanup, and post-`await` effects are proved for both backends. No implicit
-conversion of panic to throw; no global host exception catch.
+## Cleanup and continuation invariants
 
-## Conformance gates before calling the syntax implemented
-
-1. Parser precedence, single evaluation, and exact `Option<T>` typing.
-2. Success `Some(v)`, ordinary throw `None`, no automatic nested flattening.
-3. `unwrap(None)` and `unwrap(Err)` panic across `trap`.
-4. `raise`, `panic`, cancellation, and termination bypass `trap`.
-5. `unwrap_safe()` stays `Result` data, including nested `Option<Result<...>>`.
-6. Move-only guards: no double consumption, no leaked resources on unwind,
-   correct cleanup ordering.
-7. Unsupported async, unsafe host failures, and non-admitted syntax fail closed.
-8. Identical source fixtures run against the actual GraalVM and LLVM
-   production frontends; no claims of parity from docs or mock lowering.
-
-Also see the Java/GraalVM `docs/TRAP.md` callable-trap contract and
-`docs/LANGUAGE.md` Option/Result semantics.
+Trap preserves completed writes and I/O. A successful owned guard transfers
+exactly once. Each resumed expression delivers one terminal completion,
+and the block walker finalizes its environment once. The shared failure
+policy traverses a bounded set of causes and suppressed failures.
+Explicit guest catch and trap use their respective admission rules.

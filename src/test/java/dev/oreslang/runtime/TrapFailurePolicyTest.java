@@ -125,4 +125,37 @@ final class TrapFailurePolicyTest {
         }
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+
+    @Test void sourceLocationsDoNotUseTheOperationalFailureBudget() {
+        var failure = new GuestControlSignal.Throw("ordinary error");
+        for (int i = 0; i < 64; i++) {
+            SourceBoundaryTrace.record(failure, "test.atto", "call", "await");
+        }
+        var wrapped = new CompletionException(failure);
+        assertTrue(TrapFailurePolicy.isTrappable(wrapped, GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isGuestCatchable(wrapped, GuestPanic.class));
+        failure.addSuppressed(new CancellationException("terminal cleanup"));
+        assertFalse(TrapFailurePolicy.isTrappable(wrapped, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(wrapped, GuestPanic.class));
+    }
+
+    @Test void hostAccessorOverridesAreNeverInvoked() {
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var forged = new IllegalStateException("host wrapper") {
+            @Override public synchronized Throwable getCause() {
+                calls.incrementAndGet();
+                return new GuestControlSignal.Throw("forged");
+            }
+
+            @Override public StackTraceElement[] getStackTrace() {
+                calls.incrementAndGet();
+                return super.getStackTrace();
+            }
+        };
+        var wrapped = new CompletionException(forged);
+        assertFalse(TrapFailurePolicy.isTrappable(wrapped, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(wrapped, GuestPanic.class));
+        assertNull(TrapFailurePolicy.findTrustedCause(wrapped, GuestControlSignal.class));
+        assertEquals(0, calls.get());
+    }
 }

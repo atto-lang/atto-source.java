@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.ExceptionalTrait;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -469,6 +470,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Ast.InterfaceDecl findInterface(String name) {
+            Ast.InterfaceDecl marker = ExceptionalTrait.find(name);
+            if (marker != null) return marker;
             if (ambiguousInterfaces.contains(name)) throw new IllegalArgumentException("ambiguous interface " + name + "; qualify it with its module");
             return interfaces.get(name);
         }
@@ -1219,7 +1222,7 @@ public final class OresEvalRootNode extends RootNode {
                                 : "method " + method.name();
                 Object shaped = shapeReturnedValue(returnType, value, label);
                 return function != null && function.trapped()
-                        ? trapSuccess(function, shaped) : shaped;
+                        ? trapSuccess(shaped) : shaped;
             }
         }
 
@@ -1962,7 +1965,7 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> continuation.accept(
                                     t,
                                     SourceFlow.throwing(failure == null
-                                            ? new GuestControlSignal.Throw(value)
+                                            ? checkedExceptionalSignal(value, ExceptionalTrait.THROWABLE, GuestControlSignal.Throw::new)
                                             : failure)));
                     return;
                 }
@@ -1974,7 +1977,7 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> continuation.accept(
                                     t,
                                     SourceFlow.throwing(failure == null
-                                            ? new GuestControlSignal.Raise(value)
+                                            ? checkedExceptionalSignal(value, ExceptionalTrait.RAISABLE, GuestControlSignal.Raise::new)
                                             : failure)));
                     return;
                 }
@@ -1986,7 +1989,7 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> continuation.accept(
                                     t,
                                     SourceFlow.throwing(failure == null
-                                            ? new GuestControlSignal.Panic(value)
+                                            ? checkedExceptionalSignal(value, ExceptionalTrait.PANICABLE, GuestControlSignal.Panic::new)
                                             : failure)));
                     return;
                 }
@@ -2021,15 +2024,9 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
-                                    if (value instanceof TrapResultValue trapResult) {
-                                        bindTrapResultDestructure(
-                                                destructure.pattern(), trapResult, env);
-                                        continuation.accept(t, SourceFlow.normal());
-                                        return;
-                                    }
                                     if (containsNestedDestructure(destructure.pattern())) {
                                         throw new IllegalArgumentException(
-                                                "nested destructuring is currently supported only for TrapResult values");
+                                                "nested destructuring is not supported");
                                     }
                                     if (destructure.kind()
                                             == Ast.DestructureKind.SEQUENCE) {
@@ -2211,12 +2208,14 @@ public final class OresEvalRootNode extends RootNode {
                             recovered.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW
-                                        && isRecoverSignal(flow.failure())) {
+                                GuestControlSignal.Raise raised = flow.kind() == SourceFlowKind.THROW
+                                        ? GuestControlSignal.recoverableRaise(flow.failure())
+                                        : null;
+                                if (raised != null) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             recovered.signalName(),
-                                            recoverySignal(flow.failure()),
+                                            recoverySignal(raised),
                                             Ast.BindingKind.VAL);
                                     runBlock(
                                             t,
@@ -3301,10 +3300,10 @@ public final class OresEvalRootNode extends RootNode {
                     evalSuspendableExpr(task, trapped.expression(), env,
                             (t, value, failure) -> {
                                 if (failure == null) {
-                                    continuation.accept(t, new OptionValue(true, value), null);
+                                    continuation.accept(t, trapSuccess(value), null);
                                 } else if (failure instanceof RuntimeException ordinary
                                         && isTrappableFailure(ordinary)) {
-                                    continuation.accept(t, new OptionValue(false, null), null);
+                                    continuation.accept(t, trapFailure(ordinary), null);
                                 } else {
                                     continuation.accept(t, null, failure);
                                 }
@@ -4911,15 +4910,6 @@ public final class OresEvalRootNode extends RootNode {
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
                             : option;
                 }
-                if (value instanceof TrapResultValue trap) {
-                    return trap.success()
-                            ? new TrapResultValue(
-                                    true,
-                                    trap.value() == null ? null : detachAsyncValue(trap.value(), visiting),
-                                    null,
-                                    trap.voidSuccess())
-                            : trap;
-                }
                 if (value instanceof ResultValue result) {
                     return new ResultValue(result.ok(), detachAsyncValue(result.value(), visiting));
                 }
@@ -4971,78 +4961,40 @@ public final class OresEvalRootNode extends RootNode {
                 return callFunctionBodyUnchecked(fn, args);
             }
             try {
-                return trapSuccess(fn, callFunctionBodyUnchecked(fn, args));
+                return trapSuccess(callFunctionBodyUnchecked(fn, args));
             } catch (RuntimeException failure) {
                 if (!isTrappableFailure(failure)) throw failure;
                 return trapFailure(failure);
             }
         }
 
-        private TrapResultValue trapSuccess(Ast.FunctionDecl function, Object value) {
-            boolean voidSuccess = isVoidReturnType(function);
-            if (voidSuccess != (value == null)) {
-                throw new OresPanic(
-                        "trap success invariant violated for callable '" + function.name() + "'");
-            }
-            return new TrapResultValue(true, value, null, voidSuccess);
+        private ResultValue trapSuccess(Object value) {
+            return value instanceof ResultValue existing
+                    ? existing : new ResultValue(true, value);
         }
 
-        private boolean isVoidReturnType(Ast.FunctionDecl function) {
-            if (function.returnType() == null) return true;
-            Ast.TypeRef type = function.returnType();
-            Set<String> seen = new java.util.HashSet<>();
-            while (type != null && seen.add(type.name())) {
-                if (type.name().equals("void")) return true;
-                Ast.TypeAliasDecl alias = findTypeAlias(type.name());
-                if (alias == null || !alias.genericParameters().isEmpty()) return false;
-                type = alias.target();
-            }
-            return false;
-        }
-
-        private TrapResultValue trapFailure(Throwable failure) {
-            return new TrapResultValue(false, null, toTrapError(failure), false);
-        }
-
-        private TrapErrorValue toTrapError(Throwable failure) {
+        private ResultValue trapFailure(RuntimeException failure) {
             GuestControlSignal signal = guestControlSignalCause(failure);
             if (signal instanceof GuestControlSignal.Throw thrown) {
-                return new TrapErrorValue("Thrown", safeMessage(messageForPayload(thrown.payload())));
+                Object payload = thrown.payload();
+                return new ResultValue(false, payload instanceof GuestErrorValue
+                        ? payload : new GuestErrorValue(messageForPayload(payload), payload));
             }
-            String message = failure.getMessage();
-            if (message == null || message.isBlank()) message = failure.getClass().getSimpleName();
-            return new TrapErrorValue("Runtime", safeMessage(message));
+            // Mapped host failures must not expose arbitrary host exception
+            // objects, stack state or messages as guest Error values.
+            return new ResultValue(false, new GuestErrorValue("ordinary guest failure"));
         }
 
         private GuestControlSignal guestControlSignalCause(Throwable failure) {
-            Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Throwable current = failure;
-                    current != null && seen.add(current);
-                    current = current.getCause()) {
-                if (current instanceof GuestControlSignal signal) return signal;
-            }
-            return null;
-        }
-
-        private boolean hasCause(Throwable failure, Class<? extends Throwable> type) {
-            return causeOf(failure, type) != null;
-        }
-
-        private Throwable causeOf(Throwable failure, Class<? extends Throwable> type) {
-            Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Throwable current = failure;
-                    current != null && seen.add(current);
-                    current = current.getCause()) {
-                if (type.isInstance(current)) return current;
-            }
-            return null;
+            return dev.oreslang.runtime.TrapFailurePolicy.findTrustedCause(
+                    failure, GuestControlSignal.class);
         }
 
         private String messageForPayload(Object payload) {
             if (payload instanceof GuestErrorValue error) return error.message();
-            if (payload instanceof TrapErrorValue error) return error.message();
             if (payload instanceof RecoverySignalValue signal) return signal.message();
-            return display(payload);
+            if (payload instanceof OresObject object) return object.klass.name();
+            return "guest exceptional value";
         }
 
         private String safeMessage(String message) {
@@ -5057,24 +5009,26 @@ public final class OresEvalRootNode extends RootNode {
                     : failure;
         }
 
-        private boolean isRecoverSignal(Throwable failure) {
-            GuestControlSignal signal = guestControlSignalCause(failure);
-            return signal instanceof GuestControlSignal.Raise
-                    || signal instanceof GuestControlSignal.Panic
-                    || hasCause(failure, OresPanic.class);
+        private RecoverySignalValue recoverySignal(GuestControlSignal.Raise signal) {
+            return new RecoverySignalValue(signal.kind(),
+                    safeMessage(messageForPayload(signal.payload())), signal.payload());
         }
 
-        private RecoverySignalValue recoverySignal(Throwable failure) {
-            GuestControlSignal signal = guestControlSignalCause(failure);
-            if (signal instanceof GuestControlSignal.Raise
-                    || signal instanceof GuestControlSignal.Panic) {
-                return new RecoverySignalValue(
-                        signal.kind(),
-                        safeMessage(messageForPayload(signal.payload())));
+        private RuntimeException checkedExceptionalSignal(Object payload, ExceptionalTrait trait,
+                java.util.function.Function<Object, GuestControlSignal> factory) {
+            if (payload instanceof GuestErrorValue) return factory.apply(payload);
+            if (payload instanceof OresObject object
+                    && object.owner.classImplements(object.klass, trait.declaration(),
+                            new LinkedHashSet<>(), new LinkedHashSet<>())) {
+                return factory.apply(payload);
             }
-            Throwable panic = causeOf(failure, OresPanic.class);
-            String message = panic == null ? failure.getMessage() : panic.getMessage();
-            return new RecoverySignalValue("panic", safeMessage(message));
+            return new InvalidExceptionalPayload(trait);
+        }
+
+        private static final class InvalidExceptionalPayload extends RuntimeException {
+            InvalidExceptionalPayload(ExceptionalTrait trait) {
+                super("exceptional effect requires an owned " + trait.declaration().name() + " value");
+            }
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
@@ -5094,7 +5048,8 @@ public final class OresEvalRootNode extends RootNode {
             if (signal instanceof GuestControlSignal.Panic) return 4;
             if (signal instanceof GuestControlSignal.Raise) return 3;
             if (signal instanceof GuestControlSignal.Throw) return 2;
-            if (hasCause(failure, OresPanic.class)) return 4;
+            if (dev.oreslang.runtime.TrapFailurePolicy.findTrustedCause(
+                    failure, OresPanic.class) != null) return 4;
             if (failure instanceof RuntimeException runtime && isTrappableFailure(runtime)) return 2;
             return 5; // unknown host/control failures fail closed
         }
@@ -5102,14 +5057,14 @@ public final class OresEvalRootNode extends RootNode {
         private Throwable mergeControlFailure(Throwable earlier, Throwable later) {
             if (earlier == null) return later;
             if (later == null || earlier == later) return earlier;
-            // A deferred exit(0) must not turn an already failing
-            // execution into a successful exit. Nonzero exit remains a
-            // terminal request and outranks ordinary guest control signals.
-            if (later instanceof ProcessExitSignal exit && exit.exitStatus() == 0) {
+            int earlierPriority = controlPriority(earlier);
+            // A cleanup exit may choose a status for an otherwise normal
+            // return. It cannot hide an unhandled failure or an earlier exit.
+            if (later instanceof ProcessExitSignal && earlierPriority > 1) {
                 earlier.addSuppressed(later);
                 return earlier;
             }
-            if (controlPriority(later) > controlPriority(earlier)) {
+            if (controlPriority(later) > earlierPriority) {
                 later.addSuppressed(earlier);
                 return later;
             }
@@ -5299,11 +5254,12 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     executeBlock(recovered.body(), env, true);
                 } catch (RuntimeException failure) {
-                    if (!isRecoverSignal(failure)) throw failure;
+                    GuestControlSignal.Raise raised = GuestControlSignal.recoverableRaise(failure);
+                    if (raised == null) throw failure;
                     Env caught = new Env(env);
                     caught.define(
                             recovered.signalName(),
-                            recoverySignal(failure),
+                            recoverySignal(raised),
                             Ast.BindingKind.VAL);
                     // The active recover frame handles only the signal from its
                     // body. A new raise/panic in the handler escapes to an outer frame.
@@ -5342,13 +5298,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.DestructureStmt destructure) {
                 Object value = eval(destructure.initializer(), env);
-                if (value instanceof TrapResultValue trapResult) {
-                    bindTrapResultDestructure(destructure.pattern(), trapResult, env);
-                    return;
-                }
                 if (containsNestedDestructure(destructure.pattern())) {
                     throw new IllegalArgumentException(
-                            "nested destructuring is currently supported only for TrapResult values");
+                            "nested destructuring is not supported");
                 }
                 if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                     bindSequenceDestructure(
@@ -5372,13 +5324,13 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ThrowStmt thrown) {
-                throw new GuestControlSignal.Throw(eval(thrown.value(), env));
+                throw checkedExceptionalSignal(eval(thrown.value(), env), ExceptionalTrait.THROWABLE, GuestControlSignal.Throw::new);
             }
             if (stmt instanceof Ast.RaiseStmt raised) {
-                throw new GuestControlSignal.Raise(eval(raised.value(), env));
+                throw checkedExceptionalSignal(eval(raised.value(), env), ExceptionalTrait.RAISABLE, GuestControlSignal.Raise::new);
             }
             if (stmt instanceof Ast.PanicStmt panicked) {
-                throw new GuestControlSignal.Panic(eval(panicked.value(), env));
+                throw checkedExceptionalSignal(eval(panicked.value(), env), ExceptionalTrait.PANICABLE, GuestControlSignal.Panic::new);
             }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 returnFrom(
@@ -6517,10 +6469,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 try {
-                    return new OptionValue(true, eval(trapped.expression(), env));
+                    return trapSuccess(eval(trapped.expression(), env));
                 } catch (RuntimeException failure) {
                     if (!isTrappableFailure(failure)) throw failure;
-                    return new OptionValue(false, null);
+                    return trapFailure(failure);
                 }
             }
             if (expr instanceof Ast.UnaryExpr unary) {
@@ -7347,25 +7299,19 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof GuestErrorValue error) {
-                if (name.equals("message")) return error.message();
-                throw new IllegalArgumentException("unknown Error member " + name);
-            }
-            if (receiver instanceof TrapErrorValue error) {
                 return switch (name) {
-                    case "kind" -> error.kind();
                     case "message" -> error.message();
-                    default -> throw new IllegalArgumentException("unknown TrapError member " + name);
+                    case "payload" -> error.payload() == null ? error : error.payload();
+                    default -> throw new IllegalArgumentException("unknown Error member " + name);
                 };
             }
             if (receiver instanceof RecoverySignalValue signal) {
                 return switch (name) {
                     case "kind" -> signal.kind();
                     case "message" -> signal.message();
+                    case "payload" -> signal.payload();
                     default -> throw new IllegalArgumentException("unknown RecoverySignal member " + name);
                 };
-            }
-            if (receiver instanceof TrapResultValue) {
-                throw new IllegalArgumentException("TrapResult must be destructured into success and error slots");
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
@@ -7436,8 +7382,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "size" -> (long) rawList.size();
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
-                        Object index = args.getFirst();
-                        return rawList.get(sequenceIndex(index));
+                        return rawList.get(checkedListIndex(args.getFirst(), rawList.size()));
                     };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
@@ -7451,10 +7396,9 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "List.set expects exactly 2 argument(s)");
                         }
-                        Object index = args.getFirst();
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
-                        list.set(sequenceIndex(index), args.get(1));
+                        list.set(checkedListIndex(args.getFirst(), list.size()), args.get(1));
                         return null;
                     };
                     default -> throw new IllegalArgumentException(
@@ -7477,6 +7421,14 @@ public final class OresEvalRootNode extends RootNode {
                 return hostMember(receiver, "host object", name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private static int checkedListIndex(Object value, int size) {
+            int index = sequenceIndex(value);
+            if (index < 0 || index >= size) {
+                throw new IndexOutOfBoundsException("Index " + index + " out of bounds for length " + size);
+            }
+            return index;
         }
 
         private Object hostMember(Object receiver, String ownerName, String name) {
@@ -8660,6 +8612,7 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
 
+            if (value instanceof GuestErrorValue && ExceptionalTrait.find(name) != null) return true;
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
                 if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, new LinkedHashSet<>());
@@ -8961,6 +8914,11 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                if (op == '%' && y == 0) {
+                    // An explicit guest error preserves its source boundary
+                    // even when the JVM elides implicit exception traces.
+                    throw new ArithmeticException("/ by zero");
+                }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();
@@ -9119,58 +9077,6 @@ public final class OresEvalRootNode extends RootNode {
             return nested.children().stream().anyMatch(child ->
                 child instanceof Ast.NestedDestructurePattern
                         || containsNestedDestructure(child));
-        }
-
-        private void bindTrapResultDestructure(
-                Ast.DestructurePattern pattern, TrapResultValue result, Env destination) {
-            if (!(pattern instanceof Ast.NestedDestructurePattern root)
-                    || root.kind() != Ast.DestructureKind.SEQUENCE
-                    || root.children().size() != 2
-                    || !(root.children().get(1) instanceof Ast.DestructureBindingPattern errorPattern)) {
-                throw new IllegalArgumentException(
-                        "TrapResult destructuring requires [success, error] with exactly two slots");
-            }
-            Ast.DestructureBinding errorBinding = errorPattern.binding();
-            if (errorBinding.isDiscard() || errorBinding.rest()) {
-                throw new IllegalArgumentException(
-                        "trap error slot cannot be discarded or used as a rest binding");
-            }
-
-            Ast.DestructurePattern successPattern = root.children().getFirst();
-            if (successPattern instanceof Ast.DestructureBindingPattern successPatternBinding) {
-                Ast.DestructureBinding successBinding = successPatternBinding.binding();
-                if (successBinding.rest()) {
-                    throw new IllegalArgumentException("TrapResult success slot cannot be a rest binding");
-                }
-                if (!successBinding.isDiscard()) {
-                    destination.define(
-                            successBinding.name(),
-                            result.successProjection(),
-                            successBinding.kind());
-                }
-            } else if (successPattern instanceof Ast.NestedDestructurePattern nestedSuccess
-                    && nestedSuccess.kind() == Ast.DestructureKind.SEQUENCE
-                    && nestedSuccess.children().size() == 1
-                    && nestedSuccess.children().getFirst() instanceof Ast.DestructureBindingPattern single) {
-                Ast.DestructureBinding successBinding = single.binding();
-                if (successBinding.rest()) {
-                    throw new IllegalArgumentException("nested TrapResult success binding cannot be a rest binding");
-                }
-                if (!successBinding.isDiscard()) {
-                    destination.define(
-                            successBinding.name(),
-                            new OptionValue(result.success(), result.success() ? result.value() : null),
-                            successBinding.kind());
-                }
-            } else {
-                throw new IllegalArgumentException(
-                        "nested TrapResult success syntax must be [const [value], const error]");
-            }
-
-            destination.define(
-                    errorBinding.name(),
-                    result.errorProjection(),
-                    errorBinding.kind());
         }
 
         private List<?> asSequence(Object value) {
@@ -9892,41 +9798,16 @@ public final class OresEvalRootNode extends RootNode {
         }
         @Override public String toString(){return CycleSafeDisplay.render(this);}
     }
-    private record TrapResultValue(
-            boolean success, Object value, TrapErrorValue error, boolean voidSuccess)
-            implements OresMutex.SharedState {
-        private TrapResultValue {
-            boolean valid = success
-                    ? error == null && (voidSuccess ? value == null : value != null)
-                    : value == null && !voidSuccess && error != null;
-            if (!valid) throw new OresPanic("invalid compiler-owned TrapResult state");
-        }
-        private List<?> successBundle() {
-            if (!success) return List.of();
-            return voidSuccess ? List.of() : List.of(value);
-        }
-        private OptionValue successProjection() {
-            return new OptionValue(success, success ? successBundle() : null);
-        }
-        private OptionValue errorProjection() {
-            return new OptionValue(!success, success ? null : error);
-        }
+    private record GuestErrorValue(String message, Object payload) implements OresMutex.SharedState {
+        GuestErrorValue(String message) { this(message, null); }
         @Override public Iterable<?> sharedStateChildren() {
-            if (success) return value == null ? List.of() : List.of(value);
-            return error == null ? List.of() : List.of(error);
+            return payload == null ? List.of() : List.of(payload);
         }
-        @Override public String toString() { return CycleSafeDisplay.render(this); }
-    }
-    private record TrapErrorValue(String kind, String message) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren() { return List.of(); }
-        @Override public String toString() { return "TrapError(" + kind + ": " + message + ")"; }
-    }
-    private record GuestErrorValue(String message) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren() { return List.of(); }
         @Override public String toString() { return "Error(" + message + ")"; }
     }
-    private record RecoverySignalValue(String kind, String message) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren() { return List.of(); }
+    private record RecoverySignalValue(String kind, String message, Object payload)
+            implements OresMutex.SharedState {
+        @Override public Iterable<?> sharedStateChildren() { return List.of(payload); }
         @Override public String toString() { return "RecoverySignal(" + kind + ": " + message + ")"; }
     }
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {

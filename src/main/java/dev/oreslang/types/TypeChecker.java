@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.ExceptionalTrait;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -193,7 +194,7 @@ public final class TypeChecker {
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
-                "TrapResult", "TrapError", "RecoverySignal", "Error", "self", "null"));
+                "TrapResult", "TrapError", "RecoverySignal", "Error", "Throwable", "Raisable", "Panicable", "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -250,7 +251,8 @@ public final class TypeChecker {
     }
 
     private void rejectCompilerOwnedTypeName(String name) {
-        if (Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
+        if (ExceptionalTrait.find(name) != null
+                || Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
             throw new IllegalArgumentException(
                     "'" + name + "' is a compiler-owned type name and cannot be declared by user code");
         }
@@ -1762,13 +1764,9 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             Type source = deref(typeOf(destructure.initializer(), env, generics, self));
-            if (source instanceof Named named && named.name().equals("TrapResult")) {
-                checkTrapResultDestructure(destructure, named, env);
-                return;
-            }
             if (containsNestedDestructure(destructure.pattern())) {
                 throw new IllegalArgumentException(
-                        "nested destructuring is currently supported only for TrapResult values");
+                        "nested destructuring is not supported");
             }
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
@@ -1806,18 +1804,18 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ThrowStmt thrown) {
-            requireNonVoidControlPayload(
-                    typeOf(thrown.value(), env, generics, self), "throw");
+            requireExceptionalPayload(
+                    typeOf(thrown.value(), env, generics, self), "throw", ExceptionalTrait.THROWABLE);
             return;
         }
         if (stmt instanceof Ast.RaiseStmt raised) {
-            requireNonVoidControlPayload(
-                    typeOf(raised.value(), env, generics, self), "raise");
+            requireExceptionalPayload(
+                    typeOf(raised.value(), env, generics, self), "raise", ExceptionalTrait.RAISABLE);
             return;
         }
         if (stmt instanceof Ast.PanicStmt panicked) {
-            requireNonVoidControlPayload(
-                    typeOf(panicked.value(), env, generics, self), "panic");
+            requireExceptionalPayload(
+                    typeOf(panicked.value(), env, generics, self), "panic", ExceptionalTrait.PANICABLE);
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
@@ -1860,11 +1858,7 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) {
-            Type expressionType = deref(typeOf(expression.expression(), env, generics, self));
-            if (isTrapResultType(expressionType)) {
-                throw new IllegalArgumentException(
-                        "trap result cannot be discarded; bind both success and error slots");
-            }
+            typeOf(expression.expression(), env, generics, self);
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
@@ -1874,11 +1868,7 @@ public final class TypeChecker {
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {
-                Type deferredType = deref(typeOf(defer.expression(), env, generics, self));
-                if (isTrapResultType(deferredType)) {
-                    throw new IllegalArgumentException(
-                            "defer cannot discard a trap result; destructure it before deferring work");
-                }
+                typeOf(defer.expression(), env, generics, self);
             } finally {
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
@@ -2301,8 +2291,8 @@ public final class TypeChecker {
             Type inner = typeOf(trapped.expression(), env, generics, self);
             if (inner instanceof Borrow)
                 throw new IllegalArgumentException(
-                        "trap cannot wrap a borrowed value without a proven Option loan lifetime");
-            return new Named("Option", List.of(inner));
+                        "trap cannot wrap a borrowed value without a proven Result loan lifetime");
+            return trapResult(true, inner);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -3596,6 +3586,9 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.NewExpr created) {
             if (created.type().name().equals("Error") && findClass("Error") == null) {
+                if (created.type().inferArguments() || !created.type().arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Error does not accept type arguments");
+                }
                 if (created.arguments().size() > 1) {
                     throw new IllegalArgumentException("Error constructor accepts zero or one message argument");
                 }
@@ -4928,9 +4921,12 @@ public final class TypeChecker {
         }
         if (receiver instanceof Named named) {
             if (named.name().equals("Error") && findClass("Error") == null) {
-                if (writing) throw new IllegalArgumentException("Error.message is immutable");
-                if (member.member().equals("message")) return Primitive.STRING;
-                throw new IllegalArgumentException("unknown Error member '" + member.member() + "'");
+                if (writing) throw new IllegalArgumentException("Error fields are immutable");
+                return switch (member.member()) {
+                    case "message" -> Primitive.STRING;
+                    case "payload" -> Unknown.INSTANCE;
+                    default -> throw new IllegalArgumentException("unknown Error member '" + member.member() + "'");
+                };
             }
             if (named.name().equals("TrapError")) {
                 if (writing) throw new IllegalArgumentException("TrapError fields are immutable");
@@ -4943,6 +4939,7 @@ public final class TypeChecker {
                 if (writing) throw new IllegalArgumentException("RecoverySignal fields are immutable");
                 return switch (member.member()) {
                     case "kind", "message" -> Primitive.STRING;
+                    case "payload" -> Unknown.INSTANCE;
                     default -> throw new IllegalArgumentException("unknown RecoverySignal member '" + member.member() + "'");
                 };
             }
@@ -6943,19 +6940,33 @@ public final class TypeChecker {
     }
 
     private Type trapResult(boolean trapped, Type result) {
-        return trapped ? new Named("TrapResult", List.of(result)) : result;
+        if (!trapped) return result;
+        Named errorType = new Named("Error", List.of());
+        if (result instanceof Named value && value.name().equals("Result")
+                && value.arguments().size() == 2) {
+            Type error = value.arguments().get(1);
+            if (error == Unknown.INSTANCE || assignable(errorType, error)) return value;
+            return new Named("Result", List.of(value.arguments().get(0),
+                    Types.unionOf(error, errorType)));
+        }
+        return new Named("Result", List.of(result, errorType));
     }
 
-    private void requireNonVoidControlPayload(Type type, String keyword) {
-        if (type == Primitive.VOID) {
-            throw new IllegalArgumentException(keyword + " requires a non-void payload");
+    private void requireExceptionalPayload(Type type, String keyword, ExceptionalTrait trait) {
+        String marker = trait.declaration().name();
+        if (!hasExceptionalTrait(type, new Named(marker, List.of()))) {
+            throw new IllegalArgumentException(keyword + " requires an owned " + marker + " value");
         }
     }
 
-    private boolean isTrapResultType(Type type) {
-        return type instanceof Named named
-                && named.name().equals("TrapResult")
-                && named.arguments().size() == 1;
+    private boolean hasExceptionalTrait(Type type, Named marker) {
+        if (type instanceof Union union) {
+            return union.options().stream().allMatch(option -> hasExceptionalTrait(option, marker));
+        }
+        if (!(type instanceof Named named)) return false;
+        if (named.name().equals("Error") && named.arguments().isEmpty()) return true;
+        return classTypeImplements(named, marker, new LinkedHashSet<>())
+                || interfaceTypeExtends(named, marker, new LinkedHashSet<>());
     }
 
     private boolean containsNestedDestructure(Ast.DestructurePattern pattern) {
@@ -6964,49 +6975,6 @@ public final class TypeChecker {
         return nested.children().stream().anyMatch(child ->
                 child instanceof Ast.NestedDestructurePattern
                         || containsNestedDestructure(child));
-    }
-
-    private void checkTrapResultDestructure(
-            Ast.DestructureStmt destructure, Named source, Env env) {
-        if (source.arguments().size() != 1
-                || destructure.kind() != Ast.DestructureKind.SEQUENCE
-                || !(destructure.pattern() instanceof Ast.NestedDestructurePattern root)
-                || root.children().size() != 2
-                || !(root.children().get(1) instanceof Ast.DestructureBindingPattern errorPattern)) {
-            throw new IllegalArgumentException(
-                    "TrapResult destructuring requires [success, error] with exactly two slots");
-        }
-
-        Ast.DestructureBinding errorBinding = errorPattern.binding();
-        if (errorBinding.isDiscard() || errorBinding.rest()) {
-            throw new IllegalArgumentException(
-                    "trap error slot cannot be discarded or used as a rest binding");
-        }
-
-        Type successType = source.arguments().getFirst();
-        Type successBundle = new Tuple(
-                successType == Primitive.VOID ? List.of() : List.of(successType),
-                TupleKind.TUPLE);
-        Type successSlotType = new Named("Option", List.of(successBundle));
-        Type errorSlotType = new Named("Option", List.of(new Named("TrapError", List.of())));
-
-        Ast.DestructurePattern successPattern = root.children().getFirst();
-        if (successPattern instanceof Ast.DestructureBindingPattern successBinding) {
-            defineDestructureBinding(env, successBinding.binding(), successSlotType);
-        } else if (successPattern instanceof Ast.NestedDestructurePattern nestedSuccess
-                && nestedSuccess.kind() == Ast.DestructureKind.SEQUENCE
-                && nestedSuccess.children().size() == 1
-                && nestedSuccess.children().getFirst() instanceof Ast.DestructureBindingPattern single) {
-            if (single.binding().rest()) {
-                throw new IllegalArgumentException("nested TrapResult success binding cannot be a rest binding");
-            }
-            defineDestructureBinding(
-                    env, single.binding(), new Named("Option", List.of(successType)));
-        } else {
-            throw new IllegalArgumentException(
-                    "nested TrapResult success syntax must be [const [value], const error]");
-        }
-        defineDestructureBinding(env, errorBinding, errorSlotType);
     }
 
     private Function trapFunctionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
@@ -8176,13 +8144,8 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 yield new Named("Option", List.of(element));
             }
-            case "TrapResult" -> {
-                if (ref.inferArguments() || ref.arguments().size() != 1) {
-                    throw new IllegalArgumentException("TrapResult requires exactly one explicit type argument");
-                }
-                yield new Named("TrapResult", List.of(resolve(ref.arguments().getFirst(), generics, self, true)));
-            }
-            case "TrapError", "RecoverySignal", "Error" -> {
+            case "TrapResult", "TrapError" -> throw new IllegalArgumentException("trap callables return Result<T, Error>");
+            case "RecoverySignal", "Error" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
                 }
@@ -8344,6 +8307,9 @@ public final class TypeChecker {
         }
 
         if (Types.isAssignable(actual, expected)) return true;
+        if (actual instanceof Named error && error.name().equals("Error") &&
+                expected instanceof Named marker && marker.arguments().isEmpty()
+                && ExceptionalTrait.find(marker.name()) != null) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
             Ast.InterfaceDecl actualContract = findInterface(actualNamed.name());
@@ -8534,6 +8500,8 @@ public final class TypeChecker {
     }
 
     private Ast.InterfaceDecl findInterface(String name) {
+        Ast.InterfaceDecl marker = ExceptionalTrait.find(name);
+        if (marker != null) return marker;
         if (ambiguousInterfaces.contains(name)) throw new IllegalArgumentException("ambiguous interface name '" + name + "'; qualify it with its module");
         return interfaces.get(name);
     }
@@ -8546,7 +8514,8 @@ public final class TypeChecker {
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
         for (String name : names) {
-            if (Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
+            if (ExceptionalTrait.find(name) != null
+                || Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
                 throw new IllegalArgumentException(
                         "'" + name + "' is compiler-owned and cannot be used as a generic parameter in " + owner);
             }

@@ -1473,7 +1473,7 @@ public final class OwnershipChecker {
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 if (fn.trapped()) {
-                    callResult = new Ast.TypeRef("TrapResult", List.of(callResult), false);
+                    callResult = new Ast.TypeRef("Option", List.of(callResult), false);
                 }
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1496,7 +1496,7 @@ public final class OwnershipChecker {
                         "function " + namespace.name() + "." + qualified.member());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 if (fn.trapped()) {
-                    callResult = new Ast.TypeRef("TrapResult", List.of(callResult), false);
+                    callResult = new Ast.TypeRef("Option", List.of(callResult), false);
                 }
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -3483,25 +3483,6 @@ public final class OwnershipChecker {
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
         if (source == null) return Ast.TypeRef.inferred();
         Ast.DestructureBinding binding = destructure.bindings().get(index);
-        if (source.name().equals("TrapResult") && source.arguments().size() == 1
-                && destructure.kind() == Ast.DestructureKind.SEQUENCE
-                && destructure.pattern() instanceof Ast.NestedDestructurePattern root
-                && root.children().size() == 2) {
-            Ast.TypeRef successType = source.arguments().getFirst();
-            if (index == 1) {
-                return new Ast.TypeRef(
-                        "Option", List.of(Ast.TypeRef.simple("TrapError")), false);
-            }
-            if (index == 0) {
-                Ast.DestructurePattern successPattern = root.children().getFirst();
-                Ast.TypeRef payload = successPattern instanceof Ast.NestedDestructurePattern
-                        ? successType
-                        : Ast.TypeRef.tupleType(successType.name().equals("void")
-                                ? List.of()
-                                : List.of(successType));
-                return new Ast.TypeRef("Option", List.of(payload), false);
-            }
-        }
         if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
             return sequenceDestructureBindingType(source, index, binding.rest());
         } else {
@@ -3807,17 +3788,6 @@ public final class OwnershipChecker {
 
         private void close() {
             if (closed) return;
-            for (VarState state : locals.values()) {
-                if (state.type != null
-                        && state.type.name().equals("TrapResult")
-                        && state.type.arguments().size() == 1
-                        && !state.moved) {
-                    throw new IllegalArgumentException(
-                            "Oreslang ownership error: trap result binding '"
-                                    + state.debugName
-                                    + "' must be destructured or explicitly transferred");
-                }
-            }
             closed = true;
             for (VarState state : locals.values()) {
                 if (state.borrowSource != null && state.borrowLease) {
