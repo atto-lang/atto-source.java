@@ -4378,6 +4378,10 @@ public final class TypeChecker {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
             }
+            if (unary.operator().equals(Ast.VerifiedI64.CHECK_I32)) {
+                requireAssignable(operand, Primitive.INT, "checked i32 carrier operand");
+                return Primitive.INT;
+            }
             if (unary.operator().equals("~")) {
                 requireInteger(operand, "~ operand");
                 return Primitive.INT;

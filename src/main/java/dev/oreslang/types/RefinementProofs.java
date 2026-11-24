@@ -46,6 +46,13 @@ public final class RefinementProofs {
         public boolean nonpositive() { return maximum <= 0; }
         public boolean atMost(Interval b) { return maximum <= b.minimum; }
 
+        /** Bound the normal results of an operation with an enforced carrier check. */
+        public Interval onNormalResultWithin(Interval carrier) {
+            long low = Math.max(minimum, carrier.minimum);
+            long high = Math.min(maximum, carrier.maximum);
+            return low <= high ? new Interval(low, high) : carrier;
+        }
+
         public Interval constrain(String operator, long bound) {
             long lower = minimum;
             long upper = maximum;

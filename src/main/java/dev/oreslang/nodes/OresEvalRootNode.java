@@ -6872,6 +6872,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "!" -> !truth(value);
                 case "~" -> ~integralLong(value);
                 case "-" -> negate(value);
+                case Ast.VerifiedI64.CHECK_I32 -> checkedI32(integralLong(value));
                 default -> throw new IllegalArgumentException(
                         "unsupported unary operator " + operator);
             };
@@ -9418,15 +9419,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             if (expr instanceof Ast.UnaryExpr unary) {
-                Object value = eval(unary.operand(), env);
-                return switch (unary.operator()) {
-                    case "&", "&mut" -> value;
-                    case "!" -> !truth(value);
-                    case "~" -> ~integralLong(value);
-                    case "+" -> value;
-                    case "-" -> negate(value);
-                    default -> throw new IllegalArgumentException("unsupported unary operator " + unary.operator());
-                };
+                return unaryValue(unary.operator(), eval(unary.operand(), env));
             }
             if (expr instanceof Ast.BinaryExpr binary) {
                 if (binary.operator().equals("pipe")) {
@@ -12993,6 +12986,12 @@ public final class OresEvalRootNode extends RootNode {
                 // and rejected anywhere else by the checker: never a shift.
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
+        }
+
+        private long checkedI32(long value) {
+            if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+                throw new ArithmeticException("E_I32_OVERFLOW: checked signed i32 arithmetic");
+            return value;
         }
 
         private long verifiedI64(String op, long left, long right) {

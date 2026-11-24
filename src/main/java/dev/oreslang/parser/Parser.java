@@ -7377,12 +7377,20 @@ public final class Parser {
 
     private static final Ast.TypeRef VERIFIED_CARRIER = Ast.TypeRef.simple("int");
 
-    private record RefinedQuantity(VerifiedQuantityUnit unit, Interval range) {
+    private static final Interval SIGNED_I32 = new Interval(Integer.MIN_VALUE, Integer.MAX_VALUE);
+
+    private record RefinedQuantity(VerifiedQuantityUnit unit, Interval range, boolean i32) {
         private static final RefinedQuantity SCALAR =
-                new RefinedQuantity(VerifiedQuantityUnit.SCALAR, Interval.anyI64());
+                new RefinedQuantity(VerifiedQuantityUnit.SCALAR, Interval.anyI64(), false);
+        private static final RefinedQuantity SCALAR_I32 =
+                new RefinedQuantity(VerifiedQuantityUnit.SCALAR, SIGNED_I32, true);
+
+        RefinedQuantity(VerifiedQuantityUnit unit, Interval range) {
+            this(unit, range, false);
+        }
 
         RefinedQuantity constrain(String operator, long bound) {
-            return new RefinedQuantity(unit, range.constrain(operator, bound));
+            return new RefinedQuantity(unit, range.constrain(operator, bound), i32);
         }
 
         void require(RefinedQuantity actual, String category, String operation) {
@@ -7412,18 +7420,23 @@ public final class Parser {
         return check(TYPE) && current + 4 < tokens.size()
                 && tokens.get(current + 1).type() == IDENT
                 && tokens.get(current + 2).type() == EQUAL
-                && tokens.get(current + 3).lexeme().equals("int")
+                && isVerifiedCarrier(tokens.get(current + 3).lexeme())
                 && tokens.get(current + 4).lexeme().equals("where");
+    }
+
+    private static boolean isVerifiedCarrier(String spelling) {
+        return spelling.equals("int") || spelling.equals("i32");
     }
 
     private void parseRefinedQuantityAlias() {
         consume(TYPE, "expected 'type'");
         Token name = consume(IDENT, "expected refinement name");
         consume(EQUAL, "expected '=' before refinement carrier");
-        consumeContextualIdentifier("int", "expected signed-i64 refinement carrier");
+        Token carrier = consume(IDENT, "expected int or i32 refinement carrier");
+        boolean i32 = carrier.lexeme().equals("i32");
         consumeContextualIdentifier("where", "expected 'where' before refinement");
         VerifiedQuantityUnit unit = null;
-        var range = Interval.anyI64();
+        var range = i32 ? SIGNED_I32 : Interval.anyI64();
         do {
             if (isContextualIdentifier("units")) {
                 if (unit != null) throw error(peek(), "E_UNIT_DUPLICATE: repeated unit clause");
@@ -7440,8 +7453,8 @@ public final class Parser {
         } while (true);
         consume(SEMICOLON, "expected ';' after refinement");
         if (refinementAliases.size() >= 128) throw error(name, "E_REFINEMENT_LIMIT: too many aliases");
-        if (name.lexeme().equals("int") || refinementAliases.putIfAbsent(name.lexeme(),
-                new RefinedQuantity(unit == null ? VerifiedQuantityUnit.SCALAR : unit, range)) != null) {
+        if (isVerifiedCarrier(name.lexeme()) || refinementAliases.putIfAbsent(name.lexeme(),
+                new RefinedQuantity(unit == null ? VerifiedQuantityUnit.SCALAR : unit, range, i32)) != null) {
             throw error(name, "E_REFINEMENT_DUPLICATE: duplicate refinement name");
         }
     }
@@ -7460,6 +7473,7 @@ public final class Parser {
 
     private RefinedQuantity readRefinedType(Token name) {
         if (name.lexeme().equals("int")) return RefinedQuantity.SCALAR;
+        if (name.lexeme().equals("i32")) return RefinedQuantity.SCALAR_I32;
         var type = refinementAliases.get(name.lexeme());
         if (type == null) throw error(name, "E_REFINEMENT_NAME: unknown verified scalar type");
         return type;
@@ -7570,7 +7584,8 @@ public final class Parser {
                 var term = parseQuantitySum(0);
                 type.require(term.type(), "E_REFINEMENT_BINDING", "binding " + localName);
                 consume(SEMICOLON, "expected ';' after immutable binding");
-                if (verifiedLocals.putIfAbsent(localName, term.type()) != null)
+                var localType = new RefinedQuantity(type.unit(), term.type().range(), type.i32());
+                if (verifiedLocals.putIfAbsent(localName, localType) != null)
                     throw error(first, "E_REFINEMENT_DUPLICATE: duplicate verified binding");
                 verifiedUpperBounds.put(localName, term.upperBounds());
                 body.add(new Ast.BindingStmt(Ast.BindingKind.VAL, VERIFIED_CARRIER, localName, term.expression(), false));
@@ -7657,7 +7672,8 @@ public final class Parser {
             Token op = previous();
             var right = parseQuantityAtom(depth);
             boolean divide = op.type() == SLASH;
-            if (divide && left.unit().equals(VerifiedQuantityUnit.SCALAR)
+            if (divide && !left.type().i32() && !right.type().i32()
+                    && left.unit().equals(VerifiedQuantityUnit.SCALAR)
                     && right.unit().equals(VerifiedQuantityUnit.SCALAR)) {
                 throw error(op, "E_UNIT_SCALAR_DIVISION: two plain int operands use ordinary division");
             }
@@ -7673,6 +7689,10 @@ public final class Parser {
         if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
         var leftRange = left.type().range();
         var rightRange = right.type().range();
+        boolean i32 = left.type().i32() || right.type().i32();
+        if (i32 && (!leftRange.entails(SIGNED_I32) || !rightRange.entails(SIGNED_I32))) {
+            throw error(peek(), "E_I32_RANGE: checked i32 arithmetic requires both operands to fit i32");
+        }
         var range = switch (operator) {
             case Ast.VerifiedI64.ADD -> leftRange.plusOnNormalResult(rightRange);
             case Ast.VerifiedI64.SUBTRACT -> leftRange.minusOnNormalResult(rightRange);
@@ -7687,8 +7707,14 @@ public final class Parser {
                     && right.unit().equals(VerifiedQuantityUnit.SCALAR);
             default -> false;
         };
-        return new QuantityTerm(new Ast.BinaryExpr(operator, left.expression(), right.expression()),
-                new RefinedQuantity(unit, range), depth, boundedByLeft ? left.upperBounds() : Set.of());
+        Ast.Expr value = new Ast.BinaryExpr(operator, left.expression(), right.expression());
+        if (i32) {
+            if (++depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
+            value = new Ast.UnaryExpr(Ast.VerifiedI64.CHECK_I32, value);
+            range = range.onNormalResultWithin(SIGNED_I32);
+        }
+        return new QuantityTerm(value, new RefinedQuantity(unit, range, i32),
+                depth, boundedByLeft ? left.upperBounds() : Set.of());
     }
 
     private QuantityTerm parseQuantityAtom(int depth) {
