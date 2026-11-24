@@ -646,6 +646,9 @@ public final class Ast {
         public boolean unaryHttp() {
             return replyRole == ActorReplyRole.UNARY && transport == ActorTransport.HTTP;
         }
+        public boolean unaryMailbox() {
+            return replyRole == ActorReplyRole.UNARY && transport == ActorTransport.GENERIC;
+        }
 
         public ActorConcurrency(ActorTransport transport, int requestConcurrency,
                                 int messageConcurrency, boolean serialReceive, boolean explicitStream) {

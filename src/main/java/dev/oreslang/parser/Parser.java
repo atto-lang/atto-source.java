@@ -1718,13 +1718,9 @@ public final class Parser {
         }
         if (recognized && !check(ACTOR) && !check(ISOACTOR))
             throw error(peek(), "actor qualifiers require an actor declaration");
-        if (unary != null && transport != Ast.ActorTransport.HTTP) {
-            String detail = switch (transport) {
-                case TCP, WEBSOCKET -> "requires an explicit framing and reply-correlation adapter";
-                case HTTP -> throw new AssertionError(transport);
-                case GENERIC -> "requires typed request and reply lowering";
-            };
-            throw error(unary, "ACTOR_UNARY_UNSUPPORTED: unary actor " + detail);
+        if (unary != null && (transport == Ast.ActorTransport.TCP || transport == Ast.ActorTransport.WEBSOCKET)) {
+            throw error(unary, "ACTOR_UNARY_UNSUPPORTED: unary actor requires an explicit framing "
+                    + "and reply-correlation adapter");
         }
         return new ActorPrefix(transport, serial, stream ? Ast.ActorReplyRole.STREAM
                 : unary == null ? Ast.ActorReplyRole.INFER : Ast.ActorReplyRole.UNARY);

@@ -2615,17 +2615,24 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable continuation,
             ActorId sender,
             long sequence,
-            TraceParent traceParent) implements AutoCloseable {
+            TraceParent traceParent,
+            UnaryCall unaryCall) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
                 long sequence,
                 TraceParent traceParent) {
+            return message(value, release, sender, sequence, traceParent, null);
+        }
+
+        private static MessageEnvelope message(
+                Object value, Runnable release, ActorId sender, long sequence,
+                TraceParent traceParent, UnaryCall unaryCall) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence, traceParent);
+            return new MessageEnvelope(value, release, null, sender, sequence, traceParent, unaryCall);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -2635,6 +2642,7 @@ public final class ActorRuntime implements AutoCloseable {
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
                     -1L,
+                    null,
                     null);
         }
 
@@ -3062,6 +3070,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         default boolean servesUnaryHttp(String actorTypeName) { return false; }
 
+        default boolean acceptsUnaryRequests(String actorTypeName) { return false; }
+
         ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
@@ -3071,6 +3081,14 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
+
+        default OresFuture<Object> receiveUnaryActor(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                ActorInboxMail<Object> mail,
+                ActorContext<Object> context) throws Exception {
+            throw new IllegalStateException("source actor has no unary request handler");
+        }
 
         /**
          * Once-only, actor-affine cooperative teardown before owned state is
@@ -3309,6 +3327,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null) {
             throw new IllegalStateException(
                     "self.send is only valid during an actor execution turn");
+        }
+        if (cell.acceptsUnaryRequests) {
+            throw new IllegalStateException("unary actors reply by returning from run");
         }
         Objects.requireNonNull(
                 value,
@@ -4041,6 +4062,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
+        }
+
+        public OresFuture<Object> request(M message) {
+            return ActorRuntime.this.request(this, message);
         }
 
         /** Hot-upgrade this incarnation; see {@link ActorRuntime#upgrade}. */
@@ -8072,6 +8097,13 @@ public final class ActorRuntime implements AutoCloseable {
     private <M> void sendWithHotRoutePermit(
             ActorRef<M> ref, M message,
             ActorPhysicalHotRouteIngressFence.Permit routePermit) {
+        sendWithHotRoutePermit(ref, message, routePermit, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendWithHotRoutePermit(
+            ActorRef<M> ref, M message,
+            ActorPhysicalHotRouteIngressFence.Permit routePermit, UnaryCall unaryCall) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -8084,6 +8116,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.ref != ref || cell.stopped.get()) throw terminated(ref);
+        if (cell.acceptsUnaryRequests != (unaryCall != null)) {
+            throw new IllegalArgumentException(cell.acceptsUnaryRequests
+                    ? "unary actors require ActorRef.request"
+                    : "ActorRef.request requires a unary mailbox actor");
+        }
         synchronized (cell.lifecycleLock) {
             cell.hotRouteIngress.require(routePermit);
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
@@ -8202,7 +8239,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence, mailTrace);
+                            prepared, release, sender, sequence, mailTrace, unaryCall);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException(
                                 "actor mailbox credit/capacity invariant violated for " + ref.id());
@@ -8223,6 +8260,82 @@ public final class ActorRuntime implements AutoCloseable {
         cell.schedule();
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
+        }
+    }
+
+    private <M> OresFuture<Object> request(ActorRef<M> ref, M message) {
+        var requester = currentActor.get();
+        if (requester != null && requester.ref == ref) {
+            throw new IllegalArgumentException("an actor cannot request a reply from its own mailbox");
+        }
+        var call = new UnaryCall(requester);
+        sendWithHotRoutePermit(ref, message, null, call);
+        // Only admitted calls observe retirement. A settled reply immediately
+        // detaches its observer, even while the target actor remains live.
+        var retirement = ref.done().whenCompleteRuntimeCancellable(
+                (ignored, failure) -> call.reply.failFromRuntime(terminated(ref)));
+        call.reply.whenCompleteRuntime((ignored, failure) -> retirement.detach());
+        return call.reply;
+    }
+
+    private final class UnaryCall {
+        private final boolean isolatedRecipient;
+        private final long recipientByteLimit;
+        private final AtomicReference<OresFuture<Object>> handler = new AtomicReference<>();
+        private final OresFuture<Object> reply = new OresFuture<>(() -> true, this::cancel);
+
+        UnaryCall(ActorCell<?> requester) {
+            isolatedRecipient = requester != null && isPrivateKind(requester.kind);
+            recipientByteLimit = requester == null
+                    ? policyCeiling.maxHeapBytes() : requester.policy.maxHeapBytes();
+        }
+
+        private void cancel() {
+            OresFuture<Object> running = handler.get();
+            if (running != null) running.cancel(false);
+        }
+
+        private OresFuture<Void> awaitHandler(OresFuture<Object> task, ActorCell<?> actor) {
+            var receipt = new OresFuture<Void>(() -> false, () -> { });
+            handler.set(task);
+            task.whenCompleteRuntime((value, failure) -> {
+                handler.set(null);
+                Throwable cause = failure == null ? null : OresFuture.unwrap(failure);
+                try {
+                    if (cause == null && !reply.isDone()) {
+                        if (currentActor.get() != actor) {
+                            throw new SecurityException("unary replies must commit on the actor carrier");
+                        }
+                        reply.completeFromRuntime(copyUnaryReply(value, actor));
+                    } else if (cause != null && !(cause instanceof CancellationException && reply.isCancelled())) {
+                        receipt.failFromRuntime(cause);
+                        return;
+                    }
+                    receipt.completeFromRuntime(null);
+                } catch (RuntimeException | Error rejected) {
+                    receipt.failFromRuntime(rejected);
+                    if (rejected instanceof VirtualMachineError fatal) throw fatal;
+                    if (rejected instanceof ThreadDeath fatal) throw fatal;
+                    if (rejected instanceof LinkageError fatal) throw fatal;
+                }
+            });
+            if (reply.isCancelled()) task.cancel(false);
+            return receipt;
+        }
+
+        private Object copyUnaryReply(Object value, ActorCell<?> actor) {
+            Objects.requireNonNull(value, "unary reply must be an owned non-void value");
+            validateMessageGraph(value);
+            rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0, true);
+            requireOwnedActorRefs(value, new IdentityHashMap<>(), 0);
+            long limit = Math.min(recipientByteLimit, actor.policy.maxHeapBytes());
+            if (estimateFrozenBytes(value) > limit)
+                throw new IllegalArgumentException("unary reply exceeds actor transport byte policy");
+            Object copied = isolatedRecipient || isPrivateKind(actor.kind)
+                    ? isolateCopy(value) : freezeForTransport(value);
+            if (estimateFrozenBytes(copied) > limit)
+                throw new IllegalArgumentException("unary reply snapshot exceeds actor transport byte policy");
+            return copied;
         }
     }
 
@@ -9457,8 +9570,17 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
+        rejectDataFreezeCapabilities(value, visiting, depth, false);
+    }
+
+    private static void rejectDataFreezeCapabilities(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth,
+            boolean allowActorRefs) {
         requireGraphDepth(depth);
-        if (value == null || isScalar(value)) return;
+        if (value == null || isScalar(value)
+                || (allowActorRefs && value instanceof ActorRuntime.ActorRef<?>)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
@@ -9473,18 +9595,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                for (Object item : list) rejectDataFreezeCapabilities(item, visiting, depth + 1);
+                for (Object item : list) rejectDataFreezeCapabilities(item, visiting, depth + 1, allowActorRefs);
             } else if (value instanceof Set<?> set) {
-                for (Object item : set) rejectDataFreezeCapabilities(item, visiting, depth + 1);
+                for (Object item : set) rejectDataFreezeCapabilities(item, visiting, depth + 1, allowActorRefs);
             } else if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    rejectDataFreezeCapabilities(entry.getKey(), visiting, depth + 1);
-                    rejectDataFreezeCapabilities(entry.getValue(), visiting, depth + 1);
+                    rejectDataFreezeCapabilities(entry.getKey(), visiting, depth + 1, allowActorRefs);
+                    rejectDataFreezeCapabilities(entry.getValue(), visiting, depth + 1, allowActorRefs);
                 }
             } else if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
                 for (int i = 0; i < length; i++) {
-                    rejectDataFreezeCapabilities(Array.get(value, i), visiting, depth + 1);
+                    rejectDataFreezeCapabilities(Array.get(value, i), visiting, depth + 1, allowActorRefs);
                 }
             }
         } finally {
@@ -10346,6 +10468,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final SharedCodeImageStore.CodeImage codeImage;
         /** Shared compiler/interpreter code executor; never exposed to guest source. */
         private final ActorCodeExecutor codeExecutor;
+        private final boolean acceptsUnaryRequests;
         /** Closed-world source actor declaration selected for this actor. */
         private final String codeActorType;
         /** Mutable source actor state, created on this actor's dispatcher. */
@@ -10540,6 +10663,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeImage = codeImage;
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
+            this.acceptsUnaryRequests = codeExecutor != null && codeExecutor.acceptsUnaryRequests(codeActorType);
             this.parent = parent;
             // USER mail and runtime continuations are physically distinct
             // channels. Do not inflate the USER channel with CONTROL headroom.
@@ -12150,11 +12274,15 @@ public final class ActorRuntime implements AutoCloseable {
                                     @SuppressWarnings("unchecked")
                                     ActorContext<Object> sourceContext =
                                             (ActorContext<Object>) (ActorContext<?>) context;
-                                    codeExecutor.receiveActor(
-                                            codeActorType,
-                                            codeActorState,
-                                            sourceMail,
-                                            sourceContext);
+                                    UnaryCall unary = activeEnvelope.unaryCall();
+                                    if (unary == null) {
+                                        codeExecutor.receiveActor(
+                                                codeActorType, codeActorState, sourceMail, sourceContext);
+                                    } else if (!unary.reply.isDone()) {
+                                        OresFuture<Object> task = codeExecutor.receiveUnaryActor(
+                                                codeActorType, codeActorState, sourceMail, sourceContext);
+                                        suspendCurrentUserMailboxUntil(unary.awaitHandler(task, this));
+                                    }
                                 } else if (!rejectedByUpgrade(mail)) {
                                     behavior.onMessage(mail.value(), context);
                                 }

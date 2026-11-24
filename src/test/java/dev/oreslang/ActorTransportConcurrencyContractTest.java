@@ -104,13 +104,40 @@ final class ActorTransportConcurrencyContractTest {
 
     @Test void unaryRolesRequireTheirOwnReplyRuntime() {
         Map<String, String> cases = Map.of(
-                "define serial unary actor Endpoint as end", "typed request and reply",
+                "define unary websocket actor Endpoint as end", "explicit framing and reply-correlation",
                 "define unary tcp actor Endpoint as end", "explicit framing and reply-correlation");
         cases.forEach((source, diagnostic) -> {
             var error = assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
             assertTrue(error.getMessage().contains("ACTOR_UNARY_UNSUPPORTED"), error::getMessage);
             assertTrue(error.getMessage().contains(diagnostic), error::getMessage);
         });
+    }
+
+    @Test void unaryMailboxChecksThePayloadReplyAndOnlyAdmitsRequestCalls() {
+        String worker = """
+                define unary actor Worker receives int as
+                  run(ActorMail<int> input): String { return "reply"; }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val Future<String> result = worker.request(7);
+                  await result;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(worker)));
+        for (String invalid : new String[] {
+                worker.replace(".request(7)", ".send(7)"),
+                worker.replace(".request(7)", ".request(\"wrong\")"),
+                worker.replace("Future<String>", "Future<int>"),
+                worker.replace("receives int", "receives String"),
+                worker.replace("return \"reply\";", "return self.run(input);"),
+                worker.replace("return \"reply\";", "self.send(\"reply\"); return \"reply\";"),
+                worker.replace("run(ActorMail<int> input): String", "run(ActorMail<int> input): void")
+                        .replace("return \"reply\";", "return;")
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(invalid)),
+                    invalid);
+        }
     }
 
     @Test void unaryHttpRequiresTheTransportOwnedRequestAndReplyHandler() {

@@ -855,17 +855,7 @@ public final class OresEvalRootNode extends RootNode {
                 ActorRuntime.ActorOwnedGuestState rawState,
                 ActorRuntime.ActorInboxMail<Object> mail,
                 ActorRuntime.ActorContext<Object> actorContext) {
-            SourceActorState state =
-                    rawState instanceof SourceActorState source
-                            ? source
-                            : null;
-            if (state == null
-                    || !state.ownerActorId().equals(actorContext.self().id())
-                    || !state.actorTypeName().equals(actorTypeName)
-                    || !mail.recipient().equals(actorContext.self().id())) {
-                throw new SecurityException(
-                        "source actor mailbox dispatch does not match actor-owned state");
-            }
+            SourceActorState state = requireMailboxState(actorTypeName, rawState, mail, actorContext);
 
             if (state.object().klass.actorConcurrency().unaryHttp()) {
                 receiveUnaryHttp(state, mail);
@@ -910,6 +900,38 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "actor receive must complete with void");
             }
+        }
+
+        private SourceActorState requireMailboxState(
+                String actorTypeName, ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorInboxMail<Object> mail, ActorRuntime.ActorContext<Object> actorContext) {
+            if (rawState instanceof SourceActorState state
+                    && state.ownerActorId().equals(actorContext.self().id())
+                    && state.actorTypeName().equals(actorTypeName)
+                    && mail.recipient().equals(actorContext.self().id())) {
+                return state;
+            }
+            throw new SecurityException("source actor mailbox dispatch does not match actor-owned state");
+        }
+
+        @Override
+        public boolean acceptsUnaryRequests(String actorTypeName) {
+            return requireLocalActorClass(actorTypeName).actorConcurrency().unaryMailbox();
+        }
+
+        @Override
+        public OresFuture<Object> receiveUnaryActor(
+                String actorTypeName, ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorInboxMail<Object> mail, ActorRuntime.ActorContext<Object> actorContext) {
+            SourceActorState state = requireMailboxState(actorTypeName, rawState, mail, actorContext);
+            if (!state.object().klass.actorConcurrency().unaryMailbox()) {
+                throw new SecurityException("actor has no unary mailbox handler");
+            }
+            Ast.MethodDecl handler = findMethod(state.object().klass, CallableSelector.instance("run", 1));
+            if (handler == null) throw new IllegalStateException("unary run handler is missing");
+            Object argument = handler.parameters().getFirst().type().name().equals("ActorMail")
+                    ? mail : mail.value();
+            return startSourceMethodTask(handler, state.object(), List.of(argument));
         }
 
         private void receiveUnaryHttp(SourceActorState state, ActorRuntime.ActorInboxMail<Object> mail) {
@@ -1215,8 +1237,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
-            if (receiver.klass.actorConcurrency().unaryHttp() && method.name().equals("run")) {
-                throw new SecurityException("unary HTTP run is a runtime-only handler");
+            if (receiver.klass.actorConcurrency().replyRole() == Ast.ActorReplyRole.UNARY
+                    && method.name().equals("run")) {
+                throw new SecurityException("unary run is a runtime-only handler");
             }
             return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
         }
@@ -11073,6 +11096,10 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "ActorRef.send");
                         typedRef.send(args.getFirst());
                         return null;
+                    };
+                    case "request" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.request");
+                        return context.actors().ownCurrentActorFuture(typedRef.request(args.getFirst()));
                     };
                     case "try_send" -> (Invokable) args -> {
                         requireOne(args, "ActorRef.try_send");

@@ -42,6 +42,15 @@ The established legacy unqualified `define actor` + **sole** `run(T): R` may con
 
 ### UNARY: `run` is a private handler, not a callable method on an actor reference
 
+The Java runtime supports inline definitions and same-module declarations with attached
+methods for shared and isolated unary mailbox actors. A `receives T` clause must
+match the payload of `run`. Both `unary actor` and `serial unary actor` hold
+USER mailbox admission across the handler's supported suspension points.
+Canceling a queued request skips its handler. Canceling a running request
+begins actor-scheduled cleanup before the next USER turn. Actor retirement
+fails any unanswered requests. Handler failures currently use actor fail-stop;
+per-request recovery for a thrown error remains part of the target contract.
+
 ```ores
 define unary actor Multiply as
     run(ActorMail<int> mail): int {

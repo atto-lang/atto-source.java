@@ -2047,8 +2047,11 @@ public final class TypeChecker {
                     + klass.name() + "' requires compiler-sealed state ownership "
                     + "and handle_state lowering; not yet enabled");
         Ast.ActorMessageContract protocol = klass.actorMessageContract();
+        var selfRef = new Named("ActorRef", List.of(nominalClassType(klass)));
+        UnaryMailboxSignature unaryMailbox = null;
         if (klass.actorConcurrency().replyRole() == Ast.ActorReplyRole.UNARY) {
-            validateUnaryHttpActor(klass);
+            validateUnaryActor(klass);
+            if (klass.actorConcurrency().unaryMailbox()) unaryMailbox = unaryMailboxSignature(selfRef);
         }
         if (protocol.sends() != null) {
             // Direct calls are already checked against the receiver's
@@ -2067,15 +2070,15 @@ public final class TypeChecker {
                         + "' requires a verified CONTROL-only mailbox path");
             Type declared = resolve(protocol.receives(),
                     Set.copyOf(klass.genericParameters()), nominalClassType(klass));
-            Type handler = actorMailboxPayloadType(
-                    new Named("ActorRef", List.of(nominalClassType(klass))));
+            Type handler = unaryMailbox == null ? actorMailboxPayloadType(selfRef) : unaryMailbox.payload();
             // The existing typed ActorMail<T> handler and outbound ActorRef
             // checks already enforce the receiving boundary. Require exact
             // equivalence, not a widening that could hide another payload.
             requireAssignable(handler, declared,
                     "receives contract of actor '" + klass.name() + "'");
             requireAssignable(declared, handler,
-                    "receive(ActorMail<T>) of actor '" + klass.name() + "'");
+                    (unaryMailbox == null ? "receive(ActorMail<T>)" : "run")
+                            + " of actor '" + klass.name() + "'");
         }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
@@ -2095,17 +2098,18 @@ public final class TypeChecker {
         }
     }
 
-    private void validateUnaryHttpActor(Ast.ClassDecl actor) {
-        if (!actor.actorConcurrency().unaryHttp()
+    private void validateUnaryActor(Ast.ClassDecl actor) {
+        boolean http = actor.actorConcurrency().unaryHttp();
+        if (!(http || actor.actorConcurrency().unaryMailbox())
                 || actor.actorKind() == Ast.ActorKind.UNTRUSTED || actor.isAbstract()
                 || !actor.genericParameters().isEmpty()) {
             throw new IllegalArgumentException(
-                    "unary HTTP actors require a concrete, nongeneric shared or isolated actor");
+                    "unary actors require a concrete, nongeneric shared or isolated actor with a supported transport");
         }
-        if (actor.actorMessageContract().receives() != null
-                || actor.actorMessageContract().emits() != null) {
+        if (actor.actorMessageContract().emits() != null
+                || (http && actor.actorMessageContract().receives() != null)) {
             throw new IllegalArgumentException(
-                    "unary HTTP ingress and reply types are fixed by run(HttpMessage): HttpResponse");
+                    "unary reply types are defined by run and HTTP ingress requires HttpMessage");
         }
         Map<Ast.MethodArity, Ast.MethodDecl> methods =
                 effectiveInstanceMethods(actor, new LinkedHashSet<>());
@@ -2115,21 +2119,25 @@ public final class TypeChecker {
                 || methods.values().stream().anyMatch(method -> method.name().equals("receive"))
                 || actor.methods().stream().anyMatch(method -> method.isStatic() && method.name().equals("run"))) {
             throw new IllegalArgumentException(
-                    "unary HTTP actor requires one run(HttpMessage): HttpResponse handler");
+                    "unary actor requires one run handler and cannot declare receive");
         }
         Ast.MethodDecl handler = handlers.getFirst();
         if (handler.visibility() != Ast.Visibility.PRIVATE || handler.async() || handler.suspends()
                 || handler.isAbstract() || handler.structural() || !handler.genericParameters().isEmpty()
-                || handler.parameters().size() != 1
-                || !handler.parameters().getFirst().type().equals(Ast.TypeRef.simple("HttpMessage"))
-                || !handler.returnType().equals(Ast.TypeRef.simple("HttpResponse"))) {
+                || handler.parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "unary actor requires a private one-argument run with actor-turn suspension");
+        }
+        if (http && (!handler.parameters().getFirst().type().equals(Ast.TypeRef.simple("HttpMessage"))
+                || !handler.returnType().equals(Ast.TypeRef.simple("HttpResponse")))) {
             throw new IllegalArgumentException(
                     "unary HTTP actor requires private run(HttpMessage): HttpResponse with actor-turn suspension");
         }
     }
 
-    private static boolean unaryHttpEntry(Ast.ClassDecl actor, String name) {
-        return actor != null && actor.actorConcurrency().unaryHttp() && name.equals("run");
+    private static boolean unaryEntry(Ast.ClassDecl actor, String name) {
+        return actor != null && actor.actorConcurrency().replyRole() == Ast.ActorReplyRole.UNARY
+                && name.equals("run");
     }
 
     private static boolean containsHttpRequestCapability(Ast.TypeRef type) {
@@ -4771,8 +4779,8 @@ public final class TypeChecker {
                                 + "send an owned message through ActorRef.send(...)");
             }
             if (call.callee() instanceof Ast.NameExpr name && env.lookup(name.name()) == null
-                    && unaryHttpEntry(currentClassOwner, name.name())) {
-                throw new IllegalArgumentException("unary HTTP run is a runtime-only handler");
+                    && unaryEntry(currentClassOwner, name.name())) {
+                throw new IllegalArgumentException("unary run is a runtime-only handler");
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
@@ -5434,6 +5442,9 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     if (member.member().equals("send")) {
+                        if (unaryEntry(currentClassOwner, "run")) {
+                            throw new IllegalArgumentException("unary actors reply by returning from run");
+                        }
                         if (call.arguments().size() != 1) {
                             throw new IllegalArgumentException(
                                     "self.send expects exactly one outbound value");
@@ -5717,7 +5728,21 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     return switch (member.member()) {
+                        case "request" -> {
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException("ActorRef.request expects exactly one payload");
+                            }
+                            UnaryMailboxSignature signature = unaryMailboxSignature(actorRef);
+                            Type payload = typeOf(call.arguments().getFirst(), env, generics, self);
+                            validateActorCallableBoundaryType(
+                                    payload, actorClass.actorKind(), false, "ActorRef.request payload");
+                            requireAssignable(payload, signature.payload(), "ActorRef.request payload");
+                            yield new Named("Future", List.of(signature.reply()));
+                        }
                         case "send", "try_send", "send_async" -> {
+                            if (actorClass.actorConcurrency().replyRole() == Ast.ActorReplyRole.UNARY) {
+                                throw new IllegalArgumentException("unary actors require ActorRef.request");
+                            }
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
                                         "ActorRef." + member.member()
@@ -6109,8 +6134,8 @@ public final class TypeChecker {
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
-                        if (unaryHttpEntry(target.owner(), method.name())) {
-                            throw new IllegalArgumentException("unary HTTP run is a runtime-only handler");
+                        if (unaryEntry(target.owner(), method.name())) {
+                            throw new IllegalArgumentException("unary run is a runtime-only handler");
                         }
                         // A lexical self check is insufficient: a receiver may
                         // be an alias, an inherited actor type or a value from
@@ -6376,7 +6401,7 @@ public final class TypeChecker {
                             List.of(actorOutputPayloadType(actorClass, actorRef.arguments().getFirst())));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
-                    case "send", "try_send", "send_async", "stop", "cancel", "kill" ->
+                    case "send", "try_send", "send_async", "request", "stop", "cancel", "kill" ->
                             throw new IllegalArgumentException(
                                     "ActorRef." + member.member()
                                             + " is direct-call-only; invoke it with (...)");
@@ -8594,6 +8619,30 @@ public final class TypeChecker {
                     "pipe " + side + " actor '" + actor.name()
                     + "' must explicitly implement StreamOperator<I,O>");
         return ports;
+    }
+
+    private record UnaryMailboxSignature(Type payload, Type reply) { }
+
+    private UnaryMailboxSignature unaryMailboxSignature(Named actorRef) {
+        Ast.ClassDecl actor = actorClassForRef(actorRef);
+        if (!actor.actorConcurrency().unaryMailbox()) {
+            throw new IllegalArgumentException("ActorRef.request requires a unary mailbox actor");
+        }
+        Named actorType = (Named) receiverDispatchType(deref(actorRef.arguments().getFirst()));
+        ResolvedMethod target = findMethodTarget(actor, actorType, "run", 1, new LinkedHashSet<>());
+        if (target == null) throw new IllegalArgumentException("unary actor has no run handler");
+        Ast.Param param = target.method().parameters().getFirst();
+        Type payload = resolveParam(param, Set.of(), target.ownerType());
+        if (payload instanceof Named mail && mail.name().equals("ActorMail")) {
+            if (!param.type().name().equals("ActorMail") || mail.arguments().size() != 1) {
+                throw new IllegalArgumentException("unary mail envelope must be spelled ActorMail<T>");
+            }
+            payload = mail.arguments().getFirst();
+        }
+        Type reply = resolve(target.method().returnType(), Set.of(), target.ownerType());
+        validateActorCallableBoundaryType(payload, actor.actorKind(), false, "unary run parameter");
+        validateActorCallableBoundaryType(reply, actor.actorKind(), false, "unary run reply");
+        return new UnaryMailboxSignature(payload, reply);
     }
 
     private Type actorMailboxPayloadType(Named actorRef) {
