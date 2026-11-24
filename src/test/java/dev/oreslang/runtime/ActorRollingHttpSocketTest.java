@@ -40,15 +40,15 @@ final class ActorRollingHttpSocketTest {
         CountDownLatch oldHandled = new CountDownLatch(1);
         CountDownLatch newHandled = new CountDownLatch(1);
         try (ActorRuntime actors = new ActorRuntime();
-             HttpClient client = HttpClient.newHttpClient();
+             HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
              var io = Executors.newVirtualThreadPerTaskExecutor()) {
-            var g1 = actors.<byte[]>spawnShared(() -> (message, ctx) -> {
+            var g1 = actors.<Integer>spawnShared(() -> (message, ctx) -> {
                 oldEntered.countDown();
                 if (!releaseOld.await(10, TimeUnit.SECONDS))
                     throw new AssertionError("held old actor exceeded test deadline");
                 oldHandled.countDown();
             });
-            var g2 = actors.<byte[]>spawnShared(() -> (message, ctx) -> {
+            var g2 = actors.<Integer>spawnShared(() -> (message, ctx) -> {
                 newHandled.countDown();
             });
             g1.getReady().get(8, TimeUnit.SECONDS);
@@ -62,7 +62,7 @@ final class ActorRollingHttpSocketTest {
                     try (var pinned = route.acquire()) {
                         // Bind the exact message to the epoch captured on
                         // HTTP admission. Do not refund the lease on send().
-                        pinned.target().send(new byte[] {1});
+                        pinned.target().send(1);
                         boolean delivered = pinned.epoch() == 1L
                                 ? oldHandled.await(8, TimeUnit.SECONDS)
                                 : newHandled.await(8, TimeUnit.SECONDS);
@@ -83,7 +83,8 @@ final class ActorRollingHttpSocketTest {
                 try {
                     CompletableFuture<HttpResponse<String>> oldRequest =
                             client.sendAsync(get(boundPort), HttpResponse.BodyHandlers.ofString());
-                    assertTrue(oldEntered.await(8, TimeUnit.SECONDS));
+                    assertTrue(oldEntered.await(8, TimeUnit.SECONDS),
+                            () -> "old request never reached the actor: " + oldRequest);
                     assertTrue(route.publishReady(1L, g2));
                     assertFalse(route.admissionsDrained(1L));
                     assertEquals(2L, route.snapshot().activeEpoch());

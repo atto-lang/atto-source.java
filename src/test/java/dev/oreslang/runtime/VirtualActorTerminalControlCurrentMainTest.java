@@ -489,8 +489,7 @@ final class VirtualActorTerminalControlCurrentMainTest {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             CountDownLatch attempted = new CountDownLatch(1);
             AtomicReference<Throwable> rejected = new AtomicReference<>();
-            var guest = group.spawnWorker(
-                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+            var guest = runtime.spawnSharedTrusted(IsolatePolicy.developer(),
                     factory -> (message, context) -> {
                         try {
                             group.installVirtualActorTerminalHandler(
@@ -501,6 +500,7 @@ final class VirtualActorTerminalControlCurrentMainTest {
                             attempted.countDown();
                         }
                     });
+            group.manageWorker(guest);
             guest.getReady().get(5, TimeUnit.SECONDS);
             guest.send("unauthorized");
             assertTrue(attempted.await(5, TimeUnit.SECONDS));

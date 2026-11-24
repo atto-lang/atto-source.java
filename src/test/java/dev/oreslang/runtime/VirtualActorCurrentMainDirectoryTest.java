@@ -227,8 +227,8 @@ final class VirtualActorCurrentMainDirectoryTest {
                 var logical = directory.resolve("Cart", "private");
                 CountDownLatch attempted = new CountDownLatch(1);
                 AtomicReference<Throwable> error = new AtomicReference<>();
-                var guest = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
-                        IsolatePolicy.developer(), factory -> (message, context) -> {
+                var guest = runtime.spawnSharedTrusted(IsolatePolicy.developer(),
+                        factory -> (message, context) -> {
                             try {
                                 directory.inspect(grant, session, logical);
                             } catch (Throwable failure) {
@@ -237,6 +237,7 @@ final class VirtualActorCurrentMainDirectoryTest {
                                 attempted.countDown();
                             }
                         });
+                group.manageWorker(guest);
                 guest.getReady().get(5, TimeUnit.SECONDS);
                 guest.send("probe");
                 assertTrue(attempted.await(5, TimeUnit.SECONDS));

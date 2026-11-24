@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -287,6 +288,48 @@ final class CooperativeActorGroupMailmanTest {
         } finally {
             control.shutdownNow();
             assertTrue(control.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void producerCompletionRacingParallelControlHandoffsPreservesOutboxOrder() throws Exception {
+        int messages = 256;
+        try (ExecutorService control = Executors.newFixedThreadPool(2);
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(1, 1, 8, 64),
+                     ActorRuntime.TurnExecutor.direct(), controlDispatcher(control))) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            var joined = new CountDownLatch(1);
+            var delivered = new CountDownLatch(messages);
+            var waits = new ArrayBlockingQueue<OresFuture<Void>>(messages);
+            var order = new ArrayList<Integer>();
+            group.<Integer>installCooperativeMailman(messages, (mail, context) -> {
+                var gate = new OresFuture<Void>();
+                return resume -> {
+                    if (resume.initial()) {
+                        waits.add(gate);
+                        return OresScheduler.await(gate);
+                    }
+                    order.add(mail.message());
+                    delivered.countDown();
+                    return OresScheduler.done(null);
+                };
+            });
+            var emitter = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                group.joinCurrent(join);
+                for (int i = 0; i < messages; i++) group.emit(i);
+                joined.countDown();
+            });
+            emitter.send(0);
+            for (int i = 0; i < messages; i++) {
+                var gate = waits.poll(5, TimeUnit.SECONDS);
+                assertTrue(gate != null, "mailman lost queued turn " + i);
+                gate.completeFromRuntime(null);
+            }
+            assertTrue(joined.await(5, TimeUnit.SECONDS));
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            assertEquals(java.util.stream.IntStream.range(0, messages).boxed().toList(), order);
         }
     }
 

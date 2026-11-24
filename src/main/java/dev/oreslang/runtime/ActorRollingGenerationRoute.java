@@ -108,15 +108,15 @@ public final class ActorRollingGenerationRoute<T> implements AutoCloseable {
         requireOpen();
         Objects.requireNonNull(readyTarget, "readyTarget");
         if (active.epoch != expectedEpoch) return false;
-        if (generations.size() >= maxLiveGenerations)
-            throw new IllegalStateException("live actor generation cap reached");
-        if (active.epoch == Long.MAX_VALUE)
-            throw new IllegalStateException("actor route epoch exhausted");
         for (Generation generation : generations.values()) {
             if (generation.target == readyTarget)
                 throw new IllegalArgumentException(
                         "replacement must not reuse a retained physical actor");
         }
+        if (generations.size() >= maxLiveGenerations)
+            throw new IllegalStateException("live actor generation cap reached");
+        if (active.epoch == Long.MAX_VALUE)
+            throw new IllegalStateException("actor route epoch exhausted");
         Generation next = new Generation(active.epoch + 1L, readyTarget);
         // No code runs between the old->draining and new->active assignments.
         active.phase = Phase.DRAINING;

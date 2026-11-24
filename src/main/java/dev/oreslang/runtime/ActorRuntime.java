@@ -6097,7 +6097,6 @@ public final class ActorRuntime implements AutoCloseable {
                     handled++;
                 }
             } finally {
-                leaveExecutionLease();
                 finishControlTurn();
             }
         }
@@ -6295,19 +6294,22 @@ public final class ActorRuntime implements AutoCloseable {
                     stopped.set(true);
                 }
             } finally {
-                leaveExecutionLease();
                 finishControlTurn();
             }
         }
 
         private void finishControlTurn() {
+            // Read the handoff while this carrier still owns the turn. After
+            // release, a resumed carrier can clear suspended before running
+            // guest code. Only that carrier may then restart the outbox.
+            PendingMailmanTask pending = suspended.get();
+            leaveExecutionLease();
             if (stopped.get()) {
                 scheduled.set(false);
                 cancelSuspended();
                 drainOutbox();
                 return;
             }
-            PendingMailmanTask pending = suspended.get();
             if (pending != null) {
                 // The logical Mailman lease remains held, but no physical
                 // carrier is retained while its awaited Future is pending.
@@ -8036,7 +8038,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         @SuppressWarnings("unchecked")
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.ref != ref && cell.ref.generation() != ref.generation()) {
+        if (cell == null || cell.ref != ref) {
             throw terminated(ref);
         }
         return cell.requestUpgrade(plan);

@@ -29,11 +29,11 @@ can_respond predicate instead returns false for a stale wrapper. There is no
 copy or generic mailbox transport path for HttpExchange, HttpHandler, or
 HttpServer. Guest code cannot manufacture these opaque handles.
 
-For lower-level supervisors, `exchange.move_to(actor_ref)` exposes the same
-single-use transfer; the caller sends the returned String token. Both move
-and claim reject stale owners, and failed dispatch cancels the destination
-and closes the exchange. Actor startup failure and termination revoke any
-unclaimed token and unfinished exchange.
+For lower-level supervisors, `exchange.move_to(actor_ref)` transfers one
+exchange to an existing actor. The caller sends the returned String token.
+Both move and claim reject stale owners. If the actor exits with an unfinished
+exchange, the transport revokes the token and closes the exchange. The
+supervisor continues to own the reusable actor's lifecycle.
 
 The socket and HTTP framing state remain in the transport. An isolated actor
 exclusively owns **guest authority** over one exchange; this is not a physical
@@ -79,17 +79,18 @@ call lowering introduces an internal continuation task.
 
 ## Lifecycle and limits
 
-A request has a deadline from admission through actor termination. Capacity
-counts both transport completion and actor finalization: forgetting self.end
-cannot accumulate unlimited actors after sending a response. Finished actors
-and exchanges release capacity exactly once. Exhausted capacity gets 503.
-Unfinished actor termination gets 500 before headers, or connection closure
-after headers. A deadline gets 504 when no I/O is in progress; otherwise it
-closes the transport and cancels the actor. Partial responses are never retried.
+A request has a deadline from admission through transport retirement. For
+fresh handlers, the deadline and capacity also cover physical actor
+finalization. Reused pool workers and manually assigned actors release the
+listener permit when their exchange closes. Their worker or supervisor
+owns actor retirement. Exhausted capacity gets 503. Unfinished actor
+termination gets 500 before headers, or connection closure after headers.
+A deadline gets 504 when no I/O is in progress. It closes the transport and
+cancels an exchange-owned fresh actor. Partial responses are never retried.
 
 `server.shutdown(grace_ms)` stops admission, gives the transport a bounded drain
-period (rounded up to seconds by the backend), cancels remaining actors, and
-settles after exchange/actor cleanup. Actor cancellation uses the existing
+period (rounded up to seconds by the backend), cancels remaining fresh handlers,
+and settles after their exchange and actor cleanup. Actor cancellation uses the existing
 cooperative runtime semantics. `accepted`, `rejected`, `completed`, and `active`
 are supervisor-only server counters. OresContext closes its HTTP servers before
 tearing down actor/async runtimes.
