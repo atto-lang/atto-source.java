@@ -88,14 +88,14 @@ final class ActorConcurrentMailboxExecutionTest {
                   }
                 end
                 pub async routine main(): void {
-                  val actor = spawn Worker();
-                  await actor.ready;
-                  actor.send(17);
-                  val output = (await actor.outputs.next()).value.unwrap();
+                  val worker = spawn Worker();
+                  await worker.ready;
+                  worker.send(17);
+                  val output = (await worker.outputs.next()).value.unwrap();
                   stdio.stdout.write(output.value);
                   stdio.stdout.write(":");
                   stdio.stdout.write(output.message_sequence.unwrap());
-                  await actor.done;
+                  await worker.done;
                   return;
                 }
                 """;

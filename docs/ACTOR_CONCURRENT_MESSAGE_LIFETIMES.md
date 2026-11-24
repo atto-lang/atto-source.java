@@ -1,6 +1,6 @@
 # Concurrent actor-message lifetimes, serialized guest execution
 
-Status: DRAFT (PR #519); exact-head executed JVM verification required before merge.
+Status: candidate policy. See [Java #574](https://github.com/atto-lang/atto-source.java/pull/574).
 
 ## Model
 
@@ -55,6 +55,19 @@ releases the slot sooner and prohibits subsequent `m.send` or `self.send`
 for that same message. A queued continuation after explicit completion finishes
 quietly without resurrecting the message.
 
+## Default and explicit interleaving
+
+The default limit is one unfinished receive. A suspended receive retains
+its logical turn. Later DATA stays queued while the physical carrier is
+available to other actors. The continuation reacquires execution authority
+for the same incarnation when it resumes. Explicit `concurrency: N`
+with `N > 1` opts into bounded interleaving. Profiles that lack that
+capability must reject the setting before actor admission.
+
+The default matches [.NET #153](https://github.com/atto-lang/atto-source.net/pull/153)
+and the [cross-backend decisions](https://github.com/atto-lang/atto-spec/pull/151).
+Track the interleaving profile and its state-safety proof separately.
+
 ## Admission / fairness / quotas
 
 - `concurrency` must be compile-time immutable in 1..1024 (1..32 untrusted);
@@ -67,7 +80,7 @@ quietly without resurrecting the message.
   user message may enter to prevent `rt cooperate` starvation.
 - The existing actor single-flight lease still forbids two simultaneous
   guest turns. `await` yields and continuation execution runs through the
-  owning actor's CONTROL continuation mailbox.
+  owning actor's internal continuation queue. Supervisor lifecycle CONTROL has independent capacity.
 - The actor mailbox transport reserves memory **through the entire admitted
   unfinished message lifetime**, including suspended source handlers, until
   implicit/explicit completion or termination. Releasing on first yield would
@@ -116,5 +129,8 @@ double done; output correlation; priority fairness under hot cooperate loops;
 actor termination while suspended; memory reservation exact release; untrusted
 input copies; recursive/opaque hostile payloads; AOT/code-generation fencing.
 
-As of this draft update the **Maven JVM suite has not executed** due runner
-startup/admission failures. Static source changes are not a passing build.
+A local run passed the 12 tests in
+`SourceActorSpawnExecutionTest`, `ActorConcurrentMailboxExecutionTest`
+and `SharedActorSingleFlightContractTest`. This includes the default
+receive ordering and explicit five-message cases. Native Image and
+the broader scheduling matrix require separate execution.
