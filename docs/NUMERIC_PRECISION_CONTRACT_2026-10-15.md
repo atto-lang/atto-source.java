@@ -14,7 +14,7 @@ Exact decimal and binary floating-point operands cannot be implicitly combined i
 ## Arithmetic and comparison
 
 - Decimal `+`, `-`, `*`, `%` use BigDecimal exact arithmetic (no silent rounding).
-- Decimal `/` uses deterministic `MathContext.DECIMAL128`: **34 significant digits, HALF_EVEN rounding**. For explicit higher precision use `std/decimal.divide(left,right,precision,rounding)` with 1..4096 significant digits; `round` and `sqrt` take the same context. These are Java VM intrinsics wrapped in source-first Oreslang, **not yet cross-backend parity**.
+- Decimal `/` is exact for terminating division. Nonterminating division requires a caller-selected context and reports `NONTERMINATING_REQUIRES_CONTEXT` when none is supplied. For rounded division use `std/decimal.divide(left,right,precision,rounding)` with 1..4096 significant digits; `round` and `sqrt` take the same context. These are Java VM intrinsics wrapped in source-first Oreslang, **not yet cross-backend parity**.
 - Decimal operation results are capped at 1,000,000 significant digits and absolute scale 200,000 for resource safety. More refined pre-allocation admission and actor-local budgets are still required.
 - Numeric equality compares the exact numeric values of finite numbers and ignores BigDecimal representational scale; +0 == -0; NaN is unequal to everything; infinities compare equal only to the same signed infinity.
 - Ordering compares exact BigDecimal and binary float numerical values without silently rounding large integers to binary64. Any relational comparison with NaN is false; signed zeros compare equal; infinity orders above/below finite values.

@@ -3,13 +3,12 @@ package dev.oreslang.runtime;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
-import java.util.Locale;
 import java.util.Objects;
 
 /**
  * Closed, deterministic exact-decimal numeric kernel for Oreslang-owned
- * std/decimal. The guest supplies precision and rounding on each operation;
- * there is no global MathContext or host-interoperability escape hatch.
+ * std/decimal. Exact division uses no rounding. Rounded operations require
+ * a caller-supplied precision and rounding mode.
  *
  * The kernel must be ported to LLVM and other targets before native parity.
  */
@@ -44,6 +43,23 @@ public final class ExactDecimalMath {
                 || Math.abs((long) value.scale()) > MAX_RESULT_SCALE) {
             throw new ArithmeticException("decimal operand exceeds precision/scale safety budget");
         }
+    }
+
+    public static BigDecimal divideExact(BigDecimal left, BigDecimal right) {
+        preflight(left);
+        preflight(right);
+        if (right.signum() == 0) throw new ArithmeticException("decimal division by zero");
+
+        BigDecimal quotient;
+        try {
+            quotient = left.divide(right);
+        } catch (ArithmeticException nonterminating) {
+            var error = new ArithmeticException(
+                    "NONTERMINATING_REQUIRES_CONTEXT: use explicit decimal precision and rounding");
+            error.initCause(nonterminating);
+            throw error;
+        }
+        return checked(quotient);
     }
 
     public static BigDecimal divide(BigDecimal left, BigDecimal right, long precision, String mode) {

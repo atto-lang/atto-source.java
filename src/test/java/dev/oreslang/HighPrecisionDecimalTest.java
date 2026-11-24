@@ -45,6 +45,28 @@ final class HighPrecisionDecimalTest {
     }
 
     @Test
+    void terminatingDivisionRetainsDigitsBeyondDecimal128() throws Exception {
+        assertEquals("61728394506172839450617283945061728394.5", eval("""
+                pub routine main(): void {
+                  stdio.stdout.write(123456789012345678901234567890123456789d / 2d);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void repeatingQuotientRequiresAnExplicitRoundingContext() {
+        Exception error = assertThrows(Exception.class, () -> eval("""
+                pub routine main(): void {
+                  stdio.stdout.write(1d / 3d);
+                  return;
+                }
+                """));
+        assertTrue(error.toString().contains("NONTERMINATING_REQUIRES_CONTEXT"),
+                error::toString);
+    }
+
+    @Test
     void decimalReturnTypesAndRuntimeTypeTestsUseDistinctDomain() throws Exception {
         assertEquals("true|true", eval("""
                 fnc value(): decimal { return 3d; }
@@ -159,16 +181,28 @@ final class HighPrecisionDecimalTest {
         Path entry = Files.createTempFile("ores-decimal-matrix-", ".ores");
         try {
             Files.writeString(entry, """
-                    import module decimal from "std/decimal";
+                    import * as decimals from "std/decimal";
                     import module matrix from "std/matrix";
 
+                    fnc left_matrix(): Array<decimal> {
+                      let mut Array<decimal> values = new Array<decimal>();
+                      values.add(0.1d); values.add(0.2d); values.add(0.3d); values.add(0.4d);
+                      return values;
+                    }
+
+                    fnc filled(int count, decimal value): Array<decimal> {
+                      let mut Array<decimal> values = new Array<decimal>();
+                      for (let i = 0; i < count; i = i + 1) {
+                        values.add(value);
+                      }
+                      return values;
+                    }
+
                     pub routine main(): void {
-                      let mut Array<decimal> a = new Array<decimal>();
-                      a.add(0.1d); a.add(0.2d); a.add(0.3d); a.add(0.4d);
                       let mut Array<decimal> b = new Array<decimal>();
                       b.add(1d); b.add(2d); b.add(3d); b.add(4d);
 
-                      val Result<Array<decimal>, String> product = matrix.multiply(2, 2, 2, a, b);
+                      val Result<Array<decimal>, String> product = matrix.multiply(2, 2, 2, left_matrix(), b);
                       val Array<decimal> result = product.expect("matrix multiplication failed");
                       stdio.stdout.write(result.get(0));
                       stdio.stdout.write("|");
@@ -178,32 +212,26 @@ final class HighPrecisionDecimalTest {
                       stdio.stdout.write("|");
                       stdio.stdout.write(result.get(3));
                       stdio.stdout.write("|");
-                      stdio.stdout.write(decimal.sum(result));
+                      stdio.stdout.write(decimals.sum(result));
                       stdio.stdout.write("|");
-                      stdio.stdout.write(matrix.multiply(0, 2, 2, a, b).is_err());
+                      stdio.stdout.write(matrix.multiply(0, 2, 2, new Array<decimal>(), new Array<decimal>()).is_err());
                       stdio.stdout.write("|");
-                      stdio.stdout.write(decimal.divide(1d, 7d, 50, "HALF_EVEN"));
+                      stdio.stdout.write(decimals.divide(1d, 7d, 50, "HALF_EVEN"));
                       stdio.stdout.write("|");
-                      stdio.stdout.write(decimal.round(2.5d, 1, "HALF_EVEN"));
+                      stdio.stdout.write(decimals.round(2.5d, 1, "HALF_EVEN"));
                       stdio.stdout.write("|");
-                      stdio.stdout.write(decimal.sqrt(4d, 50, "HALF_EVEN"));
+                      stdio.stdout.write(decimals.sqrt(4d, 50, "HALF_EVEN"));
                       stdio.stdout.write("|");
-                      stdio.stdout.write(matrix.trace(2, a).expect("trace failed"));
+                      stdio.stdout.write(matrix.trace(2, left_matrix()).expect("trace failed"));
                       stdio.stdout.write("|");
                       val Array<decimal> eye = matrix.identity(2).expect("identity failed");
                       stdio.stdout.write(eye.get(0));
                       stdio.stdout.write("|");
-                      let mut Array<decimal> single = new Array<decimal>();
-                      single.add(4d);
-                      stdio.stdout.write(matrix.frobenius_norm(1, 1, single, 50, "HALF_EVEN").expect("norm failed"));
+                      stdio.stdout.write(matrix.frobenius_norm(1, 1, filled(1, 4d), 50, "HALF_EVEN").expect("norm failed"));
                       stdio.stdout.write("|");
-                      stdio.stdout.write(matrix.frobenius_norm(1, 1, single, 0, "HALF_EVEN").is_err());
+                      stdio.stdout.write(matrix.frobenius_norm(1, 1, filled(1, 4d), 0, "HALF_EVEN").is_err());
                       stdio.stdout.write("|");
-                      let mut Array<decimal> large = new Array<decimal>();
-                      for (let i = 0; i < 2500; i = i + 1) {
-                        large.add(1d);
-                      }
-                      stdio.stdout.write(matrix.multiply(50, 50, 50, large, large).is_err());
+                      stdio.stdout.write(matrix.multiply(50, 50, 50, filled(2500, 1d), filled(2500, 1d)).is_err());
                       return;
                     }
                     """);
@@ -214,7 +242,7 @@ final class HighPrecisionDecimalTest {
                     out, err);
             assertTrue(run.units().containsKey("@std/decimal.ores"));
             assertTrue(run.units().containsKey("@std/matrix.ores"));
-            assertEquals("0.7|1.0|1.5|2.2|5.4|true|0.14285714285714285714285714285714285714285714|2|2|0.5|1|4|true|true", out.toString(StandardCharsets.UTF_8),
+            assertEquals("0.7|1.0|1.5|2.2|5.4|true|0.14285714285714285714285714285714285714285714285714|2|2|0.5|1|4|true|true", out.toString(StandardCharsets.UTF_8),
                     () -> "guest stderr: " + err.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(entry);

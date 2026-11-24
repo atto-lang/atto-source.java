@@ -8714,10 +8714,7 @@ public final class OresEvalRootNode extends RootNode {
                     case '+' -> x.add(y);
                     case '-' -> x.subtract(y);
                     case '*' -> x.multiply(y);
-                    // Division is deterministic decimal128 (34 digits, half-even).
-                    // Exact add/multiply are not rounded. Custom contexts will be
-                    // introduced through the std/decimal API, not VM globals.
-                    case '/' -> x.divide(y, java.math.MathContext.DECIMAL128);
+                    case '/' -> dev.oreslang.runtime.ExactDecimalMath.divideExact(x, y);
                     case '%' -> x.remainder(y);
                     default -> throw new IllegalArgumentException("bad decimal numeric operator");
                 };
