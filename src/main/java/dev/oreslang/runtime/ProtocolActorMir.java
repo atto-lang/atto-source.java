@@ -14,6 +14,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
 /** Closed-file protocol actors lowered to the existing serial JVM DATA lane. */
@@ -30,12 +33,54 @@ public final class ProtocolActorMir {
         if (source.getBytes(StandardCharsets.UTF_8).length > 1_048_576)
             throw new IllegalArgumentException("E_PROTOCOL_LIMIT: actor source exceeds the byte budget");
         Ast.Program program = Parser.parseProtocolActors(source);
+        return lower(program);
+    }
+
+    private static Plan lower(Ast.Program program) {
         Map<String, ActorPlan> actors = new HashMap<>();
         for (var declaration : program.modules().getFirst().declarations()) {
             if (declaration instanceof Ast.ProtocolActorDecl actor)
                 actors.put(actor.name(), ActorPlan.lower(actor));
         }
         return new Plan(program, Map.copyOf(actors));
+    }
+
+    public static long executeGuest(Ast.ProtocolGuestDecl guest, ActorRuntime runtime,
+            SharedCodeImageStore.CodeImage image) {
+        Plan plan = lower(image.program());
+        var actor = plan.spawn(runtime, image, guest.actor());
+        long result = 0;
+        try {
+            actor.ready().get(15, TimeUnit.SECONDS);
+            for (int i = 0; i < guest.turns().size(); i++) {
+                var turn = guest.turns().get(i);
+                long[] payload = turn.payload().stream().mapToLong(Long::longValue).toArray();
+                actor.send(plan.encode(guest.actor(), turn.message(), payload));
+                var next = actor.outputs().next().get(15, TimeUnit.SECONDS);
+                if (next.done() || !next.value().actorId().equals(actor.id()))
+                    throw new IllegalStateException("Missing protocol guest receipt");
+                Receipt receipt = Receipt.decode(next.value().value());
+                if (receipt.turn() != i + 1L)
+                    throw new IllegalStateException("Unexpected protocol guest receipt order");
+                if (i == guest.result()) result = receipt.status().code;
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Protocol guest interrupted", interrupted);
+        } catch (ExecutionException | TimeoutException failure) {
+            throw new IllegalStateException("Protocol guest receipt failed", failure);
+        } finally {
+            actor.stop();
+        }
+        try {
+            actor.getDone().get(15, TimeUnit.SECONDS);
+            return result;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Protocol guest stop interrupted", interrupted);
+        } catch (ExecutionException | TimeoutException failure) {
+            throw new IllegalStateException("Protocol guest stop failed", failure);
+        }
     }
 
     public static final class Plan {
@@ -84,7 +129,7 @@ public final class ProtocolActorMir {
 
     private record EdgeKey(int state, int tag) { }
 
-    private record ActorPlan(String name, int initial, Map<String, Integer> states,
+    private record ActorPlan(String name, int initial, Ast.ProtocolStateField field, Map<String, Integer> states,
                              Map<String, Integer> tags, List<Ast.ProtocolHandler> messages,
                              Map<EdgeKey, Integer> edges, byte[] fingerprint) {
         private static ActorPlan lower(Ast.ProtocolActorDecl actor) {
@@ -105,7 +150,7 @@ public final class ProtocolActorMir {
                     throw new IllegalStateException("protocol edge differs from the verified handler destination");
                 destinations.put(new EdgeKey(stateIds.get(edge.source()), tag), stateIds.get(edge.target()));
             }
-            return new ActorPlan(actor.name(), stateIds.get(protocol.initialState()), stateIds,
+            return new ActorPlan(actor.name(), stateIds.get(protocol.initialState()), actor.field(), stateIds,
                     tags, messages, Map.copyOf(destinations),
                     ProtocolActorMir.fingerprint(protocol, states, messages, edges));
         }
@@ -114,14 +159,19 @@ public final class ProtocolActorMir {
     static final class State implements ActorRuntime.ActorOwnedGuestState {
         private final ActorRuntime.ActorId owner;
         private int current;
+        private long value;
 
-        private State(ActorRuntime.ActorId owner, int initial) {
+        private State(ActorRuntime.ActorId owner, int initial, long value) {
             this.owner = owner;
             this.current = initial;
+            this.value = value;
         }
 
         @Override public ActorRuntime.ActorId ownerActorId() { return owner; }
-        void publish(int destination) { current = destination; }
+        void publish(int destination, long stagedValue) {
+            current = destination;
+            value = stagedValue;
+        }
     }
 
     private record Executor(ActorPlan plan, SharedCodeImageStore.CodeImage codeImage)
@@ -130,7 +180,7 @@ public final class ProtocolActorMir {
         public ActorRuntime.ActorOwnedGuestState initializeActor(String name,
                 ActorRuntime.ActorContext<Object> context) {
             requireActor(name, context);
-            return new State(context.self().id(), plan.initial());
+            return new State(context.self().id(), plan.initial(), plan.field() == null ? 0 : plan.field().initial());
         }
 
         @Override
@@ -171,19 +221,32 @@ public final class ProtocolActorMir {
             if (tag >= plan.messages().size()) return Status.INVALID_ENVELOPE;
             Integer destination = plan.edges().get(new EdgeKey(state.current, tag));
             if (destination == null) return Status.ILLEGAL_EDGE;
-            var fields = plan.messages().get(tag).parameters();
+            var handler = plan.messages().get(tag);
+            var fields = handler.parameters();
             if (frame.remaining() != Long.BYTES * fields.size()) return Status.INVALID_PAYLOAD;
             for (var field : fields) {
                 long value = frame.getLong();
                 if (value < field.type().minimum() || value > field.type().maximum())
                     return Status.INVALID_PAYLOAD;
             }
-            return runtime.tryPublishProtocolState(state, destination) ? Status.COMMITTED : Status.INTERRUPTED;
+            long staged = state.value;
+            if (handler.incrementParameter() >= 0) {
+                try {
+                    staged = Math.addExact(staged,
+                            frame.getLong(HEADER_BYTES + Long.BYTES * handler.incrementParameter()));
+                } catch (ArithmeticException overflow) {
+                    return Status.INVARIANT_FAILED;
+                }
+                var field = plan.field();
+                if (staged < field.minimum() || staged > field.maximum()) return Status.INVARIANT_FAILED;
+            }
+            return runtime.tryPublishProtocolState(state, destination, staged)
+                    ? Status.COMMITTED : Status.INTERRUPTED;
         }
     }
 
     public enum Status {
-        COMMITTED(1), ILLEGAL_EDGE(2), INVALID_PAYLOAD(3), INVALID_ENVELOPE(4), INTERRUPTED(5);
+        COMMITTED(1), ILLEGAL_EDGE(2), INVALID_PAYLOAD(3), INVALID_ENVELOPE(4), INTERRUPTED(5), INVARIANT_FAILED(6);
 
         private final int code;
 
@@ -196,6 +259,7 @@ public final class ProtocolActorMir {
                 case 3 -> INVALID_PAYLOAD;
                 case 4 -> INVALID_ENVELOPE;
                 case 5 -> INTERRUPTED;
+                case 6 -> INVARIANT_FAILED;
                 default -> throw new IllegalArgumentException("invalid protocol receipt status");
             };
         }

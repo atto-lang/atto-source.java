@@ -80,7 +80,7 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, SingletonDecl, ProtocolDecl, ProtocolActorDecl { }
+            ExternalActorMethodDecl, SingletonDecl, ProtocolDecl, ProtocolActorDecl, ProtocolGuestDecl { }
 
     /** Verified file-local state machine. Declaring it creates no actor or mailbox. */
     public record ProtocolDecl(String name, String initialState, Set<String> terminalStates,
@@ -101,11 +101,20 @@ public final class Ast {
     }
 
     /** Source-checked handler bindings awaiting mailbox lowering. */
-    public record ProtocolActorDecl(String name, ProtocolDecl protocol, List<ProtocolHandler> handlers)
+    public record ProtocolGuestDecl(String actor, List<ProtocolGuestTurn> turns, int result) implements Decl {
+        public ProtocolGuestDecl { turns = List.copyOf(turns); }
+    }
+    public record ProtocolGuestTurn(String message, List<Long> payload) {
+        public ProtocolGuestTurn { payload = List.copyOf(payload); }
+    }
+    public record ProtocolStateField(String name, long initial, long minimum, long maximum) { }
+    public record ProtocolActorDecl(String name, ProtocolDecl protocol, List<ProtocolHandler> handlers,
+                                    ProtocolStateField field)
             implements Decl {
         public ProtocolActorDecl { handlers = List.copyOf(handlers); }
     }
-    public record ProtocolHandler(String message, List<ProtocolField> parameters, String destination) {
+    public record ProtocolHandler(String message, List<ProtocolField> parameters, String destination,
+                                  int incrementParameter) {
         public ProtocolHandler { parameters = List.copyOf(parameters); }
     }
 

@@ -37,6 +37,7 @@ import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.SourceActorPubSub;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
+import dev.oreslang.runtime.ProtocolActorMir;
 import dev.oreslang.runtime.GeneratorRuntime;
 import dev.oreslang.runtime.Utf8StringAbi;
 import dev.oreslang.types.NumericValueEquality;
@@ -1040,6 +1041,15 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "main cannot run before successful initialization of code unit "
                                 + codeUnitId + "; current phase=" + startupPhase);
+            }
+            for (var module : program.modules()) {
+                for (var declaration : module.declarations()) {
+                    if (declaration instanceof Ast.ProtocolGuestDecl guest) {
+                        if (arguments.length != 0)
+                            throw new IllegalArgumentException("Protocol guest main takes no arguments");
+                        return ProtocolActorMir.executeGuest(guest, context.actors(), codeImage());
+                    }
+                }
             }
             Ast.FunctionDecl main = findQualifiedFunction(Parser.ROOT_MODULE + ".main", 0);
             if (main == null) main = findFunction("main", 0);

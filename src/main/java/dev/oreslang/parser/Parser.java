@@ -7621,6 +7621,22 @@ public final class Parser {
         var protocol = protocols.get(target.lexeme());
         if (protocol == null) throw error(target, "E_PROTOCOL_ACTOR: unknown local protocol");
         consume(AS, "E_PROTOCOL_ACTOR: expected 'as' after protocol name");
+        Ast.ProtocolStateField field = null;
+        RefinedQuantity fieldType = null;
+        if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+            advance();
+            consume(LBRACE, "E_PROTOCOL_STATE: expected a state block");
+            fieldType = readRefinedType(consume(IDENT, "E_PROTOCOL_STATE: expected a state field type"));
+            Token fieldName = readProtocolName("E_PROTOCOL_STATE: expected a state field name");
+            consume(EQUAL, "E_PROTOCOL_STATE: expected an initial value");
+            long literal = readSignedQuantityInteger();
+            var initial = readQuantityLiteral(previous(), literal);
+            fieldType.require(initial.type(), "E_PROTOCOL_INVARIANT", "the initial actor field value");
+            field = new Ast.ProtocolStateField(fieldName.lexeme(), initial.type().range().minimum(),
+                    fieldType.range().minimum(), fieldType.range().maximum());
+            consume(SEMICOLON, "E_PROTOCOL_STATE: expected ';' after the actor field");
+            consume(RBRACE, "E_PROTOCOL_STATE: this profile admits one actor field");
+        }
 
         Map<String, Ast.ProtocolEdge> messages = new HashMap<>();
         Set<String> stateDependentDestinations = new HashSet<>();
@@ -7644,16 +7660,113 @@ public final class Parser {
             consume(ARROW, "E_PROTOCOL_HANDLER: expected '-> void' after handler parameters");
             consume(VOID, "E_PROTOCOL_HANDLER: expected void handler result");
             consume(LBRACE, "E_PROTOCOL_HANDLER: expected a handler body");
+            int incrementParameter = -1;
+            if (field != null) {
+                for (var parameter : parameters) {
+                    if (parameter.name().equals(field.name()))
+                        throw error(message, "E_PROTOCOL_STATE: handler parameter shadows the actor field");
+                }
+                if (isContextualIdentifier(field.name())) {
+                    advance();
+                    consume(EQUAL, "E_PROTOCOL_STATE: expected a staged assignment");
+                    consumeContextualIdentifier(field.name(), "E_PROTOCOL_STATE: expected the current field");
+                    consume(PLUS, "E_PROTOCOL_STATE: expected a state increment");
+                    Token operand = readProtocolName("E_PROTOCOL_STATE: expected an increment parameter");
+                    for (int i = 0; i < parameters.size(); i++) {
+                        if (parameters.get(i).name().equals(operand.lexeme())) {
+                            incrementParameter = i;
+                            break;
+                        }
+                    }
+                    if (incrementParameter < 0)
+                        throw error(operand, "E_PROTOCOL_STATE: increment must name a handler parameter");
+                    var type = parameters.get(incrementParameter).type();
+                    if (type.i32() != fieldType.i32())
+                        throw error(operand, "E_PROTOCOL_STATE: increment carrier differs from the actor field");
+                    fieldType.unit().requireCompatible(new VerifiedQuantityUnit(type.dimension(),
+                            type.scaleNumerator(), type.scaleDenominator()));
+                    consume(SEMICOLON, "E_PROTOCOL_STATE: expected ';' after the staged assignment");
+                }
+            }
             consumeContextualIdentifier("transition", "E_PROTOCOL_TRANSITION: expected a terminal transition");
             Token destination = readProtocolName("E_PROTOCOL_TRANSITION: expected a destination state");
             if (stateDependentDestinations.contains(message.lexeme()) || !edge.target().equals(destination.lexeme()))
                 throw error(destination, "E_PROTOCOL_TRANSITION: handler destination must match every edge for its message");
             consume(SEMICOLON, "E_PROTOCOL_TRANSITION: expected ';' after transition");
             consume(RBRACE, "E_PROTOCOL_TRANSITION: transition must be the only statement in this handler");
-            handlers.add(new Ast.ProtocolHandler(message.lexeme(), parameters, destination.lexeme()));
+            handlers.add(new Ast.ProtocolHandler(message.lexeme(), parameters, destination.lexeme(), incrementParameter));
         }
         if (seen.size() != messages.size()) throw error(name, "E_PROTOCOL_HANDLER: missing protocol handler");
-        return new Ast.ProtocolActorDecl(name.lexeme(), protocol, handlers);
+        return new Ast.ProtocolActorDecl(name.lexeme(), protocol, handlers, field);
+    }
+
+    private Ast.ProtocolGuestDecl parseProtocolGuest(List<Ast.Decl> declarations) {
+        consume(VAL, "E_PROTOCOL_GUEST: expected a local actor binding");
+        String local = verifiedName("E_PROTOCOL_GUEST: expected an actor binding").lexeme();
+        consume(EQUAL, "E_PROTOCOL_GUEST: expected a spawn initializer");
+        consume(SPAWN, "E_PROTOCOL_GUEST: expected spawn");
+        Token actorName = readProtocolName("E_PROTOCOL_GUEST: expected a verified actor type");
+        var actor = declarations.stream().filter(Ast.ProtocolActorDecl.class::isInstance)
+                .map(Ast.ProtocolActorDecl.class::cast).filter(value -> value.name().equals(actorName.lexeme()))
+                .findFirst().orElseThrow(() -> error(actorName, "E_PROTOCOL_GUEST: unknown actor type"));
+        consume(LPAREN, "E_PROTOCOL_GUEST: expected an empty constructor");
+        consume(RPAREN, "E_PROTOCOL_GUEST: expected an empty constructor");
+        consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after spawn");
+
+        List<Ast.ProtocolGuestTurn> turns = new ArrayList<>();
+        Map<String, Integer> receipts = new HashMap<>();
+        while (true) {
+            consumeContextualIdentifier(local, "E_PROTOCOL_GUEST: operation requires the live actor binding");
+            consume(DOT, "E_PROTOCOL_GUEST: expected an actor operation");
+            if (match(STOP)) {
+                consume(LPAREN, "E_PROTOCOL_GUEST: expected stop()");
+                consume(RPAREN, "E_PROTOCOL_GUEST: expected stop()");
+                consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after stop");
+                break;
+            }
+            if (turns.size() >= 64) throw error(peek(), "E_PROTOCOL_LIMIT: too many guest protocol turns");
+            consumeContextualIdentifier("send", "E_PROTOCOL_GUEST: expected send or stop");
+            consume(LPAREN, "E_PROTOCOL_GUEST: expected a typed message");
+            Token tag = readProtocolName("E_PROTOCOL_GUEST: expected a message tag");
+            var handler = actor.handlers().stream().filter(value -> value.message().equals(tag.lexeme()))
+                    .findFirst().orElseThrow(() -> error(tag, "E_PROTOCOL_GUEST: unknown message tag"));
+            consume(LPAREN, "E_PROTOCOL_GUEST: expected message arguments");
+            List<Long> payload = new ArrayList<>();
+            for (var parameter : handler.parameters()) {
+                if (!payload.isEmpty()) consume(COMMA, "E_PROTOCOL_PAYLOAD: expected another argument");
+                long literal = readSignedQuantityInteger();
+                var actual = readQuantityLiteral(previous(), literal);
+                var type = parameter.type();
+                var expected = new RefinedQuantity(new VerifiedQuantityUnit(type.dimension(),
+                        type.scaleNumerator(), type.scaleDenominator()), new Interval(type.minimum(), type.maximum()),
+                        type.i32());
+                expected.require(actual.type(), "E_PROTOCOL_PAYLOAD", "the typed send argument");
+                payload.add(actual.type().range().minimum());
+            }
+            consume(RPAREN, "E_PROTOCOL_PAYLOAD: unexpected message arguments");
+            consume(RPAREN, "E_PROTOCOL_GUEST: expected ')' after the message");
+            consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after send");
+            consume(VAL, "E_PROTOCOL_GUEST: read the receipt before the next operation");
+            Token receipt = verifiedName("E_PROTOCOL_GUEST: expected a receipt binding");
+            if (receipt.lexeme().equals(local) || receipts.putIfAbsent(receipt.lexeme(), turns.size()) != null)
+                throw error(receipt, "E_PROTOCOL_GUEST: duplicate local binding");
+            consume(EQUAL, "E_PROTOCOL_GUEST: expected a receipt initializer");
+            consumeContextualIdentifier(local, "E_PROTOCOL_GUEST: receipt requires the same actor binding");
+            consume(DOT, "E_PROTOCOL_GUEST: expected get_receipt()");
+            consumeContextualIdentifier("get_receipt", "E_PROTOCOL_GUEST: expected get_receipt()");
+            consume(LPAREN, "E_PROTOCOL_GUEST: expected get_receipt()");
+            consume(RPAREN, "E_PROTOCOL_GUEST: expected get_receipt()");
+            consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after get_receipt()");
+            turns.add(new Ast.ProtocolGuestTurn(tag.lexeme(), payload));
+        }
+        consume(RETURN, "E_PROTOCOL_GUEST: expected the returned receipt status");
+        Token result = verifiedName("E_PROTOCOL_GUEST: expected a receipt binding");
+        Integer index = receipts.get(result.lexeme());
+        if (index == null) throw error(result, "E_PROTOCOL_GUEST: return requires a known receipt status");
+        consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after return");
+        consume(RBRACE, "E_PROTOCOL_GUEST: expected the end of main");
+        consume(EOF, "E_PROTOCOL_GUEST: main must be the last declaration");
+        return new Ast.ProtocolGuestDecl(actor.name(), turns, index);
     }
 
     private List<Ast.Decl> parseVerifiedFunctions(boolean protocolActorsRequired) {
@@ -7736,6 +7849,13 @@ public final class Parser {
             }
 
             consume(LBRACE, "expected '{' after verified signature");
+            if (isMain && !actorNames.isEmpty() && check(VAL) && current + 3 < tokens.size()
+                    && tokens.get(current + 2).type() == EQUAL && tokens.get(current + 3).type() == SPAWN) {
+                if (!verifiedFunctions.isEmpty() || !result.equals(returnType) || !upperParameters.isEmpty())
+                    throw error(name, "E_PROTOCOL_GUEST: actor main requires a standalone uncontracted entrypoint");
+                declarations.add(parseProtocolGuest(declarations));
+                return declarations;
+            }
             List<Ast.Stmt> body = new ArrayList<>();
             while (match(VAL)) {
                 if (body.size() >= 128) throw error(peek(), "E_REFINEMENT_LIMIT: too many immutable bindings");
