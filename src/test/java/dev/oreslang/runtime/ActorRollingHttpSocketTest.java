@@ -11,10 +11,12 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -39,16 +41,19 @@ final class ActorRollingHttpSocketTest {
         CountDownLatch releaseOld = new CountDownLatch(1);
         CountDownLatch oldHandled = new CountDownLatch(1);
         CountDownLatch newHandled = new CountDownLatch(1);
+        AtomicReference<Exception> requestFailure = new AtomicReference<>();
         try (ActorRuntime actors = new ActorRuntime();
              HttpClient client = HttpClient.newHttpClient();
              var io = Executors.newVirtualThreadPerTaskExecutor()) {
-            var g1 = actors.<byte[]>spawnShared(() -> (message, ctx) -> {
+            var g1 = actors.<List<Byte>>spawnShared(() -> (message, ctx) -> {
+                assertEquals(List.of((byte) 1), message);
                 oldEntered.countDown();
                 if (!releaseOld.await(10, TimeUnit.SECONDS))
                     throw new AssertionError("held old actor exceeded test deadline");
                 oldHandled.countDown();
             });
-            var g2 = actors.<byte[]>spawnShared(() -> (message, ctx) -> {
+            var g2 = actors.<List<Byte>>spawnShared(() -> (message, ctx) -> {
+                assertEquals(List.of((byte) 1), message);
                 newHandled.countDown();
             });
             g1.getReady().get(8, TimeUnit.SECONDS);
@@ -62,7 +67,7 @@ final class ActorRollingHttpSocketTest {
                     try (var pinned = route.acquire()) {
                         // Bind the exact message to the epoch captured on
                         // HTTP admission. Do not refund the lease on send().
-                        pinned.target().send(new byte[] {1});
+                        pinned.target().send(List.of((byte) 1));
                         boolean delivered = pinned.epoch() == 1L
                                 ? oldHandled.await(8, TimeUnit.SECONDS)
                                 : newHandled.await(8, TimeUnit.SECONDS);
@@ -71,6 +76,7 @@ final class ActorRollingHttpSocketTest {
                         exchange.sendResponseHeaders(200, body.length);
                         try (var out = exchange.getResponseBody()) { out.write(body); }
                     } catch (Exception failure) {
+                        requestFailure.compareAndSet(null, failure);
                         try {
                             byte[] body = "request failed".getBytes(StandardCharsets.UTF_8);
                             exchange.sendResponseHeaders(503, body.length);
@@ -83,7 +89,8 @@ final class ActorRollingHttpSocketTest {
                 try {
                     CompletableFuture<HttpResponse<String>> oldRequest =
                             client.sendAsync(get(boundPort), HttpResponse.BodyHandlers.ofString());
-                    assertTrue(oldEntered.await(8, TimeUnit.SECONDS));
+                    assertTrue(oldEntered.await(8, TimeUnit.SECONDS),
+                            () -> "old generation did not receive HTTP request: " + requestFailure.get());
                     assertTrue(route.publishReady(1L, g2));
                     assertFalse(route.admissionsDrained(1L));
                     assertEquals(2L, route.snapshot().activeEpoch());
