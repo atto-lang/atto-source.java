@@ -8,6 +8,8 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/imports/StaticImportGraph.java'
       - 'src/test/java/dev/oreslang/StaticImportGraphTest.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenImportSnapshot.java'
+      - 'src/test/java/dev/oreslang/FrozenImportSnapshotTest.java'
       - 'pom.xml'
 permissions:
   contents: read
@@ -36,4 +38,4 @@ jobs:
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
-          mvn -B -Dtest=ContextualImportPathTest,StaticImportGraphTest -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -Dtest=ContextualImportPathTest,StaticImportGraphTest,FrozenImportSnapshotTest -Dsurefire.failIfNoSpecifiedTests=true test
