@@ -1,0 +1,31 @@
+name: Immutable guest JSON lookup admission
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - '.github/workflows/immutable-json-lookup.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  json:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact compiler tree
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git rev-parse HEAD HEAD^{tree}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+      - name: Runtime and linked guest JSON regressions
+        run: bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=AllocJsonTextTest,OresJsonValueTest,OresKeyedMapTest,CanonicalJsonGuestTest -Dsurefire.failIfNoSpecifiedTests=true test

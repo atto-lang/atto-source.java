@@ -294,7 +294,7 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               val worker = spawn Reused();
-              await worker.ready;
+              await worker.get_ready();
 
               // Keep both requests admitted before delivering either to
               // the shared actor. Response envelopes must not cross streams.
@@ -309,7 +309,7 @@ class NativeHttpTest {
               stdio.println(server.active);
 
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -350,7 +350,7 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               val worker = spawn Reused();
-              await worker.ready;
+              await worker.get_ready();
 
               val first = await server.accept();
               val firstDone = first.completion;
@@ -364,7 +364,7 @@ class NativeHttpTest {
               stdio.println(server.active);
 
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -406,12 +406,12 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 1, 1024, 10000);
               stdio.println(server.port);
               val worker = spawn Persistent();
-              await worker.ready;
+              await worker.get_ready();
               __STEPS__
               stdio.println("reused-20");
               stdio.println(server.active);
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -532,6 +532,27 @@ class NativeHttpTest {
         assertTrue(output.contains("504"), output);
     }
 
+    @Test void movedHttpResponseDraftCannotBeReusedEvenInsideCatch() {
+        for (String kind : List.of("actor", "isoactor")) {
+            String program = """
+                define %s Hello as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    val response = http.response(201, "text/plain", "first");
+                    await request.respond_response(response);
+                    try {
+                      await request.respond_response(response);
+                    } catch (failure) { return; }
+                    return;
+                  }
+                end
+                """.formatted(kind);
+            Exception failure = assertThrows(Exception.class,
+                    () -> OresCompiler.parseAndTypeCheck(program));
+            assertTrue(failure.getMessage().contains("moved value 'response'"), failure.getMessage());
+        }
+    }
+
     @Test void guestResponseDraftIsTypedAndTransferredToRealHttp11Exchange() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
@@ -540,8 +561,11 @@ class NativeHttpTest {
                     val request = http.claim(mail.value);
                     val response = http.response(201, "text/plain; charset=utf-8", "hello from Oreslang");
                     await request.respond_response(response);
+                    // A fresh owned draft can legally reach the runtime;
+                    // the already-completed exchange must still reject it.
+                    val duplicate = http.response(202, "text/plain", "wrong");
                     try {
-                      await request.respond_response(response);
+                      await request.respond_response(duplicate);
                       stdio.println("DUPLICATE RESPONSE ACCEPTED");
                     } catch (failure) {
                       stdio.println("duplicate-response-rejected");
@@ -554,9 +578,9 @@ class NativeHttpTest {
                   val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
                   stdio.println(server.port);
                   val request = await server.accept();
-                  val done = request.completion;
+                  val completion = request.completion;
                   http.handler("Hello").dispatch(rt mut borrow request);
-                  stdio.println(await done);
+                  stdio.println(await completion);
                   await server.shutdown(0);
                   return;
                 }
@@ -714,6 +738,23 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(15)
+    void failedClientCannotStrandGuestWaitingForAnotherRequest() {
+        var sentinel = new AssertionError("injected HTTP client failure before request");
+        var failure = assertThrows(AssertionError.class, () -> run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              await request.respond(200, "text/plain", "unexpected");
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> { throw sentinel; }));
+        assertSame(sentinel, failure.getCause(), "preserve original client failure");
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
@@ -733,9 +774,26 @@ class NativeHttpTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] b, int off, int len) {
                 super.write(b, off, len);
+                noticeOutput();
+            }
+            @Override public synchronized void write(int value) {
+                super.write(value);
+                noticeOutput();
+            }
+            private void noticeOutput() {
                 String text = toString(StandardCharsets.UTF_8);
                 int end = text.indexOf('\n');
-                if (end >= 0 && !port.isDone()) port.complete(Integer.parseInt(text.substring(0, end).trim()));
+                if (end >= 0 && !port.isDone()) {
+                    try {
+                        int parsed = Integer.parseInt(text.substring(0, end).trim());
+                        if (parsed < 1 || parsed > 65535) {
+                            throw new IllegalArgumentException("invalid guest listener port: " + parsed);
+                        }
+                        port.complete(parsed);
+                    } catch (RuntimeException invalid) {
+                        port.completeExceptionally(invalid);
+                    }
+                }
                 // HTTP response completion can precede the actor's final
                 // post-response duplicate-rejection check. Keep the context
                 // alive until the diagnostic has actually been emitted, not
@@ -754,12 +812,34 @@ class NativeHttpTest {
         try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
                 .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of()).out(output).build();
              ExecutorService worker = Executors.newVirtualThreadPerTaskExecutor()) {
+            // If the client fails before sending all expected requests, the
+            // guest may be suspended in accept() forever. Preserve the first
+            // client failure and request bounded interruption of guest eval.
+            var clientFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
             Future<?> clientWork = worker.submit(() -> {
-                try { client.run(port.get(10, TimeUnit.SECONDS)); }
-                catch (Exception failure) { throw new CompletionException(failure); }
+                try {
+                    client.run(port.get(10, TimeUnit.SECONDS));
+                } catch (Throwable failure) {
+                    clientFailure.set(failure);
+                    try {
+                        context.interrupt(Duration.ofSeconds(2));
+                    } catch (Exception interruptedGuest) {
+                        failure.addSuppressed(interruptedGuest);
+                    }
+                    throw new CompletionException(failure);
+                }
             });
             try {
-                context.eval(Source.newBuilder(OresLanguage.ID, program, "native-http-test.ores").build());
+                try {
+                    context.eval(Source.newBuilder(OresLanguage.ID, program, "native-http-test.ores").build());
+                } catch (Exception evalFailure) {
+                    Throwable original = clientFailure.get();
+                    if (original != null) {
+                        original.addSuppressed(evalFailure);
+                        throw new AssertionError("HTTP test client failed before guest completion", original);
+                    }
+                    throw evalFailure;
+                }
                 clientWork.get(10, TimeUnit.SECONDS);
                 // A bounded actor-output completion barrier closes the race
                 // between response transport completion and receive cleanup.
@@ -770,7 +850,12 @@ class NativeHttpTest {
                             .get(8, TimeUnit.SECONDS);
                     closeWhenQuiescent(context);
                 }
-            } finally { clientWork.cancel(true); }
+            } finally {
+                // Release a client still waiting for the listener if guest
+                // compilation or startup failed. Never report this as a pass.
+                port.completeExceptionally(new IllegalStateException("guest ended before listener publication"));
+                clientWork.cancel(true);
+            }
 
         }
         return output.toString(StandardCharsets.UTF_8);

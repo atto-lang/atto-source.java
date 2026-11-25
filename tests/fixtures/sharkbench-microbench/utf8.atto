@@ -1,0 +1,13 @@
+// Strict UTF-8 round-trip, including multibyte scalars and chunk assembly.
+pub fnc main(): void {
+  val string sample = "aé😀z";
+  let int checksum = 0;
+  for (let int i = 0; i < 1000; i = i + 1) {
+    val bytes = sample.utf8_bytes();
+    if bytes.utf8_string() == sample; then
+      checksum = checksum + bytes.size;
+    fi
+  }
+  stdio.println(checksum);
+  return;
+}
