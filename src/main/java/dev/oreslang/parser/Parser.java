@@ -419,6 +419,9 @@ public final class Parser {
         for (var unit : sources.entrySet()) {
             if (!unit.getKey().matches("[A-Za-z0-9_-]{1,128}\\.atto"))
                 throw new IllegalArgumentException("KIND_SOURCE_ID_UNSUPPORTED: sibling .atto source IDs only");
+            if (!java.nio.charset.StandardCharsets.UTF_8.newEncoder().canEncode(unit.getValue())
+                    || unit.getValue().indexOf(0) >= 0)
+                throw new IllegalArgumentException("KIND_SOURCE_ENCODING: invalid source scalar sequence");
             byte[] source = unit.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             bytes += source.length;
             if (bytes > 4 * 1024 * 1024)
