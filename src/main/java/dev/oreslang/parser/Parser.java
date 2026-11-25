@@ -52,7 +52,8 @@ public final class Parser {
     private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
     // Phase 1a: private file-root class aliases, registered before ordinary declarations.
     // No runtime descriptor, textual rewrite, new AST kind, or imported authority.
-    private final java.util.Map<String, List<Ast.TypeRef>> localClassKeywords = new java.util.LinkedHashMap<>();
+    private record LocalDeclarationKind(boolean actor, List<Ast.TypeRef> requirements) {}
+    private final java.util.Map<String, LocalDeclarationKind> localClassKeywords = new java.util.LinkedHashMap<>();
     private static final java.util.Set<String> RESERVED_CUSTOM_KINDS = java.util.Set.of(
             "abstract",
             "activity",
@@ -671,13 +672,25 @@ public final class Parser {
                     if (COLLECTION_OF_TYPES.contains(peek().lexeme()) || !checkNext(AS)) {
                         throw error(kind, "KIND_HEADER_UNSUPPORTED: phase 1a requires a plain non-intrinsic class name followed by 'as'");
                     }
-                    modifiers = mergeModifiers(modifiers, parseModifiers());
-                    rejectCallableStructuralAnnotation(annotations, "class declarations");
-                    validateCopyPolicyClassAnnotations(annotations);
-                    validateClassModifiers(modifiers);
-                    rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC, annotations,
-                            localClassKeywords.get(kind.lexeme())));
+                    LocalDeclarationKind descriptor = localClassKeywords.get(kind.lexeme());
+                    if (descriptor.actor()) {
+                        validateOnlyVisibilityModifiers(modifiers, "custom actor declarations");
+                        rejectCallableStructuralAnnotation(annotations, "actor class declarations");
+                        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
+                        Ast.Decl actor = parseActorClass(Ast.ActorKind.SHARED, modifiers.visibility,
+                                ActorPrefix.DEFAULT, descriptor.requirements());
+                        if (!(actor instanceof Ast.ClassDecl))
+                            throw error(kind, "KIND_ACTOR_BODY_REQUIRED: custom actor requires a complete body");
+                        rootDeclarations.add(actor);
+                    } else {
+                        modifiers = mergeModifiers(modifiers, parseModifiers());
+                        rejectCallableStructuralAnnotation(annotations, "class declarations");
+                        validateCopyPolicyClassAnnotations(annotations);
+                        validateClassModifiers(modifiers);
+                        rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract,
+                                modifiers.visibility != Ast.Visibility.PUBLIC, annotations,
+                                descriptor.requirements()));
+                    }
                     continue;
                 }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
@@ -717,7 +730,8 @@ public final class Parser {
             throw error(at, "KIND_VISIBILITY_UNSUPPORTED: phase 1a descriptors are private and unannotated");
         }
         Token name = consume(IDENT, "expected contextual declaration kind name");
-        if (RESERVED_CUSTOM_KINDS.contains(name.lexeme()) || COLLECTION_OF_TYPES.contains(name.lexeme())) {
+        if (RESERVED_CUSTOM_KINDS.contains(name.lexeme()) || COLLECTION_OF_TYPES.contains(name.lexeme())
+                || java.util.Set.of("serial", "http", "tcp", "websocket", "ws", "_").contains(name.lexeme())) {
             throw error(name, "KIND_RESERVED: built-in or contextual declaration name");
         }
         if (localClassKeywords.containsKey(name.lexeme())) {
@@ -727,8 +741,9 @@ public final class Parser {
             throw error(name, "KIND_BUDGET: too many file-local descriptors");
         }
         consume(AS, "expected 'as' before keyword base kind");
-        if (!match(CLASS)) {
-            throw error(peek(), "KIND_BASE_UNSUPPORTED: phase 1a supports class only");
+        boolean actor = match(ACTOR);
+        if (!actor && !match(CLASS)) {
+            throw error(peek(), "KIND_BASE_UNSUPPORTED: supports ordinary class or actor only");
         }
         List<Ast.TypeRef> requirements = new ArrayList<>();
         while (matchContextualIdentifier("requires")) {
@@ -742,7 +757,7 @@ public final class Parser {
             requirements.add(required);
         }
         consume(END, "expected 'end' after descriptor");
-        localClassKeywords.put(name.lexeme(), List.copyOf(requirements));
+        localClassKeywords.put(name.lexeme(), new LocalDeclarationKind(actor, List.copyOf(requirements)));
     }
 
     // v1b deliberately binds only unambiguous, non-generic interfaces in the
@@ -750,7 +765,7 @@ public final class Parser {
     private void validateLocalKeywordRequirements(List<Ast.ImportDecl> imports,
             List<Ast.ModuleDecl> modules, List<Ast.Decl> declarations) {
         for (var entry : localClassKeywords.entrySet()) {
-            for (Ast.TypeRef requirement : entry.getValue()) {
+            for (Ast.TypeRef requirement : entry.getValue().requirements()) {
                 if (!imports.isEmpty() || !modules.isEmpty()) {
                     throw error(peek(), "KIND_CONTRACT_SCOPE_UNSUPPORTED: local requirements do not yet support imports or modules");
                 }
@@ -2118,6 +2133,11 @@ public final class Parser {
 
     private Ast.Decl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
+        return parseActorClass(actorKind, visibility, prefix, List.of());
+    }
+
+    private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility,
+            ActorPrefix prefix, List<Ast.TypeRef> requiredInterfaces) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
         // 'receives' and 'sends' are contextual actor-header keywords. Do
@@ -2146,6 +2166,14 @@ public final class Parser {
                     + "' may extend at most one actor superclass");
         }
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        if (!requiredInterfaces.isEmpty()) {
+            List<Ast.TypeRef> combined = new ArrayList<>(interfaces);
+            for (Ast.TypeRef required : requiredInterfaces) {
+                if (!combined.contains(required)) combined.add(required);
+            }
+            interfaces = List.copyOf(combined);
+        }
 
         // A nominal, semicolon-terminated actor may name contract obligations
         // without defining an implicit runtime actor, empty class or alias.
