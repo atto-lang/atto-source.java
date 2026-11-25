@@ -435,6 +435,14 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
+    // One bounded account per runtime security domain. This is not a global
+    // TenantVM registry: a tenant spanning runtimes needs an upstream budget.
+    // Guarded by runtimeLifecycleLock; sessions never call back into runtime.
+    private final Map<UUID, ActorIpcSessionV1> boundIpcRoutes = new java.util.HashMap<>();
+    private final ActorDataDecodeQuotaV1 ipcTransientQuota =
+            new ActorDataDecodeQuotaV1(32L * 1024 * 1024, 64);
+    private final ActorDataDecodeQuotaV1 ipcRetainedQuota =
+            new ActorDataDecodeQuotaV1(16L * 1024 * 1024, 4096);
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     /** Read-only parent-observable streams retained until drained/runtime close. */
@@ -626,6 +634,51 @@ public final class ActorRuntime implements AutoCloseable {
                 Objects.requireNonNull(logicalActorId, "logicalActorId"),
                 incarnation,
                 routeEpoch);
+    }
+
+    /**
+     * Trusted launcher path: bind exactly one active session per logical route
+     * to this runtime's shared DATA accounts. This does not launch a process
+     * or admit decoded guest messages; the old framing-only API is unchanged.
+     */
+    ActorIpcSessionV1 openBoundIpcSession(ActorArtifact<?> artifact,
+            UUID logicalActorId, long incarnation, long routeEpoch,
+            int slots, long bytes) {
+        requireSupervisorContext("open bounded IPC actor session");
+        requireCallerRuntimeAffinity("open bounded IPC actor session");
+        Objects.requireNonNull(logicalActorId, "logical actor ID");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (boundIpcRoutes.containsKey(logicalActorId) || boundIpcRoutes.size() >= 64)
+                throw new IllegalStateException("IPC route already registered or route quota full");
+            // Existing artifact ownership and host capability checks are mandatory.
+            ActorIpcSessionV1 session = openIpcSession(
+                    artifact, logicalActorId, incarnation, routeEpoch);
+            boolean registered = false;
+            try {
+                session.bindDataQueue(slots, bytes, ipcTransientQuota, ipcRetainedQuota);
+                boundIpcRoutes.put(logicalActorId, session);
+                registered = true;
+                return session;
+            } finally {
+                if (!registered) session.close();
+            }
+        }
+    }
+
+    /** Exact-object retirement; a stale or foreign session cannot retire a replacement. */
+    void retireBoundIpcSession(ActorIpcSessionV1 session) {
+        requireSupervisorContext("retire bounded IPC actor session");
+        requireCallerRuntimeAffinity("retire bounded IPC actor session");
+        Objects.requireNonNull(session, "session");
+        synchronized (runtimeLifecycleLock) {
+            if (boundIpcRoutes.get(session.logicalActorId()) != session)
+                throw new SecurityException("IPC session is not the registered route");
+            // Close before allowing replacement registration. Outstanding deliveries
+            // remain charged until their owner closes them; downstream must fence.
+            session.close();
+            boundIpcRoutes.remove(session.logicalActorId());
+        }
     }
 
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
@@ -6506,10 +6559,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         final boolean firstClose;
         final List<ActorCell<?>> snapshot;
+        final List<ActorIpcSessionV1> ipcSnapshot;
         synchronized (runtimeLifecycleLock) {
             firstClose = closed.compareAndSet(false, true);
             snapshot = List.copyOf(actors.values());
+            ipcSnapshot = List.copyOf(boundIpcRoutes.values());
+            boundIpcRoutes.clear();
         }
+        for (ActorIpcSessionV1 session : ipcSnapshot) session.close();
         for (ActorCell<?> cell : snapshot) cell.stop();
 
         if (firstClose) {
