@@ -7,6 +7,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorDataDecodeQuotaV1.java'
       - 'src/test/**/ActorIpcSessionV1Test.java'
       - 'src/test/**/ActorArtifactAdmissionTest.java'
+      - 'src/test/standalone/**/ActorDataDecodeQuotaV1*.java'
       - '.github/workflows/ipc-bound-data-admission-v1.yml'
   push:
     branches: [draft/ipc-tenant-data-admission-v1-20261124]
@@ -35,8 +36,9 @@ jobs:
           git rev-parse 'HEAD^{tree}'
           java -version
           mkdir -p "$RUNNER_TEMP/quota"
-          javac -Xlint:all -Werror -d "$RUNNER_TEMP/quota" src/main/java/dev/oreslang/runtime/ActorDataDecodeQuotaV1.java src/test/standalone/dev/oreslang/runtime/ActorDataDecodeQuotaV1Harness.java
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/quota" src/main/java/dev/oreslang/runtime/ActorDataDecodeQuotaV1.java src/test/standalone/dev/oreslang/runtime/ActorDataDecodeQuotaV1Harness.java src/test/standalone/dev/oreslang/runtime/ActorDataDecodeQuotaV1Contention.java
           java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.ActorDataDecodeQuotaV1Harness
+          java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.ActorDataDecodeQuotaV1Contention
       - name: Execute actual IPC and runtime artifact host tests
         run: |
           set -euo pipefail
