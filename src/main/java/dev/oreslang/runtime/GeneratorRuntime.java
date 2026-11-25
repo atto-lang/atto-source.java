@@ -42,10 +42,28 @@ public final class GeneratorRuntime {
     }
 
     public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
+        // Even synchronous generator construction retains a lazy Producer
+        // closure that could be pulled outside this turn. Actor-private
+        // values cannot escape through a root-owned activation.
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "ACTOR_GENERATOR_UNSUPPORTED: sync gen* requires actor-owned "
+                    + "activation/receiver lifetime; generic AsyncRuntime cannot retain actor authority");
+        }
         return new Generator<>(new Engine<>(runtime, producer));
     }
 
     public static <T> AsyncGenerator<T> asyncGenerator(AsyncRuntime runtime, Producer<T> producer) {
+        // The generic AsyncRuntime owns process/root virtual carriers. It
+        // does not carry an actor-incarnation execution lease or guarantee
+        // that await/yield/cleanup resumes on that actor's kind-specific pool.
+        // Reject construction during an actor turn rather than let a captured
+        // actor-private producer execute outside its owner's scheduler.
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "ACTOR_GENERATOR_UNSUPPORTED: async gen* requires actor-owned "
+                    + "continuation/pool admission; generic AsyncRuntime cannot retain actor authority");
+        }
         return new AsyncGenerator<>(runtime, new Engine<>(runtime, producer));
     }
 
@@ -107,6 +125,11 @@ public final class GeneratorRuntime {
 
         @Override
         public void close() {
+            if (ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "ACTOR_GENERATOR_UNSUPPORTED: synchronous generator close "
+                        + "requires root-owner cleanup; an actor cannot park its carrier");
+            }
             engine.close();
         }
     }
@@ -114,12 +137,23 @@ public final class GeneratorRuntime {
     public static final class AsyncGenerator<T> implements AutoCloseable {
         private final AsyncRuntime runtime;
         private final Engine<T> engine;
-        // Bound pull admission at one outstanding request. The Engine also
-        // serializes execution, but admitting an unbounded number of runtime
-        // tasks that merely wait on its monitor would turn concurrent next()
-        // calls into a resource-amplification path.
-        private final AtomicBoolean pullInFlight = new AtomicBoolean();
+        // A pull reservation is not reusable until BOTH the engine has left
+        // next() and the returned Future is settled. In particular, a custom
+        // TurnExecutor may perform host/context cleanup between those events.
+        // Cancellation may settle a Future while engine.next() is still active.
+        private final AtomicReference<PullAdmission<T>> activePull = new AtomicReference<>();
         private OresFuture<Void> closeFuture;
+
+        private static final class PullAdmission<T> {
+            // 0 = before engine entry, 1 = executing, 2 = left / denied entry.
+            private final AtomicInteger state = new AtomicInteger();
+            private volatile OresFuture<Step<T>> result;
+
+            private boolean retired() {
+                OresFuture<Step<T>> observed = result;
+                return state.get() == 2 && observed != null && observed.isDone();
+            }
+        }
 
         private AsyncGenerator(AsyncRuntime runtime, Engine<T> engine) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -127,64 +161,74 @@ public final class GeneratorRuntime {
         }
 
         /**
-         * One asynchronous pull. Exactly one pull may be outstanding for an
-         * activation. An overlapping pull returns a failed OresFuture instead
-         * of admitting another runtime task that would wait behind the first.
+         * Admit exactly one unsettled asynchronous pull per activation. A new
+         * pull may proceed only after the previous Future has settled AND its
+         * engine step has exited (cancellation can settle first).
          */
         public OresFuture<Step<T>> nextStep() {
-            if (!pullInFlight.compareAndSet(false, true)) {
+            // A root-owned activation can be passed to actor code. Even an
+            // otherwise Sendable value may not grant that actor a generic
+            // root-task execution capability. Preserve the Future return ABI.
+            if (ActorRuntime.inActorExecution()) {
                 return OresFuture.failed(new IllegalStateException(
-                        "concurrent AsyncIterator.next() is not permitted; await the outstanding pull first"));
+                        "ACTOR_GENERATOR_UNSUPPORTED: actor pull requires "
+                        + "actor-owned continuation/pool admission"));
+            }
+            PullAdmission<T> ticket = new PullAdmission<>();
+            for (;;) {
+                PullAdmission<T> previous = activePull.get();
+                if (previous != null && !previous.retired()) {
+                    return OresFuture.failed(new IllegalStateException(
+                            "concurrent AsyncIterator.next() is not permitted; await the outstanding pull first"));
+                }
+                if (activePull.compareAndSet(previous, ticket)) break;
             }
 
-            // Only a *settled* terminal generator can return an immediate
-            // Future. A terminal event can precede the physical guest exit;
-            // never park the caller (possibly an actor carrier) in this API.
+            // Terminal pulls return an already-settled Future. A prior pull
+            // still has to retire before reaching this shortcut.
             if (engine.isTerminalReady()) {
-                // A producer admission denial remains an exceptional async
-                // result across repeated pulls; never launder it into DONE.
                 Throwable rejected = engine.terminalFailure();
-                pullInFlight.set(false);
-                return rejected == null
+                OresFuture<Step<T>> terminal = rejected == null
                         ? OresFuture.completed(Step.doneStep())
                         : OresFuture.failed(rejected);
+                ticket.result = terminal;
+                ticket.state.set(2);
+                activePull.compareAndSet(ticket, null);
+                return terminal;
             }
 
-            // An async pull always returns an OresFuture, including when
-            // scheduler admission itself rejects before any guest work starts.
             try {
-                // Future cancellation settles before AsyncRuntime's backing task
-                // necessarily leaves engine.next(). Arbitrate task entry against
-                // early completion so cancellation cannot reopen pull admission
-                // while the cancelled consumer still owns the activation.
-                AtomicInteger pullState = new AtomicInteger(); // 0=pending, 1=inside engine.next, 2=released
                 OresFuture<Step<T>> pull = runtime.submit(() -> {
-                    if (!pullState.compareAndSet(0, 1)) {
+                    if (!ticket.state.compareAndSet(0, 1)) {
                         throw new CancellationException(
                                 "async generator pull cancelled before engine admission");
                     }
                     try {
                         return engine.next();
                     } finally {
-                        pullState.set(2);
-                        pullInFlight.set(false);
+                        ticket.state.set(2);
+                        if (ticket.retired()) activePull.compareAndSet(ticket, null);
                     }
                 });
+                ticket.result = pull;
                 pull.whenCompleteRuntime((value, failure) -> {
-                    // Admission/turn failure or cancellation before the task
-                    // entered engine.next() has no physical pull to unwind.
-                    // If engine.next() is already running, its finally owns the
-                    // release and this callback must leave the gate closed.
-                    if (pullState.compareAndSet(0, 2)) {
-                        pullInFlight.set(false);
-                    }
+                    // If completion/cancellation arrived before engine entry,
+                    // fence the entry out; otherwise engine.next()'s finally
+                    // must retire before the permit can be reused.
+                    ticket.state.compareAndSet(0, 2);
+                    if (ticket.retired()) activePull.compareAndSet(ticket, null);
                 });
+                // The task can finish before the receipt is installed. Do
+                // not leave a completed admission retained in that race.
+                if (ticket.retired()) activePull.compareAndSet(ticket, null);
                 return pull;
             } catch (java.util.concurrent.RejectedExecutionException rejected) {
-                pullInFlight.set(false);
+                ticket.state.set(2);
+                activePull.compareAndSet(ticket, null);
                 return OresFuture.failed(rejected);
             } catch (RuntimeException | Error failure) {
-                pullInFlight.set(false);
+                ticket.state.set(2);
+                activePull.compareAndSet(ticket, null);
                 throw failure;
             }
         }
@@ -196,16 +240,24 @@ public final class GeneratorRuntime {
          * needed, so runtime shutdown cannot cancel the only cleanup waiter.
          */
         public synchronized OresFuture<Void> closeAsync() {
+            // A root-owned generator is not an actor capability. Even a
+            // non-parking close would cancel its producer from a foreign
+            // actor turn and could execute finalizers outside the owner pool.
+            if (ActorRuntime.inActorExecution()) {
+                return OresFuture.failed(new IllegalStateException(
+                        "ACTOR_GENERATOR_UNSUPPORTED: async generator close "
+                        + "requires its owning execution domain"));
+            }
             if (closeFuture == null) closeFuture = engine.closeAsyncReceipt();
             return closeFuture;
         }
 
         @Override
         public void close() {
-            if (ActorRuntime.inActorExecution() && !engine.isTerminalReady()) {
+            if (ActorRuntime.inActorExecution()) {
                 throw new IllegalStateException(
-                        "synchronous AsyncIterator.close() would park an actor carrier; "
-                                + "use/await the asynchronous close operation");
+                        "ACTOR_GENERATOR_UNSUPPORTED: synchronous async generator "
+                        + "close requires its owning execution domain");
             }
             engine.close();
         }
@@ -310,8 +362,17 @@ public final class GeneratorRuntime {
                         } catch (CancellationException cancelled) {
                             if (!closed.get()) publish(new FailedEvent<>(cancelled));
                         } catch (Throwable failure) {
-                            if (!closed.get()) publish(new FailedEvent<>(failure));
-                            else closeFailure.compareAndSet(null, failure);
+                            if (!closed.get()) {
+                                publish(new FailedEvent<>(failure));
+                            } else if (!(failure instanceof InterruptedException)) {
+                                // close() cancels the producer task with
+                                // interruption. The interrupt used to stop
+                                // its blocked body is an expected cancellation,
+                                // not a failed defer/finally. Preserve all
+                                // other cleanup errors, including exceptions
+                                // raised while unwinding after cancellation.
+                                closeFailure.compareAndSet(null, failure);
+                            }
                         }
                         return null;
                     });

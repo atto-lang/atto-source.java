@@ -154,9 +154,10 @@ final class GeneratorRuntimeTest {
             java.util.concurrent.FutureTask<Void> closing = new java.util.concurrent.FutureTask<>(
                     () -> { generator.close(); return null; });
             Thread closer = Thread.ofVirtual().start(closing);
+            OresFuture<GeneratorRuntime.Step<Integer>> pull;
             try {
                 assertTrue(leaving.await(2, TimeUnit.SECONDS));
-                var pull = assertTimeoutPreemptively(java.time.Duration.ofMillis(500),
+                pull = assertTimeoutPreemptively(java.time.Duration.ofMillis(500),
                         generator::nextStep);
                 assertEquals(OresFuture.class, pull.getClass());
                 assertThrows(java.util.concurrent.TimeoutException.class,
@@ -166,6 +167,10 @@ final class GeneratorRuntimeTest {
             }
             closing.get(2, TimeUnit.SECONDS);
             closer.join();
+            // The pull admitted while the producer physically retired still
+            // owns the single-flight ticket. A fresh pull cannot skip it just
+            // because close() has completed; await its Future settlement first.
+            assertTrue(pull.get(2, TimeUnit.SECONDS).done());
             assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
         } finally {
             // Release before closing even if the first pull/assertion fails.
@@ -631,18 +636,27 @@ final class GeneratorRuntimeTest {
     void asyncCloseFutureWaitsForPhysicalProducerExit() throws Exception {
         CountDownLatch leaving = new CountDownLatch(1);
         CountDownLatch allowExit = new CountDownLatch(1);
+        var producerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
         try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
             try { turn.run(); }
             finally {
-                leaving.countDown();
-                boolean interrupted = false;
-                for (;;) {
-                    try { allowExit.await(); break; }
-                    catch (InterruptedException ignored) { interrupted = true; }
+                // A consumer turn must finish and settle nextStep() before
+                // this test can request close. Only hold the producer's
+                // physical finalizer, not every AsyncRuntime turn.
+                if (Thread.currentThread() == producerThread.get()) {
+                    leaving.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try { allowExit.await(); break; }
+                        catch (InterruptedException ignored) { interrupted = true; }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
                 }
-                if (interrupted) Thread.currentThread().interrupt();
             }
-        }); var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(1))) {
+        }); var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            producerThread.set(Thread.currentThread());
+            emitter.emit(1);
+        })) {
             assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
             OresFuture<Void> closing = generator.closeAsync();
             try {
