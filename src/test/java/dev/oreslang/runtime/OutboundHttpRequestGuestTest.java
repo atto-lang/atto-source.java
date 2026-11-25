@@ -148,7 +148,7 @@ final class OutboundHttpRequestGuestTest {
                 }
                 """.formatted(port), RuntimePermissions.denyAll().withAllowed(
                     RuntimePermissions.Permission.NET, "127.0.0.1:" + port));
-            assertEquals("0\\n255\\n128\\n42\\n0\\n", output);
+            assertEquals("0\n255\n128\n42\n0\n", output);
         } finally { server.stop(0); }
     }
 
