@@ -559,6 +559,12 @@ final class ActorSourceTaskFrameTest {
             assertEquals(109, result.get().get(3, TimeUnit.SECONDS));
             assertSame(firstIdentity.get(), secondIdentity.get(),
                     "the dispatcher reuses the SourceTask logical identity");
+            awaitCondition(() -> owner.get().retired()
+                    && arena.get().usedBytes() == 0 && arena.get().liveFrames() == 0);
+            assertTrue(owner.get().retired(),
+                    "normal completion retires the single continuation owner");
+            assertFalse(owner.get().suspended(),
+                    "retired continuation must not retain suspended state");
             assertEquals(0, arena.get().usedBytes());
             assertEquals(0, arena.get().liveFrames());
             assertTrue(actor.isAlive());
