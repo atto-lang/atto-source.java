@@ -414,6 +414,33 @@ final class OutboundHttpRequestGuestTest {
     }
 
     @Test
+    void contextualHeaderListRejectsWrongShapesAndExistingNarrowLists() {
+        for (String expression : java.util.List.of(
+                "[(\"Accept\", 42)]",
+                "[(\"Accept\", \"application/json\", \"extra\")]",
+                "[(\"Accept\", \"application/json\"), (\"Other\", false)]")) {
+            var failure = assertThrows(IllegalArgumentException.class, () ->
+                    dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        pub async routine main(): void {
+                          val response = await http.request("GET", "http://127.0.0.1:1/", %s);
+                          return;
+                        }
+                        """.formatted(expression)));
+            assertTrue(failure.getMessage().contains("string tuple list literal element"),
+                    failure.getMessage());
+        }
+        var aliasFailure = assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                    pub async routine main(): void {
+                      val headers = [("Accept", "application/json")];
+                      val response = await http.request("GET", "http://127.0.0.1:1/", headers);
+                      return;
+                    }
+                    """));
+        assertTrue(aliasFailure.getMessage().contains("argument 3"), aliasFailure.getMessage());
+    }
+
+    @Test
     void framingHeadersAndMalformedValuesFailClosedBeforeNetworkAdmission()
             throws Exception {
         for (String header : java.util.List.of(
