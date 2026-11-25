@@ -35,7 +35,7 @@ public final class OutboundHttpRequest {
 
     private OutboundHttpRequest() { }
 
-    private record Owner(
+    record Owner(
             ActorRuntime runtime,
             ActorRuntime.ActorId actorId) {
         static Owner capture(OresContext context) {
@@ -148,7 +148,8 @@ public final class OutboundHttpRequest {
     }
 
     private record PendingRead<T>(int maxBytes, OresFuture<T> future,
-            java.util.function.Function<byte[], T> decode) {
+            java.util.function.Function<byte[], T> decode, AtomicBoolean claimed) {
+        boolean claimDelivery() { return claimed.compareAndSet(false, true); }
         void complete(byte[] raw) {
             T value = decode.apply(raw);
             if (!future.completeFromRuntime(value) && value instanceof OresBytes owned) {
@@ -162,11 +163,11 @@ public final class OutboundHttpRequest {
      * One-producer / one-logical-reader bounded pipe. The native I/O worker may
      * block when the fixed byte budget is full; actor/root carriers never do.
      */
-    private static final class BodyPipe {
+    static final class BodyPipe {
         private final long deadlineNanos;
         private final ArrayDeque<byte[]> queued = new ArrayDeque<>();
 
-        private BodyPipe(long deadlineNanos) {
+        BodyPipe(long deadlineNanos) {
             this.deadlineNanos = deadlineNanos;
         }
         private int firstOffset;
@@ -185,6 +186,7 @@ public final class OutboundHttpRequest {
 
             OresFuture<T> ready;
             synchronized (this) {
+                if (pending != null && pending.future().isDone()) pending = null;
                 if (pending != null) {
                     throw new IllegalStateException(
                             "only one pending HttpClientBody.read_chunk is permitted");
@@ -204,9 +206,14 @@ public final class OutboundHttpRequest {
 
                 AtomicReference<OresFuture<T>> self =
                         new AtomicReference<>();
-                ready = new OresFuture<>(() -> cancelPending(self.get()));
+                // Producer delivery and cancellation arbitrate before either
+                // removes stream bytes. A cancelled read must not lose data.
+                AtomicBoolean claimed = new AtomicBoolean();
+                ready = new OresFuture<>(() -> claimed.compareAndSet(false, true),
+                        () -> cancelPending(self.get()));
                 self.set(ready);
-                pending = new PendingRead<>(maxBytes, ready, decode);
+                pending = new PendingRead<>(maxBytes, ready, decode, claimed);
+                notifyAll();
             }
             return owner.own(ready);
         }
@@ -231,36 +238,35 @@ public final class OutboundHttpRequest {
                 synchronized (this) {
                     requireWritableLocked();
 
-                    if (pending != null && bufferedBytes == 0) {
-                        reader = pending;
-                        pending = null;
-                        int count = Math.min(remaining, reader.maxBytes());
-                        direct = java.util.Arrays.copyOfRange(source, cursor, cursor + count);
-                        cursor += count;
-                        remaining -= count;
-                    } else {
-                        while (failure == null && !eof
-                                && bufferedBytes + remaining > PIPE_BYTES) {
-                            long waitNanos =
-                                    deadlineNanos - System.nanoTime();
-                            if (waitNanos <= 0) {
-                                throw new IOException(
-                                        "HTTP response body backpressure exceeded overall deadline");
-                            }
-                            try {
-                                TimeUnit.NANOSECONDS.timedWait(
-                                        this,
-                                        waitNanos);
-                            } catch (InterruptedException interrupted) {
-                                Thread.currentThread().interrupt();
-                                throw new IOException(
-                                        "HTTP body producer interrupted while backpressured",
-                                        interrupted);
-                            }
+                    // Wait only for actual lack of room. Large producer writes
+                    // must make incremental progress even if larger than PIPE_BYTES.
+                    while (bufferedBytes == PIPE_BYTES) {
+                        long waitNanos = deadlineNanos - System.nanoTime();
+                        if (waitNanos <= 0) {
+                            throw new IOException("HTTP response body backpressure exceeded overall deadline");
+                        }
+                        try {
+                            TimeUnit.NANOSECONDS.timedWait(this, waitNanos);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("HTTP body producer interrupted while backpressured", interrupted);
                         }
                         requireWritableLocked();
-                        int room = PIPE_BYTES - bufferedBytes;
-                        int count = Math.min(remaining, room);
+                    }
+                    if (pending != null && bufferedBytes == 0) {
+                        if (pending.claimDelivery()) {
+                            reader = pending;
+                            int count = Math.min(remaining, reader.maxBytes());
+                            direct = java.util.Arrays.copyOfRange(source, cursor, cursor + count);
+                            cursor += count;
+                            remaining -= count;
+                        } else {
+                            // Cancellation claimed this read before data was removed.
+                            pending = null;
+                        }
+                    }
+                    if (reader == null) {
+                        int count = Math.min(remaining, PIPE_BYTES - bufferedBytes);
                         byte[] copy = new byte[count];
                         System.arraycopy(source, cursor, copy, 0, count);
                         queued.addLast(copy);
@@ -271,7 +277,7 @@ public final class OutboundHttpRequest {
                     }
                 }
                 if (reader != null) {
-                    reader.complete(direct);
+                    completeDelivery(reader, direct);
                 }
             }
         }
@@ -282,19 +288,32 @@ public final class OutboundHttpRequest {
                 if (failure != null || eof) return;
                 eof = true;
                 if (bufferedBytes == 0 && pending != null) {
-                    reader = pending;
-                    pending = null;
+                    if (pending.claimDelivery()) reader = pending;
+                    else pending = null;
                 }
                 notifyAll();
             }
-            if (reader != null) reader.complete(new byte[0]);
+            if (reader != null) completeDelivery(reader, new byte[0]);
         }
 
-        void fail(Throwable cause) {
+        private void completeDelivery(PendingRead<?> reader, byte[] bytes) {
+            try {
+                reader.complete(bytes);
+            } finally {
+                synchronized (this) {
+                    if (pending == reader) pending = null;
+                    notifyAll();
+                }
+            }
+        }
+
+        void fail(Throwable cause) { fail(cause, false); }
+
+        private void fail(Throwable cause, boolean revoke) {
             Objects.requireNonNull(cause, "cause");
             PendingRead<?> reader = null;
             synchronized (this) {
-                if (failure != null || eof) return;
+                if (failure != null || (eof && !revoke)) return;
                 failure = cause;
                 queued.clear();
                 bufferedBytes = 0;
@@ -305,11 +324,19 @@ public final class OutboundHttpRequest {
                 }
                 notifyAll();
             }
-            if (reader != null) settleFailure(reader.future(), cause);
+            if (reader != null) {
+                // A claimed delivery denies guest cancellation; explicit
+                // stream revocation can still settle failure before publication.
+                if (cause instanceof CancellationException) {
+                    if (!reader.future().cancel(false)) reader.future().failFromRuntime(cause);
+                } else {
+                    reader.future().failFromRuntime(cause);
+                }
+            }
         }
 
         void cancel() {
-            fail(new CancellationException("HTTP response body revoked"));
+            fail(new CancellationException("HTTP response body revoked"), true);
         }
 
         private void requireWritableLocked() throws IOException {

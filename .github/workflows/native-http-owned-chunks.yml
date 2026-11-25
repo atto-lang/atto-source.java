@@ -36,5 +36,5 @@ jobs:
         run: |
           set -euo pipefail
           java -version
-          mvn -B -ntp -Dtest=OutboundHttpRequestGuestTest,AttoBytesV1GuestTest,AttoOwnedBytesNioGuestTest -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -ntp -Dtest=OutboundHttpBodyPipeTest,OutboundHttpRequestGuestTest,AttoBytesV1GuestTest,AttoOwnedBytesNioGuestTest -Dsurefire.failIfNoSpecifiedTests=true test
           test -z "$(git status --porcelain --untracked-files=all)"
