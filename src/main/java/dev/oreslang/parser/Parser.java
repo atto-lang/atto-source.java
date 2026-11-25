@@ -4171,6 +4171,11 @@ public final class Parser {
         if (check(LBRACE) && looksLikeDestructure()) {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
+        if (canonicalAttoSource && match(CARET)) {
+            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
+            consumeExpressionStatementTerminator(value, "return statement should end with ';'");
+            return new Ast.ReturnStmt(value);
+        }
         if (match(RETURN)) {
             // Contextual return-maybe: its inner return statements are true
             // FUNCTION_RETURN. It is NOT the value-match ARM_RESULT construct.
@@ -4241,7 +4246,11 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(GUARD)) return parseGuard();
-        if (match(IF, IFNOT, UNLESS)) return parseIf(previous().type());
+        if (canonicalAttoSource && check(DO) && (checkNext(IF) || checkNext(IFNOT) || checkNext(UNLESS))) {
+            advance();
+            return parseIf(advance().type(), true);
+        }
+        if (match(IF, IFNOT, UNLESS)) return parseIf(previous().type(), false);
         if ((check(NB)
                 || (check(IDENT) && peek().lexeme().equals("task")))
                 && current + 2 < tokens.size()
@@ -5361,7 +5370,7 @@ public final class Parser {
         return false;
     }
 
-    private Ast.Stmt parseIf(Token.Type introducer) {
+    private Ast.Stmt parseIf(Token.Type introducer, boolean explicitImperative) {
         List<Ast.IfBranch> branches = new ArrayList<>();
         List<Ast.BindingStmt> bindings = new ArrayList<>();
         // Inverting a refutable pattern does not establish its captures in the
@@ -5390,8 +5399,25 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseConditionalBraceBody();
-            consume(FI, "expected 'fi' to close if");
+            if (!canonicalAttoSource) consume(FI, "expected 'fi' to close if");
             return lowerConditionBindings(branches, bindings, elseBody);
+        }
+
+        if (canonicalAttoSource && !explicitImperative) {
+            consume(THEN, "bare keyword if requires 'then'");
+            if (check(RETURN) || check(CARET)) {
+                Ast.Expr value = parseConditionalValueArm();
+                if (match(FI)) {
+                    return lowerConditionBindings(
+                            List.of(new Ast.IfBranch(condition, List.of(new Ast.ExprStmt(value)))),
+                            bindings, List.of());
+                }
+                if (head.binding() != null) {
+                    throw error(peek(), "functional if requires an unbound condition");
+                }
+                return new Ast.ExprStmt(parseValueIfElse(condition, value));
+            }
+            return parseActionIf(condition, head.binding());
         }
 
         // Canonical keyword-delimited form:
@@ -5425,7 +5451,35 @@ public final class Parser {
         return lowerConditionBindings(branches, bindings, elseBody);
     }
 
+    private Ast.Stmt parseActionIf(Ast.Expr condition, Ast.BindingStmt binding) {
+        List<Ast.IfBranch> branches = new ArrayList<>();
+        List<Ast.BindingStmt> bindings = new ArrayList<>();
+        branches.add(new Ast.IfBranch(condition, parseConditionalActions()));
+        bindings.add(binding);
+        while (matchConditionalBranch()) {
+            ConditionHead head = parseConditionHead(false);
+            consume(THEN, "expected 'then' after elif condition");
+            branches.add(new Ast.IfBranch(head.predicate(), parseConditionalActions()));
+            bindings.add(head.binding());
+        }
+        List<Ast.Stmt> otherwise = match(ELSE) ? parseConditionalActions() : List.of();
+        consume(FI, "expected 'fi' to close imperative if");
+        return lowerConditionBindings(branches, bindings, otherwise);
+    }
+
+    private List<Ast.Stmt> parseConditionalActions() {
+        List<Ast.Stmt> body = new ArrayList<>();
+        do {
+            consume(DO, "bare imperative if arms require 'do action'; use 'do if' for unmarked statement arms");
+            Ast.Expr action = parseExpression();
+            consumeExpressionStatementTerminator(action, "conditional action should end with ';'");
+            body.add(new Ast.ExprStmt(action));
+        } while (check(DO));
+        return body;
+    }
+
     private List<Ast.Stmt> parseConditionalBraceBody() {
+        if (canonicalAttoSource) return parseBlock();
         consume(LBRACE, "expected '{' before conditional branch");
         List<Ast.Stmt> body = parseUntil(RBRACE, FI);
         if (match(RBRACE) && check(FI)) {
@@ -6437,6 +6491,32 @@ public final class Parser {
         return stage instanceof Ast.NameExpr || stage instanceof Ast.LambdaExpr;
     }
 
+    /** Canonical value if shares the checked conditional-expression AST. */
+    private Ast.Expr parseValueIf(Token.Type introducer) {
+        Ast.Expr predicate = parseCondition();
+        Ast.Expr condition = introducer == IF ? predicate : new Ast.UnaryExpr("!", predicate);
+        consume(THEN, "value-producing 'if' requires 'then'");
+        return parseValueIfElse(condition, parseConditionalValueArm());
+    }
+
+    private Ast.Expr parseValueIfElse(Ast.Expr condition, Ast.Expr whenTrue) {
+        consume(ELSE, "value-producing 'if' requires an 'else' value; use 'do if' for statements");
+        Ast.Expr whenFalse = parseConditionalValueArm();
+        consume(FI, "expected 'fi' to close value-producing 'if'");
+        return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    private Ast.Expr parseConditionalValueArm() {
+        boolean explicitResult = match(RETURN, CARET);
+        if (check(BREAK) || check(CONTINUE) || check(DO) || check(SEMICOLON)
+                || check(VOID) || check(FI) || check(ELSE)) {
+            throw error(peek(), "value-producing 'if' branch must produce a value; use 'do if' for imperative control flow");
+        }
+        Ast.Expr value = parseExpression();
+        if (explicitResult) match(SEMICOLON);
+        return value;
+    }
+
     private Ast.Expr parseConditional() {
         Ast.Expr condition = parseLogicalOr();
         if (!match(QUESTION)) return condition;
@@ -7287,6 +7367,7 @@ public final class Parser {
 
     private Ast.Expr parsePrimary() {
         if (match(MATCH)) return parseValueMatch();
+        if (canonicalAttoSource && match(IF, IFNOT, UNLESS)) return parseValueIf(previous().type());
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
