@@ -106,6 +106,10 @@ final class ActorSupervisorRestartCircuit {
     private final boolean[] restartPending;
     private final boolean[] restartQuiesced;
     private final long[] restartEpisode;
+    // Store elapsed-time origin and duration, never a signed absolute
+    // deadline: nanoTime can wrap while the episode is pending.
+    private final long[] restartDecidedAtNanos;
+    private final long[] restartDelayNanos;
 
     /** Fixed-capacity primitive ring: no Long boxing during a restart storm. */
     private final long[] restartTimes;
@@ -135,6 +139,8 @@ final class ActorSupervisorRestartCircuit {
         this.restartPending = new boolean[config.childCount()];
         this.restartQuiesced = new boolean[config.childCount()];
         this.restartEpisode = new long[config.childCount()];
+        this.restartDecidedAtNanos = new long[config.childCount()];
+        this.restartDelayNanos = new long[config.childCount()];
         this.restartTimes = new long[config.maxRestarts()];
     }
 
@@ -161,6 +167,11 @@ final class ActorSupervisorRestartCircuit {
             if (!restartQuiesced[childIndex]) {
                 throw new IllegalStateException(
                         "replacement cannot start before old generation physically quiesces");
+            }
+            long elapsed = nonNegativeElapsed(nowNanos, restartDecidedAtNanos[childIndex]);
+            if (elapsed < restartDelayNanos[childIndex]) {
+                throw new IllegalStateException(
+                        "replacement cannot start before its admitted restart backoff elapses");
             }
             long episode = restartEpisode[childIndex];
             // Reverse-order retirement must finish for the ENTIRE episode
@@ -332,6 +343,7 @@ final class ActorSupervisorRestartCircuit {
             attempt = incrementAttempt(consecutiveAttempts[childIndex]);
         }
         consecutiveAttempts[childIndex] = attempt;
+        long delay = restartDelayNanos(childIndex, actorGeneration, attempt);
 
         // Fence the complete episode before returning the plan. The failed
         // child is already quiesced; siblings are not.
@@ -340,6 +352,8 @@ final class ActorSupervisorRestartCircuit {
             restartPending[i] = true;
             restartQuiesced[i] = i == childIndex;
             restartEpisode[i] = decisionSequence;
+            restartDecidedAtNanos[i] = nowNanos;
+            restartDelayNanos[i] = delay;
         }
 
         for (int i = 0; i < width; ++i) addRestartTime(nowNanos);
@@ -352,7 +366,7 @@ final class ActorSupervisorRestartCircuit {
                 end,
                 attempt,
                 width,
-                restartDelayNanos(childIndex, actorGeneration, attempt),
+                delay,
                 decisionSequence,
                 "restart-admitted");
     }
@@ -506,6 +520,8 @@ final class ActorSupervisorRestartCircuit {
         restartPending[childIndex] = false;
         restartQuiesced[childIndex] = false;
         restartEpisode[childIndex] = 0L;
+        restartDecidedAtNanos[childIndex] = 0L;
+        restartDelayNanos[childIndex] = 0L;
     }
 
     private static int incrementAttempt(int previous) {
