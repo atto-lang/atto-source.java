@@ -90,6 +90,41 @@ final class OutboundHttpBodyPipeTest {
         assertTrue(result.isDone());
     }
 
+    @Test void failedPendingMaterializationSettlesReaderAndPoisonsStream() throws Exception {
+        var pipe = pipe();
+        var cause = new IllegalStateException("injected chunk materialization failure");
+        var pending = pipe.read(ROOT, 1, raw -> { throw cause; });
+        assertSame(cause, assertThrows(IllegalStateException.class,
+                () -> pipe.write(new byte[] {7, 8}, 0, 2)));
+        assertSame(cause, assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pending.get(2, TimeUnit.SECONDS)).getCause());
+        assertSame(cause, assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pipe.read(ROOT, 1, raw -> raw).get(2, TimeUnit.SECONDS)).getCause());
+    }
+
+    @Test void failedEofMaterializationSettlesReaderAndPoisonsStream() throws Exception {
+        var pipe = pipe();
+        var cause = new IllegalStateException("injected EOF materialization failure");
+        var pending = pipe.read(ROOT, 1, raw -> { throw cause; });
+        assertSame(cause, assertThrows(IllegalStateException.class, pipe::finish));
+        assertSame(cause, assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pending.get(2, TimeUnit.SECONDS)).getCause());
+        assertSame(cause, assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pipe.read(ROOT, 1, raw -> raw).get(2, TimeUnit.SECONDS)).getCause());
+    }
+
+    @Test void failedBufferedMaterializationCannotSilentlyAdvanceCursor() throws Exception {
+        var pipe = pipe();
+        pipe.write(new byte[] {7, 8}, 0, 2);
+        var cause = new IllegalStateException("injected buffered materialization failure");
+        var read = pipe.read(ROOT, 1, raw -> { throw cause; });
+        assertSame(cause, assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> read.get(2, TimeUnit.SECONDS)).getCause());
+        assertSame(cause, assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pipe.read(ROOT, 1, raw -> raw).get(2, TimeUnit.SECONDS)).getCause());
+        assertThrows(java.io.IOException.class, () -> pipe.write(new byte[] {9}, 0, 1));
+    }
+
     @Test void boundsAndSinglePendingReadApplyAcrossRepresentations() {
         var pipe = pipe();
         assertThrows(IllegalArgumentException.class, () -> pipe.read(ROOT, 0, raw -> raw));

@@ -192,7 +192,7 @@ public final class OutboundHttpRequest {
                             "only one pending HttpClientBody.read_chunk is permitted");
                 }
                 if (bufferedBytes != 0) {
-                    ready = OresFuture.completed(decode.apply(drainLocked(maxBytes)));
+                    ready = decodeReady(drainLocked(maxBytes), decode);
                     return owner.own(ready);
                 }
                 if (failure != null) {
@@ -200,7 +200,7 @@ public final class OutboundHttpRequest {
                     return owner.own(ready);
                 }
                 if (eof) {
-                    ready = OresFuture.completed(decode.apply(new byte[0]));
+                    ready = decodeReady(new byte[0], decode);
                     return owner.own(ready);
                 }
 
@@ -216,6 +216,18 @@ public final class OutboundHttpRequest {
                 notifyAll();
             }
             return owner.own(ready);
+        }
+
+        // A materialization failure cannot be retried after bytes have left
+        // the cursor. Fail closed rather than silently dropping stream bytes.
+        private <T> OresFuture<T> decodeReady(byte[] raw,
+                java.util.function.Function<byte[], T> decode) {
+            try {
+                return OresFuture.completed(decode.apply(raw));
+            } catch (RuntimeException materializationFailure) {
+                fail(materializationFailure, true);
+                return OresFuture.failed(materializationFailure);
+            }
         }
 
         private void cancelPending(OresFuture<?> future) {
@@ -299,6 +311,11 @@ public final class OutboundHttpRequest {
         private void completeDelivery(PendingRead<?> reader, byte[] bytes) {
             try {
                 reader.complete(bytes);
+            } catch (RuntimeException materializationFailure) {
+                // Settle the claimed reader before clearing it, even at EOF.
+                // The producer's outer failure path must still retire transport.
+                fail(materializationFailure, true);
+                throw materializationFailure;
             } finally {
                 synchronized (this) {
                     if (pending == reader) pending = null;
