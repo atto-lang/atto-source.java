@@ -4,11 +4,16 @@ import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Legacy explicit-async source lane only; strict Atto and full AOT remain gated. */
+@Timeout(45)
 final class AsyncTrapResultForwardPortTest {
     private static long run(String guest) throws Exception {
         OresCompiler.parseAndTypeCheck(guest);
@@ -92,5 +97,42 @@ final class AsyncTrapResultForwardPortTest {
                 "generator trap fnc values(): int { yield 1; }"));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
                 "suspends trap fnc later(): int { return 1; }"));
+    }
+
+    @Test void panicAfterAwaitEscapesAndRunsDeferExactlyOnce() throws Exception {
+        String guest = """
+                async fnc ready(): int { return 1; }
+                async trap! fnc panics(): int {
+                  defer stdio.stdout.write("cleanup");
+                  val n = await ready();
+                  val Option<int> missing = None;
+                  return missing.unwrap();
+                }
+                pub async fnc main(): void {
+                  val Result<int, Error> ignored = await panics();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        OresCompiler.parseAndTypeCheck(guest);
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> context.eval(Source.newBuilder(OresLanguage.ID, guest,
+                            "async-trap-panic.ores").build()));
+            assertTrue(failure.getMessage().contains("Option::unwrap"), failure::getMessage);
+        }
+        assertEquals("cleanup", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void strictAttoStillRejectsUnverifiedAsyncTrap() {
+        for (String spelling : new String[] { "trap", "trap!" }) {
+            String source = "async " + spelling + " fnc ready(): int { return 42; }";
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parseStrictAtto(source));
+            assertTrue(failure.getMessage().contains("ATTO_STRICT_TYPED_TRAP_UNSUPPORTED"),
+                    failure::getMessage);
+        }
     }
 }
