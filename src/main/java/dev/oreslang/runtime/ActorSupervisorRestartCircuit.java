@@ -157,6 +157,16 @@ final class ActorSupervisorRestartCircuit {
                         "replacement cannot start before old generation physically quiesces");
             }
             long episode = restartEpisode[childIndex];
+            // Reverse-order retirement must finish for the ENTIRE episode
+            // before any replacement starts, including a failed first child
+            // whose terminal CONTROL already proves its own quiescence.
+            for (int i = 0; i < config.childCount(); ++i) {
+                if (restartPending[i] && restartEpisode[i] == episode
+                        && !restartQuiesced[i]) {
+                    throw new IllegalStateException(
+                            "all selected old generations must physically quiesce before replacement");
+                }
+            }
             for (int i = 0; i < childIndex; ++i) {
                 if (restartPending[i] && restartEpisode[i] == episode) {
                     throw new IllegalStateException(
