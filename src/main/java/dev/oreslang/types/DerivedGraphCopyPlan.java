@@ -36,9 +36,14 @@ public final class DerivedGraphCopyPlan {
     private static final int MAX_DEPTH = 64;
     private static final int MAX_FIELDS = 128;
     private static final Set<String> SCALARS = Set.of(
-            "int", "uint", "i8", "i16", "i32", "i64",
-            "u8", "u16", "u32", "u64", "f32", "f64",
+            "int", "i8", "i16", "i32", "i64", "f32", "f64",
             "float", "bool", "Bool", "string", "String");
+
+    // Keep the compiler and transaction validator on the same closed set.
+    // Unsigned values require a verified runtime representation first.
+    static boolean supportsScalar(String name) {
+        return name != null && SCALARS.contains(name);
+    }
 
     public static Graph derive(Ast.TypeRef type, Function<String, Ast.ClassDecl> lookup) {
         if (lookup == null) throw denied("missing class resolver");
@@ -79,7 +84,7 @@ public final class DerivedGraphCopyPlan {
             }
             String name = type.name();
             Ast.ClassDecl klass = lookup.apply(name);
-            if (klass == null && SCALARS.contains(name) && type.arguments().isEmpty()) {
+            if (klass == null && supportsScalar(name) && type.arguments().isEmpty()) {
                 Integer prior = scalars.get(name);
                 if (prior != null) return prior;
                 int id = reserve();
