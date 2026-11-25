@@ -1,6 +1,8 @@
 package dev.oreslang.imports;
 
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Token;
 import dev.oreslang.runtime.ExecutionProfile;
@@ -136,6 +138,25 @@ public final class FrozenScalarImportCompiler {
         if(dot<=0) throw fail("E_IMPORT_PATH","missing provider namespace");
         String member=target.path().substring(dot+1);
         String provider=pkg.providerSource(target.path().substring(0,dot));
+        // Match the closed signed-int ABI before lowering. Do not use
+        // implicit coercions or argument types to choose a package.
+        var functions=Parser.parse(provider).modules().stream()
+            .filter(m->Parser.ROOT_MODULE.equals(m.name()))
+            .flatMap(m->m.declarations().stream())
+            .filter(d->d instanceof Ast.FunctionDecl)
+            .map(d->(Ast.FunctionDecl)d)
+            .filter(f->f.name().equals(member))
+            .toList();
+        if(functions.size()!=1) throw fail("E_IMPORT_KIND","selected function lacks unique declaration");
+        var function=functions.getFirst();
+        if(function.visibility()!=Ast.Visibility.PUBLIC||function.kind()!=Ast.CallableKind.FNC||
+            function.actorKind()!=Ast.ActorKind.NONE||function.async()||function.suspends()||
+            function.generator()||function.structural()||function.nonLexical()||function.trapped()||
+            !function.genericParameters().isEmpty()||!function.annotations().isEmpty()||
+            function.parameters().size()!=arguments.size()||
+            function.parameters().stream().anyMatch(p->!p.type().equals(Ast.TypeRef.simple("int"))||p.structural()||p.mutable())||
+            !Ast.TypeRef.simple("int").equals(function.returnType()))
+            throw fail("E_IMPORT_KIND","selected function must accept exact signed-int arguments and return int");
         // Only validated identifiers enter the generated static import. The
         // provider is the unchanged original verified source, not a transformed
         // copy. The normal compiler rechecks member signatures and call types.
