@@ -5849,6 +5849,50 @@ public final class Parser {
      * Nested lambda/task expression bodies are not walked here because their
      * returns belong to their own callable/task control-flow domain.
      */
+    // Match-arm lowering shares the enclosing callable's loop/generator
+    // context. A sync task must not accidentally inherit a nonlocal target.
+    private boolean inlineTaskHasEscapingTransfer(List<Ast.Stmt> body, int loopDepth) {
+        for (Ast.Stmt stmt : body) {
+            boolean escapes = switch (stmt) {
+                case Ast.BreakStmt ignored -> loopDepth == 0;
+                case Ast.ContinueStmt ignored -> loopDepth == 0;
+                case Ast.YieldStmt ignored -> true;
+                case Ast.BlockStmt block -> inlineTaskHasEscapingTransfer(block.body(), loopDepth);
+                case Ast.TaskScopeStmt scope -> inlineTaskHasEscapingTransfer(scope.body(), loopDepth);
+                case Ast.UsingBorrowStmt loan -> inlineTaskHasEscapingTransfer(loan.body(), loopDepth);
+                case Ast.UsingTelemetrySpanStmt span -> inlineTaskHasEscapingTransfer(span.body(), loopDepth);
+                case Ast.IfStmt conditional -> conditional.branches().stream().anyMatch(
+                        branch -> inlineTaskHasEscapingTransfer(branch.body(), loopDepth))
+                        || inlineTaskHasEscapingTransfer(conditional.elseBody(), loopDepth);
+                case Ast.MatchStmt matched -> matched.arms().stream().anyMatch(
+                        arm -> inlineTaskHasEscapingTransfer(arm.body(), loopDepth));
+                case Ast.SwitchStmt switched -> switched.cases().stream().anyMatch(
+                        arm -> inlineTaskHasEscapingTransfer(arm.body(), loopDepth))
+                        || inlineTaskHasEscapingTransfer(switched.defaultBody(), loopDepth);
+                case Ast.TryStmt attempted -> inlineTaskHasEscapingTransfer(attempted.body(), loopDepth)
+                        || inlineTaskHasEscapingTransfer(attempted.catchBody(), loopDepth)
+                        || inlineTaskHasEscapingTransfer(attempted.finallyBody(), loopDepth);
+                case Ast.SelectStmt selected -> selected.arms().stream().anyMatch(
+                        arm -> inlineTaskHasEscapingTransfer(arm.body(), loopDepth));
+                case Ast.ForStmt loop -> (loop.initializer() != null
+                        && inlineTaskHasEscapingTransfer(List.of(loop.initializer()), loopDepth))
+                        || inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.ForOfStmt loop -> inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.ForOfDestructureStmt loop -> inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.DoWhileStmt loop -> inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.LoopStmt loop -> inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.BindingStmt ignored -> false;
+                case Ast.DestructureStmt ignored -> false;
+                case Ast.ExprStmt ignored -> false;
+                case Ast.DeferStmt ignored -> false;
+                case Ast.LocalTypeDeclStmt ignored -> false;
+                case Ast.ReturnStmt ignored -> false; // separately checked by the return gate
+            };
+            if (escapes) return true;
+        }
+        return false;
+    }
+
     private boolean valueArmPrefixContainsReturn(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
@@ -6819,6 +6863,9 @@ public final class Parser {
             List<Ast.Stmt> prefix = body.subList(0, body.size() - 1);
             if (valueArmPrefixContainsReturn(prefix)) {
                 throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: inline branch returns require dedicated CFG lowering");
+            }
+            if (inlineTaskHasEscapingTransfer(prefix, 0)) {
+                throw error(previous(), "E_SYNC_TASK_CONTROL_TRANSFER: inline break/continue must target a task-local loop; yield requires dedicated lowering");
             }
             return new Ast.MatchExpr(new Ast.LiteralExpr(true),
                     List.of(new Ast.MatchValueArm(new Ast.WildcardPattern(), null,
