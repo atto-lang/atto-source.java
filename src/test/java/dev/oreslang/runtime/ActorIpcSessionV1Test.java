@@ -21,6 +21,71 @@ final class ActorIpcSessionV1Test {
     private static final String WORKER_POLICY = "66".repeat(32);
 
     @Test
+    void authenticatedMessagePackUsesPinnedShapeAndRetainsDecodedCredits() {
+        var shape = MessagePackWireV2.Shape.string();
+        var profile = new ActorIpcCodecProfileV1("messagepack", 2, "demo.String.v1",
+                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cd", MESSAGE_ABI);
+        var artifact = artifactWithReadyCommitments("ImageWorker", MANIFEST, ARTIFACT,
+                MESSAGE_ABI, STATE_SCHEMA, profile.commitment(), WORKER_POLICY);
+        var limits = new MessagePackWireV2.DecodeLimits(1024, 1024, 16, 2048, 8);
+        try (var session = ActorIpcSessionV1.create(artifact, UUID.randomUUID(), 1, 1)) {
+            session.bindCodecProfile(profile, 1, 1);
+            assertThrows(IllegalArgumentException.class, () ->
+                    session.bindMessagePackDecoder(MessagePackWireV2.Shape.i64(), limits));
+            session.bindMessagePackDecoder(shape, limits);
+            var transientQuota = new ActorDataDecodeQuotaV1(65536, 1);
+            var retained = new ActorDataDecodeQuotaV1(6500, 4);
+            assertThrows(IllegalArgumentException.class, () -> session.bindDataQueue(2, 4096,
+                    transientQuota, new ActorDataDecodeQuotaV1(5000, 4)));
+            session.bindDataQueue(2, 4096, transientQuota, retained);
+            try (var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+                ready(session, bootstrap, artifact);
+                byte[] payload = MessagePackWireV2.encode(profile.schema(), shape, "hello");
+                byte[] frame = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                        ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, payload);
+                assertTrue(session.tryQueueWorkerData(frame));
+                byte[] next = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                        ActorIpcSessionV1.FrameKind.OUTPUT, 2, 10, payload);
+                assertFalse(session.tryQueueWorkerData(next));
+                assertEquals(frame.length + 5120L, retained.usedBytes());
+                try (var delivery = session.pollWorkerData()) {
+                    assertNotNull(delivery);
+                    assertThrows(SecurityException.class, delivery::copyPayload);
+                    try (var held = transientQuota.tryReserve(1)) {
+                        assertNotNull(held);
+                        assertNull(session.tryDecodeWorkerData(delivery));
+                        assertEquals(frame.length + 5120L, retained.usedBytes());
+                    }
+                    try (var decoded = session.tryDecodeWorkerData(delivery)) {
+                        assertNotNull(decoded);
+                        assertEquals("hello", decoded.value());
+                        assertEquals(9L, decoded.messageSequence());
+                        assertEquals(5120L, retained.usedBytes());
+                        assertEquals(0L, transientQuota.usedBytes());
+                        assertThrows(SecurityException.class, () -> session.tryDecodeWorkerData(delivery));
+                    }
+                    assertEquals(0L, retained.usedBytes());
+                }
+                assertTrue(session.tryQueueWorkerData(next));
+                try (var delivery = session.pollWorkerData(); var decoded = session.tryDecodeWorkerData(delivery)) {
+                    assertEquals(10L, decoded.messageSequence());
+                }
+                assertEquals(0L, retained.usedBytes());
+                byte[] wrong = MessagePackWireV2.encode("wrong.schema", shape, "hello");
+                assertTrue(session.tryQueueWorkerData(worker(bootstrap, artifact,
+                        ActorIpcSessionV1.Lane.DATA, ActorIpcSessionV1.FrameKind.OUTPUT, 3, 11, wrong)));
+                try (var delivery = session.pollWorkerData()) {
+                    assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                            () -> session.tryDecodeWorkerData(delivery));
+                    assertTrue(session.poisoned());
+                    assertEquals(0L, retained.usedBytes());
+                    assertEquals(0L, transientQuota.usedBytes());
+                }
+            }
+        }
+    }
+
+    @Test
     void readyThenDataAndControlUseIndependentSequences() {
         ActorArtifact<Object> artifact = artifact(
                 "ImageWorker", MESSAGE_ABI, ARTIFACT);
@@ -53,6 +118,153 @@ final class ActorIpcSessionV1Test {
             assertEquals(2, complete.frameSequence());
             assertEquals(ActorIpcSessionV1.Lane.CONTROL, complete.lane());
         }
+    }
+
+    @Test
+    void queueRetainsTenantCreditsUntilDeliveryClosedAndBackpressurePreservesSequence() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (var session = ActorIpcSessionV1.create(artifact, UUID.randomUUID(), 1, 1);
+             var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            var transientBudget = new ActorDataDecodeQuotaV1(65536, 1);
+            var retained = new ActorDataDecodeQuotaV1(65536, 1);
+            session.bindDataQueue(1, 4096, transientBudget, retained);
+            byte[] one = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, new byte[]{7});
+            byte[] two = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 2, 10, new byte[]{8});
+            assertTrue(session.tryQueueWorkerData(one));
+            assertEquals(0, transientBudget.active());
+            assertFalse(session.tryQueueWorkerData(two));
+            var delivered = session.pollWorkerData();
+            assertNotNull(delivered);
+            assertEquals(9L, delivered.messageSequence());
+            byte[] copy = delivered.copyPayload(); copy[0] = 0;
+            assertArrayEquals(new byte[]{7}, delivered.copyPayload());
+            assertFalse(session.tryQueueWorkerData(two));
+            delivered.close(); delivered.close();
+            assertThrows(IllegalStateException.class, delivered::copyPayload);
+            assertTrue(session.tryQueueWorkerData(two));
+            assertEquals(two.length, retained.usedBytes());
+            session.close();
+            assertEquals(0, retained.usedBytes());
+            assertEquals(0, retained.active());
+            assertThrows(IllegalStateException.class, session::pollWorkerData);
+        }
+    }
+
+    @Test
+    void queuePoisonClearsRetainedCreditsAndRawDataCannotBypassBinding() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (var session = ActorIpcSessionV1.create(artifact, UUID.randomUUID(), 1, 1);
+             var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            var transientBudget = new ActorDataDecodeQuotaV1(65536, 2);
+            var retained = new ActorDataDecodeQuotaV1(65536, 2);
+            session.bindDataQueue(2, 4096, transientBudget, retained);
+            byte[] one = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, new byte[]{7});
+            byte[] two = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 2, 10, new byte[]{8});
+            assertTrue(session.tryQueueWorkerData(one));
+            assertThrows(IllegalStateException.class,
+                    () -> session.tryAcceptWorkerDataFrame(two, transientBudget));
+            assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.acceptWorkerFrame(two));
+            assertTrue(session.poisoned());
+            assertEquals(0, retained.usedBytes());
+            assertEquals(0, transientBudget.usedBytes());
+        }
+    }
+
+    @Test
+    void queueAuthenticationFailureRollsBackBothAccounts() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (var session = ActorIpcSessionV1.create(artifact, UUID.randomUUID(), 1, 1);
+             var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            var transientBudget = new ActorDataDecodeQuotaV1(65536, 2);
+            var retained = new ActorDataDecodeQuotaV1(65536, 2);
+            session.bindDataQueue(2, 4096, transientBudget, retained);
+            byte[] one = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, new byte[]{7});
+            one[one.length-1] ^= 1;
+            assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.tryQueueWorkerData(one));
+            assertTrue(session.poisoned());
+            assertEquals(0, retained.usedBytes());
+            assertEquals(0, transientBudget.usedBytes());
+        }
+    }
+
+    @Test
+    void quotaBackpressureDoesNotConsumeSequenceAndAuthFailureReleasesCredit() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            ActorDataDecodeQuotaV1 quota = new ActorDataDecodeQuotaV1(64 * 1024, 1);
+            byte[] output = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, new byte[]{7});
+            var held = quota.tryReserve(1);
+            assertNotNull(held);
+            assertNull(session.tryAcceptWorkerDataFrame(output, quota));
+            assertFalse(session.poisoned());
+            held.close();
+            held.close();
+            assertEquals(0, quota.active());
+            assertEquals(0L, quota.usedBytes());
+            var frame = session.tryAcceptWorkerDataFrame(output, quota);
+            assertNotNull(frame);
+            assertEquals(1L, frame.frameSequence());
+            assertEquals(0L, quota.usedBytes());
+            assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.tryAcceptWorkerDataFrame(output, quota));
+            assertTrue(session.poisoned());
+            assertEquals(0L, quota.usedBytes());
+            assertEquals(0, quota.active());
+        }
+    }
+
+    @Test
+    void dataPathRejectsEvenAuthenticatedControlAndReleasesCredit() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            ActorDataDecodeQuotaV1 quota = new ActorDataDecodeQuotaV1(64 * 1024, 1);
+            byte[] complete = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.CONTROL,
+                    ActorIpcSessionV1.FrameKind.COMPLETE, 2, 9, new byte[0]);
+            assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.tryAcceptWorkerDataFrame(complete, quota));
+            assertTrue(session.poisoned());
+            assertEquals(0L, quota.usedBytes());
+        }
+    }
+
+    @Test
+    void sharedTenantQuotaCannotOverbookAcrossThreads() throws Exception {
+        ActorDataDecodeQuotaV1 quota = new ActorDataDecodeQuotaV1(1024, 2);
+        var held = quota.tryReserve(1024);
+        assertNotNull(held);
+        var other = new java.util.concurrent.FutureTask<>(() -> quota.tryReserve(1));
+        Thread t = new Thread(other);
+        t.start();
+        assertNull(other.get(5, java.util.concurrent.TimeUnit.SECONDS));
+        t.join();
+        held.close();
+        assertEquals(0L, quota.usedBytes());
+        try (var a = quota.tryReserve(1); var b = quota.tryReserve(1)) {
+            assertNotNull(a);
+            assertNotNull(b);
+            assertNull(quota.tryReserve(1));
+        }
+        assertEquals(0, quota.active());
+        assertEquals(0L, quota.usedBytes());
     }
 
     @Test

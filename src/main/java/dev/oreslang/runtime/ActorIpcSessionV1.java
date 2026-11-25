@@ -194,6 +194,14 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     private byte[] bootstrapChallenge;
     private boolean bootstrapClaimed;
     private State state = State.AWAITING_READY;
+    // Host-only opt-in queue, protected by the session monitor. Fixed capacity
+    // allocated at trusted setup; no allocation is required to publish.
+    private DataDelivery[] dataQueue;
+    private ActorIpcCodecProfileV1 codecProfile;
+    private MessagePackWireV2.PinnedDecoder messagePackDecoder;
+    private int dataHead, dataCount;
+    private long queuedBytes, maxQueuedBytes;
+    private ActorDataDecodeQuotaV1 transientQuota, retainedQuota;
     private long nextWorkerDataSequence = 1L;
     private long nextWorkerControlSequence = 1L;
     private long nextSupervisorDataSequence = 1L;
@@ -293,6 +301,23 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
      * violation poisons the whole session and destroys host-side traffic keys.
      */
     public synchronized Frame acceptWorkerFrame(byte[] wire) {
+        // After DATA binding this is the trusted physical CONTROL path.
+        // Reject an apparent wrong lane or oversize before cloning/MAC work;
+        // the untrusted lane byte grants no authority, it can only reject.
+        if (dataQueue != null) {
+            requireNotTerminal("accept IPC CONTROL");
+            Objects.requireNonNull(wire, "wire");
+            if (wire.length < MIN_FRAME_BYTES ||
+                    wire.length > HEADER_BYTES + MAX_CONTROL_PAYLOAD_BYTES + HMAC_BYTES ||
+                    (wire[LANE_OFFSET] & 0xff) != Lane.CONTROL.code()) {
+                poison();
+                throw new ProtocolException(Reason.STATE, "invalid frame on bound CONTROL transport");
+            }
+        }
+        return acceptWorkerFrameInternal(wire, false);
+    }
+
+    private Frame acceptWorkerFrameInternal(byte[] wire, boolean requireData) {
         if (!bootstrapClaimed) {
             throw new IllegalStateException(
                     "IPC worker frame arrived before bootstrap material was claimed");
@@ -313,15 +338,20 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         try {
             DecodedFrame decoded = decodeAndAuthenticate(admittedWire);
             validateCommonIdentity(decoded);
+            if (requireData && (decoded.lane() != Lane.DATA || decoded.kind() != FrameKind.OUTPUT))
+                throw new ProtocolException(Reason.STATE, "non-DATA frame on DATA transport");
+            if (!requireData && dataQueue != null && decoded.lane() == Lane.DATA)
+                throw new ProtocolException(Reason.STATE, "bound DATA requires queue admission");
             validateWorkerSequence(decoded);
-            validateWorkerState(decoded);
-            advanceWorkerSequence(decoded.lane());
-            return new Frame(
+            Frame accepted = new Frame(
                     decoded.lane(),
                     decoded.kind(),
                     decoded.frameSequence(),
                     decoded.messageSequence(),
                     decoded.payload());
+            validateWorkerState(decoded);
+            advanceWorkerSequence(decoded.lane());
+            return accepted;
         } catch (ProtocolException failure) {
             poison();
             throw failure;
@@ -331,6 +361,271 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                     Reason.MALFORMED,
                     "malformed IPC frame: " + failure.getMessage());
         }
+    }
+
+    /**
+     * Opt-in trusted launcher admission for the physical DATA lane. A null
+     * result means backpressure before authentication/sequence consumption;
+     * retry the identical owned frame, never skip it. The caller must use a
+     * tenant-owned quota shared by all sessions and separately reserve
+     * retained-frame/mailbox bytes before calling. Not a guest entrypoint.
+     *
+     * CONTROL uses its independently admitted transport path; never choose
+     * this API or the CONTROL path based solely on attacker-provided bytes.
+     */
+    synchronized Frame tryAcceptWorkerDataFrame(byte[] wire, ActorDataDecodeQuotaV1 quota) {
+        if (dataQueue != null) throw new IllegalStateException("bound DATA requires queue admission");
+        return tryAcceptWorkerDataFrameInternal(wire, quota);
+    }
+
+    private Frame tryAcceptWorkerDataFrameInternal(byte[] wire, ActorDataDecodeQuotaV1 quota) {
+        Objects.requireNonNull(wire, "wire");
+        Objects.requireNonNull(quota, "quota");
+        // Bounded before the snapshot and all parser/MAC allocations.
+        if (wire.length < MIN_FRAME_BYTES ||
+                wire.length > HEADER_BYTES + MAX_PAYLOAD_BYTES + HMAC_BYTES) {
+            synchronized (this) {
+                requireNotTerminal("accept IPC worker DATA frame");
+                poison();
+            }
+            throw new ProtocolException(Reason.MALFORMED, "IPC DATA frame size outside bounds");
+        }
+        // Conservative logical transient charge for snapshot, payload copies
+        // and MAC work. Not an assertion of exact physical heap consumption.
+        long charge = 8L * wire.length + 4096L;
+        ActorDataDecodeQuotaV1.Lease lease = quota.tryReserve(charge);
+        if (lease == null) return null;
+        try (lease) {
+            synchronized (this) {
+                return acceptWorkerFrameInternal(wire, true);
+            }
+        }
+    }
+
+    /**
+     * Bind once from a trusted tenant registry, before reading DATA. Separate
+     * transient and retained accounts must be shared across tenant sessions.
+     * This queue is a transport handoff, NOT an ActorRuntime mailbox.
+     */
+    synchronized void bindCodecProfile(ActorIpcCodecProfileV1 profile, int allowed, int supported) {
+        requireNotTerminal("bind IPC codec profile");
+        if (codecProfile != null || dataQueue != null || bootstrapClaimed)
+            throw new IllegalStateException("codec profile must bind before bootstrap and queue");
+        Objects.requireNonNull(profile, "codec profile").requireAdmitted(allowed, supported,
+                artifact.wireCodecSha256(), artifact.messageAbiSha256());
+        codecProfile = profile;
+    }
+
+    synchronized void bindMessagePackDecoder(MessagePackWireV2.Shape shape,
+            MessagePackWireV2.DecodeLimits limits) {
+        requireNotTerminal("bind MessagePack decoder");
+        if (codecProfile == null || messagePackDecoder != null || dataQueue != null || bootstrapClaimed)
+            throw new IllegalStateException("decoder must bind after profile and before bootstrap/queue");
+        messagePackDecoder = new MessagePackWireV2.PinnedDecoder(codecProfile, shape, limits);
+    }
+
+    synchronized ActorIpcCodecProfileV1 codecProfile() {
+        return codecProfile;
+    }
+
+    synchronized void bindDataQueue(int slots, long bytes,
+            ActorDataDecodeQuotaV1 transientBudget, ActorDataDecodeQuotaV1 retainedBudget) {
+        requireNotTerminal("bind IPC DATA queue");
+        if (dataQueue != null || nextWorkerDataSequence != 1L || slots <= 0 || slots > 4096 || bytes <= 0 ||
+                bytes > 16L * MAX_PAYLOAD_BYTES || transientBudget == null ||
+                retainedBudget == null || transientBudget == retainedBudget)
+            throw new IllegalArgumentException("invalid DATA queue binding");
+        if (messagePackDecoder != null) {
+            long expanded = messagePackDecoder.expandedLimit() + 4096L;
+            long maxWire = Math.min(bytes, (long)messagePackDecoder.wireLimit()
+                    + HEADER_BYTES + HMAC_BYTES);
+            if (maxWire < MIN_FRAME_BYTES || !retainedBudget.canFit(maxWire + expanded, 2)
+                    || !transientBudget.canFit(expanded, 1)
+                    || !transientBudget.canFit(8L * maxWire + 4096L, 1))
+                throw new IllegalArgumentException("typed DATA budget cannot admit a full configured frame");
+        }
+        dataQueue = new DataDelivery[slots];
+        maxQueuedBytes = bytes;
+        transientQuota = transientBudget;
+        retainedQuota = retainedBudget;
+    }
+
+    // Retained credit follows a delivery after it leaves the transport queue.
+    // Copying payload needs independent receiver-heap accounting.
+    static final class DataDelivery implements AutoCloseable {
+        private final ActorDataDecodeQuotaV1.Lease credit;
+        private final int charge;
+        private final ActorIpcCodecProfileV1 codecProfile;
+        private final ActorIpcSessionV1 origin;
+        private ActorDataDecodeQuotaV1.Lease decodeCredit;
+        private Frame frame;
+        private DataDelivery(ActorDataDecodeQuotaV1.Lease credit, int charge, ActorIpcCodecProfileV1 codecProfile,
+                ActorIpcSessionV1 origin, ActorDataDecodeQuotaV1.Lease decodeCredit) {
+            this.credit = credit; this.charge = charge; this.codecProfile = codecProfile; this.origin = origin;
+            this.decodeCredit = decodeCredit;
+        }
+        ActorIpcCodecProfileV1 codecProfile() { return codecProfile; }
+        synchronized long messageSequence() {
+            if (frame == null) throw new IllegalStateException("closed DATA delivery");
+            return frame.messageSequence();
+        }
+        synchronized byte[] copyPayload() {
+            if (frame == null) throw new IllegalStateException("closed DATA delivery");
+            if (codecProfile != null) throw new SecurityException("profile-bound DATA requires typed decoding");
+            return frame.payload();
+        }
+        @Override public synchronized void close() {
+            if (frame != null) Arrays.fill(frame.payload, (byte)0);
+            frame = null;
+            if (decodeCredit != null) { decodeCredit.close(); decodeCredit = null; }
+            credit.close();
+        }
+    }
+
+    /**
+     * Trusted physical DATA lane. False is pre-authentication backpressure;
+     * caller retries the identical owned frame, in order. No guest authority.
+     * Session monitor fences close/poison and serializes queue publication.
+     */
+    synchronized boolean tryQueueWorkerData(byte[] wire) {
+        requireReady("queue IPC DATA");
+        if (dataQueue == null) throw new IllegalStateException("DATA queue not bound");
+        if (codecProfile != null && messagePackDecoder == null)
+            throw new SecurityException("profile-bound DATA has no registered decoder");
+        Objects.requireNonNull(wire, "wire");
+        if (wire.length < MIN_FRAME_BYTES ||
+                wire.length > HEADER_BYTES + MAX_PAYLOAD_BYTES + HMAC_BYTES) {
+            poison();
+            throw new ProtocolException(Reason.MALFORMED, "IPC DATA frame size outside bounds");
+        }
+        if (messagePackDecoder != null &&
+                wire.length > messagePackDecoder.wireLimit() + HEADER_BYTES + HMAC_BYTES) {
+            poison();
+            throw new ProtocolException(Reason.MALFORMED, "typed DATA exceeds registered wire limit");
+        }
+        // Charge the whole wire length, a conservative retained frame bound.
+        int charge = wire.length;
+        if (dataCount == dataQueue.length || charge > maxQueuedBytes - queuedBytes) return false;
+        var credit = retainedQuota.tryReserve(charge);
+        if (credit == null) return false;
+        ActorDataDecodeQuotaV1.Lease decodedCredit = null;
+        DataDelivery delivery = null;
+        boolean published = false;
+        try {
+            // Reserve the worst-case decoded result before consuming the
+            // sequence. A saturated wire queue cannot strand all decoders.
+            if (messagePackDecoder != null) {
+                decodedCredit = retainedQuota.tryReserve(messagePackDecoder.expandedLimit() + 4096L);
+                if (decodedCredit == null) return false;
+            }
+            delivery = new DataDelivery(credit, charge, codecProfile, this, decodedCredit);
+            Frame frame = tryAcceptWorkerDataFrameInternal(wire, transientQuota);
+            if (frame == null) return false;
+            delivery.frame = frame;
+            int tail = (dataHead + dataCount) % dataQueue.length;
+            dataQueue[tail] = delivery;
+            dataCount++;
+            queuedBytes += charge;
+            published = true;
+            return true;
+        } finally {
+            if (!published) {
+                if (delivery != null) delivery.close();
+                else { if (decodedCredit != null) decodedCredit.close(); credit.close(); }
+            }
+        }
+    }
+
+    // Trusted handoff; downstream must revalidate active actor route/generation
+    // at its own mailbox lock. A dequeued delivery remains tenant-charged.
+    synchronized DataDelivery pollWorkerData() {
+        requireReady("poll IPC DATA");
+        if (dataQueue == null || dataCount == 0) return null;
+        DataDelivery delivery = dataQueue[dataHead];
+        dataQueue[dataHead] = null;
+        dataHead = (dataHead + 1) % dataQueue.length;
+        dataCount--;
+        queuedBytes -= delivery.charge;
+        return delivery;
+    }
+
+    /**
+     * Host-only decoded handoff. Credit follows the value until closed.
+     * Caller may not retain/copy value after closing without separately
+     * transferring receiver heap credit. Not an ActorRuntime mailbox permit.
+     */
+    static final class DecodedData implements AutoCloseable {
+        private final ActorDataDecodeQuotaV1.Lease credit;
+        private final long sequence;
+        private final ActorIpcSessionV1 origin;
+        private Object value;
+        private boolean live = true;
+        private DecodedData(ActorDataDecodeQuotaV1.Lease credit, long sequence, ActorIpcSessionV1 origin) {
+            this.credit = credit; this.sequence = sequence; this.origin = origin;
+        }
+        long messageSequence() { return sequence; }
+        synchronized boolean liveFor(ActorIpcSessionV1 session) { return live && origin == session; }
+        synchronized Object value() {
+            if (!live) throw new IllegalStateException("closed decoded DATA");
+            return value;
+        }
+        @Override public synchronized void close() {
+            live = false; value = null; credit.close();
+        }
+    }
+
+    /**
+     * Decode one polled authenticated delivery using the registered shape.
+     * Null means budget backpressure and leaves the same delivery live.
+     * Malformed bytes are terminal and never yield a value. No wire-selected
+     * decoder; no raw access to a profile-bound delivery.
+     */
+    synchronized DecodedData tryDecodeWorkerData(DataDelivery delivery) {
+        requireReady("decode IPC DATA");
+        if (messagePackDecoder == null) throw new IllegalStateException("no registered MessagePack decoder");
+        Objects.requireNonNull(delivery, "delivery");
+        synchronized (delivery) {
+            if (delivery.origin != this || delivery.frame == null || delivery.codecProfile != codecProfile)
+                throw new SecurityException("foreign or closed DATA delivery");
+            if (delivery.frame.payload.length > messagePackDecoder.wireLimit()) {
+                delivery.close(); poison();
+                throw new ProtocolException(Reason.MALFORMED, "payload exceeds registered wire limit");
+            }
+            // Conservative logical reservations, not exact physical heap.
+            long expanded = messagePackDecoder.expandedLimit() + 4096L;
+            var retained = delivery.decodeCredit;
+            if (retained == null) throw new IllegalStateException("missing reserved decoded credit");
+            var transientLease = transientQuota.tryReserve(expanded);
+            if (transientLease == null) return null;
+            DecodedData result = null;
+            boolean ok = false;
+            try (transientLease) {
+                result = new DecodedData(retained, delivery.frame.messageSequence(), this);
+                result.value = messagePackDecoder.decode(delivery.frame.payload);
+                delivery.decodeCredit = null; // lease now belongs only to result
+                ok = true;
+                return result;
+            } catch (IllegalArgumentException malformed) {
+                poison();
+                throw new ProtocolException(Reason.MALFORMED, "invalid pinned MessagePack DATA");
+            } finally {
+                delivery.close();
+                if (!ok) { if (result != null) result.close(); else retained.close(); }
+            }
+        }
+    }
+
+    private void clearDataQueue() {
+        if (dataQueue == null) return;
+        for (int i = 0; i < dataQueue.length; i++) {
+            if (dataQueue[i] != null) {
+                dataQueue[i].close();
+                dataQueue[i] = null;
+            }
+        }
+        dataHead = 0;
+        dataCount = 0;
+        queuedBytes = 0;
     }
 
     /**
@@ -656,6 +951,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     private void poison() {
         if (state == State.CLOSED || state == State.POISONED) return;
         state = State.POISONED;
+        clearDataQueue();
         destroySecrets();
     }
 
@@ -663,6 +959,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     public synchronized void close() {
         if (state == State.CLOSED) return;
         state = State.CLOSED;
+        clearDataQueue();
         destroySecrets();
     }
 
