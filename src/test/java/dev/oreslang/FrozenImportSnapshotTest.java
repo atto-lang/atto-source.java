@@ -62,4 +62,33 @@ final class FrozenImportSnapshotTest {
         var importing=verify(MANIFEST,"use namespace network; import fnc f from './unverified.atto'; pub fnc answer(): int { return 42; }");
         assertThrows(IllegalArgumentException.class,importing::functionView);
     }
+    @Test void frozenGuestLinksAndExecutesBothAliasSpellings() throws Exception {
+        var snapshot=verify(MANIFEST,SOURCE);
+        String header="import namespace network from pkg '"+NAME+"'; ";
+        String body="pub fnc main() -> int { return web.answer(); }";
+        for(String alias:List.of("define alias web = network;",
+                "define alias network as web;",
+                "define alias web = next; define alias next = network;")) {
+            var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+alias+body,List.of(snapshot));
+            assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        }
+        var subpath=dev.oreslang.imports.FrozenScalarImportCompiler.compile(
+            "import namespace net as web from pkg '"+NAME+"/network/http'; "+body,List.of(snapshot));
+        assertEquals(42,subpath.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+    }
+
+    @Test void frozenGuestRejectsPrivateMissingCyclicAndUnsupportedInputs() throws Exception {
+        var snapshot=verify(MANIFEST,SOURCE);
+        String header="import namespace network from pkg '"+NAME+"'; ";
+        for(String bad:List.of(
+            header+"pub fnc main() -> int { return network.secret(); }",
+            header+"pub fnc main() -> int { return network.missing(); }",
+            header+"define alias a = b; define alias b = a; pub fnc main() -> int { return network.answer(); }",
+            header+"define alias a = network.answer; pub fnc main() -> int { return a(); }",
+            header+"pub fnc main() -> int { return network.answer(); } fnc extra(): int { return 1; }",
+            header+"pub fnc main() -> int { let int network = 2; return network.answer(); }",
+            "import namespace network from pkg '@wrong/project/package'; pub fnc main() -> int { return network.answer(); }",
+            "import namespace network from pkg '"+NAME+"/src/network'; pub fnc main() -> int { return network.answer(); }"))
+            assertThrows(RuntimeException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(bad,List.of(snapshot)),bad);
+    }
 }
