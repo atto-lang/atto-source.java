@@ -443,4 +443,30 @@ final class IpcSupervisorIngressIntegrationTest {
         }
     }
 
+    @Test void cborNamedRecursionAndScalarLimitsAreBounded()throws Exception{
+        var recursive=new IpcCborDataPlanV1("recursive.v1",1,"List",java.util.List.of(
+                new IpcCborDataPlanV1.Node("List",IpcCborDataPlanV1.Kind.LIST,
+                        java.util.List.of(new IpcCborDataPlanV1.Field(0,"element","List")))),
+                new IpcCborDataPlanV1.Limits(32,1024,128,8,8,2));
+        var finite=java.nio.ByteBuffer.wrap(new byte[]{(byte)0x81,(byte)0x81,(byte)0x80}).asReadOnlyBuffer();
+        assertEquals(java.util.List.of(java.util.List.of(java.util.List.of())),recursive.decode(finite,recursive.preflight(finite)));
+        var deep=java.nio.ByteBuffer.wrap(new byte[]{(byte)0x81,(byte)0x81,(byte)0x81,(byte)0x80}).asReadOnlyBuffer();
+        assertThrows(IOException.class,()->recursive.preflight(deep));
+        var scalar=new IpcCborDataPlanV1("int.v1",1,"Int",java.util.List.of(
+                new IpcCborDataPlanV1.Node("Int",IpcCborDataPlanV1.Kind.I64,java.util.List.of())),
+                new IpcCborDataPlanV1.Limits(32,1024,128,8,8,2));
+        for(long expected:new long[]{Long.MIN_VALUE,Long.MAX_VALUE}){
+            byte[] wire=java.nio.ByteBuffer.allocate(9).put((byte)(expected<0?0x3b:0x1b)).putLong(Long.MAX_VALUE).array();
+            var input=java.nio.ByteBuffer.wrap(wire).asReadOnlyBuffer();
+            assertEquals(expected,scalar.decode(input,scalar.preflight(input)));
+        }
+        var floatPlan=new IpcCborDataPlanV1("float.v1",1,"F64",java.util.List.of(
+                new IpcCborDataPlanV1.Node("F64",IpcCborDataPlanV1.Kind.F64,java.util.List.of())),
+                new IpcCborDataPlanV1.Limits(32,1024,128,8,8,2));
+        var negativeZero=java.nio.ByteBuffer.wrap(java.nio.ByteBuffer.allocate(9).put((byte)0xfb).putLong(Long.MIN_VALUE).array()).asReadOnlyBuffer();
+        assertEquals(Long.MIN_VALUE,Double.doubleToRawLongBits((Double)floatPlan.decode(negativeZero,floatPlan.preflight(negativeZero))));
+        var nan=java.nio.ByteBuffer.wrap(java.nio.ByteBuffer.allocate(9).put((byte)0xfb).putLong(0x7ff8000000000000L).array()).asReadOnlyBuffer();
+        assertThrows(IOException.class,()->floatPlan.preflight(nan));
+    }
+
 }

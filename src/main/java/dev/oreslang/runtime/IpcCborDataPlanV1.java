@@ -20,8 +20,12 @@ final class IpcCborDataPlanV1 implements IpcPinnedActorIngressV1.Decoder<Object>
     record Field(int slot,String name,String target) { }
     record Node(String id,Kind kind,List<Field> fields) {
         Node {
-            if(fields==null || fields.size()>1024)throw new IllegalArgumentException("descriptor field count");
-            fields=List.copyOf(fields);
+            if(fields==null)throw new IllegalArgumentException("descriptor fields");
+            int count=fields.size();
+            if(count<0||count>1024)throw new IllegalArgumentException("descriptor field count");
+            var snapshot=new ArrayList<Field>(count);
+            for(int i=0;i<count;i++)snapshot.add(java.util.Objects.requireNonNull(fields.get(i)));
+            fields=List.copyOf(snapshot);
         }
     }
     record Limits(int wire,long logical,long work,int nodes,int elements,int depth) {
@@ -38,11 +42,14 @@ final class IpcCborDataPlanV1 implements IpcPinnedActorIngressV1.Decoder<Object>
     private final IpcSchemaBoundDataV1.Binding binding;
 
     IpcCborDataPlanV1(String schema,long version,String root,List<Node> declarations,Limits limits) {
-        if(!token(root)||declarations==null||declarations.isEmpty()||declarations.size()>256
-                ||version<=0||version>0xffffffffL)throw new IllegalArgumentException("descriptor header");
+        if(!token(root)||declarations==null||version<=0||version>0xffffffffL)
+            throw new IllegalArgumentException("descriptor header");
+        int count=declarations.size();
+        if(count<1||count>256)throw new IllegalArgumentException("descriptor node count");
         var table=new TreeMap<String,Node>();
         int total=0;
-        for(Node n:declarations){
+        for(int index=0;index<count;index++){
+            Node n=declarations.get(index);
             if(n==null||!token(n.id())||n.kind()==null||table.containsKey(n.id()))
                 throw new IllegalArgumentException("descriptor node");
             total+=n.fields().size();if(total>4096)throw new IllegalArgumentException("descriptor field total");
@@ -146,7 +153,7 @@ final class IpcCborDataPlanV1 implements IpcPinnedActorIngressV1.Decoder<Object>
                 }
                 case TEXT->{
                     if(major!=3)throw new IOException("CBOR text shape");
-                    int n=length(ai);logical(16L*n);int start=in.position();utf8(n);
+                    int n=length(ai);logical(16L*n);work(2L*n);int start=in.position();utf8(n);
                     if(!materialize)yield null;
                     byte[] bytes=new byte[n];
                     ByteBuffer copy=in.duplicate();copy.position(start);copy.get(bytes);
