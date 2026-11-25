@@ -1,0 +1,3 @@
+# Runtime-scoped tenant ingress registry
+
+Host-only registration binds exactly one budget object to a provisioned domain per ActorRuntime; endpoint construction verifies identity against its recipient runtime. Duplicate and foreign budgets fail closed. Retirement revokes fresh wire and decoded reservations while allowing existing leases to release; already materializing work may finish under the existing actor DATA fence. Tombstones are retained and total domain entries capped at 1024. Runtime close revokes registry. This does not establish global cross-process tenant identity, actor-domain ACL mapping, physical allocator enforcement or a tenant-level publication fence for already-materializing work. Host registration is the trust boundary.

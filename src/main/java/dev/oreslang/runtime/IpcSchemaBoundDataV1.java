@@ -29,13 +29,13 @@ final class IpcSchemaBoundDataV1 {
 
     static final class Binding {
         private final Codec codec;
-        private final int version;
+        private final long version;
         private final byte[] schema;
         private final byte[] digest;
 
-        Binding(Codec codec, int version, String schema, byte[] shapeDigest) {
+        Binding(Codec codec, long version, String schema, byte[] shapeDigest) {
             this.codec = Objects.requireNonNull(codec, "codec");
-            if (version <= 0 || schema == null || schema.isEmpty()
+            if (version <= 0 || version > 0xffffffffL || schema == null || schema.isEmpty()
                     || schema.length() > MAX_SCHEMA
                     || !schema.chars().allMatch(c -> c >= 33 && c <= 126)
                     || shapeDigest == null || shapeDigest.length != 32) {
@@ -44,6 +44,10 @@ final class IpcSchemaBoundDataV1 {
             this.version = version;
             this.schema = schema.getBytes(StandardCharsets.US_ASCII);
             this.digest = shapeDigest.clone();
+        }
+        boolean sameBinding(Binding other){
+            return other!=null&&codec==other.codec&&version==other.version
+                    &&MessageDigest.isEqual(schema,other.schema)&&MessageDigest.isEqual(digest,other.digest);
         }
     }
 
@@ -59,7 +63,7 @@ final class IpcSchemaBoundDataV1 {
         try (DataOutputStream out = new DataOutputStream(raw)) {
             out.writeInt(MAGIC);
             out.writeByte(binding.codec.wire);
-            out.writeInt(binding.version);
+            out.writeInt((int)binding.version);
             out.writeShort(binding.schema.length);
             out.write(binding.schema);
             out.write(binding.digest);
@@ -89,7 +93,7 @@ final class IpcSchemaBoundDataV1 {
         if (wrapped.length > MAX_WRAPPED) throw new IOException("schema DATA payload too large");
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(wrapped))) {
             if (in.readInt() != MAGIC || in.readUnsignedByte() != expected.codec.wire
-                    || in.readInt() != expected.version) {
+                    || Integer.toUnsignedLong(in.readInt()) != expected.version) {
                 throw new IOException("schema DATA profile/codec/version mismatch");
             }
             int length = in.readUnsignedShort();

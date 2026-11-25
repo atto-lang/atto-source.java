@@ -10,6 +10,23 @@ final class IpcIngressBudgetV1 {
     private final int maxFrames;
     private long usedBytes;
     private int usedFrames;
+    private boolean retired;
+    private final java.util.Set<IpcPinnedActorIngressV1.Session> sessions=new java.util.HashSet<>();
+
+    synchronized boolean retired(){return retired;}
+    synchronized void retire(){
+        retired=true;
+        for(var session:sessions)session.fence();
+        sessions.clear();
+    }
+    synchronized void registerSession(IpcPinnedActorIngressV1.Session session){
+        if(retired || sessions.size()>=4096 || !sessions.add(session))
+            throw new IllegalStateException("tenant IPC session registration refused");
+    }
+    synchronized void closeSession(IpcPinnedActorIngressV1.Session session){
+        session.fence();
+        sessions.remove(session);
+    }
 
     IpcIngressBudgetV1(long maxBytes, int maxFrames) {
         RuntimeBlockingGuard.requireBlockingHostThread("create IPC ingress budget");
@@ -35,7 +52,7 @@ final class IpcIngressBudgetV1 {
         RuntimeBlockingGuard.requireBlockingHostThread("reserve IPC ingress staging");
         long charge=chargeFor(wireBytes);
         synchronized(this) {
-            if (charge>maxBytes-usedBytes || usedFrames>=maxFrames)
+            if (retired || charge>maxBytes-usedBytes || usedFrames>=maxFrames)
                 throw new IllegalStateException("tenant IPC ingress staging exhausted");
             Lease lease=new Lease(charge);
             usedBytes+=charge; ++usedFrames;
@@ -49,9 +66,22 @@ final class IpcIngressBudgetV1 {
     }
 
     final class Lease implements AutoCloseable {
-        private final long charge;
+        private long charge;
         private boolean released;
         private Lease(long charge){this.charge=charge;}
+        /** Add decoded graph staging credit to this already-held frame lease.
+         * No additional frame slot is consumed; no waiting for other leases. */
+        void reserveMaterialization(long bytes) {
+            RuntimeBlockingGuard.requireBlockingHostThread("reserve IPC decoder materialization");
+            if (bytes <= 0 || bytes > 8L*1024*1024)
+                throw new IllegalArgumentException("invalid decoded logical credit");
+            synchronized(IpcIngressBudgetV1.this) {
+                if(released || retired)throw new IllegalStateException("released or retired ingress lease");
+                if(bytes>maxBytes-usedBytes)
+                    throw new IllegalStateException("tenant IPC decoded staging exhausted");
+                usedBytes+=bytes; charge+=bytes;
+            }
+        }
         @Override public void close() {
             RuntimeBlockingGuard.requireBlockingHostThread("release IPC ingress staging");
             synchronized(IpcIngressBudgetV1.this) {
