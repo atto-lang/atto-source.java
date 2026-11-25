@@ -5087,7 +5087,16 @@ public final class Parser {
         boolean mutableBorrow = check(MUT);
         if (mutableBorrow) advance();
         String operation = advance().lexeme();
-        consume(BANG, "expected '!' attached to ownership operation");
+        Token bang = consume(BANG, "expected '!' attached to ownership operation");
+        // A contiguous second bang selects explicit deep copy. A separated
+        // bang remains an operand negation, not an ownership mode marker.
+        if (operation.equals("copy") && check(BANG) && adjacent(bang, peek())) {
+            Token second = advance();
+            if (check(BANG) && adjacent(second, peek())) {
+                throw error(peek(), "copy!! accepts exactly two adjacent bangs");
+            }
+            operation = "copy_deep";
+        }
         // Canonical mutable borrow is `borrow! mut value`. Keep the earlier
         // `mut borrow! value` form as a compatibility alias, but reject two
         // mutable qualifiers before parsing the operand.
