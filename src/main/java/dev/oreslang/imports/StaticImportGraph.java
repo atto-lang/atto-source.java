@@ -89,6 +89,29 @@ public final class StaticImportGraph {
         insert(staged, new Binding(binding, Objects.requireNonNull(tier), new Target(view, "", Kind.NAMESPACE)));
         bindings = List.copyOf(staged);
     }
+    /** Atomic natural suffix candidates. Original package identity is unchanged. */
+    public void bindPackage(View view, String explicitAlias) {
+        if(view.origin().domain()!=Domain.PACKAGE)
+            throw error("E_IMPORT_PATH","expected frozen external package view");
+        String identity=view.origin().identity();
+        if(!identity.matches("@[A-Za-z0-9][A-Za-z0-9_-]{0,63}/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/[A-Za-z0-9][A-Za-z0-9_-]{0,63}"))
+            throw error("E_IMPORT_PATH","invalid package root");
+        var staged=new ArrayList<>(bindings);
+        var target=new Target(view,"",Kind.NAMESPACE);
+        if(explicitAlias!=null) insert(staged,new Binding(explicitAlias,Tier.EXPLICIT,target));
+        else {
+            String[] parts=identity.substring(1).replace('-','_').split("/");
+            int count=0;
+            for(int i=parts.length-1;i>=0;i--) {
+                String[] suffix=Arrays.copyOfRange(parts,i,parts.length);
+                if(Arrays.stream(suffix).anyMatch(p->!ContextualImportPath.valid(p))) continue;
+                insert(staged,new Binding(String.join(".",suffix),Tier.DELIBERATE,target));
+                count++;
+            }
+            if(count==0) throw error("E_IMPORT_PATH","package requires explicit alias");
+        }
+        bindings=List.copyOf(staged);
+    }
     public void bindGroup(Origin requested, View view, List<Selection> selections) {
         if (!view.origin().equals(requested)) throw error("E_IMPORT_PATH", "wrong source identity");
         if (selections.isEmpty() || selections.size() > LIMIT - bindings.size())
