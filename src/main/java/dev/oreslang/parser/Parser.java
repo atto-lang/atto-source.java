@@ -648,7 +648,14 @@ public final class Parser {
                 // parsing/semantic validation/codegen still owns every member.
                 if (canonicalAttoSource && check(IDENT) && checkNext(IDENT)
                         && localClassKeywords.contains(peek().lexeme())) {
-                    advance();
+                    Token kind = advance();
+                    // The existing whole-file intrinsic-shadow scanner does not
+                    // yet recognize custom generic headers. Keep this slice
+                    // plain and reject compiler factory names rather than mint
+                    // trusted collection construction by misscanning a class.
+                    if (COLLECTION_OF_TYPES.contains(peek().lexeme()) || !checkNext(AS)) {
+                        throw error(kind, "KIND_HEADER_UNSUPPORTED: phase 1a requires a plain non-intrinsic class name followed by 'as'");
+                    }
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     validateCopyPolicyClassAnnotations(annotations);
@@ -693,7 +700,7 @@ public final class Parser {
             throw error(at, "KIND_VISIBILITY_UNSUPPORTED: phase 1a descriptors are private and unannotated");
         }
         Token name = consume(IDENT, "expected contextual declaration kind name");
-        if (RESERVED_CUSTOM_KINDS.contains(name.lexeme())) {
+        if (RESERVED_CUSTOM_KINDS.contains(name.lexeme()) || COLLECTION_OF_TYPES.contains(name.lexeme())) {
             throw error(name, "KIND_RESERVED: built-in or contextual declaration name");
         }
         if (localClassKeywords.contains(name.lexeme())) {
