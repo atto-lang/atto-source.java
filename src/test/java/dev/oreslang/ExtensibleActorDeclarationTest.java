@@ -40,7 +40,8 @@ final class ExtensibleActorDeclarationTest {
         var actual = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parseStrictAtto(custom)));
         assertEquals(expected.getMessage(), actual.getMessage());
-        assertTrue(actual.getMessage().contains("marker traits/interfaces"), actual::getMessage);
+        // Existing same-file interface admission denies this before callable shape checks.
+        assertTrue(actual.getMessage().contains("cannot use same-file interface"), actual::getMessage);
     }
 
     @Test void forgedStateAuthorityAndMalformedStateFailLikeOrdinaryActors() {
