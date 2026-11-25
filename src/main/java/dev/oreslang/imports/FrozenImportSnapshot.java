@@ -178,5 +178,7 @@ public final class FrozenImportSnapshot {
         var view=functionView();
         scope.bindGroup(view.origin(),view,List.of(new StaticImportGraph.Selection(selected,binding,StaticImportGraph.Kind.NAMESPACE,explicitAlias)));
     }
+    public String name() {return name;}
     public String version() {return version;}
+    public String lockDigest() {return lockDigest;}
 }
