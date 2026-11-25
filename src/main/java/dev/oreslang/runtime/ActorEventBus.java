@@ -595,6 +595,13 @@ public final class ActorEventBus implements AutoCloseable {
     }
 
     void closeFromGroup() {
+        ChannelRuntime.withDeferredAsyncCompletions(() -> {
+            closeFromGroupUnderCompletionFence();
+            return null;
+        });
+    }
+
+    private void closeFromGroupUnderCompletionFence() {
         if (!closed.compareAndSet(false, true)) return;
         synchronized (definitionLock) {
             for (TopicState topic : topics.values()) {
@@ -1241,11 +1248,14 @@ public final class ActorEventBus implements AutoCloseable {
                 throw new SecurityException(
                         "an actor may only close its own ActorGroup event subscription");
             }
-            synchronized (topic.deliveryLock) {
-                if (topic.subscriptions.remove(key, this)) {
-                    closeChannelOnly();
+            ChannelRuntime.withDeferredAsyncCompletions(() -> {
+                synchronized (topic.deliveryLock) {
+                    if (topic.subscriptions.remove(key, this)) {
+                        closeChannelOnly();
+                    }
                 }
-            }
+                return null;
+            });
         }
 
         private void closeChannelOnly() {
