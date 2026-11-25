@@ -267,6 +267,7 @@ public sealed interface OresJsonValue
 
     public static final class ArrayValue implements OresJsonValue {
         private final List<OresJsonValue> values;
+        private volatile boolean frozenTree;
 
         private ArrayValue(List<OresJsonValue> values) {
             this.values = values;
@@ -311,9 +312,44 @@ public sealed interface OresJsonValue
      * copy containers directly. Retain the original parser admission limits.
      * The one graph lock covers selection and snapshot, including nested aliases.
      */
+    /**
+     * Guest-only immutable parse path. Host AllocJsonText.parse retains its
+     * existing mutable-map behavior. The parser validates the fresh graph
+     * before any aliases can escape; seal bottom-up under graph stability.
+     */
+    static OresJsonValue parseImmutable(String source) {
+        OresJsonValue parsed = AllocJsonText.parse(source);
+        return OresKeyedMap.withJsonGraphLock(() -> {
+            sealParsedTree(parsed);
+            return parsed;
+        });
+    }
+
+    static boolean provenImmutable(OresJsonValue value) {
+        if (value instanceof ObjectValue object) return object.fields.frozenJson();
+        if (value instanceof ArrayValue array) return array.frozenTree;
+        return true; // all remaining sealed variants contain immutable scalars
+    }
+
+    private static void sealParsedTree(OresJsonValue value) {
+        if (provenImmutable(value)) return;
+        if (value instanceof ObjectValue object) {
+            for (var entry : object.fields.entrySnapshot()) sealParsedTree(entry.getValue());
+            object.fields.freezeJson();
+        } else if (value instanceof ArrayValue array) {
+            for (OresJsonValue child : array.values) sealParsedTree(child);
+            array.frozenTree = true;
+        }
+    }
+
     public static java.util.Optional<OresJsonValue> getOwned(OresJsonValue root, String key) {
         if (!(root instanceof ObjectValue object)) {
             throw new IllegalArgumentException("JSON get requires an object");
+        }
+        if (provenImmutable(root)) {
+            var selected = object.fields.lookup(key);
+            return selected.present() ? java.util.Optional.of(copyOwned(selected.value()))
+                    : java.util.Optional.empty();
         }
         return OresKeyedMap.withJsonGraphLock(() -> {
             validateTree(root, null);
@@ -327,6 +363,10 @@ public sealed interface OresJsonValue
         if (!(root instanceof ArrayValue array)) {
             throw new IllegalArgumentException("JSON at requires an array");
         }
+        if (provenImmutable(root)) {
+            if (index < 0 || index >= array.values.size()) return java.util.Optional.empty();
+            return java.util.Optional.of(copyOwned(array.values.get((int) index)));
+        }
         return OresKeyedMap.withJsonGraphLock(() -> {
             validateTree(root, null);
             if (index < 0 || index >= array.values.size()) return java.util.Optional.empty();
@@ -334,7 +374,7 @@ public sealed interface OresJsonValue
         });
     }
 
-    /** Called only under the graph lock after complete-root validation. */
+    /** Source is either proven immutable or held under the graph lock after complete-root validation. */
     private static OresJsonValue copyOwned(OresJsonValue value) {
         // Preserve the original stringify/parse 1 MiB wire quota, including
         // punctuation, escaped control characters and multibyte UTF-8.

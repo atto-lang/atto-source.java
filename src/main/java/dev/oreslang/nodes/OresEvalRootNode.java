@@ -1180,7 +1180,7 @@ public final class OresEvalRootNode extends RootNode {
                     requireOne(values, "Json." + fn.name());
                     Object input = values.getFirst();
                     return switch (fn.name()) {
-                        case "parse" -> dev.oreslang.runtime.AllocJsonText.parse(
+                        case "parse" -> dev.oreslang.runtime.OresJsonValue.parseImmutable(
                                 requireString(input, "Json.parse input"));
                         case "stringify" -> {
                             if (!(input instanceof dev.oreslang.runtime.OresJsonValue json)) {
