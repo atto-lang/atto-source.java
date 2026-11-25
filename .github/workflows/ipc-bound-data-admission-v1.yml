@@ -6,6 +6,8 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorIpcSessionV1.java'
       - 'src/main/java/dev/oreslang/runtime/ActorDataDecodeQuotaV1.java'
       - 'src/main/java/dev/oreslang/runtime/ActorIpcCodecProfileV1.java'
+      - 'src/main/java/dev/oreslang/runtime/MessagePackWireV2.java'
+      - 'src/test/standalone/**/MessagePackWireV2Harness.java'
       - 'src/test/standalone/**/ActorIpcCodecProfileV1Harness.java'
       - 'src/test/**/ActorIpcSessionV1Test.java'
       - 'src/test/**/ActorArtifactAdmissionTest.java'
@@ -43,6 +45,8 @@ jobs:
           java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.ActorDataDecodeQuotaV1Contention
           javac -Xlint:all -Werror -d "$RUNNER_TEMP/quota" src/main/java/dev/oreslang/runtime/ActorIpcCodecProfileV1.java src/test/standalone/dev/oreslang/runtime/ActorIpcCodecProfileV1Harness.java
           java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.ActorIpcCodecProfileV1Harness
+          javac -Xlint:all -Werror -cp "$RUNNER_TEMP/quota" -d "$RUNNER_TEMP/quota" src/main/java/dev/oreslang/runtime/MessagePackWireV2.java src/test/standalone/dev/oreslang/runtime/MessagePackWireV2Harness.java
+          java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.MessagePackWireV2Harness
       - name: Execute actual IPC and runtime artifact host tests
         run: |
           set -euo pipefail
