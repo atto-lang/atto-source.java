@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
 
 /**
