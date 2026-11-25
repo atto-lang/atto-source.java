@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/main/**'
+      - 'src/test/java/dev/oreslang/InlineTaskTerminalReturnTest.java'
       - 'pom.xml'
       - 'tests/fixtures/inline-task-net-parity/**'
       - 'tools/run-inline-task-net-parity.py'
@@ -148,3 +149,50 @@ jobs:
           assert len(roots) == 8 and len(spans) == 16
           print("TRACE_ENTROPY_COMPONENT_PASS independent_processes=8 roots=8 spans=16 GUEST_PARITY=NOT_EXECUTED")
           PY
+
+  focused-junit:
+    name: Production inline task JVM edge cases
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ github.token }}
+          cache: maven
+      - name: Build production compiler and execute focused JUnit class
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git log -1 --format='%H %T'
+          test -z "$(git status --porcelain)"
+          mvn -B -ntp -Dmaven.test.skip=true package
+          mvn -B -ntp -q dependency:build-classpath -DincludeScope=test -Dmdep.outputFile=target/inline-junit-classpath.txt
+          # Isolate this test from unrelated inherited test compilation failures.
+          # This is a focused suite, not a replacement for the full Maven gate.
+          mkdir -p target/test-classes
+          javac -proc:none -cp "target/classes:$(cat target/inline-junit-classpath.txt)" -d target/test-classes src/test/java/dev/oreslang/InlineTaskTerminalReturnTest.java
+          mvn -B -ntp -Dtest=InlineTaskTerminalReturnTest -DfailIfNoTests=true surefire:test
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          report = Path("target/surefire-reports/TEST-dev.oreslang.InlineTaskTerminalReturnTest.xml")
+          result = ET.parse(report).getroot()
+          assert int(result.attrib["tests"]) == 9, result.attrib
+          assert all(int(result.attrib.get(key, "0")) == 0 for key in ("failures", "errors", "skipped")), result.attrib
+          print("INLINE_TASK_FOCUSED_JUNIT_PASS tests=9")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: inline-task-focused-junit
+          path: target/surefire-reports/TEST-dev.oreslang.InlineTaskTerminalReturnTest.xml
+          if-no-files-found: warn
