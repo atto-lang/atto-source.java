@@ -86,7 +86,9 @@ final class InlineTaskTerminalReturnTest {
 
     @Test void outerLoopTransfersCannotEscapeInlineTask() {
         for (String transfer : new String[] { "break;", "continue;" }) {
-            for (String prefix : new String[] { transfer, "if true { " + transfer + " } fi" }) {
+            for (String prefix : new String[] { transfer, "if true { " + transfer + " } fi",
+                    "if true do " + transfer + " fi", "if true; do " + transfer + " fi",
+                    "if true then " + transfer + " fi" }) {
                 String source = """
                         pub fnc main(): int {
                           loop {
@@ -124,7 +126,7 @@ final class InlineTaskTerminalReturnTest {
     }
 
     @Test void localLoopsCanBreakContinueAndWriteBack() throws Exception {
-        assertEquals(42L, run("""
+        String braced = """
                 pub fnc main(): int {
                   let int count = 0;
                   val int result = sync task<int> {
@@ -137,7 +139,13 @@ final class InlineTaskTerminalReturnTest {
                   };
                   return result + count;
                 }
-                """));
+                """;
+        assertEquals(42L, run(braced));
+        for (String delimiter : new String[] { "do", "; do", "then", "; then" }) {
+            String keyword = braced.replace("{ continue; } fi", delimiter + " continue; fi")
+                    .replace("{ break; } fi", delimiter + " break; fi");
+            assertEquals(42L, run(keyword), delimiter);
+        }
     }
 
     @Test void assignmentDestinationIsWrittenAfterTaskCompletes() throws Exception {
