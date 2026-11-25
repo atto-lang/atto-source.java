@@ -128,6 +128,8 @@ final class GraphCopyTransactionTest {
         var list = d.sequence("List", 0);
         for (var plan : List.of(
                 new Graph(0, List.of(new Sequence("List", 1), new Scalar("uint"))),
+                new Graph(0, List.of(new Sequence("List", 1), new Scalar(null))),
+                new Graph(0, List.of(new Sequence(null, 1), new Scalar("int"))),
                 new Graph(0, List.of(new Sequence("List", 1))),
                 new Graph(0, List.of(new Sequence("List", 1), new OptionalValue(1))))) {
             assertThrows(IllegalArgumentException.class, () ->
