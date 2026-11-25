@@ -371,7 +371,7 @@ public sealed interface OresJsonValue
      * Reuse the canonical bounded codec as a conservative first copy path.
      * The one graph lock covers selection and snapshot, including nested aliases.
      */
-    static java.util.Optional<OresJsonValue> getOwned(OresJsonValue root, String key) {
+    public static java.util.Optional<OresJsonValue> getOwned(OresJsonValue root, String key) {
         if (!(root instanceof ObjectValue object)) {
             throw new IllegalArgumentException("JSON get requires an object");
         }
@@ -383,7 +383,7 @@ public sealed interface OresJsonValue
         });
     }
 
-    static java.util.Optional<OresJsonValue> atOwned(OresJsonValue root, long index) {
+    public static java.util.Optional<OresJsonValue> atOwned(OresJsonValue root, long index) {
         if (!(root instanceof ArrayValue array)) {
             throw new IllegalArgumentException("JSON at requires an array");
         }
