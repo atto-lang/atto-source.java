@@ -70,19 +70,19 @@ final class FrozenImportSnapshotTest {
                 "define alias network as web;",
                 "define alias web = next; define alias next = network;")) {
             var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+alias+body,List.of(snapshot));
-            assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+            assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(guest));
         }
         var subpath=dev.oreslang.imports.FrozenScalarImportCompiler.compile(
             "import namespace net as web from pkg '"+NAME+"/network/http'; "+body,List.of(snapshot));
-        assertEquals(42,subpath.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(subpath));
         for(String prefix:List.of("package","project.package","org.project.package")) {
             var root=dev.oreslang.imports.FrozenScalarImportCompiler.compile(
                 "import pkg '"+NAME+"'; define alias web = "+prefix+".network; "+body,List.of(snapshot));
-            assertEquals(42,root.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+            assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(root));
         }
         var renamed=dev.oreslang.imports.FrozenScalarImportCompiler.compile(
             "import pkg '"+NAME+"' as root; define alias root.network as web; "+body,List.of(snapshot));
-        assertEquals(42,renamed.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(renamed));
     }
 
     @Test void frozenGuestRejectsPrivateMissingCyclicAndUnsupportedInputs() throws Exception {
@@ -108,7 +108,7 @@ final class FrozenImportSnapshotTest {
         for(String args:List.of("40, -2","4_0, -2")) {
             String source=header+"pub fnc main() -> int { return web.answer("+args+"); }";
             var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(source,List.of(snapshot));
-            assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+            assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(guest));
         }
         for(String args:List.of("40","40, -2, 1","40, true","40, 2.0","40, 1/1",
                 "9223372036854775808, 0","-9223372036854775809, 0","40, -2,",String.join(",",Collections.nCopies(17,"1")))) {
@@ -129,7 +129,7 @@ final class FrozenImportSnapshotTest {
             "val int x = 20; val int y = x * 2; return web.answer(y, -2);",
             "val int selected_call = 40; return web.answer(selected_call, -2);")) {
             var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+body+" }",List.of(snapshot));
-            assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+            assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(guest));
         }
         for(String body:List.of(
             "val int x = x; return web.answer(x, -2);",
@@ -158,7 +158,7 @@ final class FrozenImportSnapshotTest {
             "return left.network.answer(19) + right.network.answer(10) + 1;",
             "return left.network.answer(left.network.answer(38));")) {
             var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+"pub fnc main() -> int { "+body+" }",List.of(first,second));
-            assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+            assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(guest));
         }
         for(String body:List.of(
             "return left.network.answer(right.network.helper(20));",
