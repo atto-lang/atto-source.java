@@ -317,7 +317,7 @@ public sealed interface OresJsonValue
      * existing mutable-map behavior. The parser validates the fresh graph
      * before any aliases can escape; seal bottom-up under graph stability.
      */
-    static OresJsonValue parseImmutable(String source) {
+    public static OresJsonValue parseImmutable(String source) {
         OresJsonValue parsed = AllocJsonText.parse(source);
         return OresKeyedMap.withJsonGraphLock(() -> {
             sealParsedTree(parsed);
