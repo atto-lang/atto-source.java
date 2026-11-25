@@ -40,6 +40,29 @@ public final class ChannelRuntime {
 
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
+    // Trusted async-only composite operations may hold an outer runtime
+    // admission fence. Commit channel operations normally, but publish their
+    // Future completions only after that outer fence is released.
+    private static final ThreadLocal<ArrayList<Runnable>> ASYNC_COMPLETIONS =
+            new ThreadLocal<>();
+
+    static <T> T withDeferredAsyncCompletions(java.util.function.Supplier<T> action) {
+        Objects.requireNonNull(action, "action");
+        if (ASYNC_COMPLETIONS.get() != null) return action.get();
+        ArrayList<Runnable> deferred = new ArrayList<>();
+        ASYNC_COMPLETIONS.set(deferred);
+        Throwable primary = null;
+        try {
+            return action.get();
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
+        } finally {
+            ASYNC_COMPLETIONS.remove();
+            final Throwable failure = primary;
+            runAfterPreservingFailure(failure, () -> runCompletions(deferred));
+        }
+    }
     /** Global cap on pending selections, independent of per-channel arm limits. */
     private static final int MAX_PENDING_SELECTS = 4_096;
     static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS = 4_096;
@@ -1164,6 +1187,12 @@ public final class ChannelRuntime {
         }
 
         private Optional<SelectResult> tryNow() {
+            if (ASYNC_COMPLETIONS.get() != null) {
+                // An immediate probe must observe its own completed Future
+                // before returning. Never mistake a deferred result for Empty.
+                throw new IllegalStateException(
+                        "immediate channel selection inside deferred async admission");
+            }
             start(true);
             if (!future.isDone()) return Optional.empty();
             return Optional.of(future.join());
@@ -1655,6 +1684,11 @@ public final class ChannelRuntime {
      * silently treating a broken internal completion hook as success.</p>
      */
     private static void runCompletions(List<Runnable> completions) {
+        ArrayList<Runnable> deferred = ASYNC_COMPLETIONS.get();
+        if (deferred != null) {
+            deferred.addAll(completions);
+            return;
+        }
         Throwable firstFailure = null;
         for (Runnable completion : completions) {
             try {
