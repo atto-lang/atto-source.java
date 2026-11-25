@@ -90,6 +90,29 @@ final class PipelineAndRecursiveAliasTest {
     }
 
     @Test
+    void threeModuleAliasesNeverResurrectAnAmbiguousShortName() {
+        String declarations = """
+                define module first
+                    type Shared = int;
+                end
+                define module second
+                    type Shared = bool;
+                end
+                define module third
+                    type Shared = string;
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(declarations + """
+                        fnc bad(Shared item): void { return; }
+                        """)));
+        assertTrue(error.getMessage().contains("ambiguous type alias"), error.getMessage());
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(declarations + """
+                fnc qualified(first.Shared item): int { return item; }
+                """)));
+    }
+
+    @Test
     void modulesAndClassesCannotBeUsedAsRuntimeValues() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module Maths as
