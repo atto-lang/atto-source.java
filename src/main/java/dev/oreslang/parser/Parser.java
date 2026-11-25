@@ -400,6 +400,41 @@ public final class Parser {
             else break;
         }
 
+        // Static aliases are compile-time declarations, not runtime values.
+        // Validate the complete leading declaration batch before linking.
+        // Acyclic bindings still require the authenticated graph integration.
+        if (check(DEFINE) && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("alias")) {
+            Token start = peek();
+            var aliases = new ArrayList<dev.oreslang.imports.StaticImportGraph.Alias>();
+            while (check(DEFINE) && current + 1 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 1).lexeme().equals("alias")) {
+                advance(); advance();
+                if (aliases.size() >= 256)
+                    throw error(start, "E_SOURCE_LIMIT: namespace alias budget exceeded");
+                String left = parseStaticAliasPath();
+                String name, reference;
+                if (match(EQUAL)) {
+                    name = left;
+                    reference = parseStaticAliasPath();
+                } else {
+                    consume(AS, "expected '=' or 'as' in static alias");
+                    reference = left;
+                    name = consume(IDENT, "expected namespace alias name").lexeme();
+                }
+                consume(SEMICOLON, "expected ';' after namespace alias");
+                aliases.add(new dev.oreslang.imports.StaticImportGraph.Alias(name, reference));
+            }
+            try {
+                dev.oreslang.imports.StaticImportGraph.precheckAliases(aliases);
+            } catch (IllegalArgumentException invalid) {
+                throw error(start, invalid.getMessage());
+            }
+            throw error(start, "E_UNSUPPORTED: namespace aliases require authenticated static binding integration");
+        }
+
         // Once a package namespace participates, require unique local import
         // bindings across *all* import forms, including legacy selections.
         // The later verified linker must additionally check top-level
@@ -668,6 +703,20 @@ public final class Parser {
             throw error(previous(), "package import requires explicit 'as <namespace>'");
         }
         return name;
+    }
+
+    private String parseStaticAliasPath() {
+        String first = consume(IDENT, "expected static alias path").lexeme();
+        if (first.length() > 64) throw error(previous(), "E_IMPORT_PATH: alias component too long");
+        StringBuilder path = new StringBuilder(first);
+        int components = 1;
+        while (match(DOT)) {
+            if (++components > 8) throw error(peek(), "E_IMPORT_PATH: alias path too deep");
+            String part = consume(IDENT, "expected alias path component").lexeme();
+            if (part.length() > 64) throw error(previous(), "E_IMPORT_PATH: alias component too long");
+            path.append('.').append(part);
+        }
+        return path.toString();
     }
 
     private Ast.ImportDecl parseImport(String currentNamespace) {
