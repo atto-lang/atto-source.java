@@ -349,6 +349,45 @@ final class ActorLocalReferencesTest {
     }
 
     @Test
+    void cellPublicationRejectsNestedForeignHandlesBeforeChangingValue() throws Exception {
+        var foreign = new CompletableFuture<ActorLocalReferences.Ref<Object>>();
+        var weak = new CompletableFuture<ActorLocalReferences.WeakRef<Object>>();
+        var verified = new CompletableFuture<Void>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var first = runtime.<String>spawn(() -> (message, context) -> {
+                var ref = ActorLocalReferences.<Object>create(7);
+                foreign.complete(ref);
+                weak.complete(ref.downgrade());
+            });
+            first.send("create");
+            var foreignRef = foreign.get(10, TimeUnit.SECONDS);
+            var foreignWeak = weak.get(10, TimeUnit.SECONDS);
+            var second = runtime.<String>spawn(() -> (message, context) -> {
+                try {
+                    var local = ActorLocalReferences.<Object>create(42);
+                    assertThrows(SecurityException.class,
+                            () -> ActorLocalReferences.create(List.of(Optional.of(foreignRef))));
+                    var cyclic = new java.util.ArrayList<Object>();
+                    cyclic.add(cyclic);
+                    cyclic.add(java.util.Map.of("foreign", foreignWeak));
+                    assertThrows(SecurityException.class, () -> local.set(cyclic));
+                    assertEquals(42, local.getCopy(), "failed replacement must retain the old value");
+                    assertThrows(SecurityException.class,
+                            () -> local.set(new AtomicReference<>(foreignRef)));
+                    assertEquals(42, local.getCopy());
+                    local.set(List.of(local)); // legal local self-edge
+                    assertSame(local, ((List<?>) local.take().orElseThrow()).getFirst());
+                    verified.complete(null);
+                } catch (Throwable failure) {
+                    verified.completeExceptionally(failure);
+                }
+            });
+            second.send("verify");
+            verified.get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void actorCannotPublishReferencesThroughMailbox() throws Exception {
         CompletableFuture<Boolean> rejected = new CompletableFuture<>();
         try (ActorRuntime runtime = new ActorRuntime()) {
