@@ -5,6 +5,10 @@ on:
       - 'src/main/java/dev/oreslang/types/DerivedCopyPlanV1.java'
       - 'src/main/java/dev/oreslang/types/DerivedGraphCopyPlan.java'
       - 'src/main/java/dev/oreslang/types/GraphCopyTransaction.java'
+      - 'src/main/java/dev/oreslang/types/GraphTopology.java'
+      - 'tests/graph-topology-host/TopologyTest.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DerivedGraphCopyPlanTest.java'
       - 'src/test/java/dev/oreslang/GraphCopyTransactionTest.java'
       - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
@@ -42,6 +46,14 @@ jobs:
           java-version: '25'
           distribution: graalvm
           cache: maven
+      - name: Execute exact graph topology host harness
+        run: |
+          set -euo pipefail
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/graph-topology" \
+            src/main/java/dev/oreslang/types/GraphTopology.java \
+            tests/graph-topology-host/TopologyTest.java
+          java -Xss256k -cp "$RUNNER_TEMP/graph-topology" TopologyTest
+          echo 'GRAPH_TOPOLOGY_SCOPE=HOST_COMPONENT_ONLY'
       - name: Run actual type-checker and GraalVM guest-copy JUnit
         shell: bash
         run: |
