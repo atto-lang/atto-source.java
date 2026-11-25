@@ -24,7 +24,7 @@ final class ActorIpcSessionV1Test {
     void authenticatedMessagePackUsesPinnedShapeAndRetainsDecodedCredits() {
         var shape = MessagePackWireV2.Shape.string();
         var profile = new ActorIpcCodecProfileV1("messagepack", 2, "demo.String.v1",
-                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cda", MESSAGE_ABI);
+                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cd", MESSAGE_ABI);
         var artifact = artifactWithReadyCommitments("ImageWorker", MANIFEST, ARTIFACT,
                 MESSAGE_ABI, STATE_SCHEMA, profile.commitment(), WORKER_POLICY);
         var limits = new MessagePackWireV2.DecodeLimits(1024, 1024, 16, 2048, 8);
