@@ -81,21 +81,30 @@ final class CanonicalConditionalJoinCurrentMainTest {
                     stdio.stdout.write(answer);
                 }
                 """;
-        var checked = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        // Execute each program under its own latest ownership admission.
+        // Optimization creates a new AST identity; it cannot inherit a lease.
+        assertConditionalOutput(source, OresCompiler.parseAndTypeCheckStrictAtto(source));
         var optimized = OresCompiler.compileForBuildStrictAtto(source, BuildOptions.executable());
-        assertTrue(optimized.retained("condition"));
-        assertTrue(optimized.retained("selected"));
-        assertTrue(optimized.retained("other"));
-        for (var program : java.util.List.of(checked, optimized.program())) {
-            var output = new ByteArrayOutputStream();
-            String name = "conditional-optimization.ores";
-            try (var lease = OresLanguage.openPrecheckedProgram(name, source, program);
-                 Context context = Context.newBuilder(OresLanguage.ID)
-                         .allowAllAccess(false).out(output).build()) {
-                context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
-            }
-            assertEquals("CS42", output.toString(StandardCharsets.UTF_8));
+        assertTrue(optimized.retained(Parser.ROOT_MODULE + ".condition"));
+        assertTrue(optimized.retained(Parser.ROOT_MODULE + ".selected"));
+        assertTrue(optimized.retained(Parser.ROOT_MODULE + ".other"));
+        var readmitted = dev.oreslang.types.TypeChecker.checkTypesWithDiagnostics(
+                optimized.program(), true);
+        dev.oreslang.types.OwnershipChecker.check(
+                readmitted.program(), readmitted.shortInferredAliases());
+        assertConditionalOutput(source, readmitted.program());
+    }
+
+    private static void assertConditionalOutput(String source, dev.oreslang.ast.Ast.Program program)
+            throws Exception {
+        var output = new ByteArrayOutputStream();
+        String name = "conditional-optimization.ores";
+        try (var lease = OresLanguage.openPrecheckedProgram(name, source, program);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
         }
+        assertEquals("CS42", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test

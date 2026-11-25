@@ -1,9 +1,7 @@
 // Canonical AttoLang executable regression: the same routine is called by
 // two instances of Counter, an isolated actor, and root bookkeeping.
 // Each actor owns independent mutable fields; code reuse shares no objects.
-fnc advance(int current, int delta): int {
-  return current + delta;
-}
+import fnc advance from "./advance.atto";
 
 define actor Counter as
   let int total;
@@ -14,7 +12,7 @@ define actor Counter as
   }
 
   receive(ActorMail<int> mail): void {
-    self.total = advance(self.total, mail.value);
+    self.total = imports::advance(self.total, mail.value);
     self.send(self.total);
     self.end();
     return;
@@ -33,7 +31,7 @@ define isoactor PrivateCounter as
   }
 
   receive(ActorMail<int> mail): void {
-    self.total = advance(self.total, mail.value);
+    self.total = imports::advance(self.total, mail.value);
     self.send(self.total);
     self.end();
     return;
@@ -69,7 +67,7 @@ pub async routine main(): void {
   await right.get_done();
   await isolated.get_done();
 
-  val int supervisorTotal = advance(40, 2);
+  val int supervisorTotal = imports::advance(40, 2);
   stdio.stdout.write(supervisorTotal);
   return;
 }

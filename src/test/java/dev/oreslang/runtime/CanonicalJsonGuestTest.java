@@ -46,6 +46,50 @@ final class CanonicalJsonGuestTest {
     }
 
     @Test
+    void actorCanUseExplicitlyLinkedCanonicalJsonWithoutAmbientSiblingAuthority() throws Exception {
+        assertEquals("42", run("""
+                import class Json from "alloc/json";
+                import class JsonValue from "alloc/json";
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val JsonValue document = Json.parse(mail.value);
+                    val JsonValue number = document.get("number").unwrap();
+                    stdio.println(number.as_int().unwrap());
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("{\\\"number\\\":42}");
+                  await worker.get_done();
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void actorCannotTreatLocalJsonLookalikeAsLinkedClass() throws Exception {
+        Path entry = root.resolve("ambient.atto");
+        Files.writeString(entry, """
+                define class Json as
+                  pub static fnc parse(string source): string { return source; }
+                end
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    stdio.println(Json.parse(mail.value));
+                    return;
+                  }
+                end
+                pub fnc main(): void { return; }
+                """);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(failure.getMessage().contains("actor 'Worker'"), failure.getMessage());
+    }
+
+    @Test
     void canonicalOpaqueConstructionIsRejected() throws Exception {
         Path entry = root.resolve("forge.atto");
         Files.writeString(entry, """
