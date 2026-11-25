@@ -40,12 +40,22 @@ The trusted host may call `scheduleRestartWakeup(permit, scheduler)` with a call
 
 Two additional ActorRuntime regressions cover duplicate wakeup rejection, cancellation, scheduler submission rejection, CONTROL-thread delivery, permit preservation and escalation between scheduling and delivery. Physical release uses a synthetic oracle. No new hosted execution has been established.
 
+### Automatic replacement from a trusted factory (wave 13)
+
+`scheduleRestartReplacement(permit, scheduler, factory)` accepts an already issued managed-guardian restart permit and a compiler-compatible `ActorRuntime.BehaviorFactory`. One exact job owns the permit while scheduled or executing; competing manual attachment, advisory wakeup and automatic job requests are denied. Cancellation wins only before CONTROL claims the wakeup, preserves the charged permit, and prevents its stale callback from creating a replacement. The job completion is an observation stage, not a cancellation or restart authority.
+
+After timer readiness, CONTROL revalidates the permit and physical-release gate, allocates a dormant private actor through the owning ActorRuntime, attaches it to the guardian with the same budget and generation fence, and requests nonblocking activation. Guest initialization runs on the actor dispatcher. The job completion means attachment and activation requested, not successful guest initialization: observe the actor's readiness barrier separately. If creation/attachment fails, the coordinator requests cancellation of any newly allocated actor; consumed attachment failures remain fenced. Physical verification denial before allocation leaves the original permit reusable. No new scheduler or blocking wait is introduced.
+
+This API does not automatically discover failures, issue restart permits, acknowledge terminal CONTROL, or provide a production native physical-release verifier. The host still drives those prerequisites. The host owns the scheduler and must cancel pending jobs before scheduler shutdown. Group-wide ONE_FOR_ALL/REST_FOR_ONE orchestration, nested supervisor recovery and parent-driven retirement remain open.
+
+Two new integration test cases cover duplicate/cancelled jobs, manual attachment exclusion, successor activation and stale physical-release denial followed by an admitted retry. Synthetic release oracles only; tests not executed.
+
 ## Executable regression inventory
 
 - Previously executed (host-only): standalone JDK 21, `javac -Xlint:all -Werror`, 557 passing assertions on exact Git blobs `6934a266090a16361154a7fa24859d99c46a6470` (escrow) and `bfa4618c1e76041c8e5a90ad4950abdef73e1602` (test).
 - New coordinator: compile-only under JDK 21 against **minimal stub ActorRuntime interfaces**, not a full source tree compile. GitHub blob verification pins the actual committed coordinator `18463efa99db15d3ff4b0ec650214add03747375`, bridge `55f4feb55c4892c43612dbcfffe1127666299750`, full ActorRuntime `0760e04d1ccc57828317aebe9416324e08185b34`.
-- Real runtime JUnit: **12 tests authored, NOT EXECUTED**. The parent suite's obsolete `acknowledgeCommitted` call was fixed. New cases cover nested automatic cancellation, unaffected sibling, pending-failure/release denial, synthetic restart permitting, duplicate-permit denial, three-level top-down replacement, stale ActorRefs, and rejecting an inline CONTROL executor.
-- JDK25 exact-blob workflow now requires both suites' Surefire XML (`3 + 9` cases, zero failures/errors/skips) and the pre-existing 557 standalone assertions. A zero-step Actions failure is **NOT_EXECUTED**, not a proof of correctness.
+- Real runtime JUnit: **14 tests authored, NOT EXECUTED**. The parent suite's obsolete `acknowledgeCommitted` call was fixed. New cases cover nested automatic cancellation, unaffected sibling, pending-failure/release denial, synthetic restart permitting, duplicate-permit denial, three-level top-down replacement, stale ActorRefs, and rejecting an inline CONTROL executor.
+- JDK25 exact-blob workflow now requires both suites' Surefire XML (`3 + 11` cases, zero failures/errors/skips) and the pre-existing 557 standalone assertions. A zero-step Actions failure is **NOT_EXECUTED**, not a proof of correctness.
 
 ## P0 release gates and known limitations
 
