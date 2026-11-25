@@ -1574,11 +1574,11 @@ public final class ActorRuntime implements AutoCloseable {
         // current source receive suspends its serial mailbox. Requests made
         // without suspension (and unrelated Futures) never enter the graph.
         // Cycle rejection cancels the already-published outbound request.
-        final ActorRequestDependencyGraph.Lease dependency;
+        ActorRequestDependencyGraph.Lease admittedDependency;
         ActorId requestedActor = actorRequestDestinations.get(future);
         if (requestedActor != null && !future.isDone()) {
             try {
-                dependency = serialRequestDependencies.suspendUntilReply(
+                admittedDependency = serialRequestDependencies.suspendUntilReply(
                         new ActorRequestDependencyGraph.ActorIdentity(
                                 cell.ref.id().value().toString(), 0),
                         new ActorRequestDependencyGraph.ActorIdentity(
@@ -1593,7 +1593,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     throw cycle;
                 }
-                dependency = null;
+                admittedDependency = null;
             } catch (RuntimeException failure) {
                 if (!future.isDone() && future.cancel(false)) {
                     synchronized (cell.lifecycleLock) {
@@ -1601,11 +1601,13 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     throw failure;
                 }
-                dependency = null;
+                admittedDependency = null;
             }
         } else {
-            dependency = null;
+            admittedDependency = null;
         }
+
+        final ActorRequestDependencyGraph.Lease dependency = admittedDependency;
 
         future.whenCompleteRuntime((value, failure) -> {
             // Release as soon as the producer settles, including cancellation,
