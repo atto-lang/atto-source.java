@@ -520,4 +520,59 @@ final class IpcSupervisorIngressIntegrationTest {
         }
     }
 
+    private static final String COMPILER_ORDER_SOURCE="""
+            define class Order as
+              paid: bool;
+              total: i64;
+            end
+            """;
+    private static IpcCborDataPlanV1 compileOrder(String source){
+        return IpcCompilerCborPlanV1.compile(source,"Order","order.v1",1,
+                new IpcCborDataPlanV1.Limits(1024,8192,4096,100,100,8));
+    }
+    @Test void checkedCompilerSourceDerivesSameCanonicalCborBinding()throws Exception{
+        var plan=compileOrder(COMPILER_ORDER_SOURCE);
+        var reference=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"order.v1",
+                HexFormat.of().parseHex("610eef10e566bf78d2741deea68e26171a2c03f901ccb2a7c2f032090afa969f"));
+        plan.requireBinding(reference);
+        var input=java.nio.ByteBuffer.wrap(new byte[]{(byte)0x82,(byte)0xf5,0x18,42}).asReadOnlyBuffer();
+        assertEquals(java.util.List.of(true,42L),plan.decode(input,plan.preflight(input)));
+        var reordered=compileOrder("""
+                define class Order as
+                  total: i64;
+                  paid: bool;
+                end
+                """);
+        assertThrows(IllegalArgumentException.class,()->reordered.requireBinding(reference));
+        assertThrows(IOException.class,()->reordered.preflight(input));
+        for(String unsupported:new String[]{
+                COMPILER_ORDER_SOURCE.replace("i64","i32"),
+                COMPILER_ORDER_SOURCE.replace("i64","bigint"),
+                COMPILER_ORDER_SOURCE.replace("i64","List[i64]"),
+                COMPILER_ORDER_SOURCE+"\ndefine class Extra as\n  value: bool;\nend",
+                COMPILER_ORDER_SOURCE.replace("paid: bool","paid: void"),
+                COMPILER_ORDER_SOURCE+"\npub fnc bad() : i64 { return false; }"
+        })assertThrows(IllegalArgumentException.class,()->compileOrder(unsupported));
+    }
+    @Test void compilerDerivedCborPlanPublishesAuthenticatedOwnedRecord()throws Exception{
+        var plan=compileOrder(COMPILER_ORDER_SOURCE);
+        byte[] key=new byte[32],connection=new byte[16];Arrays.fill(key,(byte)7);Arrays.fill(connection,(byte)8);
+        var delivered=new java.util.concurrent.atomic.AtomicReference<Object>();
+        try(ActorRuntime runtime=new ActorRuntime()){
+            var child=runtime.<Object>spawnPrivateTrusted(ignored->(message,turn)->delivered.set(message));
+            var budget=runtime.registerIpcIngressTenant("tenant",1024*1024,2);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
+            byte[] good=IpcSchemaBoundDataV1.wrap(plan.binding(),new byte[]{(byte)0x82,(byte)0xf5,0x18,42});
+            var epoch=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "compiler-cbor",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(good)),
+                    1,child.generation(),3,4,1,1);
+            try(var ingress=new IpcPinnedActorIngressV1<>(child,epoch,authority(5,connection,key),plan.binding(),budget,8192,plan)){
+                ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,good,5,connection,key));
+                child.drain().get(5,TimeUnit.SECONDS);
+                assertEquals(java.util.List.of(true,42L),delivered.get());
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            }
+        }
+    }
+
 }
