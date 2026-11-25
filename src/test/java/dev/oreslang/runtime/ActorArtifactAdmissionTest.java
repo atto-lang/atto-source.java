@@ -597,6 +597,41 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void codecBoundRouteRejectsLegacyAttestationAndCannotDowngradeAfterRetirement() throws Exception {
+        byte[] executable = "ELF-codec-bound-route".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+        var profile = new ActorIpcCodecProfileV1("messagepack", 2, "order.v1",
+                "11".repeat(32), MESSAGE_ABI);
+        UUID route = UUID.randomUUID();
+        try (ActorRuntime runtime = new ActorRuntime(supervisorPolicy())) {
+            ActorArtifact<Object> legacy = runtime.admitIpcActorArtifact(
+                    "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
+                    attestation("ImageWorker", manifest), TRUST_ATTESTATION,
+                    (builder, keyId) -> keys.getPublic(), targetPolicy(), privateWorkerPolicy());
+            assertThrows(SecurityException.class, () -> runtime.openCodecBoundIpcSession(
+                    legacy, route, 1, 1, 2, 4096, profile, 1, 1));
+            var attested = attestation("ImageWorker", Ast.ActorKind.PRIVATE, manifest,
+                    profile.commitment());
+            ActorArtifact<Object> artifact = runtime.admitIpcActorArtifact(
+                    "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
+                    attested, TRUST_ATTESTATION, (builder, keyId) -> keys.getPublic(),
+                    targetPolicy(), privateWorkerPolicy());
+            assertThrows(SecurityException.class, () -> runtime.openCodecBoundIpcSession(
+                    artifact, route, 1, 1, 2, 4096, profile, 1, 2));
+            var first = runtime.openCodecBoundIpcSession(
+                    artifact, route, 1, 1, 2, 4096, profile, 1, 1);
+            assertEquals(profile, first.codecProfile());
+            runtime.retireBoundIpcSession(first);
+            assertThrows(SecurityException.class, () ->
+                    runtime.openBoundIpcSession(legacy, route, 1, 2, 2, 4096));
+            var replacement = runtime.openCodecBoundIpcSession(
+                    artifact, route, 1, 2, 2, 4096, profile, 1, 1);
+            assertEquals(profile, replacement.codecProfile());
+        }
+    }
+
+    @Test
     void canonicalUnsignedManifestHasDeterministicSortedObjectKeys() throws Exception {
         byte[] executable = "ELF-canonical".getBytes(StandardCharsets.UTF_8);
         var manifest = manifest(executable, List.of("filesystem.read", "stdout"));
@@ -700,6 +735,14 @@ final class ActorArtifactAdmissionTest {
             String actorTypeName,
             Ast.ActorKind actorKind,
             ActorArtifactAdmission.Manifest manifest) {
+        return attestation(actorTypeName, actorKind, manifest, WIRE_CODEC);
+    }
+
+    private static ActorArtifactAdmission.TrustedBuildAttestation attestation(
+            String actorTypeName,
+            Ast.ActorKind actorKind,
+            ActorArtifactAdmission.Manifest manifest,
+            String codecCommitment) {
         return new ActorArtifactAdmission.TrustedBuildAttestation(
                 actorTypeName,
                 actorKind,
@@ -718,7 +761,7 @@ final class ActorArtifactAdmissionTest {
                 manifest.provenance().builderId(),
                 MESSAGE_ABI,
                 STATE_SCHEMA,
-                WIRE_CODEC);
+                codecCommitment);
     }
 
     private static KeyPair keyPair() throws Exception {
