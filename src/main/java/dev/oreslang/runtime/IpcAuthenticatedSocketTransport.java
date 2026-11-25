@@ -77,6 +77,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     // a reader queued behind it must not consume another frame after close.
     private volatile boolean receiptReadsClosed;
     private final Object encodingKeyGate = new Object();
+    // Guarded by encodingKeyGate; no MAC operation may use retired material.
+    private boolean authenticationRetired;
 
     IpcAuthenticatedSocketTransport(
             Socket socket,
@@ -205,15 +207,15 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     }
 
     private void destroyAuthenticationMaterialAfterPhysicalClose() {
-        // A reader may already have consumed a complete frame and be
-        // authenticating/applying it under readGate. The descriptor is already
-        // closing/closed, so no new authenticated receive may start after this
-        // drain point.
-        synchronized (readGate) {
-            synchronized (encodingKeyGate) {
-                Arrays.fill(this.macKey, (byte) 0);
-                Arrays.fill(this.connectionBinding, (byte) 0);
-            }
+        // Serialize erasure with memory-only authentication and receipt ledger
+        // application, not the potentially blocked physical read. Close intent
+        // already fences fresh readers; a late frame cannot use retired keys.
+        // Never wait for a kernel read to finish after an ambiguous close.
+        // An admitted reader acquires this gate only AFTER reading its frame.
+        synchronized (encodingKeyGate) {
+            authenticationRetired = true;
+            Arrays.fill(this.macKey, (byte) 0);
+            Arrays.fill(this.connectionBinding, (byte) 0);
         }
     }
 
@@ -272,7 +274,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         final byte[] preparedFrame;
         try {
             synchronized (encodingKeyGate) {
-                if (receiptReadsClosed) {
+                if (receiptReadsClosed || authenticationRetired) {
                     return new SendSubmission(CompletableFuture.completedFuture(
                             IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE)
                             .minimalCompletionStage(),
@@ -325,15 +327,19 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     throw new IOException("IPC receipt read after close request");
                 }
                 byte[] frame = readReceiptWireFrame(input);
-                receipt = decodeReceiptFrame(
-                        frame, connectionBinding, macKey);
-                if (receipt.physicalGeneration() != physicalGeneration) {
-                    throw new IOException("stale IPC physical transport generation");
+                synchronized (encodingKeyGate) {
+                    if (authenticationRetired) {
+                        throw new IOException("IPC authentication material retired");
+                    }
+                    receipt = decodeReceiptFrame(frame, connectionBinding, macKey);
+                    if (receipt.physicalGeneration() != physicalGeneration) {
+                        throw new IOException("stale IPC physical transport generation");
+                    }
+                    requireTrustedEpoch(receipt.envelope());
+                    publication = receipts.applyVerified(
+                            physicalOwner, receipt.envelope(),
+                            physicalGeneration, receipt.stage());
                 }
-                requireTrustedEpoch(receipt.envelope());
-                publication = receipts.applyVerified(
-                        physicalOwner, receipt.envelope(),
-                        physicalGeneration, receipt.stage());
             }
 
             // CompletableFuture.complete() may synchronously run arbitrary
@@ -485,7 +491,14 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     void retryQuarantinedAbort() {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC transport quarantined abort retry");
+        // An executing close owns the descriptor even after its writer drains.
+        if (abortState.get() < 0) {
+            throw new IllegalStateException("IPC physical abort is already executing");
+        }
         var snapshot = sessionLease.snapshot();
+        if (abortState.get() < 0) {
+            throw new IllegalStateException("IPC physical abort is already executing");
+        }
         if (snapshot.phase() != IpcTransportSessionLease.Phase.QUARANTINED
                 || snapshot.activeWrites() <= 0) {
             throw new IllegalStateException(
