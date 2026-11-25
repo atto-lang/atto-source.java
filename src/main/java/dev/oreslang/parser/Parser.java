@@ -4305,6 +4305,34 @@ public final class Parser {
         // Procedural dispatch returns from its enclosing callable. Keep this
         // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
+            // The void inline task owns a lexical block, not a scheduler task.
+            // Erase only an optional terminal bare return; earlier returns
+            // need a distinct CFG and must never escape the caller.
+            if (isContextualIdentifier("sync") && checkNext(IDENT)
+                    && tokens.get(current + 1).lexeme().equals("task")) {
+                advance();
+                advance();
+                consume(LT, "do sync task requires <void>");
+                Ast.TypeRef payload = parseTypeRef();
+                consume(GT, "expected '>' after do sync task result type");
+                if (!payload.name().equals("void") || !payload.arguments().isEmpty()
+                        || payload.inferArguments() || payload.isBorrow()) {
+                    throw error(previous(), "E_SYNC_TASK_VOID_RESULT: do sync task requires <void>");
+                }
+                List<Ast.Stmt> body = parseBlock();
+                if (!body.isEmpty() && body.getLast() instanceof Ast.ReturnStmt returned
+                        && returned.value() == null) {
+                    body = List.copyOf(body.subList(0, body.size() - 1));
+                }
+                if (valueArmPrefixContainsReturn(body)) {
+                    throw error(previous(), "E_SYNC_TASK_VOID_RETURN_UNSUPPORTED: only terminal bare return is admitted");
+                }
+                if (inlineTaskHasEscapingTransfer(body, 0)) {
+                    throw error(previous(), "E_SYNC_TASK_CONTROL_TRANSFER: inline break/continue must target a task-local loop; yield requires dedicated lowering");
+                }
+                match(SEMICOLON);
+                return new Ast.BlockStmt(body);
+            }
             if (match(MATCH)) return parseMatch(true);
             if (match(SWITCH)) return parseSwitch();
             // Explicitly discard a channel read result (or write's unit result)
