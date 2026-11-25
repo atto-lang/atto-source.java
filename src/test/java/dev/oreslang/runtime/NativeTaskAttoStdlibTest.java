@@ -60,6 +60,11 @@ final class NativeTaskAttoStdlibTest {
                 () -> OresCompiler.parseAndTypeCheck(text.replace("task<int>", "task<bool>")));
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(text.replace("val Future<int>", "val Future<bool>")));
+        // A scheduled source task exposes Future<T>, not the historical
+        // Task<T> result wrapper (runtime bookkeeping is a separate concern).
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(text.replace("val Future<int>", "val Task<int>")));
+
     }
 
     @Test
