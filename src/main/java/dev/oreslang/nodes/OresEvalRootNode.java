@@ -137,7 +137,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return context.runRootMain(() -> {
+            return context.runRootMain(this, () -> {
                 try { return current.executeMain(new Object[0], true); }
                 catch (ProcessExitSignal exit) { return exit.exitStatus(); }
             });
@@ -146,7 +146,7 @@ public final class OresEvalRootNode extends RootNode {
                 && INVOKE_ROOT_PUBLIC_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String functionName) {
             current.link();
-            return context.runRootMain(() -> current.invokePublic(functionName,
+            return context.runRootMain(this, () -> current.invokePublic(functionName,
                     java.util.Arrays.copyOfRange(arguments, 2, arguments.length)));
         }
         if (arguments.length >= 2
@@ -160,7 +160,7 @@ public final class OresEvalRootNode extends RootNode {
         // link/init/main commands to install a full import graph before init.
         current.link();
         current.initialize();
-        return context.runRootMain(() -> current.executeMain(arguments, false));
+        return context.runRootMain(this, () -> current.executeMain(arguments, false));
     }
 
     private Evaluator evaluator(OresContext context) {
