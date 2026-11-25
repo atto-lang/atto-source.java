@@ -85,4 +85,33 @@ final class StaticImportGraphTest {
         deny("E_SOURCE_LIMIT",()->scope.bindAliases(List.of(new Alias("extra","p"))));
         deny("E_SOURCE_LIMIT",()->StaticImportGraph.precheckAliases(Collections.nCopies(257,new Alias("x","p"))));
     }
+    @Test void packageSuffixCollisionsNeverConsultMembersOrNormalizeIdentity() {
+        var a=view(origin(Domain.PACKAGE,"@atto-lang/network/http",'a'),true);
+        var b=view(origin(Domain.PACKAGE,"@acme/network/http",'b'),false);
+        var c=view(origin(Domain.PACKAGE,"@atto_lang/network/http",'c'),false);
+        for(boolean reverse:new boolean[]{false,true}) {
+            var scope=new StaticImportGraph();
+            scope.bindPackage(reverse?b:a,null);
+            scope.bindPackage(reverse?a:b,null);
+            deny("E_AMBIGUOUS",()->scope.resolve("http.net.http.get"));
+            deny("E_AMBIGUOUS",()->scope.resolve("network.http.net.http.get"));
+            assertSame(a,scope.resolve("atto_lang.network.http.net.http.get").view());
+            deny("E_UNBOUND",()->scope.resolve("acme.network.http.net.http.get"));
+            scope.bindPackage(c,null);
+            deny("E_AMBIGUOUS",()->scope.resolve("atto_lang.network.http.net.http.get"));
+        }
+        var renamed=new StaticImportGraph();
+        renamed.bindPackage(a,"web");
+        assertSame(a,renamed.resolve("web.net.http.get").view());
+        deny("E_UNBOUND",()->renamed.resolve("http.net.http.get"));
+        deny("E_UNBOUND",()->renamed.resolve("net.http.get"));
+        var invalid=view(origin(Domain.PACKAGE,"@a/b/shared",'d'),true);
+        deny("E_IMPORT_PATH",()->renamed.bindPackage(invalid,null));
+        renamed.bindPackage(invalid,"other");
+        assertSame(invalid,renamed.resolve("other.net.http.get").view());
+        var budget=new StaticImportGraph();
+        for(int i=0;i<254;i++) budget.bindRoot(a,"v"+i,Tier.EXPLICIT);
+        deny("E_SOURCE_LIMIT",()->budget.bindPackage(a,null));
+        deny("E_UNBOUND",()->budget.resolve("http.net.http.get"));
+    }
 }
