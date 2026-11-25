@@ -113,6 +113,30 @@ final class PipelineAndRecursiveAliasTest {
     }
 
     @Test
+    void excessiveAcyclicAliasChainsFailWithControlledTypeDiagnostic() {
+        StringBuilder source = new StringBuilder();
+        for (int i = 0; i < 160; i++) {
+            source.append("type Alias").append(i).append(" = Alias").append(i + 1).append(";\n");
+        }
+        source.append("type Alias160 = int;\n");
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source.toString()));
+        var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(parsed));
+        assertTrue(error.getMessage().contains("E_TYPE_EXPANSION_LIMIT"), error.getMessage());
+    }
+
+    @Test
+    void branchingAliasExpansionIsBoundedEvenWithoutACycle() {
+        StringBuilder source = new StringBuilder("type Leaf0 = int;\n");
+        for (int i = 1; i <= 18; i++) {
+            source.append("type Leaf").append(i).append(" = struct{left: Leaf")
+                    .append(i - 1).append(", right: Leaf").append(i - 1).append("};\n");
+        }
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source.toString()));
+        var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(parsed));
+        assertTrue(error.getMessage().contains("E_TYPE_EXPANSION_LIMIT"), error.getMessage());
+    }
+
+    @Test
     void modulesAndClassesCannotBeUsedAsRuntimeValues() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module Maths as
