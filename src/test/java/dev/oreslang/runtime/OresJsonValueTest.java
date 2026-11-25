@@ -389,6 +389,30 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void ownedLookupNeverAliasesNestedMapStorageAndDistinguishesNull() {
+        var child = OresJsonValue.objectMap();
+        child.put("name", OresJsonValue.of("before"));
+        var root = OresJsonValue.objectMap();
+        root.put("x", OresJsonValue.object(child));
+        root.put("n", OresJsonValue.nullValue());
+        OresJsonValue document = OresJsonValue.object(root);
+        OresJsonValue snapshot = OresJsonValue.getOwned(document, "x").orElseThrow();
+        child.put("name", OresJsonValue.of("after"));
+        assertEquals("{\"name\":\"before\"}", OresJsonValue.stringify(snapshot));
+        assertEquals("{\"name\":\"after\"}", OresJsonValue.stringify(
+                OresJsonValue.getOwned(document, "x").orElseThrow()));
+        assertTrue(OresJsonValue.getOwned(document, "missing").isEmpty());
+        assertInstanceOf(OresJsonValue.NullValue.class,
+                OresJsonValue.getOwned(document, "n").orElseThrow());
+        var array = OresJsonValue.array(List.of(document));
+        assertTrue(OresJsonValue.atOwned(array, -1).isEmpty());
+        assertTrue(OresJsonValue.atOwned(array, Long.MAX_VALUE).isEmpty());
+        assertTrue(OresJsonValue.atOwned(array, 0).isPresent());
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.atOwned(document, 0));
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.getOwned(array, "x"));
+    }
+
+    @Test
     void nestedObjectsRemainValidWhenAcyclic() {
         OresKeyedMap<String, OresJsonValue> address =
                 OresJsonValue.objectMap();
