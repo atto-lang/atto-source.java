@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * First typed, immutable and multi-field critical-method IR for declared actors.
@@ -33,7 +34,95 @@ final class NamespaceActorCriticalIrCompiler {
         return new IllegalArgumentException("NAMESPACE_ACTOR_CRITICAL_IR_UNSUPPORTED: " + reason);
     }
 
+    /**
+     * Compiler-issued, immutable descriptor. Never decoded from source or
+     * supplied by a guest as an authority. The code image is an opaque,
+     * nonforgeable SharedCodeImageStore object with exact AST identity.
+     */
+    static final class VerifiedActorDescriptor {
+        private final SharedCodeImageStore.CodeImage image;
+        private final String namespace;
+        private final String actorName;
+        private final Map<String, Integer> fields;
+        private final Set<String> criticalMethods;
+
+        private VerifiedActorDescriptor(
+                SharedCodeImageStore.CodeImage image, String namespace,
+                String actorName, Map<String, Integer> fields,
+                Set<String> criticalMethods) {
+            this.image = Objects.requireNonNull(image);
+            this.namespace = Objects.requireNonNull(namespace);
+            this.actorName = Objects.requireNonNull(actorName);
+            this.fields = Map.copyOf(fields);
+            this.criticalMethods = Set.copyOf(criticalMethods);
+            if (this.namespace.isBlank() || this.actorName.isBlank()
+                    || this.fields.isEmpty() || this.criticalMethods.isEmpty()
+                    || image.program().namespace() == null
+                    || !this.namespace.equals(image.program().namespace())) {
+                throw new SecurityException("invalid compiler-issued actor descriptor");
+            }
+        }
+
+        SharedCodeImageStore.CodeImage codeImage() { return image; }
+        String namespace() { return namespace; }
+        String actorName() { return actorName; }
+        Map<String, Integer> scalarFields() { return fields; }
+        Set<String> criticalMethods() { return criticalMethods; }
+    }
+
+    /** Read-only compiler metadata, never a guest-visible bearer capability. */
+    static VerifiedActorDescriptor descriptor(ActorRuntime.ActorCodeExecutor executor) {
+        if (!(executor instanceof Executable compiled)
+                || compiled.descriptor().codeImage() != compiled.codeImage()) {
+            throw new SecurityException("actor has no verified code-image descriptor");
+        }
+        return compiled.descriptor();
+    }
+
+    /**
+     * Compiler-only fact derived from the fully checked native receive AST.
+     * A guest cannot turn an arbitrary ActorRef into an output source by
+     * choosing a method name in main().
+     */
+    static boolean emitsScalarOutput(ActorRuntime.ActorCodeExecutor executor) {
+        if (!(executor instanceof Executable compiled)
+                || compiled.descriptor().codeImage() != compiled.codeImage()) {
+            throw new SecurityException("actor output requires a verified compiler code image");
+        }
+        return compiled.outputAddend() != null;
+    }
+
     private record InitialField(String name, long value) { }
+
+    /**
+     * Immutable diagnostic record of actor-owned state after an admitted turn.
+     * This is never a state alias, borrow permit, persistence record or
+     * source-visible field accessor; state itself remains actor-owned.
+     */
+    record StateReceipt(ActorRuntime.ActorId actorId, long generation,
+                        long processed, Map<String, Long> fields) {
+        StateReceipt {
+            Objects.requireNonNull(actorId, "actor identity");
+            fields = Map.copyOf(fields);
+            if (processed < 0) throw new IllegalArgumentException("negative processed count");
+        }
+        long require(String name) {
+            Long value = fields.get(name);
+            if (value == null) throw new IllegalArgumentException(
+                    "checked actor has no scalar field '" + name + "'");
+            return value;
+        }
+    }
+
+    /** Read-only host diagnostic after drain; not available in .atto source. */
+    static StateReceipt receiptAfterDrain(ActorRuntime.ActorCodeExecutor executor,
+            ActorRuntime.ActorRef<Object> ref) {
+        Objects.requireNonNull(ref, "actor ref");
+        if (!(executor instanceof Executable compiled)) {
+            throw new SecurityException("unverified actor compiler cannot mint a state receipt");
+        }
+        return compiled.readReceipt(ref);
+    }
     private record Write(int slot, IntValue value) { }
     private record CriticalPlan(String name, List<Write> writes) {
         private CriticalPlan { writes = List.copyOf(writes); }
@@ -64,6 +153,22 @@ final class NamespaceActorCriticalIrCompiler {
     }
 
     static ActorRuntime.ActorCodeExecutor compile(SharedCodeImageStore.CodeImage image) {
+        return compileInternal(image, false);
+    }
+
+    /**
+     * Source-level spawn v0: allow exactly one main function to accompany
+     * the fully verified namespace actor declaration. The caller MUST check
+     * every main statement using a separate closed-world typed admission.
+     * The ordinary compiler remains fail closed for all other programs.
+     */
+    static ActorRuntime.ActorCodeExecutor compileForVerifiedMain(
+            SharedCodeImageStore.CodeImage image) {
+        return compileInternal(image, true);
+    }
+
+    private static ActorRuntime.ActorCodeExecutor compileInternal(
+            SharedCodeImageStore.CodeImage image, boolean admitMain) {
         Objects.requireNonNull(image, "immutable source image");
         Ast.Program program = image.program();
         if (program.namespace() == null || program.namespace().isBlank()
@@ -77,6 +182,7 @@ final class NamespaceActorCriticalIrCompiler {
         Ast.ExternalActorMethodDecl init = null;
         Ast.ExternalActorMethodDecl receive = null;
         List<Ast.ExternalActorMethodDecl> critical = new ArrayList<>();
+        boolean sawEntry = false;
         for (Ast.Decl declaration : program.modules().getFirst().declarations()) {
             if (declaration instanceof Ast.StandaloneActorDecl a) {
                 if (actor != null) throw reject("duplicate actor");
@@ -84,6 +190,11 @@ final class NamespaceActorCriticalIrCompiler {
             } else if (declaration instanceof Ast.ActorStateDecl s) {
                 if (state != null) throw reject("duplicate state");
                 state = s;
+            } else if (admitMain && declaration instanceof Ast.FunctionDecl fn
+                    && fn.name().equals("main") && !sawEntry) {
+                // Only the closed-world source-spawn compiler validates the
+                // main body. Nothing in this routine executes its AST.
+                sawEntry = true;
             } else if (declaration instanceof Ast.ExternalActorMethodDecl m) {
                 if (m.name().equals("init")) {
                     if (init != null) throw reject("duplicate init");
@@ -100,6 +211,7 @@ final class NamespaceActorCriticalIrCompiler {
                 throw reject("unsupported namespace declaration");
             }
         }
+        if (admitMain && !sawEntry) throw reject("source spawn requires checked main");
         if (actor == null || state == null || init == null || receive == null
                 || critical.isEmpty() || critical.size() > 8
                 || actor.actorKind() != Ast.ActorKind.SHARED
@@ -168,12 +280,22 @@ final class NamespaceActorCriticalIrCompiler {
 
         List<CriticalPlan> calls = new ArrayList<>();
         List<Ast.Stmt> statements = receive.body();
-        if (statements.size() < 2 || statements.size() > 9
+        if (statements.size() < 2 || statements.size() > 10
                 || !(statements.getLast() instanceof Ast.ReturnStmt end)
                 || end.value() != null) {
-            throw reject("receive must call 1..8 own critical methods, then return");
+            throw reject("receive requires 1..8 critical calls, optional actor output, then return");
         }
-        for (int i = 0; i < statements.size() - 1; i++) {
+        // Only the exact source-owned p.send(mail.value) or verified
+        // p.send(mail.value + literal) may emit a checked scalar result.
+        // Every critical write loan closes before the output channel is used.
+        int criticalEnd = statements.size() - 1;
+        Long outputAddend = criticalEnd > 1 ? checkedOutputAddend(
+                statements.get(criticalEnd - 1), receive.receiverName(), mail.name()) : null;
+        if (outputAddend != null) criticalEnd--;
+        if (criticalEnd < 1 || criticalEnd > 8) {
+            throw reject("receive must call 1..8 checked critical methods before output");
+        }
+        for (int i = 0; i < criticalEnd; i++) {
             if (!(statements.get(i) instanceof Ast.ExprStmt exprStmt)
                     || !(exprStmt.expression() instanceof Ast.CallExpr call)
                     || call.origin() != Ast.CallOrigin.DIRECT
@@ -194,7 +316,43 @@ final class NamespaceActorCriticalIrCompiler {
             throw reject("critical method call graph is not statically closed");
         }
         long[] initial = fields.stream().mapToLong(InitialField::value).toArray();
-        return new Executable(image, actor.name(), initial, List.copyOf(calls));
+        VerifiedActorDescriptor descriptor = new VerifiedActorDescriptor(
+                image, program.namespace(), actor.name(),
+                slots, methods.keySet());
+        return new Executable(image, actor.name(), initial,
+                Map.copyOf(slots), List.copyOf(calls), outputAddend,
+                new ConcurrentHashMap<>(), descriptor);
+    }
+
+    /** Exact source-owned scalar output; no ambient method dispatch. */
+    private static Long checkedOutputAddend(Ast.Stmt statement,
+            String receiver, String mailName) {
+        if (!(statement instanceof Ast.ExprStmt expression)
+                || !(expression.expression() instanceof Ast.CallExpr call)
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()
+                || call.arguments().size() != 1
+                || !(call.callee() instanceof Ast.MemberExpr target)
+                || !target.member().equals("send")
+                || !isName(target.receiver(), receiver)) {
+            return null;
+        }
+        Ast.Expr value = call.arguments().getFirst();
+        if (isOwnedMailValue(value, mailName)) return 0L;
+        if (value instanceof Ast.BinaryExpr plus
+                && plus.operator().equals("+")
+                && isOwnedMailValue(plus.left(), mailName)
+                && plus.right() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long addend) {
+            return addend;
+        }
+        return null;
+    }
+
+    private static boolean isOwnedMailValue(Ast.Expr value, String mailName) {
+        return value instanceof Ast.MemberExpr message
+                && message.member().equals("value")
+                && isName(message.receiver(), mailName);
     }
 
     private static IntValue lowerValue(Ast.Expr value, String receiver, String param,
@@ -306,10 +464,38 @@ final class NamespaceActorCriticalIrCompiler {
     }
 
     private record Executable(SharedCodeImageStore.CodeImage codeImage,
-            String actorName, long[] initial, List<CriticalPlan> calls)
+            String actorName, long[] initial, Map<String, Integer> slots,
+            List<CriticalPlan> calls, Long outputAddend,
+            ConcurrentHashMap<ActorRuntime.ActorId, StateReceipt> receipts,
+            VerifiedActorDescriptor descriptor)
             implements ActorRuntime.ActorCodeExecutor {
+        private StateReceipt snapshotOf(Owned owned, long processed) {
+            Map<String, Long> frozen = new LinkedHashMap<>();
+            for (var entry : slots.entrySet()) {
+                frozen.put(entry.getKey(), owned.values[entry.getValue()]);
+            }
+            return new StateReceipt(owned.actor.id(), owned.actor.generation(),
+                    processed, frozen);
+        }
+
+        private StateReceipt readReceipt(ActorRuntime.ActorRef<Object> ref) {
+            StateReceipt receipt = receipts.get(ref.id());
+            if (receipt == null
+                    || !receipt.actorId().equals(ref.id())
+                    || receipt.generation() != ref.generation()
+                    || ref.kind() != ActorRuntime.ActorKind.SHARED
+                    || !ref.isAlive()) {
+                throw new SecurityException(
+                        "state receipt requires same live actor incarnation");
+            }
+            return receipt;
+        }
+
         private void requireTurn(String name, ActorRuntime.ActorContext<Object> context) {
-            if (!actorName.equals(name) || context.kind() != ActorRuntime.ActorKind.SHARED
+            if (descriptor.codeImage() != codeImage
+                    || !descriptor.actorName().equals(actorName)
+                    || !actorName.equals(name)
+                    || context.kind() != ActorRuntime.ActorKind.SHARED
                     || context.codeImage().orElse(null) != codeImage
                     || ActorRuntime.currentActorRuntime() != context.runtime()
                     || !context.self().id().equals(ActorRuntime.currentActorId().orElse(null))) {
@@ -320,7 +506,13 @@ final class NamespaceActorCriticalIrCompiler {
                 String name, ActorRuntime.ActorContext<Object> context) {
             requireTurn(name, context);
             if (context.currentMail().isPresent()) throw new SecurityException("init is activation only");
-            return new Owned(context.self(), initial);
+            Owned owned = new Owned(context.self(), initial);
+            StateReceipt prior = receipts.putIfAbsent(
+                    owned.actor.id(), snapshotOf(owned, 0L));
+            if (prior != null) {
+                throw new SecurityException("actor state receipt identity reused");
+            }
+            return owned;
         }
         @Override public void receiveActor(String name, ActorRuntime.ActorOwnedGuestState state,
                 ActorRuntime.ActorInboxMail<Object> mail,
@@ -333,6 +525,34 @@ final class NamespaceActorCriticalIrCompiler {
                 throw new SecurityException("mail must be a current owned ActorMail<int>");
             }
             for (CriticalPlan plan : calls) owned.apply(plan, input, context);
+            // This uses ActorRuntime's bounded, data-only, runtime-minted
+            // output channel. On full/closed output the actor turn fails
+            // rather than blocking its carrier or fabricating success.
+            // No mutable state reference or guest-held sender crosses out.
+            if (outputAddend != null) {
+                // Checked arithmetic prevents overflow from publishing a
+                // partial or falsely successful reply.
+                long value = Math.addExact(input, outputAddend);
+                context.runtime().emitCurrentActorOutput(value);
+            }
+            StateReceipt previous = receipts.get(owned.actor.id());
+            if (previous == null
+                    || previous.generation() != owned.actor.generation()) {
+                throw new SecurityException("actor state receipt generation changed");
+            }
+            long next = Math.addExact(previous.processed(), 1L);
+            receipts.put(owned.actor.id(), snapshotOf(owned, next));
+        }
+
+        @Override
+        public void tearDownActor(String name,
+                ActorRuntime.ActorOwnedGuestState state,
+                ActorRuntime.ActorContext<Object> context) {
+            requireTurn(name, context);
+            if (!(state instanceof Owned owned) || owned.actor != context.self()) {
+                throw new SecurityException("actor state retirement identity mismatch");
+            }
+            receipts.remove(owned.actor.id());
         }
     }
 }

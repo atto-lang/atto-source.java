@@ -47,6 +47,57 @@ final class CheckedNamespaceActorContextEvalTest {
     }
 
     @Test
+    void graalResultComesFromActualActorFieldNotDrainedMessageCount() throws Exception {
+        String changed = source()
+                .replace("let int received: 0;", "let int received: 5;")
+                .replace("let int budget: 10000;", "let int budget: 10005;");
+        try (var proof = CheckedNamespaceActorGuestProof.compile(
+                     "state-readback.atto", changed);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).build()) {
+            try (var lease = OresLanguage.openCheckedActorGuest(proof)) {
+                assertEquals(1005L,
+                        context.eval(guestSource(changed, "state-readback.atto")).asLong(),
+                        "Graal must return the actor-owned received field, not hard-coded 1000");
+            }
+        }
+    }
+
+    @Test
+    void graalActorTypeAndNamespaceComeFromCheckedSourceDescriptor() throws Exception {
+        String renamed = source()
+                .replace("use namespace foo;", "use namespace metrics;")
+                .replace("Probe", "Ledger");
+        try (var proof = CheckedNamespaceActorGuestProof.compile(
+                     "named-ledger.atto", renamed);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).build()) {
+            try (var lease = OresLanguage.openCheckedActorGuest(proof)) {
+                assertEquals(1000L,
+                        context.eval(guestSource(renamed, "named-ledger.atto")).asLong(),
+                        "declared actor type must be source-derived, not hardcoded Probe");
+            }
+        }
+    }
+
+    @Test
+    void checkedSourceWithWrongCriticalBudgetResultFailsStateProof() throws Exception {
+        String altered = source().replace(
+                "p.state.budget = p.state.budget - delta;",
+                "p.state.budget = p.state.budget + delta;");
+        try (var proof = CheckedNamespaceActorGuestProof.compile(
+                     "wrong-budget.atto", altered);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).build()) {
+            try (var lease = OresLanguage.openCheckedActorGuest(proof)) {
+                assertThrows(RuntimeException.class, () -> context.eval(
+                        guestSource(altered, "wrong-budget.atto")),
+                        "a checked but semantically wrong actor state must not be passed off as verified");
+            }
+        }
+    }
+
+    @Test
     void previouslyAdmittedActorSourceCannotBeReexecutedWithoutLease() throws Exception {
         String program = source();
         Source guest = guestSource(program, "one-shot-critical-ir.atto");
@@ -81,6 +132,23 @@ final class CheckedNamespaceActorContextEvalTest {
                 .allowAllAccess(false).build()) {
             assertThrows(RuntimeException.class, () -> context.eval(
                     guestSource(source(), "unleased-critical-ir.atto")));
+        }
+    }
+
+    @Test
+    void ordinaryGuestSpawnOfNamespaceActorIsStillBlockedUntilRealLowering() throws Exception {
+        String program = source() + """
+                pub fnc main(): int {
+                    let actor = spawn Probe();
+                    actor.send(1);
+                    return 1;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertThrows(RuntimeException.class,
+                    () -> context.eval(guestSource(program, "blocked-guest-spawn.atto")),
+                    "source-level spawn must remain rejected without actor guest lowering");
         }
     }
 

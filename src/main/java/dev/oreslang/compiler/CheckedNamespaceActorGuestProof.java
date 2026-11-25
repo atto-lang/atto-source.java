@@ -59,7 +59,9 @@ public final class CheckedNamespaceActorGuestProof implements AutoCloseable {
      *
      * <p>Demonstrates source-bound actor creation and 1,000 actual mailbox
      * turns without exposing any ActorRef or mutable state to guest code.
-     * Returns the number of admitted, drained messages, not state contents.
+     * Returns a verified immutable receipt of the first actor's
+     * "received" scalar field after all mailbox turns (not just a message
+     * count); the sibling's state and budget deltas are checked separately.
      */
     private long executeCheckedActorTurns(ActorRuntime runtime) {
         Objects.requireNonNull(runtime, "context-owned actor runtime");
@@ -69,8 +71,15 @@ public final class CheckedNamespaceActorGuestProof implements AutoCloseable {
         ActorRuntime.ActorRef<Object> first = null;
         ActorRuntime.ActorRef<Object> sibling = null;
         try {
-            first = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executable, "Probe");
-            sibling = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executable, "Probe");
+            var descriptor = NamespaceActorCriticalIrCompiler.descriptor(executable);
+            if (!descriptor.scalarFields().containsKey("received")
+                    || !descriptor.scalarFields().containsKey("budget")) {
+                throw new SecurityException("guest proof requires checked received/budget fields");
+            }
+            first = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executable, descriptor.actorName());
+            sibling = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executable, descriptor.actorName());
             first.ready().get(5, TimeUnit.SECONDS);
             sibling.ready().get(5, TimeUnit.SECONDS);
             if (first.id().equals(sibling.id())) {
@@ -83,7 +92,20 @@ public final class CheckedNamespaceActorGuestProof implements AutoCloseable {
             if (first.failure().isPresent() || sibling.failure().isPresent()) {
                 throw new IllegalStateException("checked actor mailbox execution failed");
             }
-            return 1_000L;
+            // Prove actual actor-owned values, not merely that messages
+            // drained. Snapshots were frozen on each owner's last turn;
+            // no mutable actor state, borrow or guest state handle escapes.
+            var a = NamespaceActorCriticalIrCompiler.receiptAfterDrain(executable, first);
+            var b = NamespaceActorCriticalIrCompiler.receiptAfterDrain(executable, sibling);
+            if (a.processed() != 1_000L || b.processed() != 1L
+                    || Math.subtractExact(a.require("received"), b.require("received"))
+                            != 993L
+                    || Math.subtractExact(b.require("budget"), a.require("budget"))
+                            != 993L) {
+                throw new SecurityException(
+                        "actor-owned critical state failed real mailbox readback proof");
+            }
+            return a.require("received");
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("checked guest actor proof interrupted", interrupted);

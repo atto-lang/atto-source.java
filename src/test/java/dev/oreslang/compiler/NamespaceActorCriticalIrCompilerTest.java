@@ -66,6 +66,92 @@ final class NamespaceActorCriticalIrCompilerTest {
     }
 
     @Test
+    void verifiedDescriptorBindsCodeImageActorNameAndImmutableCriticalLayout() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            var first = compile(store, source(), "ir/descriptor-a.atto");
+            var other = compile(store, source(), "ir/descriptor-b.atto");
+            var a = NamespaceActorCriticalIrCompiler.descriptor(first);
+            var b = NamespaceActorCriticalIrCompiler.descriptor(other);
+            assertSame(first.codeImage(), a.codeImage());
+            assertNotSame(a.codeImage(), b.codeImage(),
+                    "equal source bytes in separate code units are not the same executable identity");
+            assertEquals("foo", a.namespace());
+            assertEquals("Probe", a.actorName());
+            assertEquals(2, a.scalarFields().size());
+            assertTrue(a.scalarFields().containsKey("received"));
+            assertTrue(a.scalarFields().containsKey("budget"));
+            assertEquals(java.util.Set.of("add", "debit"), a.criticalMethods());
+            assertThrows(UnsupportedOperationException.class,
+                    () -> a.scalarFields().put("forged", 123));
+            assertThrows(UnsupportedOperationException.class,
+                    () -> a.criticalMethods().add("direct_receive"));
+        }
+    }
+
+    @Test
+    void immutableStateReceiptsProveRealFieldsAndSiblingIsolation() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var executable = compile(store, source(), "ir/state-receipts.atto");
+            var a = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executable, "Probe");
+            var b = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executable, "Probe");
+            a.ready().get(3, TimeUnit.SECONDS);
+            b.ready().get(3, TimeUnit.SECONDS);
+
+            var initial = NamespaceActorCriticalIrCompiler.receiptAfterDrain(executable, a);
+            assertEquals(a.id(), initial.actorId());
+            assertEquals(a.generation(), initial.generation());
+            assertEquals(0L, initial.processed());
+            assertEquals(0L, initial.require("received"));
+            assertEquals(10000L, initial.require("budget"));
+            assertThrows(UnsupportedOperationException.class,
+                    () -> initial.fields().put("received", 99999L),
+                    "outside actor cannot mutate a snapshot or owned state");
+
+            a.send(3L);
+            a.drain().get(3, TimeUnit.SECONDS);
+            var afterThree = NamespaceActorCriticalIrCompiler.receiptAfterDrain(executable, a);
+            assertEquals(1L, afterThree.processed());
+            assertEquals(3L, afterThree.require("received"));
+            assertEquals(9997L, afterThree.require("budget"));
+            assertEquals(0L, NamespaceActorCriticalIrCompiler
+                    .receiptAfterDrain(executable, b).require("received"));
+
+            a.send(4L);
+            a.drain().get(3, TimeUnit.SECONDS);
+            var afterSeven = NamespaceActorCriticalIrCompiler.receiptAfterDrain(executable, a);
+            assertEquals(2L, afterSeven.processed());
+            assertEquals(7L, afterSeven.require("received"));
+            assertEquals(9993L, afterSeven.require("budget"));
+            assertEquals(3L, afterThree.require("received"),
+                    "prior immutable state receipt must not track later writes");
+
+            a.stop();
+            a.done().get(3, TimeUnit.SECONDS);
+            assertThrows(SecurityException.class,
+                    () -> NamespaceActorCriticalIrCompiler.receiptAfterDrain(executable, a),
+                    "retired actor generation must not retain source-visible state authority");
+            b.stop();
+            b.done().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void anotherCompiledCodeImageCannotReadActorReceipt() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var original = compile(store, source(), "ir/receipt-owner.atto");
+            var outsider = compile(store, source(), "ir/receipt-outsider.atto");
+            var actor = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, original, "Probe");
+            actor.ready().get(3, TimeUnit.SECONDS);
+            assertThrows(SecurityException.class,
+                    () -> NamespaceActorCriticalIrCompiler.receiptAfterDrain(outsider, actor));
+            actor.stop();
+            actor.done().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void rejectsForgedActorIngressOutsidePhysicalTurn() throws Exception {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
