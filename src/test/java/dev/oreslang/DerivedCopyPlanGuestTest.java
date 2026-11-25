@@ -121,6 +121,32 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void shallowCapabilityDoesNotFollowOwnedMutableChildren() {
+        String source = """
+                define class Leaf as
+                  pub let int value = 0;
+                end
+                define class Parent as
+                  pub val Leaf child = new Leaf();
+                end
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var classes = new java.util.HashMap<String, Ast.ClassDecl>();
+        for (var module : parsed.modules()) {
+            for (var declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass) classes.put(klass.name(), klass);
+            }
+        }
+        assertInstanceOf(DerivedCopyPlanV1.Instance.class,
+                DerivedCopyPlanV1.deriveShallow(Ast.TypeRef.simple("Leaf"), classes::get));
+        assertInstanceOf(DerivedCopyPlanV1.Instance.class,
+                DerivedCopyPlanV1.derive(Ast.TypeRef.simple("Parent"), classes::get));
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                DerivedCopyPlanV1.deriveShallow(Ast.TypeRef.simple("Parent"), classes::get));
+        assertTrue(error.getMessage().contains("E_COPY_SHALLOW_ALIAS"));
+    }
+
+    @Test
     void rootTypedArrayCopyIsIndependentAndRetainsTypeForFurtherCopy() throws Exception {
         assertEquals("10|99|7", run("""
                 pub fnc main(): void {
