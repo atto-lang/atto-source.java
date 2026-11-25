@@ -1348,10 +1348,10 @@ public final class OwnershipChecker {
                     }
                     yield taken;
                 }
-                case "copy", "copy_deep" -> {
-                    // The explicit deep mode currently shares the verified
-                    // acyclic plan only; recursive graph execution remains
-                    // unadmitted until real guest ownership proof exists.
+                case "copy", "copy_shallow", "copy_deep" -> {
+                    // Single bang admits only a fresh root with immutable
+                    // immediate fields/elements. Legacy rt copy and double bang
+                    // retain the bounded acyclic deep path for now.
                     ValueInfo source = checkExpr(argument, scope, false);
                     CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
                     if (projected != null && projected.noCopy()) {
@@ -1366,8 +1366,9 @@ public final class OwnershipChecker {
                         // classification: classes remain move-only on normal
                         // arguments and assignments, while rt copy produces an
                         // independently allocated owned result.
-                        DerivedCopyPlanV1.Plan plan = DerivedCopyPlanV1.derive(
-                                source.type, this::findClass);
+                        DerivedCopyPlanV1.Plan plan = runtime.operation().equals("copy_shallow")
+                                ? DerivedCopyPlanV1.deriveShallow(source.type, this::findClass)
+                                : DerivedCopyPlanV1.derive(source.type, this::findClass);
                         if (!(plan instanceof DerivedCopyPlanV1.Instance
                                 || plan instanceof DerivedCopyPlanV1.Sequence)) {
                             throw error("E_COPY_UNPROVEN: only proven class or typed sequence roots have copy lowering in v1");
