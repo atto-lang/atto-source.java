@@ -197,6 +197,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     // Host-only opt-in queue, protected by the session monitor. Fixed capacity
     // allocated at trusted setup; no allocation is required to publish.
     private DataDelivery[] dataQueue;
+    private ActorIpcCodecProfileV1 codecProfile;
     private int dataHead, dataCount;
     private long queuedBytes, maxQueuedBytes;
     private ActorDataDecodeQuotaV1 transientQuota, retainedQuota;
@@ -405,6 +406,19 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
      * transient and retained accounts must be shared across tenant sessions.
      * This queue is a transport handoff, NOT an ActorRuntime mailbox.
      */
+    synchronized void bindCodecProfile(ActorIpcCodecProfileV1 profile, int allowed, int supported) {
+        requireNotTerminal("bind IPC codec profile");
+        if (codecProfile != null || dataQueue != null || bootstrapClaimed)
+            throw new IllegalStateException("codec profile must bind before bootstrap and queue");
+        Objects.requireNonNull(profile, "codec profile").requireAdmitted(allowed, supported,
+                artifact.wireCodecSha256(), artifact.messageAbiSha256());
+        codecProfile = profile;
+    }
+
+    synchronized ActorIpcCodecProfileV1 codecProfile() {
+        return codecProfile;
+    }
+
     synchronized void bindDataQueue(int slots, long bytes,
             ActorDataDecodeQuotaV1 transientBudget, ActorDataDecodeQuotaV1 retainedBudget) {
         requireNotTerminal("bind IPC DATA queue");
@@ -423,8 +437,12 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     static final class DataDelivery implements AutoCloseable {
         private final ActorDataDecodeQuotaV1.Lease credit;
         private final int charge;
+        private final ActorIpcCodecProfileV1 codecProfile;
         private Frame frame;
-        private DataDelivery(ActorDataDecodeQuotaV1.Lease credit, int charge) { this.credit = credit; this.charge = charge; }
+        private DataDelivery(ActorDataDecodeQuotaV1.Lease credit, int charge, ActorIpcCodecProfileV1 codecProfile) {
+            this.credit = credit; this.charge = charge; this.codecProfile = codecProfile;
+        }
+        ActorIpcCodecProfileV1 codecProfile() { return codecProfile; }
         synchronized long messageSequence() {
             if (frame == null) throw new IllegalStateException("closed DATA delivery");
             return frame.messageSequence();
@@ -463,7 +481,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         boolean published = false;
         try {
             // Allocate the delivery before sequence consumption.
-            delivery = new DataDelivery(credit, charge);
+            delivery = new DataDelivery(credit, charge, codecProfile);
             Frame frame = tryAcceptWorkerDataFrameInternal(wire, transientQuota);
             if (frame == null) return false;
             delivery.frame = frame;
