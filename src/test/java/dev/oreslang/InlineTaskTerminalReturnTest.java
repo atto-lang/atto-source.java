@@ -253,4 +253,63 @@ final class InlineTaskTerminalReturnTest {
                 () -> Parser.parseStrictAtto(source)).getMessage()
                 .contains("E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED"));
     }
+
+    @Test void orderedEarlyReturnChainEvaluatesOnlySelectedBranch() throws Exception {
+        String source = """
+                fnc matches(int value, int target): bool { return value eq target; }
+                fnc choose(int route): int {
+                  let int count = 0;
+                  val int result = sync task<int> {
+                    if matches(route, 0) && count eq 0 do
+                      count = count + 2;
+                      return 40;
+                    elif matches(route, 1) then
+                      count = count + 3;
+                      return 39;
+                    fi
+                    count = count + 4;
+                    return 38;
+                  };
+                  return result + count;
+                }
+                pub fnc main(): int {
+                  guard choose(0) eq 42, choose(1) eq 42, choose(2) eq 42 { return 1; }
+                  return 42;
+                }
+                """;
+        assertEquals(42L, run(source));
+    }
+
+    @Test void conditionalReturnBudgetIsBounded() {
+        String prefix = "pub fnc main(): int { return sync task<int> { ";
+        String branch = "if false do return 1; fi ";
+        String suffix = "return 42; }; }";
+        assertDoesNotThrow(() -> Parser.parseStrictAtto(prefix + branch.repeat(16) + suffix));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> Parser.parseStrictAtto(prefix + branch.repeat(17) + suffix))
+                .getMessage().contains("E_SYNC_TASK_EARLY_RETURN_BUDGET"));
+    }
+
+    @Test void skippedShortCircuitTasksCannotMutateOuterState() throws Exception {
+        String source = """
+                fnc choose(bool run): int {
+                  let int count = 0;
+                  val bool result = run && sync task<bool> {
+                    count = count + 2;
+                    return true;
+                  };
+                  if run do
+                    guard result { return 1; }
+                    return 40 + count;
+                  fi
+                  guard !result { return 2; }
+                  return 42 + count;
+                }
+                pub fnc main(): int {
+                  guard choose(true) eq 42, choose(false) eq 42 { return 1; }
+                  return 42;
+                }
+                """;
+        assertEquals(42L, run(source));
+    }
 }
