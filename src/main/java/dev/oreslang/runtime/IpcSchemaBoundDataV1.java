@@ -45,6 +45,10 @@ final class IpcSchemaBoundDataV1 {
             this.schema = schema.getBytes(StandardCharsets.US_ASCII);
             this.digest = shapeDigest.clone();
         }
+        boolean sameBinding(Binding other){
+            return other!=null&&codec==other.codec&&version==other.version
+                    &&MessageDigest.isEqual(schema,other.schema)&&MessageDigest.isEqual(digest,other.digest);
+        }
     }
 
     private IpcSchemaBoundDataV1() { }
