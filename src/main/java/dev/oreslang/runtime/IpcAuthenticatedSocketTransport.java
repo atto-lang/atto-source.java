@@ -69,6 +69,9 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private final Object sendGate = new Object();
     private final Object readGate = new Object();
     private final Object writeGate = new Object();
+    // Close intent must fence new receipt transactions before physical close.
+    private volatile boolean receiptReadsClosed;
+    private final Object encodingKeyGate = new Object();
 
     IpcAuthenticatedSocketTransport(
             Socket socket,
@@ -79,6 +82,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             byte[] macKey,
             byte[] connectionBinding,
             IpcTransportSessionLease.CleanupScheduler cleanupScheduler) throws IOException {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC socket transport construction");
         this.socket = Objects.requireNonNull(socket, "socket");
         this.receipts = Objects.requireNonNull(receipts, "receipts");
         this.trustedEpoch = Objects.requireNonNull(trustedEpoch, "trustedEpoch");
@@ -122,24 +127,16 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             }
             throw constructionFailure;
         }
-        try {
-            receipts.claimPhysicalTransport(
-                    physicalOwner, trustedEpoch, physicalGeneration);
-        } catch (RuntimeException | Error bindingFailure) {
-            Arrays.fill(privateMacKey, (byte) 0);
-            try {
-                socket.close();
-            } catch (IOException closeFailure) {
-                bindingFailure.addSuppressed(closeFailure);
-            }
-            throw bindingFailure;
-        }
+        // Prepare all remaining transport state BEFORE the irreversible
+        // bridge claim. Constructor failure must not strand a bridge that
+        // could otherwise have been reused by a valid physical session.
         this.macKey = privateMacKey;
         this.connectionBinding = privateConnectionBinding;
         this.physicalGeneration = physicalGeneration;
         this.input = socketInput;
         this.output = socketOutput;
-        this.sessionLease = new IpcTransportSessionLease(
+        try {
+            this.sessionLease = new IpcTransportSessionLease(
                 trustedEpoch,
                 physicalGeneration,
                 maxOutstandingWrites,
@@ -147,20 +144,40 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 physicalOwner,
                 (ignoredEnvelope, preparedFrame) -> {
                     synchronized (writeGate) {
-                        writeWireFrame(output, preparedFrame);
+                        try {
+                            writeWireFrame(output, preparedFrame);
+                        } catch (IOException | RuntimeException | Error failure) {
+                            receiptReadsClosed = true;
+                            throw failure;
+                        }
                     }
                 },
                 () -> {
-                    try {
-                        socket.close();
-                    } finally {
-                        // This is our private clone, never the broker's input.
-                        // Destroy only after the lease has drained physical
-                        // writers and entered authoritative close cleanup.
-                        Arrays.fill(this.macKey, (byte) 0);
+                    receiptReadsClosed = true;
+                    // If close throws, the lease quarantines this generation.
+                    // Do not wait on a potentially blocked reader or erase its
+                    // key until an explicit successful close retry.
+                    socket.close();
+                    synchronized (readGate) {
+                        synchronized (encodingKeyGate) {
+                            Arrays.fill(this.macKey, (byte) 0);
+                        }
                     }
                 },
                 this.cleanupScheduler);
+            // Claim is the last potentially throwing construction action.
+            // No partially created lease becomes visible to callers.
+            receipts.claimPhysicalTransport(
+                    physicalOwner, trustedEpoch, physicalGeneration);
+        } catch (RuntimeException | Error constructionFailure) {
+            Arrays.fill(privateMacKey, (byte) 0);
+            try {
+                socket.close();
+            } catch (IOException closeFailure) {
+                constructionFailure.addSuppressed(closeFailure);
+            }
+            throw constructionFailure;
+        }
     }
 
     /**
@@ -191,8 +208,19 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         // ambiguous remote-delivery state or consume a correlation slot.
         final byte[] preparedFrame;
         try {
-            preparedFrame = encodeDataFrame(
-                    message, body, physicalGeneration, connectionBinding, macKey);
+            // Do not race MAC encoding against key retirement. This lock
+            // covers memory-only work, never physical socket I/O or callbacks.
+            synchronized (encodingKeyGate) {
+                if (receiptReadsClosed) {
+                    return new SendSubmission(CompletableFuture.completedFuture(
+                            IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE)
+                            .minimalCompletionStage(),
+                            new IpcTransportSessionLease.PreDispatchRejectedException(
+                                    "closed IPC transport"));
+                }
+                preparedFrame = encodeDataFrame(
+                        message, body, physicalGeneration, connectionBinding, macKey);
+            }
         } catch (IOException impossibleMemoryEncodingFailure) {
             throw new IllegalStateException(
                     "in-memory authenticated IPC frame encoding failed",
@@ -221,23 +249,27 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     IpcReceiptCorrelation.Stage readVerifiedReceipt() throws IOException {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt read");
         try {
-            // TCP receipt order is protocol order. Keep frame consumption,
-            // authentication, epoch validation and ledger transition under
-            // one receive gate so concurrent host readers cannot read ACK then
-            // COMMIT in order but apply those state transitions out of order.
+            if (receiptReadsClosed) throw new IOException("IPC receipt read after close request");
+            // TCP receipt order is protocol order. Read, authenticate and
+            // advance the ledger under one receive gate, but NEVER complete
+            // a user-observable future while holding it: dependent callbacks
+            // may synchronously wait for a second host receipt reader.
+            final DecodedReceipt receipt;
+            final IpcReceiptCompletionBridge.PreparedDelivery terminal;
             synchronized (readGate) {
+                if (receiptReadsClosed) throw new IOException("IPC receipt read after close request");
                 byte[] frame = readReceiptWireFrame(input);
-                DecodedReceipt receipt = decodeReceiptFrame(
-                        frame, connectionBinding, macKey);
+                receipt = decodeReceiptFrame(frame, connectionBinding, macKey);
                 if (receipt.physicalGeneration() != physicalGeneration) {
                     throw new IOException("stale IPC physical transport generation");
                 }
                 requireTrustedEpoch(receipt.envelope());
-                receipts.acceptVerified(
+                terminal = receipts.acceptVerifiedDeferred(
                         physicalOwner, receipt.envelope(),
                         physicalGeneration, receipt.stage());
-                return receipt.stage();
             }
+            if (terminal != null) terminal.deliver();
+            return receipt.stage();
         } catch (IOException | RuntimeException | Error failure) {
             // Authentication, framing, EOF and state-machine violations are
             // fatal to this physical session. Never continue parsing a
@@ -250,6 +282,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     void requestClose() {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC transport close request");
+        receiptReadsClosed = true;
         // Fence new sends first. If a physical write is still pinned, submit
         // the abort to the same bounded host cleanup domain; never run
         // Socket.close() on the requesting/actor carrier.
@@ -287,14 +320,15 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         Thread caller = Thread.currentThread();
         try {
             cleanupScheduler.enqueue(() -> {
+                // A bad scheduler may dispatch this callback onto a different
+                // actor carrier. Reject before any lease monitor acquisition
+                // or Socket.close(); a host supervisor timeout/retry keeps the
+                // generation fail-closed without parking guest execution.
+                RuntimeBlockingGuard.requireBlockingHostThread(
+                        "IPC transport abort worker");
                 if (Thread.currentThread() == caller) {
                     sessionLease.quarantineIfUnsettled(new IllegalStateException(
                             "IPC abort scheduler executed inline on requesting carrier"));
-                    return;
-                }
-                if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                    sessionLease.quarantineIfUnsettled(new IllegalStateException(
-                            "IPC abort scheduler executed on an actor carrier"));
                     return;
                 }
                 try {
@@ -344,8 +378,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
 
     /** Package-local audit hook: exposes no key bytes. */
     boolean keyCloneZeroized() {
-        for (byte value : macKey) if (value != 0) return false;
-        return true;
+        synchronized (encodingKeyGate) {
+            for (byte value : macKey) if (value != 0) return false;
+            return true;
+        }
     }
 
     @Override
@@ -407,19 +443,32 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         private long lastMessageSequence;
         private long lastFrameSequence;
 
-        synchronized void accept(IpcReceiptCorrelation.Envelope envelope) {
+        void accept(IpcReceiptCorrelation.Envelope envelope) {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC inbound replay gate");
             Objects.requireNonNull(envelope, "envelope");
-            if (envelope.messageSequence() <= lastMessageSequence
-                    || envelope.frameSequence() <= lastFrameSequence) {
-                throw new IllegalArgumentException(
-                        "duplicate/reordered authenticated IPC DATA sequence");
+            synchronized (this) {
+                if (envelope.messageSequence() <= lastMessageSequence
+                        || envelope.frameSequence() <= lastFrameSequence) {
+                    throw new IllegalArgumentException(
+                            "duplicate/reordered authenticated IPC DATA sequence");
+                }
+                lastMessageSequence = envelope.messageSequence();
+                lastFrameSequence = envelope.frameSequence();
             }
-            lastMessageSequence = envelope.messageSequence();
-            lastFrameSequence = envelope.frameSequence();
         }
 
-        synchronized long lastMessageSequence() { return lastMessageSequence; }
-        synchronized long lastFrameSequence() { return lastFrameSequence; }
+        long lastMessageSequence() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC inbound replay snapshot");
+            synchronized (this) { return lastMessageSequence; }
+        }
+
+        long lastFrameSequence() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC inbound replay snapshot");
+            synchronized (this) { return lastFrameSequence; }
+        }
     }
 
     static byte[] encodeDataFrame(
