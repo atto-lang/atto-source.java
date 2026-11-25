@@ -100,6 +100,7 @@ public final class FrozenScalarImportCompiler {
             aliases.add(new StaticImportGraph.Alias(name,reference));
         }
         StaticImportGraph.precheckAliases(aliases);
+        FrozenDependencyGraph.verify(packages);
         for(var imported:imports) {
             if(imported.selector()==null) {
                 var pkg=available.get(imported.source());
