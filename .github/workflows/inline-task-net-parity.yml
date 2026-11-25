@@ -72,3 +72,79 @@ jobs:
           name: inline-task-net-parity-${{ matrix.runner }}-${{ matrix.mode }}
           path: target/inline-task-net-parity.log
           if-no-files-found: warn
+
+  trace-entropy:
+    name: TraceParent native entropy component (not guest parity)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ github.token }}
+      - name: Compile real TraceParent and exercise independent JVM and native processes
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git log -1 --format='%H %T'
+          git hash-object src/main/java/dev/oreslang/runtime/TraceParent.java
+          test -z "$(git status --porcelain)"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          mkdir -p "$work/classes"
+          cat > "$work/TraceEntropyProbe.java" <<'JAVA'
+          import dev.oreslang.runtime.TraceParent;
+          public class TraceEntropyProbe {
+              public static void main(String[] args) {
+                  var parent = TraceParent.newRoot(true);
+                  var child = parent.newChild();
+                  if (!parent.sampled() || !child.sampled()
+                          || !parent.traceId().equals(child.traceId())
+                          || parent.spanId().equals(child.spanId())
+                          || !TraceParent.parse(parent.toHeader()).orElseThrow().equals(parent)
+                          || !TraceParent.parse(child.toHeader()).orElseThrow().equals(child)) {
+                      throw new AssertionError("invalid trace context");
+                  }
+                  System.out.println(parent.toHeader());
+                  System.out.println(child.toHeader());
+              }
+          }
+          JAVA
+          javac -d "$work/classes" src/main/java/dev/oreslang/runtime/TraceParent.java "$work/TraceEntropyProbe.java"
+          native-image --no-fallback --initialize-at-run-time=dev.oreslang.runtime.TraceParent -cp "$work/classes" -o "$work/probe" TraceEntropyProbe
+          file "$work/probe" | grep -E 'Mach-O.*arm64'
+          for mode in jvm native; do
+            for attempt in 1 2 3 4; do
+              if [[ "$mode" == jvm ]]; then
+                java -cp "$work/classes" TraceEntropyProbe > "$work/$mode-$attempt"
+              else
+                "$work/probe" > "$work/$mode-$attempt"
+              fi
+            done
+          done
+          python3 - "$work" <<'PY'
+          import pathlib, re, sys
+          work = pathlib.Path(sys.argv[1])
+          roots, spans = set(), set()
+          for mode in ("jvm", "native"):
+              for attempt in range(1, 5):
+                  lines = (work / f"{mode}-{attempt}").read_text().splitlines()
+                  assert len(lines) == 2, lines
+                  p, c = [re.fullmatch(r"00-([0-9a-f]{32})-([0-9a-f]{16})-01", line) for line in lines]
+                  assert p and c
+                  assert int(p[1], 16) and p[1] == c[1] and p[1] not in roots
+                  roots.add(p[1])
+                  for match in (p, c):
+                      assert int(match[2], 16) and match[2] not in spans
+                      spans.add(match[2])
+          assert len(roots) == 8 and len(spans) == 16
+          print("TRACE_ENTROPY_COMPONENT_PASS independent_processes=8 roots=8 spans=16 GUEST_PARITY=NOT_EXECUTED")
+          PY
