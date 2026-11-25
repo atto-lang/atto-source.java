@@ -119,8 +119,16 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void adjacentCopyBangsAreDistinctFromLogicalNegation() {
+        assertEquals(source("copy!!foo"), source("copy!! foo"));
+        assertNotEquals(source("copy!!foo"), source("copy! !foo"));
+        assertEquals(source("copy! !foo"), source("copy!/* separator */!foo"));
+        assertThrows(IllegalArgumentException.class, () -> source("copy!!"));
+    }
+
+    @Test
     void deepPrefixChainsFailDeterministicallyInsteadOfOverflowingTheJvmStack() {
-        for (String prefix : new String[]{"copy!", "borrow!", "take!",
+        for (String prefix : new String[]{"copy!", "copy!!", "borrow!", "take!",
                 "share!", "mut borrow! copy!", "!"}) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> source(prefix.repeat(200) + "foo"), prefix);

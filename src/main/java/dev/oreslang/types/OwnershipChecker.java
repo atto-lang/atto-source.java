@@ -1581,7 +1581,7 @@ public final class OwnershipChecker {
                     }
                     yield taken;
                 }
-                case "copy" -> {
+                case "copy", "copy!!" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
                     // Main permits an explicit copy from an implicit immutable self receiver
                     // (certified immutable fields); a nested borrow inside the copied type
@@ -1606,6 +1606,8 @@ public final class OwnershipChecker {
                     ValueInfo copied = null;
                     if (source.kind == ValueKind.COPY) {
                         copied = source;
+                    } else if (runtime.operation().equals("copy!!")) {
+                        throw error(E_COPY_GRAPH_UNPROVEN, "copy!! requires a proven independent value");
                     } else if (source.type != null && withCopyEligibleClass(source.type)
                             && source.kind != ValueKind.MUT_BORROW
                             && !scope.hasLiveMutexGuard()) {

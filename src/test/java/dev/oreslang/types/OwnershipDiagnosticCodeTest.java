@@ -105,6 +105,7 @@ final class OwnershipDiagnosticCodeTest {
                 OwnershipDiagnosticCode.E_ACTOR_LOAN_ESCAPE,
                 OwnershipDiagnosticCode.E_TASK_CAPTURE,
                 OwnershipDiagnosticCode.E_COPY_SHALLOW_ALIAS,
+                OwnershipDiagnosticCode.E_COPY_GRAPH_UNPROVEN,
                 OwnershipDiagnosticCode.E_SHARE_ALIAS);
         Set<OwnershipDiagnosticCode> actual = EnumSet.noneOf(OwnershipDiagnosticCode.class);
         for (OwnershipDiagnosticCode code : OwnershipDiagnosticCode.values()) {

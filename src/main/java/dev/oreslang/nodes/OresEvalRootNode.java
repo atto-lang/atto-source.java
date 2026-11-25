@@ -9122,6 +9122,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 // Borrow/take alter compiler ownership state, not the JVM handle.
                 case "borrow", "take" -> value;
+                case "copy!!" -> {
+                    if (!(value instanceof Long || value instanceof Boolean)) {
+                        throw new IllegalStateException(
+                                "E_COPY_GRAPH_UNPROVEN: copy!! requires an int or bool value");
+                    }
+                    yield value;
+                }
                 case "share", "copy" -> {
                     if (containsAtomicCell(value,
                             java.util.Collections.newSetFromMap(new IdentityHashMap<>()),
