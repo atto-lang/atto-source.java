@@ -61,12 +61,10 @@ jobs:
           distribution: graalvm
       - name: Test dependency retry classification (host-only)
         run: bash tests/fixtures/sharkbench-admission/test-maven-retry.sh
-      - name: Run all NativeHttpTest cases with bounded fork and diagnostics
-        timeout-minutes: 12
-        run: |
-          set -euo pipefail
-          bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=NativeHttpTest -Dsurefire.failIfNoSpecifiedTests=true -Dsurefire.forkedProcessTimeoutInSeconds=480 -Djunit.jupiter.execution.timeout.default=60s -Djunit.jupiter.execution.timeout.threaddump.enabled=true test
-      - name: Report completed test cases on failure
+      - name: Run every NativeHttpTest method in a separately bounded JVM
+        timeout-minutes: 27
+        run: bash tests/fixtures/sharkbench-admission/run-native-http.sh
+      - name: Report isolated test receipts on failure
         if: failure()
         run: |
           find target/surefire-reports -maxdepth 1 -type f -name '*NativeHttpTest*' -print -exec tail -c 12000 {} \; || true

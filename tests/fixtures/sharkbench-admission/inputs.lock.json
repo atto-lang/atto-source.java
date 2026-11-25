@@ -5,7 +5,7 @@
   "benchmark_commit": "a87f57a063d1ae621a91a0fcb3e1420726865ab5",
   "benchmark_tree": "4f85bc3ad8a5be98a39974ff564ef91957c56775",
   "blobs": {
-    "tests/fixtures/sharkbench-admission/sharkbench-web.atto": "7cb1932bd2def3906770747c7ec042313174a268",
+    "tests/fixtures/sharkbench-admission/sharkbench-web.atto": "85d33dae2ea2021fbfdf6e6e87311adb96e1ff28",
     "tests/fixtures/sharkbench-admission/check_contract.py": "2f5514245444e5fc9f268f18bf73a5a09a58b3e2",
     "tests/fixtures/sharkbench-admission/check_faults.py": "7dd3671428f87aff533444b0e5a76e99b729c74c",
     "tests/fixtures/sharkbench-admission/check_lifecycle.py": "805b1318ce56495535f80699553abd09223118be"
@@ -18,5 +18,11 @@
   "additional_probe_source": {
     "repo": "atto-lang/atto-benchmarks",
     "commit": "df8e5dc33a9ecb28d8d43713335f2db71032a84c"
+  },
+  "workload_source": {
+    "repo": "atto-lang/atto-benchmarks",
+    "commit": "d546d81dec7aaf209f619943d2368f9212c0b10f",
+    "tree": "6fa1c16d27dae7a5c924d54e862a8cfd240ed219",
+    "path": "benchmark/web/sharkbench/adapters/jvm/sharkbench-web.atto"
   }
 }
