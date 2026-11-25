@@ -11,7 +11,7 @@ on:
 permissions:
   contents: read
 jobs:
-  integrated-guest:
+  compiler-regressions:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -34,9 +34,81 @@ jobs:
           distribution: graalvm
       - name: Test dependency retry classification (host-only)
         run: bash tests/fixtures/sharkbench-admission/test-maven-retry.sh
-      - name: Run compiler and runtime regression gates
+      - name: Run compiler and runtime regression gates excluding isolated NativeHttpTest
         run: |
           set -euo pipefail
-          bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=SharkBenchTransportGuestTest,OutboundHttpRequestGuestTest,NativeHttpTest,StringTransformTest,Utf8StringAbiTest,CanonicalJsonGuestTest,AllocJsonTextTest,OresJsonValueTest,OresKeyedMapTest,OresKeyedMapLookupOptionTest,SymbolPropertyKeyCodecTest -Dsurefire.failIfNoSpecifiedTests=true test
+          bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=SharkBenchTransportGuestTest,OutboundHttpRequestGuestTest,StringTransformTest,Utf8StringAbiTest,CanonicalJsonGuestTest,AllocJsonTextTest,OresJsonValueTest,OresKeyedMapTest,OresKeyedMapLookupOptionTest,SymbolPropertyKeyCodecTest -Dsurefire.failIfNoSpecifiedTests=true test
+  native-http-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact compiler head and tree
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD HEAD^{tree}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+      - name: Test dependency retry classification (host-only)
+        run: bash tests/fixtures/sharkbench-admission/test-maven-retry.sh
+      - name: Run all NativeHttpTest cases with bounded fork and diagnostics
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=NativeHttpTest -Dsurefire.failIfNoSpecifiedTests=true -Dsurefire.forkedProcessTimeoutInSeconds=480 -Djunit.jupiter.execution.timeout.default=60s -Djunit.jupiter.execution.timeout.threaddump.enabled=true test
+      - name: Report completed test cases on failure
+        if: failure()
+        run: |
+          find target/surefire-reports -maxdepth 1 -type f -name '*NativeHttpTest*' -print -exec tail -c 12000 {} \; || true
+  workload-probes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact compiler head and tree
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD HEAD^{tree}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+      - name: Test dependency retry classification (host-only)
+        run: bash tests/fixtures/sharkbench-admission/test-maven-retry.sh
       - name: Compile and run actual two-route Atto application
         run: bash tests/fixtures/sharkbench-admission/run.sh
+  integrated-guest:
+    if: always()
+    needs: [compiler-regressions, native-http-regressions, workload-probes]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require all three independent gates
+        env:
+          COMPILER_RESULT: ${{ needs.compiler-regressions.result }}
+          HTTP_RESULT: ${{ needs.native-http-regressions.result }}
+          WORKLOAD_RESULT: ${{ needs.workload-probes.result }}
+        run: |
+          set -euo pipefail
+          printf 'compiler=%s native_http=%s workload=%s\n' "$COMPILER_RESULT" "$HTTP_RESULT" "$WORKLOAD_RESULT"
+          test "$COMPILER_RESULT" = success
+          test "$HTTP_RESULT" = success
+          test "$WORKLOAD_RESULT" = success
