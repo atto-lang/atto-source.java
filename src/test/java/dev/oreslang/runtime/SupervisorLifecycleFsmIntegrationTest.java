@@ -27,6 +27,8 @@ final class SupervisorLifecycleFsmIntegrationTest {
                     () -> { throw injected; }, () -> fallback));
             assertEquals(java.util.List.of(injected), failures);
             assertTrue(tree.status().hasFailures());
+            assertTrue(root.lifecycle().coordinatorFailed(),
+                    "fallback cannot erase infrastructure CONTROL fault");
             assertFalse(root.lifecycle().actorsDone(), "initiation is not retirement");
             assertFalse(root.terminated().isDone());
             while (!queued.isEmpty()) queued.removeFirst().run();
@@ -56,6 +58,8 @@ final class SupervisorLifecycleFsmIntegrationTest {
                             () -> { throw first; }, () -> { throw second; })));
             assertEquals(java.util.List.of(first, second), failures);
             assertTrue(tree.status().hasFailures());
+            assertTrue(root.lifecycle().coordinatorFailed(),
+                    "both initiation failures must leave CONTROL fault visible");
             assertFalse(root.lifecycle().actorsDone());
             assertFalse(root.terminated().isDone());
             assertFalse(tree.status().allLogicallyStopped());
@@ -122,6 +126,8 @@ final class SupervisorLifecycleFsmIntegrationTest {
                     java.time.Duration.ofSeconds(1), rejectedWatchdog);
             assertTrue(tree.status().hasFailures(),
                     "failed deadline registration must appear in status immediately");
+            assertTrue(root.lifecycle().coordinatorFailed(),
+                    "a rejected watchdog is a CONTROL failure, not a guest hook failure");
             assertFalse(tree.status().allPhysicallyReclaimed());
             assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> bounded.get(5, TimeUnit.SECONDS));

@@ -89,6 +89,7 @@ public final class SupervisorLifecycleFsm {
             boolean postHookFailed,
             boolean physicalReleased,
             boolean failed,
+            boolean coordinatorFailed,
             boolean deadlineExpired) {
         public State {
             Objects.requireNonNull(phase, "phase");
@@ -117,7 +118,7 @@ public final class SupervisorLifecycleFsm {
                 throw new IllegalArgumentException("failure without matching completed receipt");
             }
             if (!failed && (preHookFailed || actorsFailed || postHookFailed
-                    || !failedChildren.isEmpty())) {
+                    || coordinatorFailed || !failedChildren.isEmpty())) {
                 throw new IllegalArgumentException("aggregate failure must be sticky");
             }
             if (physicalReleased && !actorsDone) {
@@ -136,10 +137,14 @@ public final class SupervisorLifecycleFsm {
         public static State initial() {
             return new State(Phase.RUNNING, 1L, 0L, Set.of(), Map.of(), Set.of(), Set.of(),
                     Set.of(), false, false, false, false, false, false,
-                    false, false, false);
+                    false, false, false, false);
         }
-        public boolean admissionsOpen() { return phase == Phase.RUNNING; }
-        public boolean restartPermitted() { return phase == Phase.RUNNING; }
+        public boolean admissionsOpen() {
+            return phase == Phase.RUNNING && !coordinatorFailed;
+        }
+        public boolean restartPermitted() {
+            return phase == Phase.RUNNING && !coordinatorFailed;
+        }
         public boolean logicallyStopped() {
             return phase == Phase.STOPPED || phase == Phase.RECLAIMED;
         }
@@ -176,12 +181,14 @@ public final class SupervisorLifecycleFsm {
         boolean post = s.postHookDone();
         boolean released = s.physicalReleased();
         boolean failed = s.failed();
+        boolean controlFault = s.coordinatorFailed();
         boolean timedOut = s.deadlineExpired();
         long epoch = s.epoch();
 
         if (e instanceof RestartRequested) {
             if (p == Phase.RESTARTING) return s;
             require(p == Phase.RUNNING, "restart requested after shutdown fence");
+            require(!controlFault, "cannot restart supervisor with lost CONTROL authority");
             // RUNNING has open admissions: any earlier retirement receipt
             // may describe a smaller, already replaced worker snapshot.
             // A restart MUST revalidate old-incarnation actor retirement
@@ -192,6 +199,7 @@ public final class SupervisorLifecycleFsm {
             next = Phase.RESTARTING;
         } else if (e instanceof RestartCommitted) {
             require(p == Phase.RESTARTING, "restart completion out of order");
+            require(!controlFault, "cannot commit restart after CONTROL failure");
             require(actors && released, "cannot restart before old actor/arena retirement");
             if (epoch == Long.MAX_VALUE) throw new IllegalStateException("epoch overflow");
             epoch++;
@@ -203,6 +211,7 @@ public final class SupervisorLifecycleFsm {
             failedChildren = Set.of();
             pre = actors = post = released = failed = timedOut = false;
             preFailed = actorFailed = postFailed = false;
+            controlFault = false; // Proven false by the guard above.
         } else if (e instanceof ShutdownWithChildEpochs request) {
             if (p != Phase.RUNNING && p != Phase.RESTARTING) {
                 require(expected.equals(request.children().keySet())
@@ -210,6 +219,7 @@ public final class SupervisorLifecycleFsm {
                         "conflicting or downgraded shutdown child generations");
                 return s;
             }
+            require(!controlFault, "cannot begin guest-hook shutdown after CONTROL loss");
             expected = request.children().keySet();
             generations = request.children();
             done = Set.of();
@@ -231,6 +241,7 @@ public final class SupervisorLifecycleFsm {
                         "conflicting or unauthenticated shutdown child set for frozen epoch");
                 return s;
             }
+            require(!controlFault, "cannot begin guest-hook shutdown after CONTROL loss");
             expected = request.children();
             generations = Map.of();
             done = Set.of();
@@ -342,7 +353,11 @@ public final class SupervisorLifecycleFsm {
             failed |= result.failed();
             next = released && reclaimed.equals(expected) ? Phase.RECLAIMED : Phase.STOPPED;
         } else if (e instanceof CoordinatorFailed) {
-            if (failed) return s;
+            if (controlFault) return s;
+            // A hook or actor may already have reported failure. Even then,
+            // a separate infrastructure fault must remain visible and bar
+            // restart: ordinary failed=true is insufficient evidence.
+            controlFault = true;
             failed = true;
         } else if (e instanceof DeadlineExpired) {
             if (timedOut || p == Phase.RECLAIMED) return s;
@@ -369,6 +384,7 @@ public final class SupervisorLifecycleFsm {
                 && pre == s.preHookDone()
                 && actors == s.actorsDone() && post == s.postHookDone()
                 && released == s.physicalReleased() && failed == s.failed()
+                && controlFault == s.coordinatorFailed()
                 && timedOut == s.deadlineExpired()) return s;
 
         if (s.revision() == Long.MAX_VALUE) {
@@ -377,7 +393,7 @@ public final class SupervisorLifecycleFsm {
         return new State(next, epoch, s.revision() + 1,
                 expected, generations, done, reclaimed, failedChildren,
                 pre, actors, post, preFailed, actorFailed, postFailed,
-                released, failed, timedOut);
+                released, failed, controlFault, timedOut);
     }
 
     private static void require(boolean condition, String error) {

@@ -117,6 +117,48 @@ public final class SupervisorLifecycleFsmOracle {
         check(staleShutdown.phase() == SupervisorLifecycleFsm.Phase.RECLAIMED,
                 "fresh physical receipt not recognized");
 
+        // A trusted runtime CONTROL failure cannot be erased by an actor
+        // restart even when an earlier actor/hook failure already set failed.
+        var coordinator = SupervisorLifecycleFsm.State.initial();
+        coordinator = apply(coordinator,
+                new SupervisorLifecycleFsm.CoordinatorFailed(1));
+        check(coordinator.failed() && coordinator.coordinatorFailed(),
+                "lost initial coordinator infrastructure fault");
+        check(!coordinator.admissionsOpen() && !coordinator.restartPermitted(),
+                "supervisor advertised admissions after losing CONTROL");
+        mustReject(coordinator, new SupervisorLifecycleFsm.RestartRequested(1));
+        mustReject(coordinator, new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of()));
+        mustReject(coordinator, new SupervisorLifecycleFsm.ShutdownWithChildEpochs(
+                1, Map.of()));
+        // Emergency cleanup is an independent host path; it must not
+        // pretend CONTROL can still initiate guest shutdown hooks.
+        var afterCoordinator = apply(coordinator,
+                new SupervisorLifecycleFsm.CoordinatorFailed(1));
+        check(afterCoordinator == coordinator, "duplicate coordinator fault mutated state");
+
+        var hookAndCoordinator = SupervisorLifecycleFsm.State.initial();
+        hookAndCoordinator = apply(hookAndCoordinator,
+                new SupervisorLifecycleFsm.ShutdownWithChildEpochs(1, Map.of()));
+        hookAndCoordinator = apply(hookAndCoordinator,
+                new SupervisorLifecycleFsm.BeforeHookFinished(1, true));
+        check(hookAndCoordinator.failed() && !hookAndCoordinator.coordinatorFailed(),
+                "hook error incorrectly classified as CONTROL loss");
+        var withInfrastructureFailure = apply(hookAndCoordinator,
+                new SupervisorLifecycleFsm.CoordinatorFailed(1));
+        check(withInfrastructureFailure.coordinatorFailed()
+                        && withInfrastructureFailure.revision()
+                            == hookAndCoordinator.revision() + 1,
+                "CONTROL failure disappeared because failed was already true");
+
+        var reserved = SupervisorLifecycleFsm.State.initial();
+        reserved = apply(reserved, new SupervisorLifecycleFsm.RestartRequested(1));
+        reserved = apply(reserved, new SupervisorLifecycleFsm.ActorsFinished(1, true));
+        reserved = apply(reserved, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        // An actor crash alone may be restartable; infrastructure failure
+        // must not be silently reclassified as a successful replacement.
+        reserved = apply(reserved, new SupervisorLifecycleFsm.CoordinatorFailed(1));
+        mustReject(reserved, new SupervisorLifecycleFsm.RestartCommitted(1));
+
         var restart = SupervisorLifecycleFsm.State.initial();
         restart = apply(restart, new SupervisorLifecycleFsm.RestartRequested(1));
         mustReject(restart, new SupervisorLifecycleFsm.RestartCommitted(1));
@@ -169,6 +211,12 @@ public final class SupervisorLifecycleFsmOracle {
         check(!s.preHookFailed() || s.preHookDone(), "pre-hook failure without receipt");
         check(!s.actorsFailed() || s.actorsDone(), "actor failure without receipt");
         check(!s.postHookFailed() || s.postHookDone(), "post-hook failure without receipt");
+        check(!s.coordinatorFailed() || s.failed(),
+                "CONTROL infrastructure fault not reflected in failure aggregate");
+        check(!s.coordinatorFailed() || !s.restartPermitted(),
+                "restart advertised despite CONTROL infrastructure fault");
+        check(!s.coordinatorFailed() || !s.admissionsOpen(),
+                "admission advertised despite CONTROL infrastructure fault");
         check(s.failed() || (!s.preHookFailed() && !s.actorsFailed()
                 && !s.postHookFailed() && s.failedChildren().isEmpty()),
                 "failure aggregate dropped completed failure receipt");
