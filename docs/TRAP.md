@@ -1,4 +1,22 @@
-# `trap`: Option-valued non-throwing callables
+# Historical proposal: Option-valued `trap` (superseded)
+
+> **Not normative. Do not merge the old implementation as written.**
+> The merged [Atto decision #151](https://github.com/atto-lang/atto-spec/pull/151)
+> and [Java #1801](https://github.com/atto-lang/atto-source.java/pull/1801)
+> establish Result-valued trap semantics. This document and its legacy tests
+> describe the pre-reconciliation Option implementation, retained here to identify
+> code and test migrations, not to authorize a second dialect.
+>
+> Required replacement: ordinary values become `Ok(value)`; ordinary throws
+> become `Err(error)` preserving the original error; an existing Result passes
+> through, and an Option remains an Ok payload. The suspension-capable boundary
+> must produce `Future<Result<T, Error>>` (preserving an existing Result's
+> approved error type), with identical behavior before and after suspension.
+> Raise, panic, cancellation and termination bypass trap; cleanup occurs once.
+> The actual async code, typing and regression fixtures still need reconciliation
+> and exact-head JVM and Native Image execution. No async support is claimed.
+
+## Historical text follows
 
 This document defines the Oreslang contract for the `trap` callable modifier
 and its interaction with `throw`, `raise`, `panic`, async/Future execution,
