@@ -87,11 +87,16 @@ public final class FrozenImportSnapshot {
             !digest(header.get("manifest_sha256")) || pins.isEmpty()) throw fail("E_LOCK","invalid lock inventory");
         if(!sha(manifest).equals(header.get("manifest_sha256"))) throw fail("E_LOCK_HASH","manifest digest mismatch");
         if(inputs.size()!=pins.size()||inputs.size()>MAX_FILES) throw fail("E_LOCK_HASH","source inventory mismatch");
+        var exact=new HashMap<String,byte[]>();
+        for(var e:inputs.entrySet()) {
+            if(exact.containsKey(e.getKey())) throw fail("E_LOCK_HASH","duplicate source");
+            exact.put(e.getKey(),e.getValue());
+        }
         var sources=new TreeMap<String,String>();
         for(var e:pins.entrySet()) {
             if(!path(e.getKey())||!digest(e.getValue())) throw fail("E_LOCK","invalid source pin");
-            if(!inputs.containsKey(e.getKey())) throw fail("E_LOCK_HASH","missing pinned source");
-            byte[] data=bounded(inputs.get(e.getKey()),MAX_SOURCE,"E_SOURCE_LIMIT");
+            if(!exact.containsKey(e.getKey())) throw fail("E_LOCK_HASH","missing pinned source");
+            byte[] data=bounded(exact.get(e.getKey()),MAX_SOURCE,"E_SOURCE_LIMIT");
             if(!sha(data).equals(e.getValue())) throw fail("E_LOCK_HASH","source digest mismatch");
             sources.put(e.getKey(),text(data,"E_LOCK"));
         }
