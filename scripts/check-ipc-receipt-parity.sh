@@ -10,11 +10,13 @@ trap 'rm -rf -- "$tmp"' EXIT
   "$root/src/main/java/dev/oreslang/runtime/RuntimeBlockingGuard.java" \
   "$root/src/main/java/dev/oreslang/runtime/IpcReceiptCorrelation.java" \
   "$root/src/main/java/dev/oreslang/runtime/IpcReceiptCompletionBridge.java" \
+  "$root/src/main/java/dev/oreslang/runtime/IpcPhysicalConnectionBroker.java" \
   "$root/src/main/java/dev/oreslang/runtime/IpcTransportSessionLease.java" \
   "$root/src/main/java/dev/oreslang/runtime/IpcAuthenticatedSocketTransport.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCorrelationSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCompletionBridgeSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcReceiptPhysicalBindingSelfTest.java" \
+  "$root/src/test/java/dev/oreslang/runtime/IpcPhysicalConnectionBrokerSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcSessionAdmissionCloseRaceSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcTransportSessionLeaseSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcAuthenticatedSocketTransportSelfTest.java" \
@@ -23,6 +25,7 @@ trap 'rm -rf -- "$tmp"' EXIT
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCorrelationSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCompletionBridgeSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptPhysicalBindingSelfTest
+"$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcPhysicalConnectionBrokerSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcSessionAdmissionCloseRaceSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcTransportSessionLeaseSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcAuthenticatedSocketTransportSelfTest

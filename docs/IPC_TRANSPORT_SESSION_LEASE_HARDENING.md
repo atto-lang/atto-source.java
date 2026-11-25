@@ -5,12 +5,13 @@ Status: **DRAFT / trusted host substrate plus localhost HMAC-framed socket adapt
 ## Source seam
 
 - `IpcTransportSessionLease` is a package-local, trusted-host-only object for one immutable authenticated transport epoch (domain, sender/destination, incarnations, session, route and capability generation) and a monotonic physical `generation`, with bounded active writes.
-- The synchronous `FrameWriter` is **bound once at lease construction** with the trusted epoch/generation, closer and cleanup scheduler; callers cannot substitute a different physical writer per frame. Production owner-bound sends use `sendPreparedFrame(generation, envelope, preparedFrame)`, which atomically validates OPEN/generation/epoch authority, admits the receipt, commits `DISPATCH_COMMITTED`, pins the physical write, executes the bound writer, and releases the pin with no abandonable intermediate token. The older `writeFrame(...)` path remains only for unbound host parity tests and is guarded by the same carrier rule.
+- The synchronous `FrameWriter` is **bound once at lease construction** with the trusted epoch/generation, closer and cleanup scheduler; callers cannot substitute a different physical writer per frame. Every lease now requires a non-null opaque physical owner. The former unbound constructor and `writeFrame(...)` path have been deleted. `sendPreparedFrame(generation, envelope, preparedFrame)` is the sole lease send path: it atomically validates OPEN/generation/epoch authority, owner-bound admits the receipt, commits `DISPATCH_COMMITTED`, pins the physical write, executes the bound writer, and releases the pin with no abandonable intermediate token.
 - The supplied host writer MUST perform and finish the physical attempted write before returning. No async fire-and-forget, guest callback, mixed-generation socket handoff, foreign session, unverified DNS/proxy hop or caller-provided authorization.
 - Once dispatch commits, an unsuccessful or uncertain socket write **cannot** become `REJECTED_BEFORE_REMOTE`. The broker must close/drain or quarantine and only mark `OUTCOME_UNKNOWN` with the local trusted transport authority.
-- `requestClose` admits no further writers. If a physical write is pinned, the socket abort is submitted to the bounded non-caller-runs cleanup domain instead of running `Socket.close()` on the requester. `requestCloseAndAwait` bounds supervisor waiting and quarantines unresolved generations; timeout is never evidence of successful close. `RuntimeBlockingGuard` is enforced both at the authenticated socket adapter and inside `sendPreparedFrame`, legacy `writeFrame`, and `awaitTerminal`; the terminal-wait guard runs **before** acquiring the lease monitor so an actor carrier cannot park while entering the wait.
+- `requestClose` admits no further writers. If a physical write is pinned, the socket abort is submitted to the bounded non-caller-runs cleanup domain instead of running `Socket.close()` on the requester. `requestCloseAndAwait` bounds supervisor waiting and quarantines unresolved generations; timeout is never evidence of successful close. `RuntimeBlockingGuard` now runs **before monitor entry** across the lease, receipt bridge, raw correlation table, broker authority, authenticated socket gates and replay gate. Actor carriers therefore cannot park on transport lifecycle diagnostics or receipt/protocol monitors.
 - `CleanupScheduler` MUST be a bounded, non-caller-runs, host-owned worker queue. The runtime now detects same-thread caller-runs execution and quarantines before physical close; rejected scheduling also quarantines without falsely completing futures. The one `Runnable::run` use in the self-test is an intentional **negative** case proving that fail-closed behavior.
 - Cleanup closure is generation/attempt-fenced and single-flight. Duplicate or stale scheduled cleanup callbacks do not double-close a descriptor or steal a later retry.
+- Physical descriptor close ownership is also single-flight across active-write abort and finalization. Once a close callback is entered, an exception is treated as an ambiguous descriptor state and that generation can never invoke the closer a second time. A confirmed abort feeds close confirmation back into the lease, so later finalization retires receipts without a second `Socket.close()`. Scheduler failure before close ownership is claimed remains explicitly retryable.
 - If physical close fails, the session is `QUARANTINED`: no reuse, no new sends, and no fabricated physical completion. `retryQuarantinedClose` is an explicit host-supervisor action; no automatic spinning. If physical close was confirmed but receipt retirement failed, retry skips the physical close and resumes receipt retirement.
 - Verified remote receipts still require independently authenticated peer, frame, route, incarnation, capability and digest authority. `IpcTransportSessionLease` does not authenticate any of those.
 
@@ -21,11 +22,11 @@ Status: **DRAFT / trusted host substrate plus localhost HMAC-framed socket adapt
 - `IpcReceiptCompletionBridge.java`
 - `IpcTransportSessionLease.java`
 - `IpcAuthenticatedSocketTransport.java`
-- seven host self-test classes (correlation, completion bridge, physical binding, close/admission race, session lease, authenticated socket, and blocking guard)
+- nine host self-test classes (correlation, completion bridge, physical binding, physical broker, close/admission race, session lease, authenticated socket, two-process socket, and blocking guard)
 
 The Maven/JUnit `IpcReceiptParityTest` includes both the physical-session lease test and the authenticated localhost socket test.
 
-New host test vectors: successful verified receipt, denied stale generation, local never-sent denial, failed socket write/uncertain terminal, failed physical close quarantine, explicit retry, deferred close task and denied worker capacity, duplicate/stale cleanup task, 512 pinned close-vs-write cases, 512 close-vs-admit races.
+New host test vectors include successful verified receipt, denied stale generation, failed socket write/uncertain terminal, failed physical close quarantine, retry only before physical close begins, deferred close task and denied worker capacity, duplicate/stale cleanup task, owner/epoch/generation binding, writer-drain vs in-flight descriptor-close races, unconfirmed-close no-retry proof, exactly-one-descriptor-close proof, 512 pinned close-vs-write cases, 512 close-vs-admit races, 512 authenticated-terminal-vs-transport-loss races, plus adversarial monitor contention for lease diagnostics, broker/authority, receipt bridge/publication, raw receipt correlation and inbound replay gates.
 
 Local independent Java 21 compilation checked a matching transport-epoch lease algorithm against a minimal host bridge stub under `javac -Xlint:all -Werror` with **6,168 passing assertions**, including 1,024 real Java thread races. This is **NOT an exact source Java compilation**: the actual source-repo host suite has been committed but source-org Actions provide no executed steps.
 
@@ -38,6 +39,25 @@ Local independent Java 21 compilation checked a matching transport-epoch lease a
 5. Independently authorize any cross-organization private-source transport under current security incidents conformance #22/#77 and Java private-CI PR #1217. A funded runner, a PRIVATE repository and matching blob SHAs alone are **not sufficient approval**.
 
 No PR is production-ready until these gates are independently reviewed and executed.
+
+### Source-free single-close supporting evidence
+
+A separate private funded runner executed an independently authored source-free
+model of the descriptor-close ownership state machine. This did **not** copy or
+compile Oreslang private source and is therefore supporting model evidence only.
+
+- carrier: `usa-acc/usa-acc-e2e`
+- run: `39362506997`
+- carrier commit: `733356bddb02c8b32f3cc7c6399c655f9c880165`
+- GraalVM/JDK: Oracle GraalVM 25.3.4.1 / Java 25.0.4.1
+- compile: `javac -Xlint:all -Werror`
+- result: `SOURCE_FREE_IPC_SINGLE_CLOSE_PASS checks=60014 races=20000 exact_source=false`
+
+The model covers retry after scheduler rejection **before** close ownership,
+permanent quarantine after an unconfirmed close invocation, finalizer-only
+close, and writer-drain racing an in-flight external close. Every path asserts
+at most one descriptor-close invocation. Exact-head source execution remains
+required separately.
 
 
 ## Follow-up close scheduler and epoch hardening
@@ -108,8 +128,10 @@ parity.
 
 The real localhost socket self-test is checked into the exact Java branch and
 wired into `scripts/check-ipc-receipt-parity.sh` and `IpcReceiptParityTest`.
-Source-org Actions still need to actually allocate a runner before those
-source files can be claimed as executed.
+The dedicated `.github/workflows/ipc-host-strict.yml` records exact Git
+commit/tree/blob identity, runs JDK 25 strict compilation and executes the
+adversarial host suite four times. Source-org Actions still need to actually
+allocate a runner before those source files can be claimed as executed.
 
 
 ## Replay, pre-authentication memory and key-lifetime hardening
@@ -163,11 +185,12 @@ after authoritative retirement.
 ## Current-head adapter hardening (latest audit)
 
 At the latest audit, the current source blobs are:
-- `IpcTransportSessionLease.java`: `e9157c6c117e1739dc13145035b90af8fb1bcbb6`
-- `IpcAuthenticatedSocketTransport.java`: `f769058d156aad580d9ca24d2af103208aea5f92`
+- `IpcReceiptCorrelation.java`: `0db39a49de798f713503f1bcec813f730716297d`
+- `IpcReceiptCompletionBridge.java`: `d320550828f4837f935e0159ab09527546a04dc7`
+- `IpcPhysicalConnectionBroker.java`: `ab1325fd561a88d0a849bd6fb46ab8eb313f1967`
+- `IpcTransportSessionLease.java`: `abdc69e61988ef65cc477c2ca11040725340fa21`
+- `IpcAuthenticatedSocketTransport.java`: `b0e3248cb8fab9a61faca4c5600517a9194a69cf`
 - `RuntimeBlockingGuard.java`: `caebbceb9ef294994c35b6cb6fc0a5c124c8c33a`
-- authenticated socket self-test: `4f1afae4578c48e8f31fa3be6ccd2e5c3649bbf5`
-- session-lease self-test: `4a233a9bffb24c2cdac78e60732c5f33ca11d3f7`
 
 The socket adapter now:
 - binds its physical writer at lease construction and passes only prebuilt authenticated frame bytes per send;
@@ -193,15 +216,17 @@ host object identity, the authenticated logical epoch, and the physical
 connection generation. The claim is irreversible: closing/retiring the
 connection never clears it, and reconnect must allocate a fresh bridge.
 
-Once bound, legacy generic bridge mutation entry points fail closed. Admission,
-dispatch commitment, verified receipts, local pre-dispatch rejection, and
-transport-loss retirement all require the exact opaque owner + logical epoch +
-physical generation. This prevents a delayed generation-N close from retiring
-generation-N+1 correlations even when session/route strings and keys are reused.
+Once bound, there are no legacy unbound or two-step bridge mutation entry
+points. `admitAndCommit(owner, envelope, generation)` is the only bridge send
+admission API, while verified receipts and transport-loss retirement require the
+same exact opaque owner + logical epoch + physical generation. This prevents a
+delayed generation-N close from retiring generation-N+1 correlations and
+prevents test or sibling runtime code from recreating the old admit-then-commit
+escape hatch.
 
 A second race was also closed: adapter `send()` no longer inserts a correlation
 before the session lease decides whether the connection is still OPEN.
-`IpcTransportSessionLease.admitAndCommitFrame` performs OPEN/generation/epoch
+`IpcTransportSessionLease.sendPreparedFrame` performs OPEN/generation/epoch
 validation and owner-bound correlation admit + `DISPATCH_COMMITTED` under the
 same session monitor. Therefore:
 

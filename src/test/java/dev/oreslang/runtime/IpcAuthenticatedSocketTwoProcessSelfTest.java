@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit;
  * Forked-JVM authenticated IPC proof. The peer runs in a separate OS process,
  * so frame bytes cross a kernel socket/process boundary rather than only
  * crossing threads in one VM. This is still Java<->Java host evidence, not
- * broker identity/key establishment or LLVM parity.
+ * external identity/key negotiation or LLVM parity. The local transport side
+ * consumes a broker-minted physical connection authority.
  */
 public final class IpcAuthenticatedSocketTwoProcessSelfTest {
     private static final byte[] PAYLOAD =
@@ -49,6 +50,14 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
             binding[i] = (byte) (41 + i);
         }
         return binding;
+    }
+
+    private static IpcPhysicalConnectionBroker.Authority authority(
+            long generation, byte[] key, byte[] binding) {
+        byte[] expectedBinding = binding.clone();
+        var broker = new IpcPhysicalConnectionBroker(target ->
+                System.arraycopy(expectedBinding, 0, target, 0, target.length));
+        return broker.mint(generation, key);
     }
 
     private static String digest(byte[] payload) {
@@ -178,8 +187,8 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                     socket.setSoTimeout(5000);
                     var bridge = new IpcReceiptCompletionBridge(1);
                     var transport = new IpcAuthenticatedSocketTransport(
-                            socket, bridge, message, 501, 1,
-                            key, binding, cleanup::execute);
+                            socket, bridge, message, 1,
+                            authority(501, key, binding), cleanup::execute);
 
                     var submission = transport.send(message, PAYLOAD);
                     check(!submission.writeAttemptFailed());
@@ -192,6 +201,7 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                     check(bridge.invariant());
                     check(transport.requestCloseAndAwait(3000));
                     check(transport.keyCloneZeroized());
+                    check(transport.connectionBindingCloneZeroized());
                 }
 
                 String output = finishPeer(peer);
@@ -221,8 +231,8 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                     socket.setSoTimeout(5000);
                     var bridge = new IpcReceiptCompletionBridge(1);
                     var transport = new IpcAuthenticatedSocketTransport(
-                            socket, bridge, message, 502, 1,
-                            key, binding, cleanup::execute);
+                            socket, bridge, message, 1,
+                            authority(502, key, binding), cleanup::execute);
 
                     var submission = transport.send(message, PAYLOAD);
                     check(!submission.writeAttemptFailed());

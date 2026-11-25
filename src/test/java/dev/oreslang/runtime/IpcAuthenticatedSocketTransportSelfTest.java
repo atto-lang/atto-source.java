@@ -4,6 +4,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -48,6 +50,18 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         return binding;
     }
 
+    private static IpcPhysicalConnectionBroker.Authority authority(
+            long generation, byte[] key, byte[] binding) {
+        byte[] expectedBinding = binding.clone();
+        var broker = new IpcPhysicalConnectionBroker(target -> {
+            if (target.length != expectedBinding.length) {
+                throw new AssertionError("unexpected broker binding width");
+            }
+            System.arraycopy(expectedBinding, 0, target, 0, target.length);
+        });
+        return broker.mint(generation, key);
+    }
+
     private static String digest(byte[] payload) {
         try {
             return HexFormat.of().formatHex(
@@ -73,6 +87,266 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         }
         throw new AssertionError("transport did not reach phase " + phase
                 + ": " + transport.snapshot());
+    }
+
+    private static final class FinalReadGateInputStream extends InputStream {
+        private final byte[] bytes;
+        private final CountDownLatch finalChunkCopied;
+        private final CountDownLatch releaseFinalRead;
+        private int offset;
+
+        FinalReadGateInputStream(
+                byte[] bytes,
+                CountDownLatch finalChunkCopied,
+                CountDownLatch releaseFinalRead) {
+            this.bytes = bytes.clone();
+            this.finalChunkCopied = finalChunkCopied;
+            this.releaseFinalRead = releaseFinalRead;
+        }
+
+        @Override
+        public int read() {
+            if (offset >= bytes.length) return -1;
+            return bytes[offset++] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] target, int targetOffset, int length) throws IOException {
+            if (offset >= bytes.length) return -1;
+            int count = Math.min(length, bytes.length - offset);
+            System.arraycopy(bytes, offset, target, targetOffset, count);
+            offset += count;
+            if (offset == bytes.length) {
+                finalChunkCopied.countDown();
+                try {
+                    if (!releaseFinalRead.await(3, TimeUnit.SECONDS)) {
+                        throw new IOException("final receipt read gate timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("final receipt read gate interrupted", interrupted);
+                }
+            }
+            return count;
+        }
+    }
+
+    private static final class FirstFrameGateInputStream extends InputStream {
+        private final byte[] bytes;
+        private final int firstFrameBytes;
+        private final CountDownLatch firstFrameCopied;
+        private final CountDownLatch releaseFirstFrame;
+        private int offset;
+        private boolean gated;
+
+        FirstFrameGateInputStream(
+                byte[] bytes,
+                int firstFrameBytes,
+                CountDownLatch firstFrameCopied,
+                CountDownLatch releaseFirstFrame) {
+            this.bytes = bytes.clone();
+            if (firstFrameBytes <= 0 || firstFrameBytes >= bytes.length) {
+                throw new IllegalArgumentException("invalid first-frame boundary");
+            }
+            this.firstFrameBytes = firstFrameBytes;
+            this.firstFrameCopied = firstFrameCopied;
+            this.releaseFirstFrame = releaseFirstFrame;
+        }
+
+        private void gateAtFirstFrame() throws IOException {
+            if (gated || offset != firstFrameBytes) return;
+            gated = true;
+            firstFrameCopied.countDown();
+            try {
+                if (!releaseFirstFrame.await(3, TimeUnit.SECONDS)) {
+                    throw new IOException("first receipt frame gate timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("first receipt frame gate interrupted", interrupted);
+            }
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (offset >= bytes.length) return -1;
+            int value = bytes[offset++] & 0xff;
+            gateAtFirstFrame();
+            return value;
+        }
+
+        @Override
+        public int read(byte[] target, int targetOffset, int length) throws IOException {
+            if (offset >= bytes.length) return -1;
+            int boundary = offset < firstFrameBytes ? firstFrameBytes : bytes.length;
+            int count = Math.min(length, boundary - offset);
+            System.arraycopy(bytes, offset, target, targetOffset, count);
+            offset += count;
+            gateAtFirstFrame();
+            return count;
+        }
+
+        int bytesRead() { return offset; }
+    }
+
+    private static final class ConstructionFailureSocket extends Socket {
+        private final boolean failOutput;
+        private final boolean failClose;
+        private final ByteArrayInputStream input =
+                new ByteArrayInputStream(new byte[0]);
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        private final AtomicInteger closes = new AtomicInteger();
+
+        ConstructionFailureSocket(boolean failOutput, boolean failClose) {
+            this.failOutput = failOutput;
+            this.failClose = failClose;
+        }
+
+        @Override public InputStream getInputStream() { return input; }
+
+        @Override
+        public OutputStream getOutputStream() throws IOException {
+            if (failOutput) throw new IOException("construction output acquisition failed");
+            return output;
+        }
+
+        @Override
+        public void close() {
+            closes.incrementAndGet();
+            if (failClose) {
+                throw new IllegalStateException("construction close failed");
+            }
+        }
+
+        int closeCount() { return closes.get(); }
+    }
+
+    private static final class BlockingAbortOutputStream extends OutputStream {
+        private final CountDownLatch writeEntered;
+        private final CountDownLatch abortWrite;
+        private volatile boolean aborted;
+
+        BlockingAbortOutputStream(
+                CountDownLatch writeEntered,
+                CountDownLatch abortWrite) {
+            this.writeEntered = writeEntered;
+            this.abortWrite = abortWrite;
+        }
+
+        void abort() {
+            aborted = true;
+            abortWrite.countDown();
+        }
+
+        private void awaitAbort() throws IOException {
+            writeEntered.countDown();
+            try {
+                if (!abortWrite.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("test physical write did not receive abort");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("test physical write interrupted", interrupted);
+            }
+            if (aborted) throw new IOException("test physical write aborted");
+        }
+
+        @Override public void write(int value) throws IOException {
+            awaitAbort();
+        }
+
+        @Override
+        public void write(byte[] source, int offset, int length) throws IOException {
+            if (length == 0) return;
+            awaitAbort();
+        }
+    }
+
+    private static final class AbortControlledSocket extends Socket {
+        private final InputStream input = new ByteArrayInputStream(new byte[0]);
+        private final BlockingAbortOutputStream output;
+        private final CountDownLatch firstCloseEntered;
+        private final CountDownLatch releaseFirstClose;
+        private final AtomicInteger closeCount = new AtomicInteger();
+
+        AbortControlledSocket(
+                BlockingAbortOutputStream output,
+                CountDownLatch firstCloseEntered,
+                CountDownLatch releaseFirstClose) {
+            this.output = output;
+            this.firstCloseEntered = firstCloseEntered;
+            this.releaseFirstClose = releaseFirstClose;
+        }
+
+        @Override public InputStream getInputStream() { return input; }
+        @Override public OutputStream getOutputStream() { return output; }
+
+        @Override
+        public void close() throws IOException {
+            int count = closeCount.incrementAndGet();
+            if (count == 1) {
+                firstCloseEntered.countDown();
+                // Wake the pinned writer before this close invocation returns.
+                // This deliberately creates the writer-drain vs close-in-flight
+                // interleaving that previously allowed finalization to invoke
+                // Socket.close() a second time.
+                output.abort();
+                try {
+                    if (!releaseFirstClose.await(5, TimeUnit.SECONDS)) {
+                        throw new IOException("test first physical close did not release");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("test first physical close interrupted", interrupted);
+                }
+                return;
+            }
+            output.abort();
+        }
+
+        int closeCount() { return closeCount.get(); }
+    }
+
+    private static final class FailingAbortSocket extends Socket {
+        private final InputStream input = new ByteArrayInputStream(new byte[0]);
+        private final BlockingAbortOutputStream output;
+        private final AtomicInteger closes = new AtomicInteger();
+
+        FailingAbortSocket(BlockingAbortOutputStream output) {
+            this.output = output;
+        }
+
+        @Override public InputStream getInputStream() { return input; }
+        @Override public OutputStream getOutputStream() { return output; }
+
+        @Override
+        public void close() throws IOException {
+            closes.incrementAndGet();
+            output.abort();
+            throw new IOException("test physical close outcome unconfirmed");
+        }
+
+        int closeCount() { return closes.get(); }
+    }
+
+    private static final class ControlledSocket extends Socket {
+        private final InputStream input;
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        private final CountDownLatch closeCalled;
+        private volatile boolean closed;
+
+        ControlledSocket(InputStream input, CountDownLatch closeCalled) {
+            this.input = input;
+            this.closeCalled = closeCalled;
+        }
+
+        @Override public InputStream getInputStream() { return input; }
+        @Override public OutputStream getOutputStream() { return output; }
+        @Override public synchronized void close() {
+            closed = true;
+            closeCalled.countDown();
+        }
+        @Override public boolean isClosed() { return closed; }
     }
 
     private static void offCallerCleanup(Runnable cleanup) {
@@ -166,6 +440,95 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         check(goldenDecoded.envelope().equals(goldenEnvelope));
         check(Arrays.equals(goldenDecoded.payload(), goldenPayload));
 
+        // Constructor preparation is reversible until the final one-shot
+        // receipt-bridge claim. A stream acquisition failure must close the
+        // socket and leave the bridge available for a later legitimate owner.
+        byte[] constructionPayload = "construction".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var constructionEpoch = envelope(
+                1, "constructionTxn", 3, 4, constructionPayload);
+        var constructionBridge = new IpcReceiptCompletionBridge(1);
+        var constructionAuthority = authority(
+                901, key, connectionBinding);
+        var streamFailureSocket = new ConstructionFailureSocket(true, false);
+        try {
+            new IpcAuthenticatedSocketTransport(
+                    streamFailureSocket, constructionBridge,
+                    constructionEpoch, 1, constructionAuthority,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            throw new AssertionError("constructor stream failure was swallowed");
+        } catch (IOException expected) {
+            check(expected.getMessage().contains("output acquisition"));
+        }
+        check(streamFailureSocket.closeCount() == 1);
+        check(!constructionAuthority.consumedOrDestroyed());
+
+        // Pre-consumption failure leaves the exact same authority retryable.
+        var recoverySocket = new ConstructionFailureSocket(false, false);
+        var recoveredTransport = new IpcAuthenticatedSocketTransport(
+                recoverySocket, constructionBridge, constructionEpoch, 1,
+                constructionAuthority,
+                IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+        check(constructionAuthority.consumedOrDestroyed());
+        check(recoveredTransport.requestCloseAndAwait(3000));
+        check(recoverySocket.closeCount() == 1);
+        check(recoveredTransport.keyCloneZeroized());
+        check(recoveredTransport.connectionBindingCloneZeroized());
+        check(constructionBridge.invariant());
+
+        // A consumed authority cannot create a second physical transport.
+        var reusedAuthoritySocket = new ConstructionFailureSocket(false, false);
+        try {
+            new IpcAuthenticatedSocketTransport(
+                    reusedAuthoritySocket, new IpcReceiptCompletionBridge(1),
+                    constructionEpoch, 1, constructionAuthority,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            throw new AssertionError("consumed physical authority reused");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("already consumed"));
+        }
+        check(reusedAuthoritySocket.closeCount() == 1);
+
+        // The final irreversible bridge claim may itself fail (for example
+        // because another physical transport already owns the bridge).
+        // Credentials already transferred from the broker are destroyed and
+        // that authority remains permanently spent.
+        var occupiedBridge = new IpcReceiptCompletionBridge(1);
+        Object occupiedOwner = new Object();
+        occupiedBridge.claimPhysicalTransport(
+                occupiedOwner, constructionEpoch, 902);
+        var claimAuthority = authority(902, key, connectionBinding);
+        var claimFailureSocket = new ConstructionFailureSocket(false, true);
+        try {
+            new IpcAuthenticatedSocketTransport(
+                    claimFailureSocket, occupiedBridge,
+                    constructionEpoch, 1, claimAuthority,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            throw new AssertionError("duplicate physical bridge claim succeeded");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("already bound"));
+            check(expected.getSuppressed().length == 1);
+            check(expected.getSuppressed()[0].getMessage().contains(
+                    "construction close failed"));
+        }
+        check(claimAuthority.consumedOrDestroyed());
+        check(claimFailureSocket.closeCount() == 1);
+        check(occupiedBridge.transportLost(
+                occupiedOwner, constructionEpoch, 902) == 0);
+        check(occupiedBridge.invariant());
+
+        var burnedAuthoritySocket = new ConstructionFailureSocket(false, false);
+        try {
+            new IpcAuthenticatedSocketTransport(
+                    burnedAuthoritySocket, new IpcReceiptCompletionBridge(1),
+                    constructionEpoch, 1, claimAuthority,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            throw new AssertionError("post-claim-failure authority reused");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("already consumed"));
+        }
+        check(burnedAuthoritySocket.closeCount() == 1);
+
         // TCP stream publication is single-file. Physical write concurrency
         // greater than one is rejected; outstanding receipt lifetimes are a
         // separate bridge/correlation concern.
@@ -177,21 +540,26 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(peer.isConnected());
             var bridge = new IpcReceiptCompletionBridge(2);
             try {
-                new IpcAuthenticatedSocketTransport(
-                        client, bridge, configMessage, 10, 1, key, new byte[16],
-                        IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                authority(10, key, new byte[16]);
                 throw new AssertionError("all-zero connection binding accepted");
-            } catch (IllegalArgumentException expected) {
-                check(expected.getMessage().contains("must not be all zero"));
+            } catch (IllegalStateException expected) {
+                check(expected.getMessage().contains("all-zero"));
             }
+            var invalidPolicyAuthority =
+                    authority(10, key, connectionBinding);
             try {
                 new IpcAuthenticatedSocketTransport(
-                        client, bridge, configMessage, 10, 2, key, connectionBinding,
+                        client, bridge, configMessage, 2,
+                        invalidPolicyAuthority,
                         IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
                 throw new AssertionError("parallel TCP physical writers accepted");
             } catch (IllegalArgumentException expected) {
                 check(expected.getMessage().contains("exactly one"));
+                check(!invalidPolicyAuthority.consumedOrDestroyed());
+            } finally {
+                invalidPolicyAuthority.close();
             }
+            check(invalidPolicyAuthority.consumedOrDestroyed());
             check(!client.isClosed());
         }
 
@@ -203,8 +571,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(peer.isConnected());
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, configMessage, 10, 1, key, connectionBinding,
-                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                    client, bridge, configMessage, 1,
+                    authority(10, key, connectionBinding), IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
             try {
                 transport.requestCloseAndAwait(-1);
                 throw new AssertionError("invalid close deadline accepted");
@@ -224,13 +592,13 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 } catch (IllegalStateException expected) {
                     check(expected.getMessage().contains("cannot block an actor carrier"));
                 }
-                check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
                 check(!client.isClosed());
                 check(!transport.keyCloneZeroized());
             } finally {
                 RuntimeBlockingGuard.exitActorCarrier();
             }
             check(!RuntimeBlockingGuard.actorCarrierMarked());
+            check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
             check(transport.requestCloseAndAwait(3000));
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
         }
@@ -273,7 +641,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(4);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, message, 11, 1, key, connectionBinding, cleanup::execute);
+                    client, bridge, message, 1,
+                    authority(11, key, connectionBinding), cleanup::execute);
                 var submission = transport.send(message, payload);
                 check(!submission.writeAttemptFailed());
                 check(!submission.outcome().toCompletableFuture().isDone());
@@ -288,6 +657,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 check(transport.snapshot().activeWrites() == 0);
                 check(transport.keyCloneZeroized());
+                check(transport.connectionBindingCloneZeroized());
             } finally {
                 cleanup.shutdownNow();
                 cleanup.awaitTermination(2, TimeUnit.SECONDS);
@@ -295,6 +665,92 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             peer.join(3000);
             check(!peer.isAlive());
             check(peerFailure.get() == null);
+        }
+
+        // Terminal completion callbacks must not execute while readGate is
+        // held. The callback performs a full close-and-wait; if publication
+        // still occurred under readGate, physical close would block trying to
+        // acquire that same gate for key/binding destruction and this callback
+        // would time out instead of observing RETIRED.
+        byte[] callbackPayload = "callback outside read gate".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var callbackMessage = envelope(
+                1, "callbackOutsideReadGate", 3, 4, callbackPayload);
+        ByteArrayOutputStream callbackWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                callbackWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        callbackMessage, 111,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                        connectionBinding, key));
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                callbackWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        callbackMessage, 111,
+                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                        connectionBinding, key));
+        CountDownLatch callbackCloseCalled = new CountDownLatch(1);
+        var callbackSocket = new ControlledSocket(
+                new ByteArrayInputStream(callbackWire.toByteArray()),
+                callbackCloseCalled);
+        ExecutorService callbackCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-callback-close-cleanup"));
+        try {
+            var callbackBridge = new IpcReceiptCompletionBridge(1);
+            var callbackTransport = new IpcAuthenticatedSocketTransport(
+                    callbackSocket, callbackBridge, callbackMessage, 1,
+                    authority(111, key, connectionBinding), callbackCleanup::execute);
+            var callbackSubmission =
+                    callbackTransport.send(callbackMessage, callbackPayload);
+            check(!callbackSubmission.writeAttemptFailed());
+
+            CountDownLatch callbackDone = new CountDownLatch(1);
+            AtomicReference<Boolean> callbackCloseResult = new AtomicReference<>();
+            AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+            callbackSubmission.outcome().thenAccept(stage -> {
+                Thread closer = new Thread(() -> {
+                    try {
+                        callbackCloseResult.set(
+                                callbackTransport.requestCloseAndAwait(1500));
+                    } catch (Throwable failure) {
+                        callbackFailure.compareAndSet(null, failure);
+                    }
+                }, "ipc-test-close-from-terminal-callback");
+                closer.start();
+                try {
+                    closer.join(2500);
+                    if (closer.isAlive()) {
+                        callbackFailure.compareAndSet(null,
+                                new AssertionError(
+                                        "terminal callback close blocked on readGate"));
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    callbackFailure.compareAndSet(null, interrupted);
+                } finally {
+                    callbackDone.countDown();
+                }
+            });
+
+            check(callbackTransport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(callbackTransport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(callbackDone.await(3, TimeUnit.SECONDS));
+            check(callbackFailure.get() == null);
+            check(Boolean.TRUE.equals(callbackCloseResult.get()));
+            check(callbackCloseCalled.getCount() == 0);
+            check(callbackTransport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(callbackTransport.keyCloneZeroized());
+            check(callbackTransport.connectionBindingCloneZeroized());
+            check(callbackSubmission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(callbackBridge.invariant());
+        } finally {
+            callbackSocket.close();
+            callbackCleanup.shutdownNow();
+            callbackCleanup.awaitTermination(2, TimeUnit.SECONDS);
         }
 
         // Concurrent host receipt readers must preserve TCP protocol order
@@ -340,8 +796,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(5000);
                 var bridge = new IpcReceiptCompletionBridge(2);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, orderedEpoch, 12, 1,
-                        key, connectionBinding, cleanup::execute);
+                    client, bridge, orderedEpoch, 1,
+                    authority(12, key, connectionBinding), cleanup::execute);
 
                 for (int sequence = 1; sequence <= 128; ++sequence) {
                     var orderedMessage = envelope(
@@ -404,6 +860,555 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(peerFailure.get() == null);
         }
 
+        // Key destruction must wait for an already-consumed authenticated
+        // receipt to finish decode + ledger application. The controlled stream
+        // pauses after copying the complete wire frame while readVerifiedReceipt
+        // still owns readGate. Close may interrupt kernel I/O first, but must
+        // not zero the MAC key until that receive transaction exits.
+        byte[] drainPayload = "receipt key drain".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var drainMessage = envelope(1, "receiptKeyDrain", 3, 4, drainPayload);
+        byte[] drainReceipt = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                drainMessage, 13,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                connectionBinding, key);
+        ByteArrayOutputStream drainWireBytes = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                drainWireBytes, drainReceipt);
+        CountDownLatch finalChunkCopied = new CountDownLatch(1);
+        CountDownLatch releaseFinalRead = new CountDownLatch(1);
+        CountDownLatch closeCalled = new CountDownLatch(1);
+        var controlledSocket = new ControlledSocket(
+                new FinalReadGateInputStream(
+                        drainWireBytes.toByteArray(),
+                        finalChunkCopied,
+                        releaseFinalRead),
+                closeCalled);
+        ExecutorService drainCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-cleanup-key-drain"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    controlledSocket, bridge, drainMessage, 1,
+                    authority(13, key, connectionBinding), drainCleanup::execute);
+            var submission = transport.send(drainMessage, drainPayload);
+            check(!submission.writeAttemptFailed());
+
+            AtomicReference<IpcReceiptCorrelation.Stage> readStage =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> readFailure = new AtomicReference<>();
+            Thread reader = new Thread(() -> {
+                try {
+                    readStage.set(transport.readVerifiedReceipt());
+                } catch (Throwable failure) {
+                    readFailure.set(failure);
+                }
+            }, "ipc-test-key-drain-reader");
+            reader.start();
+
+            check(finalChunkCopied.await(2, TimeUnit.SECONDS));
+            transport.requestClose();
+            check(closeCalled.await(2, TimeUnit.SECONDS));
+            check(!transport.keyCloneZeroized());
+            check(!transport.connectionBindingCloneZeroized());
+            check(reader.isAlive());
+
+            releaseFinalRead.countDown();
+            reader.join(3000);
+            check(!reader.isAlive());
+            check(readFailure.get() == null);
+            check(readStage.get() == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(transport.requestCloseAndAwait(3000));
+            check(transport.keyCloneZeroized());
+            check(transport.connectionBindingCloneZeroized());
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(bridge.invariant());
+        } finally {
+            releaseFinalRead.countDown();
+            controlledSocket.close();
+            drainCleanup.shutdownNow();
+            drainCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
+        // Close intent fences receipt admission, not merely key erasure.
+        // Reader A already owns readGate and may finish its authenticated ACK.
+        // Reader B starts before close but is queued behind A; after close
+        // begins it must recheck the fence inside readGate and consume none of
+        // the already-buffered terminal frame.
+        byte[] readFencePayload = "receipt read admission fence".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var readFenceMessage = envelope(
+                1, "receiptReadFence", 3, 4, readFencePayload);
+        byte[] readFenceAck = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                readFenceMessage, 133,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                connectionBinding, key);
+        byte[] readFenceTerminal =
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        readFenceMessage, 133,
+                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                        connectionBinding, key);
+        ByteArrayOutputStream firstReadFenceWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                firstReadFenceWire, readFenceAck);
+        ByteArrayOutputStream readFenceWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                readFenceWire, readFenceAck);
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                readFenceWire, readFenceTerminal);
+
+        CountDownLatch firstFenceFrameCopied = new CountDownLatch(1);
+        CountDownLatch releaseFirstFenceFrame = new CountDownLatch(1);
+        CountDownLatch readFenceCloseCalled = new CountDownLatch(1);
+        CountDownLatch secondReaderStarted = new CountDownLatch(1);
+        var readFenceInput = new FirstFrameGateInputStream(
+                readFenceWire.toByteArray(),
+                firstReadFenceWire.size(),
+                firstFenceFrameCopied,
+                releaseFirstFenceFrame);
+        var readFenceSocket = new ControlledSocket(
+                readFenceInput, readFenceCloseCalled);
+        ExecutorService readFenceCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-receipt-read-fence"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    readFenceSocket, bridge, readFenceMessage, 1,
+                    authority(133, key, connectionBinding),
+                    readFenceCleanup::execute);
+            var submission = transport.send(readFenceMessage, readFencePayload);
+            check(!submission.writeAttemptFailed());
+
+            AtomicReference<IpcReceiptCorrelation.Stage> firstStage =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+            Thread firstReader = new Thread(() -> {
+                try {
+                    firstStage.set(transport.readVerifiedReceipt());
+                } catch (Throwable failure) {
+                    firstFailure.set(failure);
+                }
+            }, "ipc-test-read-fence-first");
+            firstReader.start();
+            check(firstFenceFrameCopied.await(2, TimeUnit.SECONDS));
+
+            AtomicReference<IpcReceiptCorrelation.Stage> secondStage =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+            Thread secondReader = new Thread(() -> {
+                secondReaderStarted.countDown();
+                try {
+                    secondStage.set(transport.readVerifiedReceipt());
+                } catch (Throwable failure) {
+                    secondFailure.set(failure);
+                }
+            }, "ipc-test-read-fence-second");
+            secondReader.start();
+            check(secondReaderStarted.await(2, TimeUnit.SECONDS));
+
+            transport.requestClose();
+            check(readFenceCloseCalled.await(2, TimeUnit.SECONDS));
+            check(readFenceInput.bytesRead() == firstReadFenceWire.size());
+            check(!transport.keyCloneZeroized());
+
+            releaseFirstFenceFrame.countDown();
+            firstReader.join(3000);
+            secondReader.join(3000);
+            check(!firstReader.isAlive());
+            check(!secondReader.isAlive());
+            check(firstFailure.get() == null);
+            check(firstStage.get()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(secondStage.get() == null);
+            check(secondFailure.get() instanceof IOException);
+            check(secondFailure.get().getMessage().contains(
+                    "receipt read after close request"));
+            check(readFenceInput.bytesRead() == firstReadFenceWire.size());
+
+            check(transport.requestCloseAndAwait(3000));
+            check(transport.keyCloneZeroized());
+            check(transport.connectionBindingCloneZeroized());
+
+            int bytesAfterRetirement = readFenceInput.bytesRead();
+            try {
+                transport.readVerifiedReceipt();
+                throw new AssertionError(
+                        "receipt read after close consumed buffered terminal frame");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains(
+                        "receipt read after close request"));
+            }
+            check(readFenceInput.bytesRead() == bytesAfterRetirement);
+
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(bridge.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(bridge.invariant());
+        } finally {
+            releaseFirstFenceFrame.countDown();
+            readFenceSocket.close();
+            readFenceCleanup.shutdownNow();
+            readFenceCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
+        // Authenticated terminal receipt vs trusted close has one winner
+        // through the full socket adapter, not just the bridge abstraction.
+        // First prove a terminal receipt that is already consumed under
+        // readGate wins before close can erase the key/retire correlations.
+        byte[] terminalRacePayload = "terminal close race".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var terminalRaceMessage = envelope(
+                1, "terminalCloseRace", 3, 4, terminalRacePayload);
+        ByteArrayOutputStream terminalRaceWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                terminalRaceWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        terminalRaceMessage, 131,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                        connectionBinding, key));
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                terminalRaceWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        terminalRaceMessage, 131,
+                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                        connectionBinding, key));
+        CountDownLatch terminalFrameCopied = new CountDownLatch(1);
+        CountDownLatch releaseTerminalRead = new CountDownLatch(1);
+        CountDownLatch terminalCloseCalled = new CountDownLatch(1);
+        var terminalRaceSocket = new ControlledSocket(
+                new FinalReadGateInputStream(
+                        terminalRaceWire.toByteArray(),
+                        terminalFrameCopied,
+                        releaseTerminalRead),
+                terminalCloseCalled);
+        ExecutorService terminalRaceCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-terminal-close-race"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    terminalRaceSocket, bridge, terminalRaceMessage, 1,
+                    authority(131, key, connectionBinding), terminalRaceCleanup::execute);
+            var submission = transport.send(terminalRaceMessage, terminalRacePayload);
+            check(!submission.writeAttemptFailed());
+            check(transport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+
+            AtomicReference<IpcReceiptCorrelation.Stage> terminalRead =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> terminalFailure = new AtomicReference<>();
+            Thread terminalReader = new Thread(() -> {
+                try {
+                    terminalRead.set(transport.readVerifiedReceipt());
+                } catch (Throwable failure) {
+                    terminalFailure.set(failure);
+                }
+            }, "ipc-test-terminal-before-loss");
+            terminalReader.start();
+
+            check(terminalFrameCopied.await(2, TimeUnit.SECONDS));
+            transport.requestClose();
+            check(terminalCloseCalled.await(2, TimeUnit.SECONDS));
+            check(!transport.keyCloneZeroized());
+            check(!submission.outcome().toCompletableFuture().isDone());
+
+            releaseTerminalRead.countDown();
+            terminalReader.join(3000);
+            check(!terminalReader.isAlive());
+            check(terminalFailure.get() == null);
+            check(terminalRead.get()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
+            check(transport.keyCloneZeroized());
+            check(bridge.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(bridge.invariant());
+        } finally {
+            releaseTerminalRead.countDown();
+            terminalRaceSocket.close();
+            terminalRaceCleanup.shutdownNow();
+            terminalRaceCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
+        // Then prove trusted loss can win first after ACK: the host completion
+        // settles OUTCOME_UNKNOWN exactly once and a correctly MACed terminal
+        // frame still buffered in the test input cannot resurrect it.
+        var lossWinsMessage = envelope(
+                1, "lossWinsTerminal", 3, 4, terminalRacePayload);
+        ByteArrayOutputStream lossWinsWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                lossWinsWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        lossWinsMessage, 132,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                        connectionBinding, key));
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                lossWinsWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        lossWinsMessage, 132,
+                        IpcReceiptCorrelation.Stage.HANDLER_FAILED,
+                        connectionBinding, key));
+        CountDownLatch lossCloseCalled = new CountDownLatch(1);
+        var lossWinsSocket = new ControlledSocket(
+                new ByteArrayInputStream(lossWinsWire.toByteArray()),
+                lossCloseCalled);
+        ExecutorService lossWinsCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-loss-before-terminal"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    lossWinsSocket, bridge, lossWinsMessage, 1,
+                    authority(132, key, connectionBinding), lossWinsCleanup::execute);
+            var submission = transport.send(lossWinsMessage, terminalRacePayload);
+            check(!submission.writeAttemptFailed());
+            check(transport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(transport.requestCloseAndAwait(3000));
+            check(lossCloseCalled.getCount() == 0);
+            check(transport.keyCloneZeroized());
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+
+            try {
+                transport.readVerifiedReceipt();
+                throw new AssertionError(
+                        "late terminal receipt resurrected retired completion");
+            } catch (IOException | IllegalArgumentException expected) {
+                ++checks;
+            }
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(bridge.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(bridge.invariant());
+        } finally {
+            lossWinsSocket.close();
+            lossWinsCleanup.shutdownNow();
+            lossWinsCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
+        // A partially-enqueued physical abort from attempt N must become
+        // inert after explicit retry N+1. Once N+1 atomically claims Socket.close,
+        // another retry is rejected until that descriptor operation finishes.
+        byte[] abortPayload = "physical abort retry".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var abortMessage = envelope(1, "physicalAbortRetry", 3, 4, abortPayload);
+        CountDownLatch abortWriteEntered = new CountDownLatch(1);
+        CountDownLatch abortWriteRelease = new CountDownLatch(1);
+        CountDownLatch firstAbortCloseEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstAbortClose = new CountDownLatch(1);
+        var abortOutput = new BlockingAbortOutputStream(
+                abortWriteEntered, abortWriteRelease);
+        var abortSocket = new AbortControlledSocket(
+                abortOutput, firstAbortCloseEntered, releaseFirstAbortClose);
+        AtomicInteger abortSchedules = new AtomicInteger();
+        AtomicReference<Runnable> staleAbort = new AtomicReference<>();
+        AtomicReference<Runnable> currentAbort = new AtomicReference<>();
+        AtomicReference<Runnable> finalClose = new AtomicReference<>();
+        IpcTransportSessionLease.CleanupScheduler abortScheduler = cleanup -> {
+            int schedule = abortSchedules.incrementAndGet();
+            if (schedule == 1) {
+                staleAbort.set(cleanup);
+                throw new IllegalStateException("abort enqueue admission uncertain");
+            }
+            if (schedule == 2) {
+                currentAbort.set(cleanup);
+                return;
+            }
+            if (schedule == 3) {
+                finalClose.set(cleanup);
+                return;
+            }
+            throw new IllegalStateException("unexpected abort cleanup schedule " + schedule);
+        };
+
+        var abortBridge = new IpcReceiptCompletionBridge(1);
+        var abortTransport = new IpcAuthenticatedSocketTransport(
+                    abortSocket, abortBridge, abortMessage, 1,
+                    authority(14, key, connectionBinding), abortScheduler);
+        AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> abortSubmission =
+                new AtomicReference<>();
+        AtomicReference<Throwable> abortSenderFailure = new AtomicReference<>();
+        Thread abortSender = new Thread(() -> {
+            try {
+                abortSubmission.set(abortTransport.send(abortMessage, abortPayload));
+            } catch (Throwable failure) {
+                abortSenderFailure.set(failure);
+            }
+        }, "ipc-test-physical-abort-sender");
+        abortSender.start();
+        check(abortWriteEntered.await(2, TimeUnit.SECONDS));
+
+        abortTransport.requestClose();
+        check(abortTransport.snapshot().phase()
+                == IpcTransportSessionLease.Phase.QUARANTINED);
+        check(abortTransport.snapshot().activeWrites() == 1);
+        check(staleAbort.get() != null);
+        check(abortSocket.closeCount() == 0);
+
+        abortTransport.retryQuarantinedAbort();
+        check(currentAbort.get() != null);
+
+        Thread staleAbortWorker = new Thread(
+                staleAbort.get(), "ipc-test-stale-physical-abort");
+        staleAbortWorker.start();
+        staleAbortWorker.join(1000);
+        check(!staleAbortWorker.isAlive());
+        check(abortSocket.closeCount() == 0);
+        check(abortSender.isAlive());
+
+        AtomicReference<Throwable> currentAbortFailure = new AtomicReference<>();
+        Thread currentAbortWorker = new Thread(() -> {
+            try {
+                currentAbort.get().run();
+            } catch (Throwable failure) {
+                currentAbortFailure.set(failure);
+            }
+        }, "ipc-test-current-physical-abort");
+        currentAbortWorker.start();
+        check(firstAbortCloseEntered.await(2, TimeUnit.SECONDS));
+        check(abortSocket.closeCount() == 1);
+
+        // The descriptor close is deliberately still blocked, but it has
+        // already woken the writer. Writer drain must not let finalization
+        // steal physical-close ownership.
+        abortSender.join(1500);
+        check(!abortSender.isAlive());
+        check(currentAbortWorker.isAlive());
+        check(abortTransport.snapshot().activeWrites() == 0);
+        check(abortSocket.closeCount() == 1);
+
+        try {
+            abortTransport.retryQuarantinedAbort();
+            throw new AssertionError("retry superseded executing physical abort");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("already executing"));
+        }
+        try {
+            abortTransport.retryQuarantinedClose();
+            throw new AssertionError("finalization retried an executing physical close");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("unconfirmed"));
+        }
+        check(abortSocket.closeCount() == 1);
+
+        releaseFirstAbortClose.countDown();
+        currentAbortWorker.join(3000);
+        check(!currentAbortWorker.isAlive());
+        check(currentAbortFailure.get() == null);
+        check(abortSenderFailure.get() == null);
+        check(abortSubmission.get() != null);
+        check(abortSubmission.get().writeAttemptFailed());
+        check(abortTransport.snapshot().phase()
+                == IpcTransportSessionLease.Phase.QUARANTINED);
+        check(abortTransport.snapshot().activeWrites() == 0);
+        check(abortSocket.closeCount() == 1);
+        check(abortTransport.keyCloneZeroized());
+        check(abortTransport.connectionBindingCloneZeroized());
+        check(!abortSubmission.get().outcome().toCompletableFuture().isDone());
+
+        abortTransport.retryQuarantinedClose();
+        check(finalClose.get() != null);
+        AtomicReference<Throwable> finalCloseFailure = new AtomicReference<>();
+        Thread finalCloseWorker = new Thread(() -> {
+            try {
+                finalClose.get().run();
+            } catch (Throwable failure) {
+                finalCloseFailure.set(failure);
+            }
+        }, "ipc-test-finalize-after-abort");
+        finalCloseWorker.start();
+        finalCloseWorker.join(3000);
+        check(!finalCloseWorker.isAlive());
+        check(finalCloseFailure.get() == null);
+        check(abortTransport.snapshot().phase()
+                == IpcTransportSessionLease.Phase.RETIRED);
+        // Abort already confirmed the exact physical descriptor close.
+        // Finalization retires receipts only and must not invoke Socket.close()
+        // a second time.
+        check(abortSocket.closeCount() == 1);
+        check(abortTransport.keyCloneZeroized());
+        check(abortTransport.connectionBindingCloneZeroized());
+        check(abortSubmission.get().outcome().toCompletableFuture().join()
+                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(abortBridge.invariant());
+
+        // A delayed copy of attempt 1 stays inert even after retirement.
+        staleAbort.get().run();
+        check(abortSocket.closeCount() == 1);
+
+        // If the one actual abort close invocation throws after waking the
+        // writer, the physical descriptor outcome is ambiguous. The generation
+        // stays quarantined permanently and neither abort retry nor finalization
+        // may invoke Socket.close() again.
+        byte[] failedAbortPayload = new byte[8 * 1024 * 1024];
+        Arrays.fill(failedAbortPayload, (byte) 0x33);
+        var failedAbortMessage = envelope(
+                1, "failedAbortClose", 3, 4, failedAbortPayload);
+        CountDownLatch failedWriteEntered = new CountDownLatch(1);
+        CountDownLatch failedAbortWrite = new CountDownLatch(1);
+        var failingOutput = new BlockingAbortOutputStream(
+                failedWriteEntered, failedAbortWrite);
+        var failingSocket = new FailingAbortSocket(failingOutput);
+        ExecutorService failingCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-failing-abort-close"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    failingSocket, bridge, failedAbortMessage, 1,
+                    authority(141, key, connectionBinding),
+                    failingCleanup::execute);
+            AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> result =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> senderFailure = new AtomicReference<>();
+            Thread sender = new Thread(() -> {
+                try {
+                    result.set(transport.send(
+                            failedAbortMessage, failedAbortPayload));
+                } catch (Throwable failure) {
+                    senderFailure.set(failure);
+                }
+            }, "ipc-test-failing-abort-writer");
+            sender.start();
+            check(failedWriteEntered.await(2, TimeUnit.SECONDS));
+
+            check(!transport.requestCloseAndAwait(3000));
+            sender.join(3000);
+            check(!sender.isAlive());
+            check(senderFailure.get() == null);
+            check(result.get() != null && result.get().writeAttemptFailed());
+            check(failingSocket.closeCount() == 1);
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(transport.snapshot().activeWrites() == 0);
+            check(transport.keyCloneZeroized());
+            check(transport.connectionBindingCloneZeroized());
+            check(!result.get().outcome().toCompletableFuture().isDone());
+
+            try {
+                transport.retryQuarantinedAbort();
+                throw new AssertionError(
+                        "abort retry repeated an unconfirmed physical close");
+            } catch (IllegalStateException expected) {
+                ++checks;
+            }
+            try {
+                transport.retryQuarantinedClose();
+                throw new AssertionError(
+                        "close retry repeated an unconfirmed physical close");
+            } catch (IllegalStateException expected) {
+                check(expected.getMessage().contains("unconfirmed"));
+            }
+            check(failingSocket.closeCount() == 1);
+            check(bridge.invariant());
+        } finally {
+            failingCleanup.shutdownNow();
+            failingCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
         // Full route/grant epoch must be validated before receipt admission or wire I/O.
         byte[] epochPayload = "epoch".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var oldEpoch = envelope(1, "reused", 3, 4, epochPayload);
@@ -416,7 +1421,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             try {
                 var bridge = new IpcReceiptCompletionBridge(2);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, oldEpoch, 71, 1, key, connectionBinding, cleanup::execute);
+                    client, bridge, oldEpoch, 1,
+                    authority(71, key, connectionBinding), cleanup::execute);
                 try {
                     transport.send(upgraded, epochPayload);
                     throw new AssertionError("upgraded route used stale transport authority");
@@ -444,7 +1450,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             try {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, rejectedMessage, 72, 1, key, connectionBinding, cleanup::execute);
+                    client, bridge, rejectedMessage, 1,
+                    authority(72, key, connectionBinding), cleanup::execute);
                 transport.requestClose();
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 var submission = transport.send(rejectedMessage, rejectedPayload);
@@ -492,7 +1499,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, maliciousMessage, 73, 1, key, connectionBinding, cleanup::execute);
+                    client, bridge, maliciousMessage, 1,
+                    authority(73, key, connectionBinding), cleanup::execute);
                 var submission = transport.send(maliciousMessage, maliciousPayload);
                 check(!submission.writeAttemptFailed());
                 try {
@@ -541,7 +1549,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, replayMessage, 81, 1, key, connectionBinding, cleanup::execute);
+                    client, bridge, replayMessage, 1,
+                    authority(81, key, connectionBinding), cleanup::execute);
                 var submission = transport.send(replayMessage, replayPayload);
                 check(!submission.writeAttemptFailed());
                 try {
@@ -698,8 +1707,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, reboundMessage, 821, 1, key,
-                        replacementBinding, cleanup::execute);
+                    client, bridge, reboundMessage, 1,
+                    authority(821, key, replacementBinding), cleanup::execute);
                 var submission = transport.send(reboundMessage, reboundPayload);
                 check(!submission.writeAttemptFailed());
                 try {
@@ -763,7 +1772,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 client.setSoTimeout(3000);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, tamperMessage, 74, 1, key, connectionBinding, cleanup::execute);
+                    client, bridge, tamperMessage, 1,
+                    authority(74, key, connectionBinding), cleanup::execute);
                 var submission = transport.send(tamperMessage, tamperPayload);
                 try {
                     transport.readVerifiedReceipt();
@@ -794,7 +1804,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             peer.setSoTimeout(3000);
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, inlineMessage, 88, 1, key, connectionBinding, Runnable::run);
+                    client, bridge, inlineMessage, 1,
+                    authority(88, key, connectionBinding), Runnable::run);
             var submission = transport.send(inlineMessage, inlinePayload);
             check(!submission.writeAttemptFailed());
             IpcAuthenticatedSocketTransport.readDataWireFrame(peer.getInputStream());
@@ -825,7 +1836,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 offCallerCleanup(cleanup); // deterministic host-supervisor retry fixture
             };
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, quarantineMessage, 89, 1, key, connectionBinding, scheduler);
+                    client, bridge, quarantineMessage, 1,
+                    authority(89, key, connectionBinding), scheduler);
             var submission = transport.send(quarantineMessage, quarantinePayload);
             check(!submission.writeAttemptFailed());
             var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
@@ -870,7 +1882,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, silentMessage, 90, 1, key, connectionBinding, cleanup::execute);
+                    client, bridge, silentMessage, 1,
+                    authority(90, key, connectionBinding), cleanup::execute);
                 var submission = transport.send(silentMessage, silentPayload);
                 check(!submission.writeAttemptFailed());
                 check(peerSawData.await(2, TimeUnit.SECONDS));
@@ -920,7 +1933,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             try {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, blockedMessage, 91, 1, key, connectionBinding, cleanup::execute);
+                    client, bridge, blockedMessage, 1,
+                    authority(91, key, connectionBinding), cleanup::execute);
                 AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> sendResult =
                         new AtomicReference<>();
                 AtomicReference<Throwable> sendFailure = new AtomicReference<>();
@@ -999,7 +2013,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             };
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, retryAbortMessage, 915, 1, key, connectionBinding, scheduler);
+                    client, bridge, retryAbortMessage, 1,
+                    authority(915, key, connectionBinding), scheduler);
             AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> result =
                     new AtomicReference<>();
             AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -1064,7 +2079,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             };
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
-                    client, bridge, deadlineMessage, 92, 1, key, connectionBinding, scheduler);
+                    client, bridge, deadlineMessage, 1,
+                    authority(92, key, connectionBinding), scheduler);
             AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> result =
                     new AtomicReference<>();
             AtomicReference<Throwable> failure = new AtomicReference<>();

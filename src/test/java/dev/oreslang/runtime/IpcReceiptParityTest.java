@@ -18,8 +18,13 @@ class IpcReceiptParityTest {
     }
 
     @Test
-    void oneShotPhysicalBridgeBindingRejectsReconnectAba() {
+    void oneShotPhysicalBridgeBindingRejectsReconnectAba() throws Exception {
         IpcReceiptPhysicalBindingSelfTest.main(new String[0]);
+    }
+
+    @Test
+    void brokerMintsOneShotPhysicalConnectionAuthority() throws Exception {
+        IpcPhysicalConnectionBrokerSelfTest.main(new String[0]);
     }
 
     @Test

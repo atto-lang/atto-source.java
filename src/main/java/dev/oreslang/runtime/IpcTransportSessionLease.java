@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Trusted host-side ownership of one IPC transport incarnation.
@@ -11,7 +12,7 @@ import java.util.concurrent.CompletionStage;
  * implementation or zero-copy ABI. The caller supplies an independently
  * authenticated, synchronous host frame writer and a physical close callback.
  * Never dispatch on an actor carrier or route UNTRUSTED NETWORK through here.
- * Synchronous send/write/wait entry points enforce that carrier boundary before
+ * Synchronous send/wait entry points enforce that carrier boundary before
  * receipt mutation, writer invocation, or monitor acquisition for blocking waits.
  * The authenticated socket adapter repeats the outer check, while this lease
  * is the non-bypassable package-local enforcement point.
@@ -56,6 +57,15 @@ final class IpcTransportSessionLease {
     record Snapshot(long generation, Phase phase, int activeWrites,
                     boolean physicalCloseConfirmed, boolean receiptsRetired) { }
 
+    private record DeferredSchedulerFailure(long cleanupAttempt, Throwable failure) {
+        DeferredSchedulerFailure {
+            if (cleanupAttempt < 0) {
+                throw new IllegalArgumentException("invalid deferred cleanup attempt");
+            }
+            Objects.requireNonNull(failure, "failure");
+        }
+    }
+
     private final IpcReceiptCorrelation.Envelope trustedEpoch;
     private final long generation;
     private final int limit;
@@ -66,22 +76,28 @@ final class IpcTransportSessionLease {
     private final CleanupScheduler scheduler;
     private Phase phase = Phase.OPEN;
     private int activeWrites;
+    // A descriptor close may be owned either by active-write abort or by
+    // finalization, but never by both. "attempted && !confirmed && !executing"
+    // is permanently ambiguous/unsafe: the close callback threw after entry,
+    // so this generation must never invoke physical close a second time.
+    private boolean physicalCloseAttempted;
+    private boolean physicalCloseExecuting;
     private boolean physicalCloseConfirmed;
     private boolean receiptsRetired;
+    // Once an actual descriptor-close invocation fails, that ambiguity is the
+    // authoritative shutdown failure for this generation. Scheduler, timeout,
+    // or receipt-retirement diagnostics must never overwrite it.
+    private boolean physicalCloseFailureRecorded;
     private Throwable closeFailure;
     private long cleanupAttempt;
     private boolean cleanupExecuting;
     private long enqueueAttempt;
     private Thread enqueueCaller;
-
-    IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
-                             long generation, int limit,
-                             IpcReceiptCompletionBridge receipts,
-                             FrameWriter writer, PhysicalCloser closer,
-                             CleanupScheduler scheduler) {
-        this(trustedEpoch, generation, limit, receipts, null,
-                writer, closer, scheduler);
-    }
+    // Misrouted cleanup callbacks must be able to report failure without
+    // acquiring this monitor. A trusted host observation folds the deferred
+    // violation into QUARANTINED under the normal session lock.
+    private final AtomicReference<DeferredSchedulerFailure> deferredSchedulerFailure =
+            new AtomicReference<>();
 
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
                              long generation, int limit,
@@ -96,7 +112,7 @@ final class IpcTransportSessionLease {
         this.generation = generation;
         this.limit = limit;
         this.receipts = Objects.requireNonNull(receipts, "receipts");
-        this.physicalOwner = physicalOwner;
+        this.physicalOwner = Objects.requireNonNull(physicalOwner, "physicalOwner");
         this.writer = Objects.requireNonNull(writer, "writer");
         this.closer = Objects.requireNonNull(closer, "closer");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -130,14 +146,11 @@ final class IpcTransportSessionLease {
         Objects.requireNonNull(preparedFrame, "preparedFrame");
         final CompletionStage<IpcReceiptCorrelation.Stage> outcome;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.OPEN || expectedGeneration != generation
                     || !sameTrustedEpoch(message) || activeWrites >= limit) {
                 throw new PreDispatchRejectedException(
                         "closed/stale/bounded IPC transport");
-            }
-            if (physicalOwner == null) {
-                throw new IllegalStateException(
-                        "atomic IPC admission requires bound physical owner");
             }
             outcome = receipts.admitAndCommit(
                     physicalOwner, message, generation);
@@ -160,55 +173,6 @@ final class IpcTransportSessionLease {
     }
 
     /**
-     * Linearize session admission, receipt dispatch commitment, and close
-     * intent on this session monitor, BEFORE any possible physical write.
-     * The transport callback is invoked OUTSIDE both session and receipt
-     * monitors while this operation pins the underlying physical resource.
-     */
-    void writeFrame(long expectedGeneration,
-                    IpcReceiptCorrelation.Envelope message,
-                    byte[] preparedFrame) throws IOException {
-        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport write");
-        Objects.requireNonNull(message, "message");
-        Objects.requireNonNull(preparedFrame, "preparedFrame");
-        synchronized (this) {
-            if (phase != Phase.OPEN || expectedGeneration != generation
-                    || !sameTrustedEpoch(message) || activeWrites >= limit) {
-                throw new PreDispatchRejectedException(
-                        "closed/stale/bounded IPC transport");
-            }
-            // No arbitrary user callbacks or memory allocation after
-            // commitment until the writer has acquired the physical pin.
-            ++activeWrites;
-            try {
-                if (physicalOwner == null) {
-                    receipts.commitDispatch(message);
-                } else {
-                    receipts.commitDispatch(
-                            physicalOwner, message, generation);
-                }
-            } catch (RuntimeException failure) {
-                --activeWrites;
-                throw new PreDispatchRejectedException(
-                        "IPC receipt dispatch commitment rejected", failure);
-            } catch (Error failure) {
-                --activeWrites;
-                throw failure;
-            }
-        }
-        try {
-            writer.write(message, preparedFrame);
-        } catch (IOException | RuntimeException | Error failure) {
-            // A dispatch-committed failed write is INDETERMINATE, even when
-            // the host call threw before reporting any accepted bytes.
-            requestClose();
-            throw failure;
-        } finally {
-            releaseWrite();
-        }
-    }
-
-    /**
      * Close intent does not wait for writes or run physical cleanup inline.
      * An admitted last-writer release submits cleanup to a bounded host
      * worker; on scheduler failure the session stays quarantined.
@@ -220,6 +184,7 @@ final class IpcTransportSessionLease {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC transport close request");
         boolean finalize;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase == Phase.OPEN) phase = Phase.CLOSING;
             finalize = beginFinalization();
         }
@@ -243,9 +208,16 @@ final class IpcTransportSessionLease {
             long remainingNanos = timeoutMillis * 1_000_000L;
             long deadline = System.nanoTime() + remainingNanos;
             while (phase != Phase.RETIRED && phase != Phase.QUARANTINED) {
+                absorbDeferredSchedulerFailureLocked();
+                if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) break;
                 if (remainingNanos <= 0) return false;
-                long millis = remainingNanos / 1_000_000L;
-                int nanos = (int) (remainingNanos % 1_000_000L);
+                // A deferred actor-carrier scheduler violation is recorded
+                // lock-free and cannot notify this monitor without risking the
+                // actor park we are preventing. Bound host wait slices so the
+                // supervisor observes it promptly without busy polling.
+                long sliceNanos = Math.min(remainingNanos, 50_000_000L);
+                long millis = sliceNanos / 1_000_000L;
+                int nanos = (int) (sliceNanos % 1_000_000L);
                 wait(millis, nanos);
                 remainingNanos = deadline - System.nanoTime();
             }
@@ -253,40 +225,146 @@ final class IpcTransportSessionLease {
         }
     }
 
+    /** Only called while holding this monitor. */
+    private void recordLifecycleFailureLocked(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (!physicalCloseFailureRecorded) {
+            closeFailure = failure;
+        }
+    }
+
+    /** Only called while holding this monitor after entering descriptor close. */
+    private void recordPhysicalCloseFailureLocked(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        physicalCloseFailureRecorded = true;
+        closeFailure = failure;
+    }
+
     /**
      * Fail closed when a trusted abort task cannot be admitted or when the
      * write pins do not drain by a supervisor deadline. Never marks an
      * executing physical close as retired or interrupts its cleanup worker.
      */
-    synchronized boolean quarantineIfUnsettled(Throwable failure) {
+    boolean quarantineIfUnsettled(Throwable failure) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport quarantine");
         Objects.requireNonNull(failure, "failure");
-        if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
-        if (phase == Phase.FINALIZING && cleanupExecuting) {
-            if (closeFailure == null) closeFailure = failure;
-            return false;
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
+            if (phase == Phase.FINALIZING && cleanupExecuting) {
+                if (closeFailure == null && !physicalCloseFailureRecorded) {
+                    closeFailure = failure;
+                }
+                return false;
+            }
+            recordLifecycleFailureLocked(failure);
+            phase = Phase.QUARANTINED;
+            notifyAll();
+            return true;
         }
-        closeFailure = failure;
-        phase = Phase.QUARANTINED;
-        notifyAll();
-        return true;
     }
 
-    /** An explicit supervisor retry never reopens a quarantined session. */
+    /**
+     * An explicit supervisor retry never reopens a quarantined session.
+     * Only failures that happened before physical close began are retryable.
+     * Once a close callback was entered but did not confirm success, invoking
+     * it again would rely on descriptor-close idempotence and risks closing a
+     * reused/native descriptor.
+     */
     void retryQuarantinedClose() {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC transport quarantined close retry");
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.QUARANTINED || activeWrites != 0) {
                 throw new IllegalStateException("transport not quarantined");
+            }
+            if (physicalCloseAttempted && !physicalCloseConfirmed) {
+                throw new IllegalStateException(
+                        "physical close attempt unconfirmed; descriptor reuse unsafe");
             }
             phase = Phase.FINALIZING;
         }
         scheduleFinalization();
     }
 
+    /**
+     * Claim physical close ownership for an active-write abort. The claim is
+     * made under the same lifecycle monitor used by finalization, preventing a
+     * writer-drain race from invoking the descriptor closer concurrently.
+     */
+    boolean beginExternalPhysicalClose() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC external physical close claim");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            if ((phase != Phase.CLOSING && phase != Phase.QUARANTINED)
+                    || activeWrites <= 0
+                    || physicalCloseAttempted
+                    || physicalCloseExecuting
+                    || physicalCloseConfirmed) {
+                return false;
+            }
+            physicalCloseAttempted = true;
+            physicalCloseExecuting = true;
+            return true;
+        }
+    }
+
+    /**
+     * Complete the exact external close claim. Successful abort confirmation
+     * is fed back into the lease so finalization retires receipts without
+     * calling the descriptor closer again.
+     */
+    void completeExternalPhysicalClose(Throwable failure) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC external physical close completion");
+        boolean finalize = false;
+        synchronized (this) {
+            if (!physicalCloseAttempted || !physicalCloseExecuting
+                    || physicalCloseConfirmed) {
+                throw new IllegalStateException(
+                        "IPC external physical close completion without claim");
+            }
+            physicalCloseExecuting = false;
+            if (failure != null) {
+                // The descriptor-close result outranks an earlier scheduling
+                // or timeout diagnostic: this is the failure that determines
+                // whether physical reuse can ever be considered safe.
+                recordPhysicalCloseFailureLocked(failure);
+                phase = Phase.QUARANTINED;
+                notifyAll();
+                return;
+            }
+
+            physicalCloseConfirmed = true;
+            if (phase == Phase.CLOSING && activeWrites == 0) {
+                phase = Phase.FINALIZING;
+                finalize = true;
+            }
+            notifyAll();
+        }
+        if (finalize) scheduleFinalization();
+    }
+
+    boolean externalPhysicalCloseRetryable() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC external physical close retry diagnostic");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            return phase == Phase.QUARANTINED
+                    && activeWrites > 0
+                    && !physicalCloseAttempted
+                    && !physicalCloseExecuting
+                    && !physicalCloseConfirmed;
+        }
+    }
+
     private void releaseWrite() {
         boolean finalize;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (activeWrites <= 0) throw new IllegalStateException("IPC write pin underflow");
             --activeWrites;
             finalize = beginFinalization();
@@ -297,6 +375,10 @@ final class IpcTransportSessionLease {
     /** Only called while holding this monitor. */
     private boolean beginFinalization() {
         if (phase == Phase.CLOSING && activeWrites == 0) {
+            // An abort may already own the descriptor close while the writer
+            // is unwinding. Its completion will schedule finalization after
+            // close confirmation; do not race a second close here.
+            if (physicalCloseExecuting) return false;
             phase = Phase.FINALIZING;
             return true;
         }
@@ -306,9 +388,11 @@ final class IpcTransportSessionLease {
     private void scheduleFinalization() {
         final long attempt;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.FINALIZING) return;
             if (cleanupAttempt == Long.MAX_VALUE) {
-                closeFailure = new IllegalStateException("cleanup attempt overflow");
+                recordLifecycleFailureLocked(
+                        new IllegalStateException("cleanup attempt overflow"));
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
@@ -326,7 +410,7 @@ final class IpcTransportSessionLease {
             synchronized (this) {
                 if (phase == Phase.FINALIZING && cleanupAttempt == attempt
                         && !cleanupExecuting) {
-                    closeFailure = failure;
+                    recordLifecycleFailureLocked(failure);
                     phase = Phase.QUARANTINED;
                     notifyAll();
                 }
@@ -341,48 +425,76 @@ final class IpcTransportSessionLease {
     }
 
     private void finalizePhysicalClose(long attempt) {
+        if (RuntimeBlockingGuard.actorCarrierMarked()) {
+            deferSchedulerFailure(attempt, new IllegalStateException(
+                    "cleanup scheduler executed on an actor carrier"));
+            return;
+        }
+
+        final boolean closeNeeded;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
                     || cleanupExecuting) return;
             if (enqueueAttempt == attempt && enqueueCaller == Thread.currentThread()) {
-                closeFailure = new IllegalStateException(
-                        "cleanup scheduler executed inline on requesting carrier");
+                recordLifecycleFailureLocked(new IllegalStateException(
+                        "cleanup scheduler executed inline on requesting carrier"));
                 enqueueCaller = null;
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
             }
-            if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                closeFailure = new IllegalStateException(
-                        "cleanup scheduler executed on an actor carrier");
-                phase = Phase.QUARANTINED;
-                notifyAll();
-                return;
-            }
+
             cleanupExecuting = true;
+            closeNeeded = !physicalCloseConfirmed;
+            if (closeNeeded) {
+                if (physicalCloseExecuting) {
+                    recordLifecycleFailureLocked(new IllegalStateException(
+                            "physical close already executing"));
+                    cleanupExecuting = false;
+                    phase = Phase.QUARANTINED;
+                    notifyAll();
+                    return;
+                }
+                if (physicalCloseAttempted) {
+                    recordLifecycleFailureLocked(new IllegalStateException(
+                            "physical close attempt unconfirmed; descriptor reuse unsafe"));
+                    cleanupExecuting = false;
+                    phase = Phase.QUARANTINED;
+                    notifyAll();
+                    return;
+                }
+                physicalCloseAttempted = true;
+                physicalCloseExecuting = true;
+            }
         }
+
         try {
-            if (!physicalCloseConfirmed) closer.closeAndConfirm();
+            if (closeNeeded) closer.closeAndConfirm();
         } catch (Exception | Error failure) {
             synchronized (this) {
-                closeFailure = failure;
+                physicalCloseExecuting = false;
+                recordPhysicalCloseFailureLocked(failure);
                 cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
                 notifyAll();
             }
-            return; // Never declare the descriptor reusable.
+            return; // Never invoke an unconfirmed physical close a second time.
         }
-        synchronized (this) { physicalCloseConfirmed = true; }
+
+        synchronized (this) {
+            if (closeNeeded) {
+                physicalCloseExecuting = false;
+                physicalCloseConfirmed = true;
+            }
+        }
         try {
             // Arbitrary dependent user callbacks can run: no session lock held.
-            if (physicalOwner == null) {
-                receipts.transportLost(trustedEpoch);
-            } else {
-                receipts.transportLost(physicalOwner, trustedEpoch, generation);
-            }
+            receipts.transportLost(
+                    physicalOwner, trustedEpoch, generation);
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
-                closeFailure = failure;
+                recordLifecycleFailureLocked(failure);
                 cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
                 notifyAll();
@@ -398,19 +510,101 @@ final class IpcTransportSessionLease {
         }
     }
 
-    synchronized Snapshot snapshot() {
-        return new Snapshot(generation, phase, activeWrites,
-                physicalCloseConfirmed, receiptsRetired);
+    /**
+     * Misrouted actor-carrier callbacks report through this lock-free path so
+     * they can never park behind a host lifecycle monitor.
+     */
+    void deferSchedulerFailure(long expectedCleanupAttempt, Throwable failure) {
+        if (expectedCleanupAttempt <= 0) {
+            throw new IllegalArgumentException("invalid cleanup attempt");
+        }
+        deferSchedulerFailureInternal(expectedCleanupAttempt, failure);
     }
 
-    synchronized Throwable closeFailure() { return closeFailure; }
+    void deferExternalSchedulerFailure(Throwable failure) {
+        deferSchedulerFailureInternal(0, failure);
+    }
 
-    synchronized boolean invariant() {
-        return activeWrites >= 0 && activeWrites <= limit
-                && (!physicalCloseConfirmed || activeWrites == 0)
-                && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
-                && (phase != Phase.OPEN || !physicalCloseConfirmed)
-                && (phase != Phase.FINALIZING || activeWrites == 0)
-                && (!cleanupExecuting || phase == Phase.FINALIZING);
+    private void deferSchedulerFailureInternal(long expectedCleanupAttempt, Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (!RuntimeBlockingGuard.actorCarrierMarked()) {
+            throw new IllegalStateException(
+                    "deferred scheduler failure requires an actor carrier");
+        }
+        var next = new DeferredSchedulerFailure(expectedCleanupAttempt, failure);
+        deferredSchedulerFailure.getAndUpdate(current -> {
+            if (current == null) return next;
+            // External transport-abort scheduler failure is not tied to the
+            // close-attempt counter and must not be displaced by stale cleanup.
+            if (current.cleanupAttempt() == 0) return current;
+            if (next.cleanupAttempt() == 0) return next;
+            // Retain the newest cleanup attempt so an old callback cannot
+            // poison an explicit retry.
+            return next.cleanupAttempt() >= current.cleanupAttempt()
+                    ? next : current;
+        });
+    }
+
+    /** Only called while holding this monitor on a trusted host thread. */
+    private void absorbDeferredSchedulerFailureLocked() {
+        DeferredSchedulerFailure deferred = deferredSchedulerFailure.getAndSet(null);
+        if (deferred == null || phase == Phase.RETIRED || phase == Phase.QUARANTINED) return;
+        if (deferred.cleanupAttempt() != 0
+                && deferred.cleanupAttempt() != cleanupAttempt) {
+            return; // stale scheduler callback from an older cleanup attempt
+        }
+        if (closeFailure == null && !physicalCloseFailureRecorded) {
+            closeFailure = deferred.failure();
+        }
+        cleanupExecuting = false;
+        phase = Phase.QUARANTINED;
+        notifyAll();
+    }
+
+    Snapshot snapshot() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport snapshot");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            return new Snapshot(generation, phase, activeWrites,
+                    physicalCloseConfirmed, receiptsRetired);
+        }
+    }
+
+    Throwable closeFailure() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport close failure diagnostic");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            return closeFailure;
+        }
+    }
+
+    boolean invariant() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport invariant diagnostic");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            return activeWrites >= 0 && activeWrites <= limit
+                    && (!physicalCloseExecuting
+                        || (physicalCloseAttempted && !physicalCloseConfirmed))
+                    && (!physicalCloseConfirmed
+                        || (physicalCloseAttempted && !physicalCloseExecuting))
+                    && (phase != Phase.RETIRED
+                        || (physicalCloseConfirmed && receiptsRetired
+                            && activeWrites == 0))
+                    && (phase != Phase.OPEN
+                        || (!physicalCloseAttempted
+                            && !physicalCloseExecuting
+                            && !physicalCloseConfirmed))
+                    && (phase != Phase.FINALIZING || activeWrites == 0)
+                    && (!physicalCloseFailureRecorded
+                        || (phase == Phase.QUARANTINED
+                            && physicalCloseAttempted
+                            && !physicalCloseExecuting
+                            && !physicalCloseConfirmed
+                            && closeFailure != null))
+                    && (!cleanupExecuting || phase == Phase.FINALIZING);
+        }
     }
 }
