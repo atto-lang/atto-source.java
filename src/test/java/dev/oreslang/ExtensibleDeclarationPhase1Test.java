@@ -33,7 +33,6 @@ final class ExtensibleDeclarationPhase1Test {
             {"define keyword workflow as class end", "KIND_RESERVED"},
             {"define keyword Map as class end", "KIND_RESERVED"},
             {HEADER + HEADER, "KIND_DUPLICATE"},
-            {"define class First as end\n" + HEADER, "KIND_HEADER_REQUIRED"},
             {HEADER + "define entity Map as end", "KIND_HEADER_UNSUPPORTED"},
             {HEADER + "define entity Box<T> as end", "KIND_HEADER_UNSUPPORTED"},
         };
@@ -44,8 +43,7 @@ final class ExtensibleDeclarationPhase1Test {
         }
         assertThrows(IllegalArgumentException.class, () ->
                 Parser.parseStrictAtto(HEADER + "define module inner as\ndefine entity Box as end\nend"));
-        assertThrows(IllegalArgumentException.class, () ->
-                Parser.parseStrictAtto("define entity Box as end\n" + HEADER));
+
         assertThrows(IllegalArgumentException.class, () ->
                 Parser.parseStrictAtto("import keyword entity from \"std.database\";\ndefine entity Box as end"));
     }
@@ -92,5 +90,31 @@ final class ExtensibleDeclarationPhase1Test {
                 Parser.parseStrictAtto("define keyword entity as class requires Entity; requires Entity; end\n"
                         + "define interface Entity as end\ndefine entity Customer as end"));
         assertTrue(duplicate.getMessage().contains("KIND_CONTRACT_DUPLICATE"), duplicate::getMessage);
+    }
+    @Test void forwardLocalDescriptorsProduceIdenticalOrdinaryAst() {
+        assertEquals(Parser.parseStrictAtto("define class Customer as end"),
+                Parser.parseStrictAtto("define entity Customer as end\n" + HEADER));
+        assertEquals(Parser.parseStrictAtto("define class First as end\ndefine class Customer as end"),
+                Parser.parseStrictAtto("define class First as end\n" + HEADER + "define entity Customer as end"));
+        String contract = "define interface Entity as answer(): int; end\n";
+        String body = "pub answer(): int { return 42; } end";
+        assertEquals(Parser.parseStrictAtto(contract + "define class Customer implements Entity as " + body),
+                Parser.parseStrictAtto(contract + "define entity Customer as " + body
+                        + "\ndefine keyword entity as class requires Entity; end"));
+        assertEquals(Parser.parseStrictAtto("define actor Counter as end"),
+                Parser.parseStrictAtto("define durable_object Counter as end\n"
+                        + "define keyword durable_object as actor end"));
+    }
+
+    @Test void provisionalForwardDescriptorCannotEscapeItsActualRootScope() {
+        for (String suffix : new String[] {
+                "define module inner as " + HEADER + " end",
+                "define pub keyword entity as class end",
+                "// define keyword entity as class end",
+                HEADER + HEADER
+        }) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    Parser.parseStrictAtto("define entity Customer as end\n" + suffix), suffix);
+        }
     }
 }
