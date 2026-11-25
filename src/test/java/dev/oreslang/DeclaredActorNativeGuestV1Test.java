@@ -172,6 +172,93 @@ final class DeclaredActorNativeGuestV1Test {
     }
 
     @Test
+    void allCanonicalUseNamespaceHeadersExecuteTheManifestLinkedAttoActor() throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        for (String file : new String[] {
+                "contract.atto", "actor.atto", "method.atto", "start.atto",
+                "receive.atto", "main.atto" }) {
+            Path source = root.resolve("src/counter/" + file);
+            String contents = Files.readString(source);
+            assertTrue(contents.startsWith("namespace counter;")
+                    || contents.startsWith("use namespace counter;"), file);
+            if (!contents.startsWith("use namespace counter;")) {
+                Files.writeString(source, "use namespace counter;"
+                        + contents.substring("namespace counter;".length()));
+            }
+        }
+        Ast.Program verified = packageBuild.compileStatelessActorGuestV1();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        String sourceText = "manifest-owned all-use-namespace actor guest";
+        String codeUnit = "declared-actor-use-namespace-v1.atto";
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnit)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            try (var lease = OresLanguage.openPrecheckedProgram(
+                    codeUnit, sourceText, verified)) {
+                context.eval(source);
+            }
+        }
+        assertEquals("1|7", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void privateInitRunsExactlyAsTheNativeActorStartupHook() throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        String initSource = Files.readString(Path.of(
+                "contracts", "declared-actor-native-guest-v1", "init.atto"));
+        assertTrue(initSource.startsWith("use namespace counter;"));
+        write("src/counter/start.atto", initSource);
+        Ast.Program verified = packageBuild.compileStatelessActorGuestV1();
+        Ast.ClassDecl counter = verified.modules().getFirst().declarations().stream()
+                .filter(d -> d instanceof Ast.ClassDecl)
+                .map(d -> (Ast.ClassDecl) d).findFirst().orElseThrow();
+        assertTrue(counter.methods().stream().anyMatch(m -> m.name().equals("on_start")));
+        assertFalse(counter.methods().stream().anyMatch(m -> m.name().equals("init")));
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        String sourceText = "manifest-owned private init actor guest";
+        String codeUnit = "declared-actor-private-init-v1.atto";
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnit)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            try (var lease = OresLanguage.openPrecheckedProgram(
+                    codeUnit, sourceText, verified)) {
+                context.eval(source);
+            }
+        }
+        assertEquals("1|7", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void initAndOnStartCannotBothClaimTheOneShotBootstrapSlot() throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        write("src/counter/init.atto", NS
+                + "mtd (Counter c) init(): void { return; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                packageBuild::compileStatelessActorGuestV1);
+        assertTrue(error.getMessage().contains("both init and on_start"),
+                error.getMessage());
+    }
+
+    @Test
+    void declaredInitMustRemainPrivateAndNotReturnActorIdentity() throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        for (String invalid : new String[] {
+                "pub mtd (Counter c) init(): void { return; }",
+                "mtd (Counter c) init(int value): void { return; }",
+                "mtd (Counter c) init(): Counter { return c; }" }) {
+            write("src/counter/start.atto", NS + invalid);
+            var error = assertThrows(IllegalArgumentException.class,
+                    packageBuild::compileStatelessActorGuestV1);
+            assertTrue(error.getMessage().contains(
+                    "declared actor init must be private, zero-argument and return void"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void attachedStateCannotBeRecastAsLegacyActorFields() throws Exception {
         PackageNamespaceBuild packageBuild = build();
         write("src/counter/state.atto", NS

@@ -1,0 +1,8 @@
+use namespace counter;
+
+// Manifest-linked source hook. It is an Atto method, not a Java business handler.
+// The checked declared-actor lowerer maps private init() to one-shot on_start.
+mtd (Counter c) init(): void {
+  self.send(1);
+  return;
+}

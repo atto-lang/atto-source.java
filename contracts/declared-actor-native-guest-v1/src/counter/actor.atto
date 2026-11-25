@@ -1,2 +1,2 @@
-namespace counter;
+use namespace counter;
 declare pub actor Counter implements Echo;

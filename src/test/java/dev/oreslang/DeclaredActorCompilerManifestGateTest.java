@@ -59,6 +59,27 @@ final class DeclaredActorCompilerManifestGateTest {
     }
 
     @Test
+    void mixedNamespaceHeaderSpellingsShareManifestActorWitnessAndKeepCodegenClosed()
+            throws IOException {
+        var config = setup();
+        // A source header spelling must not change package / nominal authority.
+        write("src/foo/actor.atto", ACTOR.replace("namespace foo;", "use namespace foo;"));
+        write("src/foo/method.atto", METHOD.replace("namespace foo;", "use namespace foo;"));
+        var audit = new PackageNamespaceBuild(config).auditDeclaredActors();
+        var key = new ActorContractWitness.ActorKey("demo@0.1.0", "foo", "Foo");
+        var actor = audit.contractWitness().actors().get(key);
+        assertNotNull(actor);
+        assertEquals("src/foo/actor.atto", actor.actorUnit());
+        assertEquals("src/foo/method.atto", actor.methods().getFirst().methodUnit());
+
+        // Static contract admission must not become executable actor authority.
+        var unsupported = assertThrows(IllegalArgumentException.class,
+                () -> new PackageNamespaceBuild(config).build());
+        assertTrue(unsupported.getMessage().contains("DECLARED_ACTOR_CODEGEN_UNSUPPORTED"),
+                unsupported.getMessage());
+    }
+
+    @Test
     void actorTargetContractParsingIsDistinctFromModuleAndOrdinaryInterface() {
         Ast.InterfaceDecl actor = assertInstanceOf(Ast.InterfaceDecl.class,
                 Parser.parse(CONTRACT).modules().getFirst().declarations().getFirst());
