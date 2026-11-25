@@ -21,6 +21,60 @@ final class ActorIpcSessionV1Test {
     private static final String WORKER_POLICY = "66".repeat(32);
 
     @Test
+    void authenticatedMessagePackUsesPinnedShapeAndRetainsDecodedCredits() {
+        var shape = MessagePackWireV2.Shape.string();
+        var profile = new ActorIpcCodecProfileV1("messagepack", 2, "demo.String.v1",
+                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cda", MESSAGE_ABI);
+        var artifact = artifactWithReadyCommitments("ImageWorker", MANIFEST, ARTIFACT,
+                MESSAGE_ABI, STATE_SCHEMA, profile.commitment(), WORKER_POLICY);
+        var limits = new MessagePackWireV2.DecodeLimits(1024, 1024, 16, 2048, 8);
+        try (var session = ActorIpcSessionV1.create(artifact, UUID.randomUUID(), 1, 1)) {
+            session.bindCodecProfile(profile, 1, 1);
+            assertThrows(IllegalArgumentException.class, () ->
+                    session.bindMessagePackDecoder(MessagePackWireV2.Shape.i64(), limits));
+            session.bindMessagePackDecoder(shape, limits);
+            var transientQuota = new ActorDataDecodeQuotaV1(65536, 1);
+            var retained = new ActorDataDecodeQuotaV1(65536, 4);
+            session.bindDataQueue(2, 4096, transientQuota, retained);
+            try (var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+                ready(session, bootstrap, artifact);
+                byte[] payload = MessagePackWireV2.encode(profile.schema(), shape, "hello");
+                byte[] frame = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                        ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, payload);
+                assertTrue(session.tryQueueWorkerData(frame));
+                try (var delivery = session.pollWorkerData()) {
+                    assertNotNull(delivery);
+                    assertThrows(SecurityException.class, delivery::copyPayload);
+                    try (var held = transientQuota.tryReserve(1)) {
+                        assertNotNull(held);
+                        assertNull(session.tryDecodeWorkerData(delivery));
+                        assertEquals(frame.length, retained.usedBytes());
+                    }
+                    try (var decoded = session.tryDecodeWorkerData(delivery)) {
+                        assertNotNull(decoded);
+                        assertEquals("hello", decoded.value());
+                        assertEquals(9L, decoded.messageSequence());
+                        assertEquals(5120L, retained.usedBytes());
+                        assertEquals(0L, transientQuota.usedBytes());
+                        assertThrows(SecurityException.class, () -> session.tryDecodeWorkerData(delivery));
+                    }
+                    assertEquals(0L, retained.usedBytes());
+                }
+                byte[] wrong = MessagePackWireV2.encode("wrong.schema", shape, "hello");
+                assertTrue(session.tryQueueWorkerData(worker(bootstrap, artifact,
+                        ActorIpcSessionV1.Lane.DATA, ActorIpcSessionV1.FrameKind.OUTPUT, 2, 10, wrong)));
+                try (var delivery = session.pollWorkerData()) {
+                    assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                            () -> session.tryDecodeWorkerData(delivery));
+                    assertTrue(session.poisoned());
+                    assertEquals(0L, retained.usedBytes());
+                    assertEquals(0L, transientQuota.usedBytes());
+                }
+            }
+        }
+    }
+
+    @Test
     void readyThenDataAndControlUseIndependentSequences() {
         ActorArtifact<Object> artifact = artifact(
                 "ImageWorker", MESSAGE_ABI, ARTIFACT);
