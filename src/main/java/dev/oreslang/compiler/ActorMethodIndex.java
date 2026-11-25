@@ -57,7 +57,7 @@ public final class ActorMethodIndex {
     }
 
     private static final Set<String> CONTROL_METHOD_NAMES = Set.of(
-            "tear_down", "handle_state", "on_panic", "on_throw",
+            "init", "tear_down", "handle_state", "on_panic", "on_throw",
             "on_throws", "on_raise", "on_recover", "on_start", "on_stop",
             "on_restart", "receive", "send", "end", "endWithCleanup");
 

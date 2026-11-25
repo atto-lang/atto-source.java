@@ -66,8 +66,16 @@ final class VerifiedStatelessActorGuestV1 {
             }
             // The existing actor TypeChecker verifies method bodies, parameter
             // transport, private hook signatures and ownership on this AST.
+            // Only a manifest-verified private init may become on_start;
+            // that is a runtime-only, one-shot pre-publication actor hook.
+            String loweredName = external.name().equals("init")
+                    ? "on_start" : external.name();
+            if (methods.stream().anyMatch(m -> m.name().equals(loweredName)
+                    && m.parameters().size() == external.parameters().size())) {
+                throw unsupported("duplicate executable lifecycle or method slot");
+            }
             methods.add(new Ast.MethodDecl(
-                    external.name(), external.visibility(),
+                    loweredName, external.visibility(),
                     false, false, false, false, false, null,
                     List.of(), external.parameters(), external.returnType(),
                     List.of(), external.body()));

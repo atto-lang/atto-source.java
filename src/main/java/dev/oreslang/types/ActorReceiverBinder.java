@@ -379,7 +379,7 @@ public final class ActorReceiverBinder {
                                     + "' conflicts with an in-class actor method");
                 }
             }
-            validateHookShape(method);
+            validateHookShape(target, method);
             Slot key = new Slot(
                     module.name(), method.actorName(), method.name(),
                     method.parameters().size());
@@ -392,6 +392,17 @@ public final class ActorReceiverBinder {
                                 + "'; parameter types and return types do not disambiguate overloads");
             }
         }
+
+        // Both spellings target the same single-use bootstrap slot. Reject
+        // aliases together BEFORE executable linking, independent of file order.
+        for (String actorName : nominalActors.keySet()) {
+            if (bindings.containsKey(new Slot(module.name(), actorName, "init", 0))
+                    && bindings.containsKey(new Slot(module.name(), actorName, "on_start", 0))) {
+                throw new IllegalArgumentException(
+                        "declared actor cannot define both init and on_start lifecycle hooks: "
+                                + module.name() + "." + actorName);
+            }
+        }
     }
 
     private static String methodSelector(String name, int arity) {
@@ -400,15 +411,24 @@ public final class ActorReceiverBinder {
         return name + "/" + arity;
     }
 
-    private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
+    private static void validateHookShape(Ast.Decl target, Ast.ExternalActorMethodDecl method) {
         String name = method.name();
-        // init is a privileged, one-shot actor bootstrap operation. An external
-        // attachment cannot manufacture a pre-publication state permit, nor
-        // return a raw actor identity through an ordinary callable slot.
+        // init is admitted ONLY as a private, void, parameter-free lifecycle
+        // method on a declared actor. The manifest-verified guest lowerer maps
+        // it to the runtime-only one-shot on_start hook; it never becomes an
+        // ordinary public method or a caller-minted actor bootstrap capability.
         if (name.equals("init")) {
-            throw new IllegalArgumentException(
-                    "external actor init is reserved for one-shot actor-owned initialization; "
-                            + "namespace receiver methods cannot implement init");
+            if (!(target instanceof Ast.DeclaredActorDecl)) {
+                throw new IllegalArgumentException(
+                        "external actor init is reserved for one-shot actor-owned initialization; "
+                                + "namespace receiver methods cannot implement init");
+            }
+            if (method.visibility() != Ast.Visibility.PRIVATE
+                    || !method.parameters().isEmpty() || !isVoid(method.returnType())) {
+                throw new IllegalArgumentException(
+                        "declared actor init must be private, zero-argument and return void");
+            }
+            return;
         }
         if (Set.of("on_panic", "on_throw", "on_throws", "on_raise",
                 "on_recover", "handle_state", "on_stop", "on_restart").contains(name)) {
