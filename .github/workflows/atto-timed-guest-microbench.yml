@@ -16,6 +16,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Validate receipt parser controls (source-free)
+        run: python3 -B tests/fixtures/sharkbench-microbench/test-parse-fork.py
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: "25.3"
