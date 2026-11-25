@@ -78,6 +78,49 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void doubleBangHasDistinctAstAndExecutesAcyclicDeepCopy() throws Exception {
+        String template = "fnc main(): int { val int x = 7; return %s; }";
+        assertNotEquals(Parser.parse(template.formatted("copy! x")),
+                Parser.parse(template.formatted("copy!! x")));
+        assertEquals(Parser.parse(template.formatted("copy!! x")),
+                Parser.parse(template.formatted("copy!!x")));
+        assertThrows(IllegalArgumentException.class, () ->
+                Parser.parse(template.formatted("copy!!!x")));
+        assertEquals("10|77", run("""
+                define class Person as
+                  pub val Array<int> scores = new Array<int>();
+                end
+                pub fnc main(): void {
+                  let mut Person original = new Person();
+                  original.scores.add(10);
+                  let mut Person clone = copy!! original;
+                  clone.scores.set(0, 77);
+                  stdio.stdout.write(original.scores.get(0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(clone.scores.get(0));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void doubleBangStillRejectsUnprovedCyclicLayout() {
+        String source = """
+                define class Node as
+                  pub let Node next;
+                end
+                fnc bad(Node value): Node {
+                  return copy!! value;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("E_COPY_GRAPH_UNPROVEN")
+                || error.getMessage().contains("E_COPY_TRANSITIVE"), error::toString);
+    }
+
+    @Test
     void rootTypedArrayCopyIsIndependentAndRetainsTypeForFurtherCopy() throws Exception {
         assertEquals("10|99|7", run("""
                 pub fnc main(): void {
