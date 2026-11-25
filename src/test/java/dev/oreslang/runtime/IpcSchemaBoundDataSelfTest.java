@@ -19,7 +19,7 @@ public final class IpcSchemaBoundDataSelfTest {
         try { f.run(); throw new AssertionError("schema DATA accepted invalid input"); }
         catch (IOException expected) { ++checks; }
     }
-    private static IpcSchemaBoundDataV1.Binding binding(IpcSchemaBoundDataV1.Codec codec,int version,String schema,byte[] digest) {
+    private static IpcSchemaBoundDataV1.Binding binding(IpcSchemaBoundDataV1.Codec codec,long version,String schema,byte[] digest) {
         return new IpcSchemaBoundDataV1.Binding(codec,version,schema,digest);
     }
     private static IpcReceiptCorrelation.Envelope envelope(byte[] payload,long recipient) throws Exception {
@@ -66,6 +66,19 @@ public final class IpcSchemaBoundDataSelfTest {
         var legacy=envelope(BODY,2);
         reject(()->open(frame(BODY,legacy),legacy,expected));
         reject(()->IpcSchemaBoundDataV1.wrap(expected,new byte[1024*1024+1]));
+        for(long version:new long[]{1,0x7fffffffL,0x80000000L,0xffffffffL}){
+            var boundary=binding(IpcSchemaBoundDataV1.Codec.CBOR,version,"order.v1",SHAPE);
+            byte[] wrapped=IpcSchemaBoundDataV1.wrap(boundary,BODY);
+            check(Integer.toUnsignedLong(java.nio.ByteBuffer.wrap(wrapped,5,4).getInt())==version);
+            var envelope=envelope(wrapped,2);
+            check(Arrays.equals(open(frame(wrapped,envelope),envelope,boundary),BODY));
+            if(version!=1)reject(()->open(frame(wrapped,envelope),envelope,expected));
+        }
+        for(long bad:new long[]{0,-1,0x100000000L,Long.MAX_VALUE}){
+            try {binding(IpcSchemaBoundDataV1.Codec.CBOR,bad,"order.v1",SHAPE);
+                 throw new AssertionError("invalid u32 version admitted");}
+            catch(IllegalArgumentException expectedFailure){++checks;}
+        }
         System.out.println("JAVA_IPC_SCHEMA_BOUND_DATA_PASS checks="+checks);
     }
 }
