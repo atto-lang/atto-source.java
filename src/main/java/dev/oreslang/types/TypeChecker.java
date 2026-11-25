@@ -6101,6 +6101,19 @@ public final class TypeChecker {
                                 TupleKind.TUPLE);
                         parameters = List.of();
                     }
+                    case "read_resp2_binary_batch_async" -> {
+                        Type bytes = new Named("$builtin$Bytes", List.of());
+                        result = new ListType(new Tuple(
+                                List.of(Primitive.INT, Primitive.STRING, bytes, bytes),
+                                TupleKind.TUPLE));
+                        parameters = List.of(Primitive.INT);
+                    }
+                    case "write_resp2_binary_batch_async" -> {
+                        Type bytes = new Named("$builtin$Bytes", List.of());
+                        parameters = List.of(new ListType(new Tuple(
+                                List.of(Primitive.STRING, bytes), TupleKind.TUPLE)));
+                        result = Primitive.VOID;
+                    }
                     case "write_resp2_binary_async" -> {
                         result = Primitive.VOID;
                         parameters = List.of(Primitive.STRING,

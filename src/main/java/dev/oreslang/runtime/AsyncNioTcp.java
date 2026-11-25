@@ -392,6 +392,170 @@ public final class AsyncNioTcp {
             }
         }
 
+        /**
+         * Return between one and maxBatch complete binary RESP2 commands.
+         *
+         * This is NOT a wait-for-N operation. The first full frame (or EOF) is
+         * awaited using NIO2 CompletionHandler; additional frames are drained
+         * only from the already received, bounded socket buffer. In particular,
+         * a client that sends one command must never deadlock waiting for more.
+         * All returned keys/values are immutable, detached OresBytes. No KV
+         * operation is performed by the Java transport.
+         */
+        public OresFuture<List<List<Object>>> readResp2BinaryBatchAsync(int maxBatch) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.read_resp2_binary_batch_async");
+            if (maxBatch < 1 || maxBatch > 64) {
+                throw new IllegalArgumentException("binary RESP2 batch size must be 1..64");
+            }
+            if (!readerMode.compareAndSet(0, 3) && readerMode.get() != 3) {
+                return OresFuture.failed(new IllegalStateException(
+                        "cannot mix binary RESP2, hex RESP2 and raw socket reads"));
+            }
+            if (closed.get() || !reading.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "closed socket or concurrent binary RESP2 reader"));
+            }
+            return OresFuture.fromCallback(
+                    callback -> continueBinaryBatchRead(maxBatch, callback), this::closeQuietly);
+        }
+
+        private void continueBinaryBatchRead(int maxBatch,
+                OresFuture.Callback<List<List<Object>>> callback) {
+            if (closed.get()) {
+                reading.set(false);
+                callback.reject(new IOException("socket retired before binary RESP2 batch read"));
+                return;
+            }
+            ArrayList<List<Object>> batch = new ArrayList<>(Math.min(maxBatch, 16));
+            respInput.flip();
+            try {
+                for (int i = 0; i < maxBatch; ++i) {
+                    AsyncNioResp2.BinaryParsed frame = AsyncNioResp2.parseBinary(respInput);
+                    if (frame == null) break;
+                    respInput.position(frame.consumed());
+                    List<OresBytes> arguments = frame.arguments();
+                    int kind = switch (frame.opcode()) {
+                        case "PING" -> arguments.isEmpty() ? 1 : 6;
+                        case "GET" -> arguments.size() == 1 ? 2 : 6;
+                        case "SET" -> arguments.size() == 2 ? 3 : 6;
+                        case "DEL" -> arguments.size() == 1 ? 4 : 6;
+                        case "QUIT" -> arguments.isEmpty() ? 5 : 6;
+                        default -> 6;
+                    };
+                    OresBytes key = arguments.size() >= 1
+                            ? arguments.get(0) : OresBytes.empty();
+                    OresBytes value = arguments.size() >= 2
+                            ? arguments.get(1) : OresBytes.empty();
+                    batch.add(List.of(kind, frame.opcode(), key, value));
+                    // Commands after QUIT may already be buffered, but must
+                    // never execute before the connection is retired.
+                    if (kind == 5) break;
+                }
+            } catch (IOException malformed) {
+                respInput.compact();
+                reading.set(false);
+                closeQuietly();
+                callback.reject(malformed);
+                return;
+            }
+            respInput.compact();
+            if (!batch.isEmpty()) {
+                reading.set(false);
+                callback.resolve(List.copyOf(batch));
+                return;
+            }
+            if (!respInput.hasRemaining()) {
+                if (respInput.capacity() >= AsyncNioResp2.MAX_FRAME) {
+                    reading.set(false);
+                    closeQuietly();
+                    callback.reject(new IOException("binary RESP2 exceeds bounded frame"));
+                    return;
+                }
+                ByteBuffer enlarged = ByteBuffer.allocate(Math.min(
+                        AsyncNioResp2.MAX_FRAME, respInput.capacity() * 2));
+                respInput.flip();
+                enlarged.put(respInput);
+                respInput = enlarged;
+            }
+            try {
+                channel.read(respInput, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null,
+                        new CompletionHandler<Integer, Void>() {
+                    @Override public void completed(Integer count, Void ignored) {
+                        if (count == null || count < 0) {
+                            int buffered = respInput.position();
+                            reading.set(false);
+                            if (buffered != 0) {
+                                closeQuietly();
+                                callback.reject(new IOException("truncated binary RESP2 frame"));
+                            } else {
+                                callback.resolve(List.of(List.of(
+                                        0, "", OresBytes.empty(), OresBytes.empty())));
+                            }
+                            return;
+                        }
+                        // Never busy-wait or block a carrier on partial frames.
+                        continueBinaryBatchRead(maxBatch, callback);
+                    }
+                    @Override public void failed(Throwable failure, Void ignored) {
+                        reading.set(false);
+                        closeQuietly();
+                        callback.reject(failure);
+                    }
+                });
+            } catch (RuntimeException failure) {
+                reading.set(false);
+                closeQuietly();
+                callback.reject(failure);
+            }
+        }
+
+        /**
+         * Serialize 1..64 already-computed immutable Atto actor replies into
+         * one detached output buffer, then submit exactly one NIO2 write.
+         * This transport helper does not execute Redis commands or touch KV.
+         * Validation finishes before any bytes are sent; malformed entries
+         * cannot yield a partial successful response stream.
+         */
+        public OresFuture<Void> writeResp2BinaryBatchAsync(List<?> replies) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.write_resp2_binary_batch_async");
+            if (replies == null || replies.isEmpty() || replies.size() > 64) {
+                throw new IllegalArgumentException("binary RESP2 reply batch must contain 1..64 entries");
+            }
+            byte[][] serialized = new byte[replies.size()][];
+            int totalBytes = 0;
+            try {
+                for (int i = 0; i < replies.size(); ++i) {
+                    if (!(replies.get(i) instanceof List<?> reply)
+                            || reply.size() != 2
+                            || !(reply.get(0) instanceof String status)
+                            || !(reply.get(1) instanceof OresBytes payload)) {
+                        throw new IllegalArgumentException(
+                                "binary RESP2 batch expects Tuple<string,Bytes> entries");
+                    }
+                    // Non-bulk replies do not encode their placeholder payload,
+                    // matching write_resp2_binary_async exactly.
+                    byte[] encoded = AsyncNioResp2.encodeBinary(
+                            status, "VALUE".equals(status) ? payload : null);
+                    if ((long) totalBytes + encoded.length > MAX_BYTES) {
+                        throw new IOException("binary RESP2 reply batch exceeds 1048576 bytes");
+                    }
+                    serialized[i] = encoded;
+                    totalBytes += encoded.length;
+                }
+            } catch (IOException badReply) {
+                return OresFuture.failed(badReply);
+            }
+            byte[] detached = new byte[totalBytes];
+            int offset = 0;
+            for (byte[] part : serialized) {
+                System.arraycopy(part, 0, detached, offset, part.length);
+                offset += part.length;
+            }
+            return writeDetachedAsync(detached);
+        }
+
         /** One bounded binary RESP2 write through NIO2 completion callbacks. */
         public OresFuture<Void> writeResp2BinaryAsync(String status, OresBytes payload) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,

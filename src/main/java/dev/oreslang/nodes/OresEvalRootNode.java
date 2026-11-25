@@ -5972,6 +5972,10 @@ public final class OresEvalRootNode extends RootNode {
                         "async task argument count differs from its formal parameters");
             }
             ArrayList<Object> detached = new ArrayList<>(args.size());
+            // Affine NIO2 sockets can move once into an async callable with
+            // an explicit owned NioConnection formal; never deep-copy.
+            IdentityHashMap<dev.oreslang.runtime.AsyncNioTcp.Connection, Boolean>
+                    movedSockets = new IdentityHashMap<>();
             for (int i = 0; i < args.size(); i++) {
                 Object arg = args.get(i);
                 if (arg instanceof ChannelRuntime.Channel<?> channel) {
@@ -5992,6 +5996,20 @@ public final class OresEvalRootNode extends RootNode {
                     // Actor/mailbox boundary capabilities remain forbidden.
                     // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
+                } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow() || formal.inferArguments()
+                            || !"NioConnection".equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async socket argument " + (i + 1)
+                                        + " requires a concrete owned NioConnection parameter");
+                    }
+                    if (movedSockets.put(socket, Boolean.TRUE) != null) {
+                        throw new IllegalArgumentException(
+                                "the same NioConnection cannot be moved twice in one async call");
+                    }
+                    detached.add(socket);
                 } else {
                     detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
                 }
@@ -8202,6 +8220,23 @@ public final class OresEvalRootNode extends RootNode {
                     case "read_resp2_binary_async" -> (Invokable) args -> {
                         requireZero(args, "socket.read_resp2_binary_async");
                         return socket.readResp2BinaryAsync();
+                    };
+                    case "read_resp2_binary_batch_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_resp2_binary_batch_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)
+                                || n.longValue() < 1 || n.longValue() > 64) {
+                            throw new IllegalArgumentException(
+                                    "binary RESP2 batch size must be integer 1..64");
+                        }
+                        return socket.readResp2BinaryBatchAsync(n.intValue());
+                    };
+                    case "write_resp2_binary_batch_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_resp2_binary_batch_async");
+                        if (!(args.getFirst() instanceof List<?> replies)) {
+                            throw new IllegalArgumentException(
+                                    "write_resp2_binary_batch_async requires a list of reply tuples");
+                        }
+                        return socket.writeResp2BinaryBatchAsync(replies);
                     };
                     case "write_resp2_binary_async" -> (Invokable) args -> {
                         requireTwo(args, "socket.write_resp2_binary_async");
