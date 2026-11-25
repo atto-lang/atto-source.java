@@ -714,6 +714,23 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(15)
+    void failedClientCannotStrandGuestWaitingForAnotherRequest() {
+        var sentinel = new AssertionError("injected HTTP client failure before request");
+        var failure = assertThrows(AssertionError.class, () -> run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              await request.respond(200, "text/plain", "unexpected");
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> { throw sentinel; }));
+        assertSame(sentinel, failure.getCause(), "preserve original client failure");
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
