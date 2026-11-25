@@ -22,6 +22,8 @@ public class RuntimeDiagnostics {
     public static class JsonState {
         @Param({"16", "128", "512"})
         public int entries;
+        @Param({"mutable", "immutable"})
+        public String representation;
         String source;
         OresJsonValue root;
         String[] keys;
@@ -37,12 +39,23 @@ public class RuntimeDiagnostics {
                     .append(i).append(",\"group\":18}");
             }
             source = text.append('}').toString();
-            root = AllocJsonText.parse(source);
+            root = parse();
             if (!OresJsonValue.getOwned(root, keys[0]).isPresent()
                     || OresJsonValue.getOwned(root, "missing").isPresent()
                     || !source.equals(OresJsonValue.stringify(root))) {
                 throw new IllegalStateException("JSON benchmark fixture failed correctness");
             }
+            String expected = "{\"name\":\"Hélium😀\",\"number\":0,\"group\":18}";
+            if (!expected.equals(OresJsonValue.stringify(OresJsonValue.getOwned(root, keys[0]).orElseThrow()))) {
+                throw new IllegalStateException("selected subtree differs from fixture");
+            }
+        }
+        OresJsonValue parse() {
+            return switch (representation) {
+                case "mutable" -> AllocJsonText.parse(source);
+                case "immutable" -> OresJsonValue.parseImmutable(source);
+                default -> throw new IllegalStateException("unsupported JSON representation");
+            };
         }
         String key() { return keys[next++ & (entries - 1)]; }
     }
@@ -79,7 +92,14 @@ public class RuntimeDiagnostics {
     }
 
     @Benchmark public OresJsonValue jsonParse(JsonState s) {
-        return AllocJsonText.parse(s.source);
+        return s.parse();
+    }
+    // Representative per-request path: includes parse/seal and selected
+    // subtree extraction, unlike the already-parsed lookup diagnostics.
+    @Benchmark public String jsonParseLookupStringify(JsonState s) {
+        var root = s.parse();
+        var selected = OresJsonValue.getOwned(root, s.key()).orElseThrow();
+        return OresJsonValue.stringify(selected);
     }
     @Benchmark public String jsonStringify(JsonState s) {
         return OresJsonValue.stringify(s.root);
