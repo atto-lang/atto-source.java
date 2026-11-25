@@ -3060,6 +3060,10 @@ public final class TypeChecker {
 
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
         if (!insideActorLexicalBoundary() || lexicalClassOrigin == target) return;
+        // The linker admits a class identity only after checking a unique
+        // explicit cross-unit import. Never infer authority from its spelling.
+        if (target.actorKind() == Ast.ActorKind.NONE
+                && linkedClassNames.containsKey(target)) return;
         throw new IllegalArgumentException(
                 "actor '" + lexicalClassOrigin.name()
                         + "' cannot implicitly access sibling "
@@ -3074,6 +3078,8 @@ public final class TypeChecker {
         Ast.ClassDecl localClass = findClass(name);
         if (localClass != null) {
             if (localClass == lexicalClassOrigin || isExplicitActorParent(localClass)) return;
+            if (localClass.actorKind() == Ast.ActorKind.NONE
+                    && linkedClassNames.containsKey(localClass)) return;
             throw new IllegalArgumentException(
                     "actor '" + lexicalClassOrigin.name()
                             + "' cannot use same-file type '" + name
@@ -4884,8 +4890,14 @@ public final class TypeChecker {
                 if (pkgRoot && qualifiedCall.member().equals("init")) {
                     throw new IllegalArgumentException("pkg::init is a lifecycle hook, not a callable");
                 }
-                // pkg:: is not an actor capability: same-file dependencies remain forbidden.
-                rejectUnimportedModuleNamespace(moduleName);
+                // Only a linker-checked named function in the synthetic import
+                // namespace is an explicit cross-unit dependency. pkg:: and
+                // all ambient same-file namespaces remain forbidden.
+                if (!(moduleName.equals(Parser.IMPORTS_NAMESPACE)
+                        && linkedImportCallables.contains(qualifiedCall.member())
+                        && importedFunctions.containsKey(qualifiedCall.member()))) {
+                    rejectUnimportedModuleNamespace(moduleName);
+                }
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + (pkgRoot ? "pkg::" : moduleName + ".") + qualifiedCall.member());
@@ -7795,6 +7807,28 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list && !list.explicitArrayConstructor()) {
+            // A fresh literal can be constructed directly at its expected
+            // string-tuple element type. Do not widen existing mutable lists
+            // or grant variance to arbitrary tuple/collection payloads.
+            if (expected instanceof ListType sequence
+                    && sequence.element() instanceof Tuple header
+                    && header.kind() == TupleKind.TUPLE
+                    && !header.elements().isEmpty()
+                    && header.elements().stream().allMatch(t -> t == Primitive.STRING)) {
+                for (Ast.Expr item : list.elements()) {
+                    Type actual = typeOf(item, env, generics, self);
+                    if (!(actual instanceof Tuple tuple)
+                            || tuple.kind() != TupleKind.TUPLE
+                            || tuple.elements().size() != header.elements().size()
+                            || !tuple.elements().stream().allMatch(t ->
+                                    t == Primitive.STRING || t instanceof StringLiteral)) {
+                        throw new IllegalArgumentException(
+                                "string tuple list literal element must match " + header
+                                        + "; got " + actual);
+                    }
+                }
+                return expected;
+            }
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
@@ -8870,6 +8904,8 @@ public final class TypeChecker {
             };
             case "HttpClientBody" -> switch (name) {
                 case "closed" -> Primitive.BOOL;
+                case "read_owned_bytes" -> new Function(List.of(Primitive.INT),
+                        new Named("Future", List.of(new Named("Bytes", List.of()))));
                 case "read_chunk" ->
                         new Function(
                                 List.of(Primitive.INT),

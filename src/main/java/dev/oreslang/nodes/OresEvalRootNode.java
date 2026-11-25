@@ -137,7 +137,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return context.runRootMain(() -> {
+            return context.runRootMain(this, () -> {
                 try { return current.executeMain(new Object[0], true); }
                 catch (ProcessExitSignal exit) { return exit.exitStatus(); }
             });
@@ -146,7 +146,7 @@ public final class OresEvalRootNode extends RootNode {
                 && INVOKE_ROOT_PUBLIC_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String functionName) {
             current.link();
-            return context.runRootMain(() -> current.invokePublic(functionName,
+            return context.runRootMain(this, () -> current.invokePublic(functionName,
                     java.util.Arrays.copyOfRange(arguments, 2, arguments.length)));
         }
         if (arguments.length >= 2
@@ -160,7 +160,7 @@ public final class OresEvalRootNode extends RootNode {
         // link/init/main commands to install a full import graph before init.
         current.link();
         current.initialize();
-        return context.runRootMain(() -> current.executeMain(arguments, false));
+        return context.runRootMain(this, () -> current.executeMain(arguments, false));
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -1180,7 +1180,7 @@ public final class OresEvalRootNode extends RootNode {
                     requireOne(values, "Json." + fn.name());
                     Object input = values.getFirst();
                     return switch (fn.name()) {
-                        case "parse" -> dev.oreslang.runtime.AllocJsonText.parse(
+                        case "parse" -> dev.oreslang.runtime.OresJsonValue.parseImmutable(
                                 requireString(input, "Json.parse input"));
                         case "stringify" -> {
                             if (!(input instanceof dev.oreslang.runtime.OresJsonValue json)) {
@@ -10722,7 +10722,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OutboundHttpRequest.Body body) {
                 return switch (name) {
                     case "closed" -> body.closed();
-                    case "read_chunk" -> (Invokable) args -> {
+                    case "read_chunk", "read_owned_bytes" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof Number limit)
                                 || !isIntegral(limit)) {
                             throw new IllegalArgumentException(
@@ -10733,7 +10733,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "HTTP body read limit is outside int range");
                         }
-                        return body.readChunk((int) value);
+                        return name.equals("read_owned_bytes") ? body.readOwnedBytes((int) value) : body.readChunk((int) value);
                     };
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "HttpClientBody.close");

@@ -118,6 +118,8 @@ public final class OresKeyedMap<K, V> {
     private LinkedHashMap<K, V> entries = new LinkedHashMap<>();
     // Tracked while holding this map's monitor; never expose a mutable view.
     private long storedKeyWireBytes;
+    // One-way publication; writes can never unfreeze this JSON map.
+    private volatile boolean frozenJson;
     // Java monitors are reentrant. A key-aware validator must never be able
     // to mutate this same map while an outer mutation is still validating.
     private boolean entryValidationActive;
@@ -358,7 +360,25 @@ public final class OresKeyedMap<K, V> {
         }
     }
 
+    boolean frozenJson() { return frozenJson; }
+
+    /** Runtime-only: publish a map after every descendant has been sealed. */
+    synchronized void freezeJson() {
+        if (!Thread.holdsLock(JSON_GRAPH_ADMISSION_LOCK)) {
+            throw new IllegalStateException("JSON freeze requires graph stability guard");
+        }
+        if (valueDomain != ValueDomain.JSON) throw new IllegalStateException("not a JSON map");
+        rejectReentrantMutation();
+        for (V value : entries.values()) {
+            if (!(value instanceof OresJsonValue json) || !OresJsonValue.provenImmutable(json)) {
+                throw new IllegalStateException("JSON freeze requires immutable descendants");
+            }
+        }
+        frozenJson = true;
+    }
+
     private void rejectReentrantMutation() {
+        if (frozenJson) throw new IllegalStateException("immutable JSON map");
         if (entryValidationActive || bulkMutationActive
                 || (valueDomain == ValueDomain.JSON && Boolean.TRUE.equals(jsonSnapshotActive.get()))) {
             throw new IllegalStateException(

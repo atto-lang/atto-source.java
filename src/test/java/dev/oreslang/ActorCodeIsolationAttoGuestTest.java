@@ -40,9 +40,10 @@ final class ActorCodeIsolationAttoGuestTest {
     @Test
     void sharedImplementationDoesNotShareActorStateAndRootUsesSameRoutine()
             throws Exception {
+        fixture("advance.atto");
         Path entry = fixture("shared-implementation-private-state.atto");
         var validated = LinkedProgramRunner.validate(entry, Map.of());
-        assertEquals(1, validated.units().size(),
+        assertEquals(2, validated.units().size(),
                 "the actual AttoLang source must pass linked compiler admission");
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
