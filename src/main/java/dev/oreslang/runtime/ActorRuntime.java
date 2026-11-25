@@ -443,6 +443,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
+    private final IpcTenantIngressRegistryV1 ipcIngressRegistry = new IpcTenantIngressRegistryV1();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     /** Opt-in, trusted CONTROL bindings. No guest or actor code can register one. */
@@ -2277,6 +2278,10 @@ public final class ActorRuntime implements AutoCloseable {
             return new ActorAddress(runtimeInstanceId, id, generation, kind, "local-process");
         }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
+        void requireIpcIngressBudget(String domain, IpcIngressBudgetV1 budget) {
+            requireSupervisorShutdownAuthority("bind IPC ingress endpoint");
+            ipcIngressRegistry.require(domain,budget);
+        }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
@@ -4075,6 +4080,19 @@ public final class ActorRuntime implements AutoCloseable {
 
     // Package-scoped host authority check for the dedicated supervisor tree
     // coordinator. ActorGroup creator privileges are not supervisor authority.
+    IpcIngressBudgetV1 registerIpcIngressTenant(String domain,long bytes,int frames) {
+        requireSupervisorShutdownAuthority("register IPC ingress tenant");
+        synchronized(runtimeLifecycleLock) {
+            if(closed.get())throw new IllegalStateException("runtime closed");
+            return ipcIngressRegistry.register(domain,bytes,frames);
+        }
+    }
+
+    void retireIpcIngressTenant(String domain) {
+        requireSupervisorShutdownAuthority("retire IPC ingress tenant");
+        ipcIngressRegistry.retire(domain);
+    }
+
     void requireSupervisorShutdownAuthority(String operation) {
         requireSupervisorContext(operation);
     }
@@ -7119,6 +7137,7 @@ public final class ActorRuntime implements AutoCloseable {
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
             firstClose = closed.compareAndSet(false, true);
+            if(firstClose)ipcIngressRegistry.close();
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stop();

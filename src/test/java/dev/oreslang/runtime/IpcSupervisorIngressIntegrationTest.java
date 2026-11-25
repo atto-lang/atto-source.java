@@ -32,10 +32,10 @@ final class IpcSupervisorIngressIntegrationTest {
         Arrays.fill(key,(byte)7); Arrays.fill(connection,(byte)8); Arrays.fill(digest,(byte)9);
         var binding = new IpcSchemaBoundDataV1.Binding(
                 IpcSchemaBoundDataV1.Codec.CBOR,1,"bool.v1",digest);
-        var budget = new IpcIngressBudgetV1(16L*1024*1024,8);
         try (ActorRuntime runtime = new ActorRuntime();
              ExecutorService control = Executors.newSingleThreadExecutor();
              ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            var budget=runtime.registerIpcIngressTenant("tenant",16L*1024*1024,8);
             var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
             var recovery = new SupervisorEscrowSubtreeRecoveryV1(runtime,bridge,control,ignored->false);
             ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivate(
@@ -85,10 +85,10 @@ final class IpcSupervisorIngressIntegrationTest {
         byte[] key=new byte[32], connection=new byte[16], digest=new byte[32];
         Arrays.fill(key,(byte)7); Arrays.fill(connection,(byte)8); Arrays.fill(digest,(byte)9);
         var binding=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"bool.v1",digest);
-        var budget = new IpcIngressBudgetV1(16L*1024*1024,8);
         try (ActorRuntime runtime=new ActorRuntime();
              ExecutorService control=Executors.newSingleThreadExecutor();
              ExecutorService worker=Executors.newSingleThreadExecutor()) {
+            var budget=runtime.registerIpcIngressTenant("tenant",16L*1024*1024,8);
             var bridge=new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
             // Test-only release oracle: actual Java restart, not native/FFI reclamation proof.
             var recovery=new SupervisorEscrowSubtreeRecoveryV1(runtime,bridge,control,ignored->true);
@@ -159,7 +159,7 @@ final class IpcSupervisorIngressIntegrationTest {
                     "budget-session",hash,1,child.generation(),3,4,1,1);
             byte[] frame=IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,body,5,connection,key);
             long charge=IpcIngressBudgetV1.chargeFor(frame.length);
-            var budget=new IpcIngressBudgetV1(charge+BOOL_CREDIT,1);
+            var budget=runtime.registerIpcIngressTenant("tenant",charge+BOOL_CREDIT,1);
             var calls=new java.util.concurrent.atomic.AtomicInteger();
             var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->{
                 calls.incrementAndGet();return Boolean.TRUE;
@@ -204,13 +204,17 @@ final class IpcSupervisorIngressIntegrationTest {
             byte[] frame=IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,body,5,connection,key);
             long charge=IpcIngressBudgetV1.chargeFor(frame.length);
             var calls=new java.util.concurrent.atomic.AtomicInteger();
-            var shortBudget=new IpcIngressBudgetV1(charge+BOOL_CREDIT-1,1);
-            var refused=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,shortBudget,BOOL_CREDIT,
+            var shortBudget=runtime.registerIpcIngressTenant("tenan2",charge+BOOL_CREDIT-1,1);
+            var shortEpoch=new IpcReceiptCorrelation.Envelope("tenan2","sender",child.id().value().toString(),
+                    "decoded-credit",hash,1,child.generation(),3,4,1,1);
+            byte[] shortFrame=IpcAuthenticatedSocketTransport.encodeDataFrame(shortEpoch,body,5,connection,key);
+            assertEquals(frame.length,shortFrame.length);
+            var refused=new IpcPinnedActorIngressV1<>(child,shortEpoch,5,binding,shortBudget,BOOL_CREDIT,
                     boolDecoder(bytes->{calls.incrementAndGet();return Boolean.TRUE;}));
-            assertThrows(IllegalStateException.class,()->refused.admit(frame,connection,key));
+            assertThrows(IllegalStateException.class,()->refused.admit(shortFrame,connection,key));
             assertEquals(0,calls.get());
             assertEquals(new IpcIngressBudgetV1.Usage(0,0),shortBudget.usage());
-            var exact=new IpcIngressBudgetV1(charge+BOOL_CREDIT,1);
+            var exact=runtime.registerIpcIngressTenant("tenant",charge+BOOL_CREDIT,1);
             var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,exact,BOOL_CREDIT,
                     boolDecoder(bytes->{
                         assertEquals(new IpcIngressBudgetV1.Usage(charge+BOOL_CREDIT,1),exact.usage());
@@ -228,6 +232,40 @@ final class IpcSupervisorIngressIntegrationTest {
                     boolDecoder(bytes->{throw new IOException("decoder failure");}));
             assertThrows(IOException.class,()->failing.admit(frame,connection,key));
             assertEquals(new IpcIngressBudgetV1.Usage(0,0),exact.usage());
+        }
+    }
+
+    @Test void runtimeRegistryRejectsDuplicateForeignAndRetiredTenantBudgets() throws Exception {
+        byte[] key=new byte[32], connection=new byte[16], digest=new byte[32];
+        Arrays.fill(key,(byte)7); Arrays.fill(connection,(byte)8); Arrays.fill(digest,(byte)9);
+        var binding=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"bool.v1",digest);
+        try(ActorRuntime runtime=new ActorRuntime();ActorRuntime foreign=new ActorRuntime()) {
+            ActorRuntime.ActorRef<Boolean> child=runtime.spawnPrivate(ignored->(m,turn)->{});
+            byte[] body=IpcSchemaBoundDataV1.wrap(binding,new byte[]{(byte)0xf5});
+            String hash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body));
+            var epoch=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "registry",hash,1,child.generation(),3,4,1,1);
+            byte[] frame=IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,body,5,connection,key);
+            long charge=IpcIngressBudgetV1.chargeFor(frame.length);
+            var budget=runtime.registerIpcIngressTenant("tenant",charge+BOOL_CREDIT,1);
+            var wrong=foreign.registerIpcIngressTenant("tenant",charge+BOOL_CREDIT,1);
+            assertThrows(IllegalStateException.class,()->runtime.registerIpcIngressTenant("tenant",charge*2,2));
+            assertThrows(IllegalArgumentException.class,()->new IpcPinnedActorIngressV1<>(
+                    child,epoch,5,binding,wrong,BOOL_CREDIT,boolDecoder(bytes->Boolean.TRUE)));
+            var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,budget,BOOL_CREDIT,
+                    boolDecoder(bytes->Boolean.TRUE));
+            var held=budget.reserve(frame.length);
+            try {
+                assertThrows(IllegalStateException.class,()->ingress.admit(frame,connection,key));
+                runtime.retireIpcIngressTenant("tenant");
+                assertThrows(IllegalStateException.class,()->held.reserveMaterialization(BOOL_CREDIT));
+                assertEquals(new IpcIngressBudgetV1.Usage(charge,1),budget.usage());
+            } finally {held.close();}
+            assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            assertThrows(IllegalStateException.class,()->ingress.admit(frame,connection,key));
+            assertThrows(IllegalStateException.class,()->runtime.registerIpcIngressTenant("tenant",charge,1));
+            assertThrows(IllegalArgumentException.class,()->new IpcPinnedActorIngressV1<>(
+                    child,epoch,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->Boolean.TRUE)));
         }
     }
 

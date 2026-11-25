@@ -41,6 +41,7 @@ final class IpcPinnedActorIngressV1<M> {
         this.binding = Objects.requireNonNull(binding);
         this.decoder = Objects.requireNonNull(decoder);
         this.budget = Objects.requireNonNull(budget);
+        recipient.requireIpcIngressBudget(epoch.domain(),budget);
         if (maxDecodedBytes <= 0 || maxDecodedBytes > 8L*1024*1024)
             throw new IllegalArgumentException("invalid registered decoded limit");
         this.maxDecodedBytes = maxDecodedBytes;
