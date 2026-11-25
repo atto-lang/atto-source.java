@@ -123,15 +123,14 @@ public final class GraphCopyTransaction {
             for (var shape : plan.nodes()) {
                 checkCancellation();
                 if (shape instanceof DerivedGraphCopyPlan.Scalar scalar) {
-                    if (!java.util.Set.of("string", "String", "bool", "Bool", "i8", "i16",
-                            "i32", "int", "i64", "f32", "float", "f64").contains(scalar.typeName())) {
+                    if (!DerivedGraphCopyPlan.supportsScalar(scalar.typeName())) {
                         throw refused("unsupported scalar descriptor");
                     }
                 } else if (shape instanceof DerivedGraphCopyPlan.OptionalValue optional) {
                     node(optional.element());
                     edges++;
                 } else if (shape instanceof DerivedGraphCopyPlan.Sequence sequence) {
-                    if (!java.util.Set.of("Array", "List").contains(sequence.typeName())) {
+                    if (!"Array".equals(sequence.typeName()) && !"List".equals(sequence.typeName())) {
                         throw refused("unsupported sequence descriptor");
                     }
                     node(sequence.element());
@@ -142,6 +141,7 @@ public final class GraphCopyTransaction {
                     }
                     var names = new java.util.HashSet<String>();
                     for (var field : instance.fields()) {
+                        checkCancellation();
                         if (field.name() == null || !names.add(field.name())) throw refused("duplicate field");
                         node(field.descriptor());
                         edges++;
@@ -153,9 +153,11 @@ public final class GraphCopyTransaction {
             // Color each optional chain once; class/sequence nodes terminate it.
             byte[] colors = new byte[plan.nodes().size()];
             for (int i = 0; i < colors.length; i++) {
+                checkCancellation();
                 int cursor = i;
                 while (node(cursor) instanceof DerivedGraphCopyPlan.OptionalValue optional
                         && colors[cursor] == 0) {
+                    checkCancellation();
                     colors[cursor] = 1;
                     cursor = optional.element();
                 }
@@ -163,6 +165,7 @@ public final class GraphCopyTransaction {
                 cursor = i;
                 while (node(cursor) instanceof DerivedGraphCopyPlan.OptionalValue optional
                         && colors[cursor] == 1) {
+                    checkCancellation();
                     colors[cursor] = 2;
                     cursor = optional.element();
                 }
