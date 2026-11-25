@@ -185,4 +185,39 @@ final class VirtualActorDirectoryInspectionTest {
                 "atto-va1.dGVuYW50LWE.NzpkZWZhdWx0Q2FydA.NDI"));
     }
 
+
+    @Test
+    void discardedReferenceCannotObserveSameIdentityReplacementThroughHostPath() {
+        try (var registry = new VirtualActorActivationRegistry("tenant-a", 1, 2)) {
+            var stale = registry.resolve("Cart", "42");
+            registry.discardUnactivated(stale);
+            var fresh = registry.resolve("Cart", "42");
+            var activation = registry.activate(fresh);
+            registry.publish(activation);
+            assertThrows(IllegalStateException.class, () -> registry.inspectForHost(stale));
+            assertEquals(activation.incarnation(), registry.inspectForHost(fresh).incarnation());
+            assertEquals(VirtualActorActivationRegistry.LocalPhase.ACTIVE,
+                    registry.inspectForHost(fresh).phase());
+        }
+    }
+
+    @Test
+    void suppliedGenerationMustAdvanceAcrossDistinctLogicalIdentities() {
+        var generation = new java.util.concurrent.atomic.AtomicLong(5);
+        try (var registry = new VirtualActorActivationRegistry("tenant-a", 2, 2, generation::get)) {
+            var first = registry.resolve("Cart", "first");
+            var second = registry.resolve("Cart", "second");
+            var original = registry.activate(first);
+            registry.abort(original);
+            assertThrows(IllegalStateException.class, () -> registry.activate(second));
+            assertFalse(registry.inspect(second).activationPresent());
+            assertEquals(0, registry.inspect(second).latestIncarnation());
+            generation.set(4);
+            assertThrows(IllegalStateException.class, () -> registry.activate(second));
+            generation.set(6);
+            var fresh = registry.activate(second);
+            assertEquals(6, fresh.incarnation());
+            registry.publish(fresh);
+        }
+    }
 }
