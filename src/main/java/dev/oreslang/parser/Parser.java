@@ -6797,6 +6797,34 @@ public final class Parser {
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
 
+        // A synchronous task is a caller-owned lexical value block, not a
+        // scheduled child. Lower the admitted terminal-return slice through
+        // the existing checked ARM_RESULT path (ownership, defer and resumable
+        // caller control flow). Never create a TaskExpr or wrap it in Future.
+        if (isContextualIdentifier("sync") && checkNext(IDENT)
+                && tokens.get(current + 1).lexeme().equals("task")) {
+            advance();
+            advance();
+            consume(LT, "sync task requires an explicit result type");
+            Ast.TypeRef payload = parseTypeRef();
+            consume(GT, "expected '>' after sync task result type");
+            if (payload.name().equals("void")) {
+                throw error(previous(), "E_SYNC_TASK_VOID_UNSUPPORTED: inline void task control flow is not yet admitted");
+            }
+            List<Ast.Stmt> body = parseBlock();
+            if (body.isEmpty() || !(body.getLast() instanceof Ast.ReturnStmt returned)
+                    || returned.value() == null) {
+                throw error(previous(), "E_SYNC_TASK_RESULT: sync task requires a terminal return value");
+            }
+            List<Ast.Stmt> prefix = body.subList(0, body.size() - 1);
+            if (valueArmPrefixContainsReturn(prefix)) {
+                throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: inline branch returns require dedicated CFG lowering");
+            }
+            return new Ast.MatchExpr(new Ast.LiteralExpr(true),
+                    List.of(new Ast.MatchValueArm(new Ast.WildcardPattern(), null,
+                            List.copyOf(prefix), returned.value())), payload);
+        }
+
         // task is contextual: task(...) and identifiers named task remain legal.
         if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
             advance();
