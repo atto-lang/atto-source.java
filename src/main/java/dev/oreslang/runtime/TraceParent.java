@@ -14,7 +14,10 @@ import java.util.Optional;
  */
 public record TraceParent(String traceId, String spanId, int flags) {
     private static final int HEADER_LENGTH = 55;
-    private static final SecureRandom RANDOM = new SecureRandom();
+    // Do not initialize entropy while Native Image analyzes this class.
+    // Parsing an incoming header needs no RNG, and build-time seeds must
+    // never be captured in the executable image heap.
+    private static volatile SecureRandom random;
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     public TraceParent {
@@ -70,10 +73,24 @@ public record TraceParent(String traceId, String spanId, int flags) {
                 + "-" + HEX[(flags >>> 4) & 0xf] + HEX[flags & 0xf];
     }
 
+    private static SecureRandom runtimeRandom() {
+        SecureRandom current = random;
+        if (current != null) return current;
+        synchronized (TraceParent.class) {
+            current = random;
+            if (current == null) {
+                current = new SecureRandom();
+                random = current;
+            }
+            return current;
+        }
+    }
+
     private static String randomHex(int bytes) {
+        SecureRandom entropySource = runtimeRandom();
         byte[] entropy = new byte[bytes];
         for (int attempt = 0; attempt < 16; attempt++) {
-            RANDOM.nextBytes(entropy);
+            entropySource.nextBytes(entropy);
             boolean anyNonzero = false;
             for (byte b : entropy) anyNonzero |= b != 0;
             if (!anyNonzero) continue;
