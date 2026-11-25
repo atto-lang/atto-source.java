@@ -1172,6 +1172,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation staticFunctionInvocation(Ast.MethodDecl fn, List<?> args) {
+            // The linked evaluator's code-unit identity, not a caller's
+            // spelling of Json, grants access to the canonical runtime.
+            if (codeUnitId.equals("@atto.alloc/json.atto")
+                    && declaringClass(fn).name().equals("Json")) {
+                return invokableInvocation(values -> {
+                    requireOne(values, "Json." + fn.name());
+                    Object input = values.getFirst();
+                    return switch (fn.name()) {
+                        case "parse" -> dev.oreslang.runtime.AllocJsonText.parse(
+                                requireString(input, "Json.parse input"));
+                        case "stringify" -> {
+                            if (!(input instanceof dev.oreslang.runtime.OresJsonValue json)) {
+                                throw new IllegalArgumentException("Json.stringify requires canonical JsonValue");
+                            }
+                            yield dev.oreslang.runtime.OresJsonValue.stringify(json);
+                        }
+                        default -> throw new IllegalArgumentException("unknown canonical Json operation");
+                    };
+                }, args);
+            }
+
             return new Invocation(this, InvocationKind.STATIC_FUNCTION, null, fn, objectArguments(args));
         }
 
@@ -9915,6 +9936,54 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof dev.oreslang.runtime.OresJsonValue json) {
+                return (Invokable) args -> {
+                    return switch (name) {
+                        case "get" -> {
+                            requireOne(args, "JsonValue.get");
+                            var selected = dev.oreslang.runtime.OresJsonValue.getOwned(
+                                    json, requireString(args.getFirst(), "JSON key"));
+                            yield new OptionValue(selected.isPresent(), selected.orElse(null));
+                        }
+                        case "at" -> {
+                            requireOne(args, "JsonValue.at");
+                            Object index = args.getFirst();
+                            if (!(index instanceof Number number) || !isIntegral(number)) {
+                                throw new IllegalArgumentException("JSON index must be an integer");
+                            }
+                            var selected = dev.oreslang.runtime.OresJsonValue.atOwned(json, number.longValue());
+                            yield new OptionValue(selected.isPresent(), selected.orElse(null));
+                        }
+                        case "is_null" -> {
+                            requireZero(args, "JsonValue.is_null");
+                            yield json instanceof dev.oreslang.runtime.OresJsonValue.NullValue;
+                        }
+                        case "as_string" -> {
+                            requireZero(args, "JsonValue.as_string");
+                            yield json instanceof dev.oreslang.runtime.OresJsonValue.StringValue string
+                                    ? new OptionValue(true, string.value()) : new OptionValue(false, null);
+                        }
+                        case "as_bool" -> {
+                            requireZero(args, "JsonValue.as_bool");
+                            yield json instanceof dev.oreslang.runtime.OresJsonValue.BoolValue bool
+                                    ? new OptionValue(true, bool.value()) : new OptionValue(false, null);
+                        }
+                        case "as_int" -> {
+                            requireZero(args, "JsonValue.as_int");
+                            if (!(json instanceof dev.oreslang.runtime.OresJsonValue.NumberValue number)) {
+                                yield new OptionValue(false, null);
+                            }
+                            try {
+                                yield new OptionValue(true, number.value().longValueExact());
+                            } catch (ArithmeticException outsideI64) {
+                                yield new OptionValue(false, null);
+                            }
+                        }
+                        default -> throw new IllegalArgumentException("unknown canonical JsonValue operation");
+                    };
+                };
+            }
+
             if (receiver instanceof ReadonlyShapeLoan loan) {
                 return loan.read(name);
             }
