@@ -40,6 +40,7 @@ with tempfile.TemporaryDirectory(prefix="sharkbench-admission-") as tmp:
                     if time.monotonic()>=deadline: raise RuntimeError("guest listener not ready")
                     time.sleep(.1)
             subprocess.run([sys.executable,str(pathlib.Path(here)/"check_contract.py")],check=True,timeout=120)
+            subprocess.run([sys.executable,"-B",str(pathlib.Path(here)/"check_faults.py")],check=True,timeout=120)
             if guest.poll() is not None: raise RuntimeError("guest exited during admission")
         finally:
             try: os.killpg(guest.pid,signal.SIGTERM)
