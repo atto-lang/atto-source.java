@@ -602,7 +602,9 @@ final class ActorArtifactAdmissionTest {
         KeyPair keys = keyPair();
         var manifest = sign(manifest(executable, List.of()), keys);
         var profile = new ActorIpcCodecProfileV1("messagepack", 2, "order.v1",
-                "11".repeat(32), MESSAGE_ABI);
+                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cda", MESSAGE_ABI);
+        var shape = MessagePackWireV2.Shape.string();
+        var limits = MessagePackWireV2.DecodeLimits.defaults();
         UUID route = UUID.randomUUID();
         try (ActorRuntime runtime = new ActorRuntime(supervisorPolicy())) {
             ActorArtifact<Object> legacy = runtime.admitIpcActorArtifact(
@@ -619,14 +621,18 @@ final class ActorArtifactAdmissionTest {
                     targetPolicy(), privateWorkerPolicy());
             assertThrows(SecurityException.class, () -> runtime.openCodecBoundIpcSession(
                     artifact, route, 1, 1, 2, 4096, profile, 1, 2));
-            var first = runtime.openCodecBoundIpcSession(
-                    artifact, route, 1, 1, 2, 4096, profile, 1, 1);
+            assertThrows(IllegalArgumentException.class, () -> runtime.openMessagePackBoundIpcSession(
+                    artifact, route, 1, 1, 2, 4096, profile, 1, 1, MessagePackWireV2.Shape.i64(), limits));
+            var first = runtime.openMessagePackBoundIpcSession(
+                    artifact, route, 1, 1, 2, 4096, profile, 1, 1, shape, limits);
             assertEquals(profile, first.codecProfile());
             runtime.retireBoundIpcSession(first);
             assertThrows(SecurityException.class, () ->
                     runtime.openBoundIpcSession(legacy, route, 1, 2, 2, 4096));
-            var replacement = runtime.openCodecBoundIpcSession(
-                    artifact, route, 1, 2, 2, 4096, profile, 1, 1);
+            assertThrows(SecurityException.class, () -> runtime.openCodecBoundIpcSession(
+                    artifact, route, 1, 2, 2, 4096, profile, 1, 1));
+            var replacement = runtime.openMessagePackBoundIpcSession(
+                    artifact, route, 1, 2, 2, 4096, profile, 1, 1, shape, limits);
             assertEquals(profile, replacement.codecProfile());
         }
     }
