@@ -255,6 +255,28 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void branchingAcyclicClassPlansCannotExpandWithoutBound() {
+        StringBuilder source = new StringBuilder("define class Leaf0 as pub let int value = 0; end\n");
+        for (int i = 1; i <= 16; i++) {
+            source.append("define class Leaf").append(i).append(" as pub let Leaf")
+                    .append(i - 1).append(" left; pub let Leaf")
+                    .append(i - 1).append(" right; end\n");
+        }
+        var program = assertDoesNotThrow(() -> Parser.parse(source.toString()));
+        var classes = new java.util.HashMap<String, Ast.ClassDecl>();
+        for (var module : program.modules()) {
+            for (var declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass) classes.put(klass.name(), klass);
+            }
+        }
+        assertEquals(17, classes.size());
+        assertDoesNotThrow(() -> DerivedCopyPlanV1.derive(Ast.TypeRef.simple("Leaf5"), classes::get));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> DerivedCopyPlanV1.derive(Ast.TypeRef.simple("Leaf16"), classes::get));
+        assertTrue(error.getMessage().contains("E_COPY_PLAN_BUDGET"), error::toString);
+    }
+
+    @Test
     void scalarCopyRemainsAdmitted() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub fnc main(): int {
