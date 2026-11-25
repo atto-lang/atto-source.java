@@ -4341,7 +4341,11 @@ public final class Parser {
         // Legacy statement syntax remains accepted during migration.
         if (match(MATCH)) {
             // Canonical bare match is a discarded value, not a callable exit.
-            if (canonicalAttoSource) return new Ast.ExprStmt(parseValueMatch());
+            if (canonicalAttoSource) {
+                Ast.Expr value = parseValueMatch();
+                match(SEMICOLON);
+                return new Ast.ExprStmt(value);
+            }
             return parseMatch(false);
         }
         if (match(SWITCH)) return parseSwitch();
