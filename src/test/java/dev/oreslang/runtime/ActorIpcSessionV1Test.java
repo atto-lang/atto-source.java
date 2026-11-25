@@ -56,6 +56,83 @@ final class ActorIpcSessionV1Test {
     }
 
     @Test
+    void queueRetainsTenantCreditsUntilDeliveryClosedAndBackpressurePreservesSequence() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (var session = ActorIpcSessionV1.create(artifact, UUID.randomUUID(), 1, 1);
+             var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            var transientBudget = new ActorDataDecodeQuotaV1(65536, 1);
+            var retained = new ActorDataDecodeQuotaV1(65536, 1);
+            session.bindDataQueue(1, 4096, transientBudget, retained);
+            byte[] one = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, new byte[]{7});
+            byte[] two = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 2, 10, new byte[]{8});
+            assertTrue(session.tryQueueWorkerData(one));
+            assertEquals(0, transientBudget.active());
+            assertFalse(session.tryQueueWorkerData(two));
+            var delivered = session.pollWorkerData();
+            assertNotNull(delivered);
+            assertEquals(9L, delivered.messageSequence());
+            byte[] copy = delivered.copyPayload(); copy[0] = 0;
+            assertArrayEquals(new byte[]{7}, delivered.copyPayload());
+            assertFalse(session.tryQueueWorkerData(two));
+            delivered.close(); delivered.close();
+            assertThrows(IllegalStateException.class, delivered::copyPayload);
+            assertTrue(session.tryQueueWorkerData(two));
+            assertEquals(two.length, retained.usedBytes());
+            session.close();
+            assertEquals(0, retained.usedBytes());
+            assertEquals(0, retained.active());
+            assertThrows(IllegalStateException.class, session::pollWorkerData);
+        }
+    }
+
+    @Test
+    void queuePoisonClearsRetainedCreditsAndRawDataCannotBypassBinding() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (var session = ActorIpcSessionV1.create(artifact, UUID.randomUUID(), 1, 1);
+             var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            var transientBudget = new ActorDataDecodeQuotaV1(65536, 2);
+            var retained = new ActorDataDecodeQuotaV1(65536, 2);
+            session.bindDataQueue(2, 4096, transientBudget, retained);
+            byte[] one = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, new byte[]{7});
+            byte[] two = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 2, 10, new byte[]{8});
+            assertTrue(session.tryQueueWorkerData(one));
+            assertThrows(IllegalStateException.class,
+                    () -> session.tryAcceptWorkerDataFrame(two, transientBudget));
+            assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.acceptWorkerFrame(two));
+            assertTrue(session.poisoned());
+            assertEquals(0, retained.usedBytes());
+            assertEquals(0, transientBudget.usedBytes());
+        }
+    }
+
+    @Test
+    void queueAuthenticationFailureRollsBackBothAccounts() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (var session = ActorIpcSessionV1.create(artifact, UUID.randomUUID(), 1, 1);
+             var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            var transientBudget = new ActorDataDecodeQuotaV1(65536, 2);
+            var retained = new ActorDataDecodeQuotaV1(65536, 2);
+            session.bindDataQueue(2, 4096, transientBudget, retained);
+            byte[] one = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, new byte[]{7});
+            one[one.length-1] ^= 1;
+            assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.tryQueueWorkerData(one));
+            assertTrue(session.poisoned());
+            assertEquals(0, retained.usedBytes());
+            assertEquals(0, transientBudget.usedBytes());
+        }
+    }
+
+    @Test
     void quotaBackpressureDoesNotConsumeSequenceAndAuthFailureReleasesCredit() {
         ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
         try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
