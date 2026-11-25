@@ -100,6 +100,22 @@ final class DerivedGraphCopyPlanTest {
     }
 
     @Test
+    void unsignedPayloadsFailAtDescriptorAdmissionEvenUnderRecursiveContainers() {
+        for (String unsigned : java.util.List.of("uint", "u8", "u16", "u32", "u64")) {
+            var declarations = classes("""
+                    define class Node as
+                      pub let Option<Node> next = None;
+                      pub let List<%s> payload;
+                    end
+                    """.formatted(unsigned));
+            var failure = assertThrows(IllegalArgumentException.class, () ->
+                    DerivedGraphCopyPlan.derive(Ast.TypeRef.simple("Node"), declarations::get));
+            assertTrue(failure.getMessage().contains("E_COPY_GRAPH_UNPROVEN"), failure::toString);
+            assertTrue(failure.getMessage().contains(unsigned), failure::toString);
+        }
+    }
+
+    @Test
     void unsupportedInheritanceFailsClosed() {
         var declarations = classes("""
                 define class Base as
