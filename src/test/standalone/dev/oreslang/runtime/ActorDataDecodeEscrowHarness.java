@@ -42,6 +42,25 @@ public final class ActorDataDecodeEscrowHarness {
         check(!other.decodeAndCommit(current, wire), "foreign ticket");
         ledger.cancel(current); ledger.cancel(current);
         check(ledger.snapshot().availableBytes() == bytes, "cancel replay");
+        // Independent endpoint tickets compete for one shared runtime budget.
+        var aggregate = new ActorDataDecodeEscrowV1.RuntimeBudget(bytes);
+        var first = aggregate.reserve(wire.length);
+        check(first != null && aggregate.inFlight() == 1, "runtime exact reserve");
+        check(aggregate.reserve(wire.length) == null, "runtime aggregate denial");
+        first.close(); first.close();
+        check(aggregate.inFlight() == 0, "runtime lease released once");
+        var second = aggregate.reserve(wire.length);
+        check(second != null, "runtime recovered"); second.close();
+        // Deterministic active-decode ownership seam: cancellation/close after
+        // decoder acquisition but before mailbox settlement cannot refund.
+        var closing = new ActorDataDecodeEscrowV1(pin, 8, bytes, work, 1);
+        var active = closing.reserve(8, pin.format(), pin.schemaId(), 1, pin.fingerprintHex(), wire.length);
+        check(Long.valueOf(42).equals(closing.decodeForMailbox(active, wire)), "decode for mailbox");
+        closing.closeEndpoint();
+        check(closing.snapshot().availableBytes() == 0, "close retains active decode");
+        check(closing.reserve(8, pin.format(), pin.schemaId(), 1, pin.fingerprintHex(), wire.length) == null, "closed endpoint denial");
+        closing.finishMailboxDecode(active); closing.finishMailboxDecode(active);
+        check(closing.snapshot().availableBytes() == bytes, "active settlement once");
         // Race commit vs cancellation: either linearization is acceptable.
         try (var pool = Executors.newFixedThreadPool(2)) {
             for (int i = 0; i < 100; i++) {

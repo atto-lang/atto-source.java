@@ -9,8 +9,9 @@ import java.util.IdentityHashMap;
 import java.util.Objects;
 
 /**
- * Trusted runtime-owned staging queue for one pinned MessagePack i64 endpoint.
- * Not yet wired to ActorRuntime's actual mailbox or transport authentication.
+ * Trusted runtime-owned decode escrow for one pinned MessagePack i64 endpoint.
+ * ActorRuntime uses its ordinary mailbox; the standalone queue is a host test seam.
+ * Transport authentication is not implemented here.
  * Only runtime code can create tickets. Input must be exclusively owned and
  * authenticated by the caller; schema metadata is not a transport credential.
  * Logical credits are not physical heap accounting.
@@ -19,6 +20,62 @@ final class ActorDataDecodeEscrowV1 {
     private static final int MAX_WIRE = 1024 * 1024;
     private static final long MAX_LOGICAL = 8L * 1024 * 1024;
     private static final long MAX_WORK = 4L * 1024 * 1024;
+
+    /**
+     * One shared temporary budget per ActorRuntime, independent of endpoints.
+     * No callbacks, actor locks or endpoint locks acquired from this monitor.
+     * The caller holds a lease through final mailbox admission and rollback.
+     */
+    static final class RuntimeBudget {
+        private final long byteLimit;
+        private final long workLimit;
+        private long bytes;
+        private long work;
+        private int inFlight;
+
+        RuntimeBudget(long byteCeiling) {
+            if (byteCeiling < 0) throw new IllegalArgumentException("invalid decode ceiling");
+            byteLimit = Math.min(byteCeiling, MAX_LOGICAL);
+            workLimit = MAX_WORK;
+        }
+
+        static final class Lease implements AutoCloseable {
+            private final RuntimeBudget owner;
+            private final long bytes;
+            private final long work;
+            private boolean released;
+            private Lease(RuntimeBudget owner, long bytes, long work) {
+                this.owner = owner;
+                this.bytes = bytes;
+                this.work = work;
+            }
+            @Override public void close() { owner.release(this); }
+        }
+
+        synchronized Lease reserve(int length) {
+            if (length <= 0 || length > MAX_WIRE || inFlight >= 4096) return null;
+            long b = 256L + 16L * length;
+            long w = 3L * length + 1L;
+            if (b > byteLimit - bytes || w > workLimit - work) return null;
+            Lease lease = new Lease(this, b, w);
+            bytes += b;
+            work += w;
+            inFlight++;
+            return lease;
+        }
+
+        private synchronized void release(Lease lease) {
+            if (lease.released) return;
+            if (lease.owner != this || inFlight <= 0 || bytes < lease.bytes || work < lease.work)
+                throw new IllegalStateException("runtime DATA decode accounting invariant");
+            lease.released = true;
+            bytes -= lease.bytes;
+            work -= lease.work;
+            inFlight--;
+        }
+
+        synchronized int inFlight() { return inFlight; }
+    }
 
     static final class Ticket {
         private final long generation;
@@ -50,6 +107,7 @@ final class ActorDataDecodeEscrowV1 {
     private long availableBytes;
     private long availableWork;
     private long publications;
+    private boolean closed;
 
     ActorDataDecodeEscrowV1(Descriptor pinned, long generation, long bytes, long work, int slots) {
         descriptor = Objects.requireNonNull(pinned);
@@ -70,7 +128,7 @@ final class ActorDataDecodeEscrowV1 {
     // by wire-selected type, codec fallback, or guest-provided descriptor.
     synchronized Ticket reserve(long epoch, Format format, String schemaId,
                                 int schemaVersion, String fingerprint, int length) {
-        if (epoch != generation || format != descriptor.format()
+        if (closed || epoch != generation || format != descriptor.format()
                 || schemaVersion != descriptor.version()
                 || !descriptor.schemaId().equals(schemaId)
                 || !descriptor.fingerprintHex().equals(fingerprint)
@@ -103,7 +161,7 @@ final class ActorDataDecodeEscrowV1 {
                     MessagePackWireV2.Shape.i64(), ownedWire);
             if (!(decoded instanceof Long value)) return false;
             synchronized (this) {
-                if (ticket.cancelled || ticket.generation != generation
+                if (closed || ticket.cancelled || ticket.generation != generation
                         || publications == Long.MAX_VALUE) return false;
                 // Publication and credit transfer are one monitor transition.
                 queue.addLast(new Entry(value, ticket.bytes, ticket.work));
@@ -153,9 +211,19 @@ final class ActorDataDecodeEscrowV1 {
         return next.value();
     }
 
+    synchronized void closeEndpoint() {
+        if (closed) return;
+        closed = true;
+        revokePendingAndQueued();
+    }
+
     synchronized void restart(long nextGeneration) {
-        if (nextGeneration <= generation) throw new IllegalArgumentException("non-monotonic generation");
+        if (closed || nextGeneration <= generation) throw new IllegalArgumentException("closed or non-monotonic generation");
         generation = nextGeneration;
+        revokePendingAndQueued();
+    }
+
+    private void revokePendingAndQueued() {
         // Active decoders remain charged until they physically exit.
         var iter = pending.keySet().iterator();
         while (iter.hasNext()) {

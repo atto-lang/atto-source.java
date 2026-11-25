@@ -439,6 +439,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
+    private final ActorDataDecodeEscrowV1.RuntimeBudget serializedDecodeBudget;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
@@ -509,6 +510,7 @@ public final class ActorRuntime implements AutoCloseable {
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
+        this.serializedDecodeBudget = new ActorDataDecodeEscrowV1.RuntimeBudget(policyCeiling.maxHeapBytes());
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
@@ -4983,11 +4985,17 @@ public final class ActorRuntime implements AutoCloseable {
             if (ticket == null) throw new IllegalArgumentException("serialized DATA admission denied");
         }
         try {
-            sendPrepared(ref, () -> {
-                Long value = ingress.decodeForMailbox(ticket, ownedWire);
-                if (value == null) throw new IllegalArgumentException("invalid serialized scalar DATA");
-                return value;
-            });
+            // Per-endpoint authorization has succeeded. Reserve shared runtime
+            // credits before any decoding and retain them through publication.
+            var lease = serializedDecodeBudget.reserve(ownedWire.length);
+            if (lease == null) throw new IllegalStateException("runtime DATA decode budget exhausted");
+            try (lease) {
+                sendPrepared(ref, () -> {
+                    Long value = ingress.decodeForMailbox(ticket, ownedWire);
+                    if (value == null) throw new IllegalArgumentException("invalid serialized scalar DATA");
+                    return value;
+                });
+            }
         } finally {
             ingress.finishMailboxDecode(ticket);
         }
@@ -7712,6 +7720,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
+                if (serializedI64 != null) serializedI64.closeEndpoint();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
