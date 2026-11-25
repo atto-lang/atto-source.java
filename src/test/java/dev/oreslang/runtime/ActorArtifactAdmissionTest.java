@@ -554,6 +554,41 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void boundIpcRoutesRequireRuntimeOwnedArtifactAndExactRetirement() throws Exception {
+        byte[] executable = "ELF-bounded-route".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+        var attestation = attestation("ImageWorker", manifest);
+        UUID route = UUID.randomUUID();
+        try (ActorRuntime runtime = new ActorRuntime(supervisorPolicy());
+             ActorRuntime other = new ActorRuntime(supervisorPolicy())) {
+            ActorArtifact<Object> artifact = runtime.admitIpcActorArtifact(
+                    "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
+                    attestation, TRUST_ATTESTATION, (builder, keyId) -> keys.getPublic(),
+                    targetPolicy(), privateWorkerPolicy());
+            assertThrows(SecurityException.class, () ->
+                    other.openBoundIpcSession(artifact, route, 1, 1, 2, 4096));
+            assertThrows(IllegalArgumentException.class, () ->
+                    runtime.openBoundIpcSession(artifact, route, 1, 1, 0, 4096));
+            var first = runtime.openBoundIpcSession(artifact, route, 1, 1, 2, 4096);
+            assertThrows(IllegalStateException.class, () ->
+                    runtime.openBoundIpcSession(artifact, route, 1, 2, 2, 4096));
+            assertThrows(SecurityException.class, () -> other.retireBoundIpcSession(first));
+            runtime.retireBoundIpcSession(first);
+            assertThrows(IllegalStateException.class, first::claimBootstrapForTrustedLauncher);
+            var replacement = runtime.openBoundIpcSession(artifact, route, 1, 2, 2, 4096);
+            assertThrows(SecurityException.class, () -> runtime.retireBoundIpcSession(first));
+            try (var bootstrap = replacement.claimBootstrapForTrustedLauncher()) {
+                assertEquals(2, bootstrap.routeEpoch());
+            }
+            runtime.close();
+            assertThrows(IllegalStateException.class, replacement::pollWorkerData);
+            assertThrows(IllegalStateException.class, () ->
+                    runtime.openBoundIpcSession(artifact, UUID.randomUUID(), 1, 1, 2, 4096));
+        }
+    }
+
+    @Test
     void canonicalUnsignedManifestHasDeterministicSortedObjectKeys() throws Exception {
         byte[] executable = "ELF-canonical".getBytes(StandardCharsets.UTF_8);
         var manifest = manifest(executable, List.of("filesystem.read", "stdout"));
