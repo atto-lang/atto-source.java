@@ -10,6 +10,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -44,6 +49,15 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             oldGeneration = generation;
             oldParentId = parentId;
         }
+    }
+
+    /** Readiness notification only: never a replacement or a new permit. */
+    static final class RestartWakeup {
+        private final RestartPermit permit;
+        private final CompletableFuture<Void> ready = new CompletableFuture<>();
+        private ScheduledFuture<?> timer; // guarded by recovery lock
+        private RestartWakeup(RestartPermit permit) { this.permit = permit; }
+        CompletionStage<Void> completion() { return ready.minimalCompletionStage(); }
     }
 
     /**
@@ -88,6 +102,9 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     private final Set<Long> queuedRoots = new HashSet<>();
     private final Set<RestartPermit> issued = new HashSet<>();
     private final Map<Long, Long> successorIds = new HashMap<>();
+    // At most one wakeup per exact issued permit. Guarded by lock.
+    private final Map<RestartPermit, RestartWakeup> wakeups = new HashMap<>();
+    private final ThreadLocal<Boolean> submittingWakeup = new ThreadLocal<>();
     private final AtomicReference<Throwable> controlFault = new AtomicReference<>();
     private final ThreadLocal<Boolean> submitting = new ThreadLocal<>();
     private boolean scheduled;
@@ -118,8 +135,8 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
 
     /**
      * Host-only explicit opt-in. As with attach(), callers must not activate
-     * the actor until registration returns. This is a single-child policy,
-     * not a shared restart budget across multiple guardian children.
+     * the actor until registration returns. Convenience wrapper for a
+     * one-slot guardian cohort.
      */
     long attachRestartManagedRoot(ActorRuntime.ActorRef<?> ref,
             ActorSupervisorRestartCircuit.Config config) {
@@ -368,21 +385,120 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     long restartDelayRemainingNanos(RestartPermit permit) {
         runtime.requireSupervisorShutdownAuthority("inspect remaining restart backoff");
         Objects.requireNonNull(permit, "permit");
-        final RootRestartPolicy policy;
+        synchronized (lock) { return remainingDelayLocked(permit); }
+    }
+
+    private long remainingDelayLocked(RestartPermit permit) {
+        if (!issued.contains(permit) || permit.used || controlFault.get() != null)
+            throw new IllegalStateException("stale restart permit or CONTROL fault");
+        RootRestartPolicy policy = rootPolicies.get(permit.oldNodeId);
+        if (policy == null) return 0L;
+        if (policy.group.circuit.escalated() || policy.plan == null)
+            throw new IllegalStateException("restart permit no longer admitted");
+        long elapsed = policy.group.clock.getAsLong() - policy.decidedAt;
+        if (elapsed < 0L) throw new IllegalStateException("restart clock regressed");
+        return Math.max(0L, policy.plan.delayNanos() - elapsed);
+    }
+
+    /**
+     * Schedule one cancellable readiness notification on a caller-owned
+     * trusted scheduler, then hand it to the existing queued CONTROL
+     * executor. No actor is created, no carrier sleeps, and no permit is
+     * consumed. The actual attachment still checks every admission gate.
+     */
+    RestartWakeup scheduleRestartWakeup(RestartPermit permit,
+            ScheduledExecutorService scheduler) {
+        runtime.requireSupervisorShutdownAuthority("schedule supervisor restart wakeup");
+        Objects.requireNonNull(permit, "permit");
+        Objects.requireNonNull(scheduler, "scheduler");
+        var wakeup = new RestartWakeup(permit);
+        final long delay;
         synchronized (lock) {
-            if (!issued.contains(permit) || permit.used || controlFault.get() != null)
-                throw new IllegalStateException("stale restart permit or CONTROL fault");
-            policy = rootPolicies.get(permit.oldNodeId);
-            if (policy == null) return 0L;
+            delay = remainingDelayLocked(permit);
+            if (wakeups.putIfAbsent(permit, wakeup) != null)
+                throw new IllegalStateException("restart wakeup already scheduled");
+        }
+
+        try {
+            submittingWakeup.set(Boolean.TRUE);
+            ScheduledFuture<?> timer;
+            try {
+                timer = scheduler.schedule(() -> dispatchRestartWakeup(wakeup),
+                        delay, TimeUnit.NANOSECONDS);
+            } finally {
+                submittingWakeup.remove();
+            }
+            boolean retained;
+            synchronized (lock) {
+                retained = wakeups.get(permit) == wakeup;
+                if (retained) wakeup.timer = timer;
+            }
+            if (!retained) timer.cancel(false);
+        } catch (RuntimeException | Error failure) {
+            finishRestartWakeup(wakeup, failure);
+            throw failure;
+        }
+        return wakeup;
+    }
+
+    private void dispatchRestartWakeup(RestartWakeup wakeup) {
+        if (Boolean.TRUE.equals(submittingWakeup.get())
+                || ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()) {
+            finishRestartWakeup(wakeup, new IllegalStateException(
+                    "restart timer executed inline or on actor carrier"));
+            return;
         }
         synchronized (lock) {
-            if (!issued.contains(permit) || permit.used || controlFault.get() != null
-                    || policy.group.circuit.escalated() || policy.plan == null)
-                throw new IllegalStateException("restart permit no longer admitted");
-            long elapsed = policy.group.clock.getAsLong() - policy.decidedAt;
-            if (elapsed < 0L) throw new IllegalStateException("restart clock regressed");
-            return Math.max(0L, policy.plan.delayNanos() - elapsed);
+            if (wakeups.get(wakeup.permit) != wakeup) return;
         }
+        submittingWakeup.set(Boolean.TRUE);
+        try {
+            control.execute(() -> {
+                if (Boolean.TRUE.equals(submittingWakeup.get())
+                        || ActorRuntime.inActorExecution()
+                        || ActorRuntime.inActorGroupMailmanExecution()) {
+                    finishRestartWakeup(wakeup, new IllegalStateException(
+                            "restart wakeup CONTROL executed inline or on actor carrier"));
+                    return;
+                }
+                finishRestartWakeup(wakeup, null);
+            });
+        } catch (RuntimeException | Error failure) {
+            finishRestartWakeup(wakeup, failure);
+        } finally {
+            submittingWakeup.remove();
+        }
+    }
+
+    private void finishRestartWakeup(RestartWakeup wakeup, Throwable failure) {
+        synchronized (lock) {
+            if (!wakeups.remove(wakeup.permit, wakeup)) return;
+            if (failure == null) {
+                try {
+                    if (remainingDelayLocked(wakeup.permit) != 0)
+                        throw new IllegalStateException("restart timer fired before backoff elapsed");
+                } catch (RuntimeException | Error denied) {
+                    failure = denied;
+                }
+            }
+        }
+        // Host continuations must never run under recovery/admission locks.
+        if (failure == null) wakeup.ready.complete(null);
+        else wakeup.ready.completeExceptionally(failure);
+    }
+
+    boolean cancelRestartWakeup(RestartWakeup wakeup) {
+        runtime.requireSupervisorShutdownAuthority("cancel supervisor restart wakeup");
+        Objects.requireNonNull(wakeup, "wakeup");
+        final ScheduledFuture<?> timer;
+        synchronized (lock) {
+            if (!wakeups.remove(wakeup.permit, wakeup)) return false;
+            timer = wakeup.timer;
+        }
+        if (timer != null) timer.cancel(false);
+        wakeup.ready.cancel(false);
+        return true;
     }
 
     long attachReplacement(RestartPermit permit, ActorRuntime.ActorRef<?> replacement,
@@ -417,6 +533,8 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
                     || actualParent != expectedParent) {
                 throw new IllegalStateException("stale, reused or misparented restart permit");
             }
+            if (wakeups.containsKey(permit))
+                throw new IllegalStateException("restart wakeup is still pending");
             if (policy != null) {
                 // Early timing denial must leave the permit intact. If actor
                 // attachment later fails, successor -1 keeps the old node
