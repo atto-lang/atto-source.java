@@ -2103,9 +2103,15 @@ public final class OwnershipChecker {
         } else if (value instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             if (state != null) roots.add(ownershipRoot(state));
-        } else if (value instanceof Ast.MemberExpr || value instanceof Ast.IndexExpr) {
-            // Only a stable, checked projection may borrow an existing owner.
-            roots.add(ownershipRoot(borrowPlace(value, scope).owner()));
+        } else if (value instanceof Ast.MemberExpr member) {
+            // Formatting has already checked/evaluated this projection. It
+            // retains the value only for this call, so freeze the entire
+            // receiver owner without minting a typed projected reference.
+            // Builtin envelope fields may not yet have a type in this pass.
+            // Explicit projected borrows still go through borrowPlace().
+            collectFormattingRoots(member.receiver(), scope, roots);
+        } else if (value instanceof Ast.IndexExpr indexed) {
+            collectFormattingRoots(indexed.receiver(), scope, roots);
         } else {
             VarState root = invocationLoanRoot(value, scope);
             if (root != null) roots.add(root);
@@ -4958,3 +4964,4 @@ public final class OwnershipChecker {
         }
     }
 }
+

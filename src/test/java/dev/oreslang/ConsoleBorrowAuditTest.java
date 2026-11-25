@@ -7,6 +7,43 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ConsoleBorrowAuditTest {
+    @Test
+    void builtinEnvelopeFieldFormatsWithoutMintingAProjectedReference() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                fnc display(ActorOutput<int> output):void {
+                  stdio.stdout.write(output.value);
+                  stdio.stdout.write(output.value);
+                  return;
+                }
+                pub fnc main():int { return 0; }
+                """));
+    }
+
+    @Test
+    void builtinEnvelopeFormattingStillPinsTheContainingOwner() {
+        assertBorrowRejected("""
+                fnc consume(ActorOutput<int> output):String { return "consumed"; }
+                fnc display(ActorOutput<int> output):void {
+                  stdio.stdout.log(output.value, consume(output));
+                  return;
+                }
+                pub fnc main():int { return 0; }
+                """);
+    }
+
+    @Test
+    void explicitEnvelopeProjectionStillRequiresProvenFieldType() {
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc inspect(ActorOutput<int> output):void {
+                          val view = rt borrow output.value;
+                          return;
+                        }
+                        pub fnc main():int { return 0; }
+                        """));
+        assertTrue(failure.getMessage().contains("known owned field type"), failure.getMessage());
+    }
+
     private static final String PAYLOAD = """
             define class ConsolePayload as pub let int value = 42; end
             fnc consume(ConsolePayload item):String { return "consumed"; }
@@ -203,3 +240,4 @@ final class ConsoleBorrowAuditTest {
         assertTrue(failure.getMessage().contains("borrow"), failure.getMessage());
     }
 }
+

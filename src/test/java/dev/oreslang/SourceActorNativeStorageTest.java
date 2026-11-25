@@ -58,20 +58,24 @@ final class SourceActorNativeStorageTest {
                           on_start(): void { self.count = 0; return; }
                           receive(ActorMail<String> mail): void {
                             self.count = self.count + 1;
-                            stdio.stdout.write(self.count);
+                            self.send(self.count);
                             self.end();
                             return;
                           }
                         end
                         pub async routine main(): void {
                           val left = spawn Counter();
-                          await left.get_ready();
-                          left.send("go");
-                          await left.get_done();
-                          stdio.stdout.write("|");
                           val right = spawn Counter();
+                          await left.get_ready();
                           await right.get_ready();
+                          left.send("go");
                           right.send("go");
+                          val a = (await left.outputs.next()).value.unwrap();
+                          val b = (await right.outputs.next()).value.unwrap();
+                          stdio.stdout.write(a.value);
+                          stdio.stdout.write("|");
+                          stdio.stdout.write(b.value);
+                          await left.get_done();
                           await right.get_done();
                           return;
                         }
@@ -84,3 +88,4 @@ final class SourceActorNativeStorageTest {
         }
     }
 }
+
