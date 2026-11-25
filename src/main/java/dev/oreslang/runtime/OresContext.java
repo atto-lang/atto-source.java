@@ -288,6 +288,24 @@ public final class OresContext implements AutoCloseable {
         return sharedCodeImages.get(codeUnitId);
     }
 
+    /**
+     * Compiler-only, manifest-verified stateful actor entrypoint used by the
+     * trusted Truffle parse lease. Publish the image in THIS context's store,
+     * so context shutdown owns code-image revocation after actor quiescence.
+     *
+     * No guest source receives an actor-state region, CodeImage or raw plan.
+     */
+    public dev.oreslang.compiler.NamespaceActorManifestV1.Verified
+    compileVerifiedStatefulActorGuest(java.nio.file.Path manifest,
+                                     String actorName) throws java.io.IOException {
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException(
+                    "filesystem-backed stateful actor guest admission is denied in untrusted isolates");
+        }
+        return dev.oreslang.compiler.NamespaceActorManifestV1.compile(
+                manifest, sharedCodeImages, actorName);
+    }
+
     public synchronized void registerLinkedCodeUnit(String codeUnitId, Object unit) {
         if (codeUnitId == null || codeUnitId.isBlank()) {
             throw new IllegalArgumentException("linked code unit id cannot be blank");
