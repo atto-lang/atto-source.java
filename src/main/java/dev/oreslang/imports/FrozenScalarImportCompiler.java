@@ -17,7 +17,7 @@ import java.util.*;
 /**
  * Frozen, in-memory compiler entry point for one deliberately bounded guest
  * shape: imports, namespace aliases, and a public scalar main returning a
- * bounded signed-int literal argument call. Every provider byte was verified before
+ * bounded signed-int arithmetic call with a scalar local prelude. Every provider byte was verified before
  * lowering. The consumer is parsed by an explicit closed token grammar, not
  * rewritten by textual substitution. Other shapes must fail closed.
  */
@@ -101,20 +101,36 @@ public final class FrozenScalarImportCompiler {
         reader.expect("pub"); reader.expect("fnc"); reader.expect("main");
         reader.expect("("); reader.expect(")");
         if(!reader.take("->")) reader.expect(":");
-        reader.expect("int"); reader.expect("{"); reader.expect("return");
+        reader.expect("int"); reader.expect("{");
+        var prelude=new StringBuilder();
+        while(reader.take("val")) {
+            if(reader.locals.size()>=16) throw fail("E_SOURCE_LIMIT","local binding budget exceeded");
+            reader.expect("int");
+            String local=reader.component();
+            if(reader.locals.containsKey(local)) throw fail("E_DUPLICATE","duplicate local binding");
+            reader.expect("=");
+            String initial=reader.expression(0);
+            reader.expect(";");
+            String generated="frozen_local_"+reader.locals.size();
+            reader.locals.put(local,generated);
+            prelude.append("val int ").append(generated).append(" = ").append(initial).append("; ");
+        }
+        reader.expect("return");
         String reference=reader.path();
         reader.expect("(");
-        var arguments=new ArrayList<Long>();
+        var arguments=new ArrayList<String>();
         if(!reader.take(")")) {
             do {
                 if(arguments.size()>=16) throw fail("E_SOURCE_LIMIT","call argument budget exceeded");
-                arguments.add(reader.integer());
+                arguments.add(reader.expression(0));
             } while(reader.take(","));
             reader.expect(")");
         }
         reader.expect(";"); reader.expect("}");
         reader.expectEnd();
         if(reference.indexOf('.')<0) throw fail("E_UNSUPPORTED","expected a qualified static call");
+        if(reader.locals.containsKey(reference.substring(0,reference.indexOf('.'))))
+            throw fail("E_IMPORT_KIND","scalar local shadows qualified call root");
         for(var imported:imports) {
             if(imported.selector()==null) {
                 var pkg=available.get(imported.source());
@@ -161,7 +177,7 @@ public final class FrozenScalarImportCompiler {
         // provider is the unchanged original verified source, not a transformed
         // copy. The normal compiler rechecks member signatures and call types.
         String lowered="import fnc "+member+" as selected_call from \""+IMPORT+"\";\n"
-            +"pub fnc main(): int { return selected_call("+String.join(", ",arguments.stream().map(v->Long.toString(v)).toList())+"); }";
+            +"pub fnc main(): int { "+prelude+"return selected_call("+String.join(", ",arguments)+"); }";
         var resolutions=Map.of(ENTRY,Map.of(IMPORT,PROVIDER));
         var build=new IncrementalCompiler().compileStrictAtto(Map.of(ENTRY,lowered,PROVIDER,provider),resolutions);
         return new CheckedGuest(build);
@@ -169,7 +185,8 @@ public final class FrozenScalarImportCompiler {
 
     private static final class Reader {
         private final List<Token> tokens;
-        private int i;
+        private int i, expressionNodes;
+        private final Map<String,String> locals=new LinkedHashMap<>();
         Reader(List<Token> tokens) {this.tokens=tokens;}
         Token peek(){return tokens.get(i);}
         boolean take(String value) {
@@ -193,6 +210,9 @@ public final class FrozenScalarImportCompiler {
                 case "=" -> Token.Type.EQUAL;
                 case "," -> Token.Type.COMMA;
                 case "-" -> Token.Type.MINUS;
+                case "+" -> Token.Type.PLUS;
+                case "*" -> Token.Type.STAR;
+                case "val" -> Token.Type.VAL;
                 default -> Token.Type.IDENT;
             };
             if(peek().type()!=expected||!peek().lexeme().equals(value)) return false;
@@ -214,6 +234,43 @@ public final class FrozenScalarImportCompiler {
                 s.append('.').append(component());
             }
             return s.toString();
+        }
+        private void chargeExpression(int depth){
+            if(depth>16||++expressionNodes>128)
+                throw fail("E_SOURCE_LIMIT","scalar expression budget exceeded");
+        }
+        String expression(int depth){
+            String value=product(depth);
+            while(peek().type()==Token.Type.PLUS||peek().type()==Token.Type.MINUS) {
+                String op=tokens.get(i++).lexeme();
+                chargeExpression(depth);
+                value="("+value+" "+op+" "+product(depth)+")";
+            }
+            return value;
+        }
+        String product(int depth){
+            String value=atom(depth);
+            while(take("*")) {
+                chargeExpression(depth);
+                value="("+value+" * "+atom(depth)+")";
+            }
+            return value;
+        }
+        String atom(int depth){
+            chargeExpression(depth);
+            if(take("(")) {
+                String value=expression(depth+1);
+                expect(")");
+                return "("+value+")";
+            }
+            if(peek().type()==Token.Type.IDENT) {
+                String name=component(), generated=locals.get(name);
+                if(generated==null) throw fail("E_UNBOUND","unbound scalar local");
+                return generated;
+            }
+            // Preserve negative-literal bounds including Long.MIN_VALUE.
+            // General unary operators and function-valued arguments remain denied.
+            return Long.toString(integer());
         }
         long integer(){
             boolean negative=take("-");
