@@ -767,8 +767,13 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || cell.sealing)
                     throw terminated(target);
-                if (ipcStringReceivers.putIfAbsent(session.logicalActorId(), target) != null)
-                    throw new IllegalStateException("IPC receiver already bound");
+                synchronized (cell.managedByGroup) {
+                    if (cell.managedByGroup.get() != null)
+                        throw new SecurityException("group-managed actor cannot bind host IPC receiver");
+                    if (ipcStringReceivers.putIfAbsent(session.logicalActorId(), target) != null)
+                        throw new IllegalStateException("IPC receiver already bound");
+                    cell.ipcHostReceiver = true;
+                }
             }
         }
     }
@@ -2590,12 +2595,17 @@ public final class ActorRuntime implements AutoCloseable {
                 // A worker has exactly one structured ActorGroup owner.
                 // Other cooperation groups may still admit it as a member,
                 // but no second manager may acquire independent stop rights.
-                ActorGroupId owningGroup = cell.managedByGroup.get();
-                if (owningGroup == null) {
-                    if (cell.managedByGroup.compareAndSet(null, id)) {
-                        owningGroup = id;
-                    } else {
-                        owningGroup = cell.managedByGroup.get();
+                ActorGroupId owningGroup;
+                synchronized (cell.managedByGroup) {
+                    if (cell.ipcHostReceiver)
+                        throw new SecurityException("IPC host receiver cannot acquire structured group ownership");
+                    owningGroup = cell.managedByGroup.get();
+                    if (owningGroup == null) {
+                        if (cell.managedByGroup.compareAndSet(null, id)) {
+                            owningGroup = id;
+                        } else {
+                            owningGroup = cell.managedByGroup.get();
+                        }
                     }
                 }
                 if (!id.equals(owningGroup)) {
@@ -5305,7 +5315,11 @@ public final class ActorRuntime implements AutoCloseable {
                         // route, recipient and lease, then performs enqueue.
                         synchronized (handoff.session()) {
                             synchronized (handoff.decoded()) {
-                                if (boundIpcRoutes.get(handoff.session().logicalActorId()) != handoff.session()
+                                // Permanent receiver claim excludes subsequent
+                                // structured group acquisition; still check the live
+                                // group value defensively at the publication point.
+                                if (cell.managedByGroup.get() != null ||
+                                        boundIpcRoutes.get(handoff.session().logicalActorId()) != handoff.session()
                                         || ipcStringReceivers.get(handoff.session().logicalActorId()) != ref
                                         || actors.get(ref.id()) != cell || cell.ref != ref
                                         || !handoff.session().ready()
@@ -6926,6 +6940,11 @@ public final class ActorRuntime implements AutoCloseable {
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
+        // Guarded by managedByGroup's monitor. Host-only IPC registration and
+        // first group ownership acquisition linearize on the same monitor.
+        // Once set, permanent for this physical actor lifetime (even after
+        // route retirement); avoids a gap allowing later supervisor adoption.
+        private boolean ipcHostReceiver;
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
