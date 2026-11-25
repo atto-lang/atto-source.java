@@ -1,0 +1,2 @@
+use namespace foo;
+declare pub actor Worker1 implements Actor;

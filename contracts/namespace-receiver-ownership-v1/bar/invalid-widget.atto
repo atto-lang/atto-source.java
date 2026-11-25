@@ -1,0 +1,2 @@
+use namespace bar;
+pub mtd (Widget self) big_ly(): void { return; }

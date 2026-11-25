@@ -1,0 +1,2 @@
+use namespace bar;
+declare pub actor Worker2 implements Actor;
