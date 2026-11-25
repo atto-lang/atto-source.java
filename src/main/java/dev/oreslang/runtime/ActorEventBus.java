@@ -430,7 +430,7 @@ public final class ActorEventBus implements AutoCloseable {
 
     public PublishReceipt publish(String name, Object value) {
         requireOpen();
-        ActorRuntime.ActorId publisher = group.currentMemberOrSystem("publish ActorGroup events");
+        ActorRuntime.ActorGroup.EventMembership publisher = group.captureEventMembership("publish ActorGroup events");
         return publishFrozen(
                 requirePublishableTopic(name),
                 runtime.freezeActorGroupEventPayload(value),
@@ -453,8 +453,8 @@ public final class ActorEventBus implements AutoCloseable {
      */
     public Optional<PublishReceipt> tryPublishReliable(String name, Object value) {
         requireOpen();
-        ActorRuntime.ActorId publisher =
-                group.currentMemberOrSystem("try publish ActorGroup events");
+        ActorRuntime.ActorGroup.EventMembership publisher =
+                group.captureEventMembership("try publish ActorGroup events");
         return tryPublishReliableFrozen(name, value, publisher);
     }
 
@@ -466,7 +466,7 @@ public final class ActorEventBus implements AutoCloseable {
     }
 
     private Optional<PublishReceipt> tryPublishReliableFrozen(
-            String name, Object value, ActorRuntime.ActorId publisher) {
+            String name, Object value, ActorRuntime.ActorGroup.EventMembership publisher) {
         TopicState topic = requirePublishableTopic(name);
         if (topic.policy != DeliveryPolicy.RELIABLE) {
             throw new IllegalArgumentException(
@@ -502,7 +502,7 @@ public final class ActorEventBus implements AutoCloseable {
         if (Double.isNaN(candidate)) {
             throw new IllegalArgumentException("double reduction candidate cannot be NaN");
         }
-        ActorRuntime.ActorId publisher = group.currentMemberOrSystem("update ActorGroup reductions");
+        ActorRuntime.ActorGroup.EventMembership publisher = group.captureEventMembership("update ActorGroup reductions");
         DoubleReductionState reduction = requireDoubleReduction(name);
         TopicState topic = requireTopic(name);
 
@@ -621,14 +621,14 @@ public final class ActorEventBus implements AutoCloseable {
     private PublishReceipt publishFrozen(
             TopicState topic,
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
-            ActorRuntime.ActorId publisher) {
+            ActorRuntime.ActorGroup.EventMembership publisher) {
         return publishFrozen(topic, frozenPayload, publisher, () -> { }, false);
     }
 
     private PublishReceipt publishFrozen(
             TopicState topic,
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
-            ActorRuntime.ActorId publisher,
+            ActorRuntime.ActorGroup.EventMembership publisher,
             Runnable commitState) {
         return publishFrozen(topic, frozenPayload, publisher, commitState, false);
     }
@@ -636,7 +636,7 @@ public final class ActorEventBus implements AutoCloseable {
     private PublishReceipt publishFrozen(
             TopicState topic,
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
-            ActorRuntime.ActorId publisher,
+            ActorRuntime.ActorGroup.EventMembership publisher,
             Runnable commitState,
             boolean strictNonblocking) {
         // Admission's linearization order is membership -> topic delivery.
@@ -662,7 +662,7 @@ public final class ActorEventBus implements AutoCloseable {
     private PublishReceipt publishFrozenUnderMembershipFence(
             TopicState topic,
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
-            ActorRuntime.ActorId publisher,
+            ActorRuntime.ActorGroup.EventMembership publisher,
             Runnable commitState,
             boolean strictNonblocking) {
         Event<Object> event = null;
@@ -673,7 +673,7 @@ public final class ActorEventBus implements AutoCloseable {
                 // frozen. Revalidate at the delivery admission boundary so
                 // no post-revocation publication can commit to subscribers.
                 // System publications have a separately checked authority.
-                if (publisher != null && !group.isMember(publisher)) {
+                if (publisher != null && !group.hasEventMembership(publisher)) {
                     throw new SecurityException(
                             "ActorGroup membership revoked before event publication");
                 }
@@ -698,7 +698,7 @@ public final class ActorEventBus implements AutoCloseable {
                         topic.subscriptions.remove(subscription.key, subscription);
                         subscription.closeChannelOnly();
                     } else if (subscription.publisherScope == null
-                            || subscription.publisherScope.actorId().equals(publisher)) {
+                            || (publisher != null && subscription.publisherScope.actorId().equals(publisher.actor()))) {
                         // Filter before reliable reservation and per-observer
                         // credit accounting. A system event only reaches
                         // legacy, unscoped topic subscriptions.
@@ -756,7 +756,7 @@ public final class ActorEventBus implements AutoCloseable {
                     Event<Object> created = new Event<>(
                             topic.name,
                             sequence,
-                            publisher,
+                            publisher == null ? null : publisher.actor(),
                             System.nanoTime(),
                             frozenPayload.value(),
                             frozenPayload.reservation());
