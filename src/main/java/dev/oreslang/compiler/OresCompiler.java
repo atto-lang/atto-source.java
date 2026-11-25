@@ -23,6 +23,28 @@ public final class OresCompiler {
             String packageIdentity, String actorName) {
         return NamespaceActorIngressV1.compile(image, packageIdentity, actorName);
     }
+    /**
+     * Opt-in V2 multi-method actor bundle. Unmodified broker ADT receive
+     * declarations remain fail-closed until typed ADT routing and runtime
+     * activation grants are implemented.
+     */
+    public static NamespaceActorIngressV2.Plan compileNamespaceActorIngressV2(
+            dev.oreslang.runtime.SharedCodeImageStore.CodeImage image,
+            String packageIdentity, String actorName) {
+        return NamespaceActorIngressV2.compile(image, packageIdentity, actorName);
+    }
+    /**
+     * Opt-in V3 exhaustive nominal enum/ActorMail dispatch. General
+     * TypeChecker and arbitrary userland enum execution remain fail-closed.
+     * No primitive variant grants privileged actor activation.
+     */
+    public static NamespaceActorIngressV3.Plan compileNamespaceActorIngressV3(
+            dev.oreslang.runtime.SharedCodeImageStore.CodeImage image,
+            String packageIdentity, String actorName) {
+        return NamespaceActorIngressV3.compile(image, packageIdentity, actorName);
+    }
+
+
 
     /**
      * Opt-in physical .atto.pkg.toml source-set admission for the restricted
