@@ -76,7 +76,7 @@ final class FrozenDependencyGraphTest {
         String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer();}";
         deny("E_UNBOUND",()->FrozenScalarImportCompiler.compile(guest,List.of(a,b)));
         var checked=FrozenScalarImportCompiler.compile(guest,List.of(a,b,c));
-        assertEquals(42,checked.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(checked));
     }
     @Test void actualGuestCallsAcrossThreePinnedProviders()throws Exception {
         var c=snapshot(C,"1.0.0",Map.of(),Map.of(),
@@ -88,7 +88,7 @@ final class FrozenDependencyGraphTest {
         String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer(20);}";
         for(var list:List.of(List.of(a,b,c),List.of(c,b,a))) {
             var program=FrozenScalarImportCompiler.compile(guest,list);
-            assertEquals(42,program.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+            assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(program));
         }
         deny("E_UNBOUND",()->FrozenScalarImportCompiler.compile(guest,List.of(a,b)));
         var jump=snapshot(A,"1.0.0",Map.of(B,b.version()),Map.of(B,b.lockDigest()),
