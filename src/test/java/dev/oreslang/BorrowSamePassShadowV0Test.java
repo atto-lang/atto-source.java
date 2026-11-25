@@ -52,4 +52,37 @@ final class BorrowSamePassShadowV0Test {
         assertThrows(NullPointerException.class,
                 () -> OwnershipChecker.checkWithBorrowShadowV0(program, null));
     }
+
+    @Test
+    void laterFunctionFailureDoesNotPublishEarlierSuccessfulMove() {
+        String invalid = SIMPLE + """
+                fnc bad(Resource resource): int {
+                  let Resource moved = rt take resource;
+                  return resource.id;
+                }
+                """;
+        Ast.Program program = Parser.parse(invalid);
+        List<OwnershipChecker.BorrowShadowEventV0> events = new ArrayList<>();
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithBorrowShadowV0(program, events::add));
+        assertTrue(error.getMessage().toLowerCase().contains("moved"),
+                "must fail in semantic ownership pass: " + error.getMessage());
+        assertTrue(events.isEmpty(),
+                "no accepted trace must escape a rejected later function");
+    }
+
+    @Test
+    void successfulCompleteProgramPublishesSamePassMoves() {
+        String accepted = SIMPLE + """
+                fnc also_good(Resource resource): int {
+                  let Resource moved = rt take resource;
+                  return moved.id;
+                }
+                """;
+        Ast.Program program = Parser.parse(accepted);
+        List<OwnershipChecker.BorrowShadowEventV0> events = new ArrayList<>();
+        assertSame(program, OwnershipChecker.checkWithBorrowShadowV0(program, events::add));
+        assertTrue(events.stream().filter(event -> "MOVE".equals(event.kind())).count() >= 2,
+                "events must publish after checking all functions");
+    }
 }
