@@ -334,6 +334,74 @@ final class ActorPubSubConcurrencyTest {
         }
     }
 
+    @Test
+    void leaveClosesOldEdgeBeforeCallbackCanRejoinAndSubscribe() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "leave-callback", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            var first = new AtomicReference<ActorEventBus.Subscription<String>>();
+            var second = new AtomicReference<ActorEventBus.Subscription<String>>();
+            var pending = new AtomicReference<OresFuture<ActorEventBus.Event<String>>>();
+            var failure = new AtomicReference<Throwable>();
+            var ready = new CountDownLatch(1);
+            var rejoined = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    if ("first".equals(message)) {
+                        join.join();
+                        first.set(topic.subscribe());
+                        pending.set(first.get().readAsync());
+                        ready.countDown();
+                    } else {
+                        second.set(topic.subscribe());
+                        rejoined.countDown();
+                    }
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+            try {
+                actor.send("first");
+                assertTrue(ready.await(5, TimeUnit.SECONDS));
+                pending.get().whenCompleteRuntime((value, problem) -> {
+                    try {
+                        assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                                OresFuture.unwrap(problem));
+                        assertTrue(first.get().closed());
+                        executor.submit(() -> group.join(actor, join))
+                                .get(3, TimeUnit.SECONDS);
+                        actor.send("second");
+                        assertTrue(rejoined.await(3, TimeUnit.SECONDS));
+                        assertTrue(second.get() != first.get(),
+                                "rejoin must receive a fresh edge");
+                    } catch (Throwable callbackFailure) {
+                        failure.compareAndSet(null, callbackFailure);
+                    }
+                });
+                group.leave(actor);
+                assertNull(failure.get());
+                assertTrue(group.contains(actor));
+                assertTrue(first.get().closed());
+                assertFalse(second.get().closed());
+                assertEquals(0, second.get().pending());
+                var receipt = group.events().tryPublishReliableSystem(
+                        "leave-callback", "fresh").orElseThrow();
+                assertEquals(1, receipt.accepted());
+                assertEquals(1, second.get().pending());
+                assertEquals(0, first.get().pending());
+                group.leave(actor);
+                assertTrue(second.get().closed());
+                assertEquals(0L, runtime.sharedMemoryBytes());
+            } finally {
+                executor.shutdownNow();
+                actor.stop();
+            }
+        }
+    }
+
     private static ActorRuntime.ActorRef<String> publisher(
             ActorRuntime runtime,
             ActorRuntime.ActorGroupJoinCapability join,
