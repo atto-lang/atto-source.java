@@ -1,4 +1,4 @@
-name: Java contextual import resolver tests (not guest parity)
+name: Java contextual imports — trusted JVM and strict isolate gates
 on:
   pull_request:
     paths:
@@ -10,6 +10,7 @@ on:
       - 'src/test/java/dev/oreslang/StaticImportGraphTest.java'
       - 'src/main/java/dev/oreslang/imports/FrozenImportSnapshot.java'
       - 'src/test/java/dev/oreslang/FrozenImportSnapshotTest.java'
+      - 'src/test/java/dev/oreslang/imports/FrozenTrustedFixture.java'
       - 'src/main/java/dev/oreslang/imports/FrozenScalarImportCompiler.java'
       - 'src/main/java/dev/oreslang/imports/FrozenPackageArchive.java'
       - 'src/main/java/dev/oreslang/launcher/FrozenPackageCommand.java'
@@ -43,10 +44,16 @@ jobs:
           git diff --quiet
           test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
           test -z "$(git ls-files --others --exclude-standard)"
-      - name: Execute JUnit resolver tests
+      - name: Execute compiler and trusted JVM fixture tests
         run: |
           set -eu
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
-          mvn -B -Dtest=ContextualImportPathTest,StaticImportGraphTest,FrozenImportSnapshotTest,FrozenPackageCommandTest,FrozenDependencyGraphTest -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -Dtest=ContextualImportPathTest,StaticImportGraphTest,FrozenImportSnapshotTest,FrozenPackageCommandTest#actualLauncherChecksFrozenArchiveAndRejectsTampering+archiveTransportRejectsCentralDirectoryTruncationAndInconsistency,FrozenDependencyGraphTest -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Strict production isolate CLI gate (no fallback)
+        run: |
+          set -eu
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          mvn -B -Dtest=FrozenPackageCommandTest#strictLauncherRunsFrozenArchive -Dsurefire.failIfNoSpecifiedTests=true test
