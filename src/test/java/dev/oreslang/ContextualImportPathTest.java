@@ -78,4 +78,21 @@ final class ContextualImportPathTest {
             assertTrue(error.getMessage().contains("authenticated package-export graph"), error.getMessage());
         }
     }
+    @Test void aliasCyclesAreRejectedBeforeLinking() {
+        for (String source : new String[]{
+                "define alias a = b; define alias b = a;",
+                "define alias a as b; define alias b as a;",
+                "define alias a = b.child; define alias a as b;",
+                "import fnc f from './missing.atto'; define alias a = a;"}) {
+            var error = assertThrows(RuntimeException.class,
+                    () -> dev.oreslang.parser.Parser.parse(source + " pub fnc main(): int { return 42; }"));
+            assertTrue(error.getMessage().contains("E_IMPORT_CYCLE"), error.getMessage());
+        }
+        var duplicate = assertThrows(RuntimeException.class,
+                () -> dev.oreslang.parser.Parser.parse("define alias a = b; define alias a = c;"));
+        assertTrue(duplicate.getMessage().contains("E_DUPLICATE"), duplicate.getMessage());
+        var unsupported = assertThrows(RuntimeException.class,
+                () -> dev.oreslang.parser.Parser.parse("define alias a = core.num; pub fnc main(): int { return 42; }"));
+        assertTrue(unsupported.getMessage().contains("authenticated static binding integration"), unsupported.getMessage());
+    }
 }
