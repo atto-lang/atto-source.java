@@ -49,7 +49,7 @@ public final class ContextualImportPath {
         return String.join(".", result);
     }
 
-    private static boolean valid(String p) {
+    static boolean valid(String p) {
         return IDENT.matcher(p).matches() && !p.startsWith("__atto_") && !RESERVED.contains(p);
     }
     private static IllegalArgumentException invalid() {
