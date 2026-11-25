@@ -7,6 +7,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
+import dev.oreslang.nodes.OresStatefulActorManifestRootNode;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresContext;
@@ -96,9 +97,9 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         if (codeUnitId.isBlank()) {
             throw new IllegalArgumentException("prechecked code unit id cannot be blank");
         }
-        if (PRECHECKED_PROGRAM.get() != null) {
+        if (PRECHECKED_PROGRAM.get() != null || STATEFUL_ACTOR_LEASE.get() != null) {
             throw new IllegalStateException(
-                    "nested prechecked Oreslang program leases are not supported");
+                    "nested or mixed prechecked Oreslang program leases are not supported");
         }
         PrecheckedProgramLease lease = new PrecheckedProgramLease(
                 codeUnitId, sourceText, program);
@@ -126,6 +127,125 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                     "prechecked Oreslang program lease does not match parsed source identity/content");
         }
         return lease.program;
+    }
+
+    /*
+     * Host-verified stateful namespace actor parse boundary. A guest cannot
+     * opt in using source text, Source MIME, names, imports or manifest paths.
+     * The trusted host explicitly leases one exact physical actor constituent
+     * source + canonical manifest for ONE synchronous Context.eval parse.
+     *
+     * Unlike a general checked Ast.Program lease, this is not TypeChecker
+     * approval of arbitrary stateful declarations. The root re-runs the
+     * closed-world manifest admission and checked critical MIR before execution.
+     */
+    private static final ThreadLocal<StatefulActorLease> STATEFUL_ACTOR_LEASE =
+            new ThreadLocal<>();
+
+    private static final class StatefulActorLease {
+        private final String codeUnitId;
+        private final String text;
+        private final Path manifest;
+        private final String actorName;
+        private boolean consumed;
+        private boolean executed;
+
+        private StatefulActorLease(String codeUnitId, String text,
+                                   Path manifest, String actorName) {
+            this.codeUnitId = codeUnitId;
+            this.text = text;
+            this.manifest = manifest;
+            this.actorName = actorName;
+        }
+    }
+
+    public static final class StatefulActorScope implements AutoCloseable {
+        private final Thread owner = Thread.currentThread();
+        private final StatefulActorLease lease;
+        private boolean closed;
+
+        private StatefulActorScope(StatefulActorLease lease) {
+            this.lease = lease;
+        }
+
+        @Override public void close() {
+            if (closed) return;
+            if (Thread.currentThread() != owner) {
+                throw new IllegalStateException(
+                        "stateful actor parse lease must close on its owning thread");
+            }
+            if (STATEFUL_ACTOR_LEASE.get() != lease) {
+                throw new IllegalStateException(
+                        "stateful actor parse lease ownership changed before scope close");
+            }
+            STATEFUL_ACTOR_LEASE.remove();
+            closed = true;
+        }
+    }
+
+    /**
+     * Trusted embedding-only single-use admission. The exact source file must
+     * be the canonical actor constituent under the manifest's own src root.
+     * The guest cannot select another root, receiver or source at parse time.
+     */
+    public static StatefulActorScope openVerifiedStatefulActor(
+            Path manifest, Path actorUnit, String sourceText, String actorName) {
+        java.util.Objects.requireNonNull(manifest, "canonical manifest");
+        java.util.Objects.requireNonNull(actorUnit, "physical actor unit");
+        java.util.Objects.requireNonNull(sourceText, "exact actor source");
+        java.util.Objects.requireNonNull(actorName, "nominal declared actor");
+        Path normalizedManifest = manifest.toAbsolutePath().normalize();
+        Path normalizedActor = actorUnit.toAbsolutePath().normalize();
+        if (!normalizedManifest.getFileName().toString().equals(".atto.pkg.toml")
+                || !normalizedActor.equals(
+                        normalizedManifest.getParent().resolve("src/actor.atto"))
+                || actorName.isBlank()) {
+            throw new IllegalArgumentException(
+                    "stateful guest requires one canonical manifest and actor constituent");
+        }
+        if (PRECHECKED_PROGRAM.get() != null || STATEFUL_ACTOR_LEASE.get() != null) {
+            throw new IllegalStateException("nested or mixed compiler parse leases are forbidden");
+        }
+        StatefulActorLease lease = new StatefulActorLease(
+                normalizedActor.toString().replace('\\', '/'),
+                sourceText, normalizedManifest, actorName);
+        STATEFUL_ACTOR_LEASE.set(lease);
+        return new StatefulActorScope(lease);
+    }
+
+    private static StatefulActorLease consumeStatefulActorLease(
+            String codeUnitId, String sourceText) {
+        StatefulActorLease lease = STATEFUL_ACTOR_LEASE.get();
+        if (lease == null) return null;
+        if (lease.consumed) {
+            throw new IllegalStateException(
+                    "stateful actor parse lease was already consumed");
+        }
+        lease.consumed = true; // consume even on identity mismatch/replay
+        if (!lease.codeUnitId.equals(codeUnitId) || !lease.text.equals(sourceText)) {
+            throw new IllegalStateException(
+                    "stateful actor parse lease does not match exact physical source");
+        }
+        return lease;
+    }
+
+    /**
+     * Required at EXECUTION too: Truffle may cache a parsed CallTarget and
+     * reuse it without a fresh parse. The root must never run outside its
+     * live one-shot host lease, even on a cached Source.
+     */
+    public static void requireStatefulActorExecution(
+            Path manifest, String actorName, String codeUnitId, String sourceText) {
+        StatefulActorLease lease = STATEFUL_ACTOR_LEASE.get();
+        if (lease == null || !lease.consumed || lease.executed
+                || !lease.manifest.equals(manifest)
+                || !lease.actorName.equals(actorName)
+                || !lease.codeUnitId.equals(codeUnitId)
+                || !lease.text.equals(sourceText)) {
+            throw new SecurityException(
+                    "stateful guest requires a fresh, unconsumed exact source execution lease");
+        }
+        lease.executed = true;
     }
 
     @Override
@@ -176,6 +296,12 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
 
+        StatefulActorLease stateful = consumeStatefulActorLease(codeUnitId, text);
+        if (stateful != null) {
+            return new OresStatefulActorManifestRootNode(
+                    this, stateful.manifest, stateful.actorName,
+                    stateful.codeUnitId, stateful.text).getCallTarget();
+        }
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
