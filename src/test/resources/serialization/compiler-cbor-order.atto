@@ -1,0 +1,14 @@
+define class Order as
+  paid: bool;
+  total: i64;
+  pub paidFlag(): bool { return self.paid; }
+  pub amount(): i64 { return self.total; }
+end
+
+pub fnc consume(bool paid, i64 total): i64 {
+  val Order order = new Order(paid, total);
+  if (order.paidFlag()) {
+    return order.amount();
+  }
+  return 0;
+}

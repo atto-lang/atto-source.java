@@ -575,4 +575,41 @@ final class IpcSupervisorIngressIntegrationTest {
         }
     }
 
+    @Test void authenticatedCompilerCborRecordReconstructsNominalGuestValue()throws Exception{
+        String source=java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/serialization/compiler-cbor-order.atto"));
+        var plan=compileOrder(source);
+        var reference=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"order.v1",
+                HexFormat.of().parseHex("610eef10e566bf78d2741deea68e26171a2c03f901ccb2a7c2f032090afa969f"));
+        plan.requireBinding(reference);
+        byte[] key=new byte[32],connection=new byte[16];Arrays.fill(key,(byte)7);Arrays.fill(connection,(byte)8);
+        var delivered=new java.util.concurrent.atomic.AtomicReference<Object>();
+        try(ActorRuntime runtime=new ActorRuntime();
+            org.graalvm.polyglot.Context context=org.graalvm.polyglot.Context.newBuilder(dev.oreslang.OresLanguage.ID)
+                    .allowAllAccess(false).build()){
+            var child=runtime.<Object>spawnPrivateTrusted(ignored->(message,turn)->delivered.set(message));
+            var budget=runtime.registerIpcIngressTenant("tenant",1024*1024,2);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
+            var parsed=context.parse(org.graalvm.polyglot.Source.newBuilder(dev.oreslang.OresLanguage.ID,source,
+                    "compiler-cbor-order.atto").mimeType(dev.oreslang.OresLanguage.MIME_TYPE).build());
+            parsed.execute(dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
+            parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INIT_ONLY_COMMAND);
+            byte[] good=IpcSchemaBoundDataV1.wrap(reference,new byte[]{(byte)0x82,(byte)0xf5,0x18,42});
+            var epoch=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "guest-cbor",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(good)),
+                    1,child.generation(),3,4,1,1);
+            try(var ingress=new IpcPinnedActorIngressV1<>(child,epoch,authority(5,connection,key),reference,budget,8192,plan)){
+                ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,good,5,connection,key));
+                child.drain().get(5,TimeUnit.SECONDS);
+                assertInstanceOf(java.util.List.class,delivered.get());
+                var values=(java.util.List<?>)delivered.get();
+                assertEquals(java.util.List.of(true,42L),values);
+                var answer=parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INVOKE_PUBLIC_COMMAND,"consume",
+                        values.get(0),values.get(1));
+                assertEquals(42L,answer.asLong());
+                assertEquals(0L,parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INVOKE_PUBLIC_COMMAND,"consume",false,42L).asLong());
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            }
+        }
+    }
+
 }
