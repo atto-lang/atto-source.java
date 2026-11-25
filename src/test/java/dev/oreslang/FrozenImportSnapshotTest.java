@@ -110,7 +110,7 @@ final class FrozenImportSnapshotTest {
             var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(source,List.of(snapshot));
             assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
         }
-        for(String args:List.of("40","40, -2, 1","40, true","40, 2.0","40, 1+1",
+        for(String args:List.of("40","40, -2, 1","40, true","40, 2.0","40, 1/1",
                 "9223372036854775808, 0","-9223372036854775809, 0","40, -2,",String.join(",",Collections.nCopies(17,"1")))) {
             String source=header+"pub fnc main() -> int { return web.answer("+args+"); }";
             assertThrows(RuntimeException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(source,List.of(snapshot)),args);
@@ -119,5 +119,28 @@ final class FrozenImportSnapshotTest {
         var e=assertThrows(IllegalArgumentException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(
             header+"pub fnc main() -> int { return web.answer(40, -2); }",List.of(boolProvider)));
         assertTrue(e.getMessage().contains("E_IMPORT_KIND"),e.getMessage());
+    }
+    @Test void frozenCallsSupportTypedExpressionsAndScalarLocals() throws Exception {
+        var snapshot=verify(MANIFEST,"use namespace network; pub fnc answer(int x, int y): int { return x - y; }");
+        String header="import namespace network from pkg '"+NAME+"'; define alias web = network; pub fnc main() -> int { ";
+        for(String body:List.of(
+            "return web.answer(2 + 19 * 2, -2);",
+            "return web.answer((2 + 18) * 2, -2);",
+            "val int x = 20; val int y = x * 2; return web.answer(y, -2);",
+            "val int selected_call = 40; return web.answer(selected_call, -2);")) {
+            var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+body+" }",List.of(snapshot));
+            assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        }
+        for(String body:List.of(
+            "val int x = x; return web.answer(x, -2);",
+            "val int x = y; val int y = 40; return web.answer(x, -2);",
+            "val int x = 20; val int x = 40; return web.answer(x, -2);",
+            "val int web = 40; return web.answer(web, -2);",
+            "val int x = 40; x = 41; return web.answer(x, -2);",
+            "return web.answer(web.answer(40, -2), 0);",
+            "return web.answer("+"(".repeat(17)+"40"+")".repeat(17)+", -2);",
+            "return web.answer("+String.join("+",Collections.nCopies(65,"1"))+", -2);")) {
+            assertThrows(RuntimeException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+body+" }",List.of(snapshot)),body);
+        }
     }
 }
