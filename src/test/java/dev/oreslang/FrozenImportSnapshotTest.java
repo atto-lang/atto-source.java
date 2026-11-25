@@ -137,10 +137,35 @@ final class FrozenImportSnapshotTest {
             "val int x = 20; val int x = 40; return web.answer(x, -2);",
             "val int web = 40; return web.answer(web, -2);",
             "val int x = 40; x = 41; return web.answer(x, -2);",
-            "return web.answer(web.answer(40, -2), 0);",
+            "return web.answer(web.missing(40, -2), 0);",
             "return web.answer("+"(".repeat(17)+"40"+")".repeat(17)+", -2);",
             "return web.answer("+String.join("+",Collections.nCopies(65,"1"))+", -2);")) {
             assertThrows(RuntimeException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+body+" }",List.of(snapshot)),body);
+        }
+    }
+    @Test void nestedCallsKeepProviderIdentitiesSeparate() throws Exception {
+        String secondName="@other/project/package";
+        String secondManifest=MANIFEST.replace(NAME,secondName);
+        String firstSource="use namespace network; fnc helper(int x): int { return x + 2; } pub fnc answer(int x): int { return helper(x); }";
+        String secondSource="use namespace network; fnc helper(int x): int { return x * 2; } pub fnc answer(int x): int { return helper(x); }";
+        var first=verify(MANIFEST,firstSource);
+        byte[] l=lock(secondManifest,PATH,secondSource);
+        var second=FrozenImportSnapshot.verify(secondName,VERSION,sha(l),bytes(secondManifest),l,Map.of(PATH,bytes(secondSource)));
+        String header="import pkg '"+NAME+"' as left; import pkg '"+secondName+"' as right; ";
+        for(String body:List.of(
+            "return left.network.answer(right.network.answer(20));",
+            "val int x = right.network.answer(20); return left.network.answer(x);",
+            "return left.network.answer(19) + right.network.answer(10) + 1;",
+            "return left.network.answer(left.network.answer(38));")) {
+            var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+"pub fnc main() -> int { "+body+" }",List.of(first,second));
+            assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        }
+        for(String body:List.of(
+            "return left.network.answer(right.network.helper(20));",
+            "return left.network.answer(right.network.answer());",
+            "val int right = 20; return left.network.answer(right.network.answer(20));",
+            "return "+String.join("+",Collections.nCopies(33,"left.network.answer(0)"))+";")) {
+            assertThrows(RuntimeException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(header+"pub fnc main() -> int { "+body+" }",List.of(first,second)),body);
         }
     }
 }
