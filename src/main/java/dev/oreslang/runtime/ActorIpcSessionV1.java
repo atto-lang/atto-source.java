@@ -194,6 +194,12 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     private byte[] bootstrapChallenge;
     private boolean bootstrapClaimed;
     private State state = State.AWAITING_READY;
+    // Host-only opt-in queue, protected by the session monitor. Fixed capacity
+    // allocated at trusted setup; no allocation is required to publish.
+    private DataDelivery[] dataQueue;
+    private int dataHead, dataCount;
+    private long queuedBytes, maxQueuedBytes;
+    private ActorDataDecodeQuotaV1 transientQuota, retainedQuota;
     private long nextWorkerDataSequence = 1L;
     private long nextWorkerControlSequence = 1L;
     private long nextSupervisorDataSequence = 1L;
@@ -293,6 +299,10 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
      * violation poisons the whole session and destroys host-side traffic keys.
      */
     public synchronized Frame acceptWorkerFrame(byte[] wire) {
+        return acceptWorkerFrameInternal(wire, false);
+    }
+
+    private Frame acceptWorkerFrameInternal(byte[] wire, boolean requireData) {
         if (!bootstrapClaimed) {
             throw new IllegalStateException(
                     "IPC worker frame arrived before bootstrap material was claimed");
@@ -313,6 +323,8 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         try {
             DecodedFrame decoded = decodeAndAuthenticate(admittedWire);
             validateCommonIdentity(decoded);
+            if (requireData && (decoded.lane() != Lane.DATA || decoded.kind() != FrameKind.OUTPUT))
+                throw new ProtocolException(Reason.STATE, "non-DATA frame on DATA transport");
             validateWorkerSequence(decoded);
             validateWorkerState(decoded);
             advanceWorkerSequence(decoded.lane());
@@ -362,14 +374,115 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         if (lease == null) return null;
         try (lease) {
             synchronized (this) {
-                Frame frame = acceptWorkerFrame(wire);
-                if (frame.lane() != Lane.DATA || frame.kind() != FrameKind.OUTPUT) {
-                    poison();
-                    throw new ProtocolException(Reason.STATE, "non-DATA frame on DATA transport");
-                }
-                return frame;
+                return acceptWorkerFrameInternal(wire, true);
             }
         }
+    }
+
+    /**
+     * Bind once from a trusted tenant registry, before reading DATA. Separate
+     * transient and retained accounts must be shared across tenant sessions.
+     * This queue is a transport handoff, NOT an ActorRuntime mailbox.
+     */
+    synchronized void bindDataQueue(int slots, long bytes,
+            ActorDataDecodeQuotaV1 transientBudget, ActorDataDecodeQuotaV1 retainedBudget) {
+        requireNotTerminal("bind IPC DATA queue");
+        if (dataQueue != null || slots <= 0 || slots > 4096 || bytes <= 0 ||
+                bytes > 16L * MAX_PAYLOAD_BYTES || transientBudget == null ||
+                retainedBudget == null || transientBudget == retainedBudget)
+            throw new IllegalArgumentException("invalid DATA queue binding");
+        dataQueue = new DataDelivery[slots];
+        maxQueuedBytes = bytes;
+        transientQuota = transientBudget;
+        retainedQuota = retainedBudget;
+    }
+
+    // Retained credit follows a delivery after it leaves the transport queue.
+    // Copying payload needs independent receiver-heap accounting.
+    static final class DataDelivery implements AutoCloseable {
+        private final ActorDataDecodeQuotaV1.Lease credit;
+        private final int charge;
+        private Frame frame;
+        private DataDelivery(ActorDataDecodeQuotaV1.Lease credit, int charge) { this.credit = credit; this.charge = charge; }
+        synchronized long messageSequence() {
+            if (frame == null) throw new IllegalStateException("closed DATA delivery");
+            return frame.messageSequence();
+        }
+        synchronized byte[] copyPayload() {
+            if (frame == null) throw new IllegalStateException("closed DATA delivery");
+            return frame.payload();
+        }
+        @Override public synchronized void close() {
+            if (frame != null) Arrays.fill(frame.payload, (byte)0);
+            frame = null;
+            credit.close();
+        }
+    }
+
+    /**
+     * Trusted physical DATA lane. False is pre-authentication backpressure;
+     * caller retries the identical owned frame, in order. No guest authority.
+     * Session monitor fences close/poison and serializes queue publication.
+     */
+    synchronized boolean tryQueueWorkerData(byte[] wire) {
+        requireReady("queue IPC DATA");
+        if (dataQueue == null) throw new IllegalStateException("DATA queue not bound");
+        Objects.requireNonNull(wire, "wire");
+        if (wire.length < MIN_FRAME_BYTES ||
+                wire.length > HEADER_BYTES + MAX_PAYLOAD_BYTES + HMAC_BYTES) {
+            poison();
+            throw new ProtocolException(Reason.MALFORMED, "IPC DATA frame size outside bounds");
+        }
+        // Charge the whole wire length, a conservative retained frame bound.
+        int charge = wire.length;
+        if (dataCount == dataQueue.length || charge > maxQueuedBytes - queuedBytes) return false;
+        var credit = retainedQuota.tryReserve(charge);
+        if (credit == null) return false;
+        DataDelivery delivery = null;
+        boolean published = false;
+        try {
+            // Allocate the delivery before sequence consumption.
+            delivery = new DataDelivery(credit, charge);
+            Frame frame = tryAcceptWorkerDataFrame(wire, transientQuota);
+            if (frame == null) return false;
+            delivery.frame = frame;
+            int tail = (dataHead + dataCount) % dataQueue.length;
+            dataQueue[tail] = delivery;
+            dataCount++;
+            queuedBytes += charge;
+            published = true;
+            return true;
+        } finally {
+            if (!published) {
+                if (delivery != null) delivery.close(); else credit.close();
+            }
+        }
+    }
+
+    // Trusted handoff; downstream must revalidate active actor route/generation
+    // at its own mailbox lock. A dequeued delivery remains tenant-charged.
+    synchronized DataDelivery pollWorkerData() {
+        requireReady("poll IPC DATA");
+        if (dataQueue == null || dataCount == 0) return null;
+        DataDelivery delivery = dataQueue[dataHead];
+        dataQueue[dataHead] = null;
+        dataHead = (dataHead + 1) % dataQueue.length;
+        dataCount--;
+        queuedBytes -= delivery.charge;
+        return delivery;
+    }
+
+    private void clearDataQueue() {
+        if (dataQueue == null) return;
+        for (int i = 0; i < dataQueue.length; i++) {
+            if (dataQueue[i] != null) {
+                dataQueue[i].close();
+                dataQueue[i] = null;
+            }
+        }
+        dataHead = 0;
+        dataCount = 0;
+        queuedBytes = 0;
     }
 
     /**
@@ -695,6 +808,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     private void poison() {
         if (state == State.CLOSED || state == State.POISONED) return;
         state = State.POISONED;
+        clearDataQueue();
         destroySecrets();
     }
 
@@ -702,6 +816,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     public synchronized void close() {
         if (state == State.CLOSED) return;
         state = State.CLOSED;
+        clearDataQueue();
         destroySecrets();
     }
 
