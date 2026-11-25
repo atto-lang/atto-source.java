@@ -198,6 +198,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     // allocated at trusted setup; no allocation is required to publish.
     private DataDelivery[] dataQueue;
     private ActorIpcCodecProfileV1 codecProfile;
+    private MessagePackWireV2.PinnedDecoder messagePackDecoder;
     private int dataHead, dataCount;
     private long queuedBytes, maxQueuedBytes;
     private ActorDataDecodeQuotaV1 transientQuota, retainedQuota;
@@ -415,6 +416,14 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         codecProfile = profile;
     }
 
+    synchronized void bindMessagePackDecoder(MessagePackWireV2.Shape shape,
+            MessagePackWireV2.DecodeLimits limits) {
+        requireNotTerminal("bind MessagePack decoder");
+        if (codecProfile == null || messagePackDecoder != null || dataQueue != null || bootstrapClaimed)
+            throw new IllegalStateException("decoder must bind after profile and before bootstrap/queue");
+        messagePackDecoder = new MessagePackWireV2.PinnedDecoder(codecProfile, shape, limits);
+    }
+
     synchronized ActorIpcCodecProfileV1 codecProfile() {
         return codecProfile;
     }
@@ -438,9 +447,11 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         private final ActorDataDecodeQuotaV1.Lease credit;
         private final int charge;
         private final ActorIpcCodecProfileV1 codecProfile;
+        private final ActorIpcSessionV1 origin;
         private Frame frame;
-        private DataDelivery(ActorDataDecodeQuotaV1.Lease credit, int charge, ActorIpcCodecProfileV1 codecProfile) {
-            this.credit = credit; this.charge = charge; this.codecProfile = codecProfile;
+        private DataDelivery(ActorDataDecodeQuotaV1.Lease credit, int charge, ActorIpcCodecProfileV1 codecProfile,
+                ActorIpcSessionV1 origin) {
+            this.credit = credit; this.charge = charge; this.codecProfile = codecProfile; this.origin = origin;
         }
         ActorIpcCodecProfileV1 codecProfile() { return codecProfile; }
         synchronized long messageSequence() {
@@ -449,6 +460,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         }
         synchronized byte[] copyPayload() {
             if (frame == null) throw new IllegalStateException("closed DATA delivery");
+            if (codecProfile != null) throw new SecurityException("profile-bound DATA requires typed decoding");
             return frame.payload();
         }
         @Override public synchronized void close() {
@@ -481,7 +493,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         boolean published = false;
         try {
             // Allocate the delivery before sequence consumption.
-            delivery = new DataDelivery(credit, charge, codecProfile);
+            delivery = new DataDelivery(credit, charge, codecProfile, this);
             Frame frame = tryAcceptWorkerDataFrameInternal(wire, transientQuota);
             if (frame == null) return false;
             delivery.frame = frame;
@@ -509,6 +521,69 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         dataCount--;
         queuedBytes -= delivery.charge;
         return delivery;
+    }
+
+    /**
+     * Host-only decoded handoff. Credit follows the value until closed.
+     * Caller may not retain/copy value after closing without separately
+     * transferring receiver heap credit. Not an ActorRuntime mailbox permit.
+     */
+    static final class DecodedData implements AutoCloseable {
+        private final ActorDataDecodeQuotaV1.Lease credit;
+        private final long sequence;
+        private Object value;
+        private boolean live = true;
+        private DecodedData(ActorDataDecodeQuotaV1.Lease credit, long sequence) {
+            this.credit = credit; this.sequence = sequence;
+        }
+        long messageSequence() { return sequence; }
+        synchronized Object value() {
+            if (!live) throw new IllegalStateException("closed decoded DATA");
+            return value;
+        }
+        @Override public synchronized void close() {
+            live = false; value = null; credit.close();
+        }
+    }
+
+    /**
+     * Decode one polled authenticated delivery using the registered shape.
+     * Null means budget backpressure and leaves the same delivery live.
+     * Malformed bytes are terminal and never yield a value. No wire-selected
+     * decoder; no raw access to a profile-bound delivery.
+     */
+    synchronized DecodedData tryDecodeWorkerData(DataDelivery delivery) {
+        requireReady("decode IPC DATA");
+        if (messagePackDecoder == null) throw new IllegalStateException("no registered MessagePack decoder");
+        Objects.requireNonNull(delivery, "delivery");
+        synchronized (delivery) {
+            if (delivery.origin != this || delivery.frame == null || delivery.codecProfile != codecProfile)
+                throw new SecurityException("foreign or closed DATA delivery");
+            if (delivery.frame.payload.length > messagePackDecoder.wireLimit()) {
+                delivery.close(); poison();
+                throw new ProtocolException(Reason.MALFORMED, "payload exceeds registered wire limit");
+            }
+            // Conservative logical reservations, not exact physical heap.
+            long expanded = messagePackDecoder.expandedLimit() + 4096L;
+            var retained = retainedQuota.tryReserve(expanded);
+            if (retained == null) return null;
+            var transientLease = transientQuota.tryReserve(expanded);
+            if (transientLease == null) { retained.close(); return null; }
+            DecodedData result = null;
+            boolean ok = false;
+            try (transientLease) {
+                result = new DecodedData(retained, delivery.frame.messageSequence());
+                result.value = messagePackDecoder.decode(delivery.frame.payload);
+                ok = true;
+                return result;
+            } catch (IllegalArgumentException malformed) {
+                poison();
+                throw new ProtocolException(Reason.MALFORMED, "invalid pinned MessagePack DATA");
+            } finally {
+                delivery.close();
+                if (!ok) { if (result != null) result.close(); else retained.close(); }
+            }
+        }
     }
 
     private void clearDataQueue() {
