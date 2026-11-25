@@ -5,6 +5,7 @@ on:
       - 'src/main/java/dev/oreslang/imports/ContextualImportPath.java'
       - 'src/test/java/dev/oreslang/ContextualImportPathTest.java'
       - '.github/workflows/contextual-import-path.yml'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'pom.xml'
 permissions:
   contents: read
