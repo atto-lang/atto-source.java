@@ -20,6 +20,7 @@ on:
       - 'src/main/java/dev/oreslang/imports/FrozenProviderLinker.java'
       - 'src/main/java/dev/oreslang/imports/FrozenZipDirectory.java'
       - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'pom.xml'
 permissions:
   contents: read
