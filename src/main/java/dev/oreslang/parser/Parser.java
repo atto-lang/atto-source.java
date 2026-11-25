@@ -4172,7 +4172,7 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (canonicalAttoSource && match(CARET)) {
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
+            Ast.Expr value = match(VOID) || check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
@@ -4184,7 +4184,7 @@ public final class Parser {
                 advance();
                 return parseMaybe(true);
             }
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
+            Ast.Expr value = (canonicalAttoSource && match(VOID)) || check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
@@ -4339,7 +4339,15 @@ public final class Parser {
                     "'do' requires match, switch, readch, writech, or a braced select");
         }
         // Legacy statement syntax remains accepted during migration.
-        if (match(MATCH)) return parseMatch(false);
+        if (match(MATCH)) {
+            // Canonical bare match is a discarded value, not a callable exit.
+            if (canonicalAttoSource) {
+                Ast.Expr value = parseValueMatch();
+                match(SEMICOLON);
+                return new Ast.ExprStmt(value);
+            }
+            return parseMatch(false);
+        }
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
@@ -5723,6 +5731,7 @@ public final class Parser {
                 throw error(peek(), "match arms in 'over ... end' use '->'");
             }
             List<Ast.Stmt> body = parseBlock();
+            if (canonicalAttoSource && procedural) body = normalizeTerminalVoidMatchArm(body);
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
         if (braced) consume(RBRACE, "expected '}' to close braced match");
@@ -5831,13 +5840,17 @@ public final class Parser {
                 // Historical outer-brace value matches remain one-return arms.
                 match(ARROW);
                 List<Ast.Stmt> body = parseBlock();
-                if (body.size() != 1
-                        || !(body.getFirst() instanceof Ast.ReturnStmt returned)
-                        || returned.value() == null) {
-                    throw error(previous(),
-                            "legacy braced value match arms require exactly one 'return expression;'");
+                if (canonicalAttoSource) {
+                    valueArms.add(canonicalBracedValueMatchArm(pattern, guard, body));
+                } else {
+                    if (body.size() != 1
+                            || !(body.getFirst() instanceof Ast.ReturnStmt returned)
+                            || returned.value() == null) {
+                        throw error(previous(),
+                                "legacy braced value match arms require exactly one 'return expression;'");
+                    }
+                    valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
                 }
-                valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
                 continue;
             }
 
@@ -5865,13 +5878,17 @@ public final class Parser {
             if (check(LBRACE)) {
                 // Compatibility with prior over/end braced arms.
                 List<Ast.Stmt> body = parseBlock();
-                if (body.size() != 1
-                        || !(body.getFirst() instanceof Ast.ReturnStmt returned)
-                        || returned.value() == null) {
-                    throw error(previous(),
-                            "legacy braced value match arms require exactly one 'return expression;'");
+                if (canonicalAttoSource) {
+                    valueArms.add(canonicalBracedValueMatchArm(pattern, guard, body));
+                } else {
+                    if (body.size() != 1
+                            || !(body.getFirst() instanceof Ast.ReturnStmt returned)
+                            || returned.value() == null) {
+                        throw error(previous(),
+                                "legacy braced value match arms require exactly one 'return expression;'");
+                    }
+                    valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
                 }
-                valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
                 continue;
             }
 
@@ -5898,6 +5915,45 @@ public final class Parser {
         }
         return new Ast.MatchExpr(subject, valueArms, declaredResult,
                 canonicalFirst || legacyFirst);
+    }
+
+    /**
+     * Lower the verified subset directly to the existing lexical match block.
+     * A terminal void exit is identical to falling through after cleanup.
+     * Earlier/nested exits need a dedicated ownership CFG join and are rejected,
+     * never silently interpreted as enclosing callable returns.
+     */
+    private List<Ast.Stmt> normalizeTerminalVoidMatchArm(List<Ast.Stmt> body) {
+        List<Ast.Stmt> prefix = body;
+        if (!body.isEmpty() && body.getLast() instanceof Ast.ReturnStmt returned) {
+            if (returned.value() != null) {
+                throw error(previous(), "do match arm must return void");
+            }
+            prefix = body.subList(0, body.size() - 1);
+        }
+        if (valueArmPrefixContainsReturn(prefix)) {
+            throw error(previous(), "do match early or nested arm return requires ownership CFG lowering");
+        }
+        return List.copyOf(prefix);
+    }
+
+    private Ast.MatchValueArm canonicalBracedValueMatchArm(
+            Ast.Pattern pattern, Ast.Expr guard, List<Ast.Stmt> body) {
+        if (body.isEmpty()) throw error(previous(), "value match arm requires a result");
+        Ast.Stmt terminal = body.getLast();
+        Ast.Expr result;
+        if (terminal instanceof Ast.ReturnStmt returned && returned.value() != null) {
+            result = returned.value();
+        } else if (terminal instanceof Ast.ExprStmt expression) {
+            result = expression.expression();
+        } else {
+            throw error(previous(), "value match arm requires a terminal result expression");
+        }
+        List<Ast.Stmt> prefix = body.subList(0, body.size() - 1);
+        if (valueArmPrefixContainsReturn(prefix)) {
+            throw error(previous(), "value match block arm v1 permits only a terminal top-level result");
+        }
+        return new Ast.MatchValueArm(pattern, guard, List.copyOf(prefix), result);
     }
 
     /**
