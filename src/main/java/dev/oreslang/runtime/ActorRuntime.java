@@ -439,6 +439,10 @@ public final class ActorRuntime implements AutoCloseable {
     // TenantVM registry: a tenant spanning runtimes needs an upstream budget.
     // Guarded by runtimeLifecycleLock; sessions never call back into runtime.
     private final Map<UUID, ActorIpcSessionV1> boundIpcRoutes = new java.util.HashMap<>();
+    // Retain a bounded high-water mark for every issued route until runtime
+    // shutdown. Never evict a tombstone to make a stale epoch valid again.
+    private record IpcRouteWatermark(long incarnation, long epoch) { }
+    private final Map<UUID, IpcRouteWatermark> ipcRouteWatermarks = new java.util.HashMap<>();
     private final ActorDataDecodeQuotaV1 ipcTransientQuota =
             new ActorDataDecodeQuotaV1(32L * 1024 * 1024, 64);
     private final ActorDataDecodeQuotaV1 ipcRetainedQuota =
@@ -651,12 +655,26 @@ public final class ActorRuntime implements AutoCloseable {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             if (boundIpcRoutes.containsKey(logicalActorId) || boundIpcRoutes.size() >= 64)
                 throw new IllegalStateException("IPC route already registered or route quota full");
+            IpcRouteWatermark prior = ipcRouteWatermarks.get(logicalActorId);
+            if (prior == null) {
+                if (ipcRouteWatermarks.size() >= 4096)
+                    throw new IllegalStateException("IPC route identity budget exhausted");
+                if (incarnation != 1 || routeEpoch != 1)
+                    throw new SecurityException("new IPC route must start at incarnation and epoch one");
+            } else if (prior.epoch() == Long.MAX_VALUE || routeEpoch != prior.epoch() + 1 ||
+                    (incarnation != prior.incarnation() &&
+                     (prior.incarnation() == Long.MAX_VALUE || incarnation != prior.incarnation() + 1))) {
+                throw new SecurityException("stale or nonconsecutive IPC route generation");
+            }
             // Existing artifact ownership and host capability checks are mandatory.
             ActorIpcSessionV1 session = openIpcSession(
                     artifact, logicalActorId, incarnation, routeEpoch);
             boolean registered = false;
             try {
                 session.bindDataQueue(slots, bytes, ipcTransientQuota, ipcRetainedQuota);
+                // Burn the epoch before exposing the session; even a failed
+                // map insertion cannot make an issued generation reusable.
+                ipcRouteWatermarks.put(logicalActorId, new IpcRouteWatermark(incarnation, routeEpoch));
                 boundIpcRoutes.put(logicalActorId, session);
                 registered = true;
                 return session;
@@ -6565,6 +6583,7 @@ public final class ActorRuntime implements AutoCloseable {
             snapshot = List.copyOf(actors.values());
             ipcSnapshot = List.copyOf(boundIpcRoutes.values());
             boundIpcRoutes.clear();
+            ipcRouteWatermarks.clear();
         }
         for (ActorIpcSessionV1 session : ipcSnapshot) session.close();
         for (ActorCell<?> cell : snapshot) cell.stop();
