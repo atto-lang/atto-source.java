@@ -75,12 +75,23 @@ final class FrozenImportSnapshotTest {
         var subpath=dev.oreslang.imports.FrozenScalarImportCompiler.compile(
             "import namespace net as web from pkg '"+NAME+"/network/http'; "+body,List.of(snapshot));
         assertEquals(42,subpath.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        for(String prefix:List.of("package","project.package","org.project.package")) {
+            var root=dev.oreslang.imports.FrozenScalarImportCompiler.compile(
+                "import pkg '"+NAME+"'; define alias web = "+prefix+".network; "+body,List.of(snapshot));
+            assertEquals(42,root.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        }
+        var renamed=dev.oreslang.imports.FrozenScalarImportCompiler.compile(
+            "import pkg '"+NAME+"' as root; define alias root.network as web; "+body,List.of(snapshot));
+        assertEquals(42,renamed.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
     }
 
     @Test void frozenGuestRejectsPrivateMissingCyclicAndUnsupportedInputs() throws Exception {
         var snapshot=verify(MANIFEST,SOURCE);
         String header="import namespace network from pkg '"+NAME+"'; ";
         for(String bad:List.of(
+            "import pkg '@unknown/project/package'; define alias a = a; pub fnc main() -> int { return a.answer(); }",
+            "import pkg '"+NAME+"' as root; pub fnc main() -> int { return package.network.answer(); }",
+            "import pkg '"+NAME+"'; pub fnc main() -> int { return package.answer(); }",
             header+"pub fnc main() -> int { return network.secret(); }",
             header+"pub fnc main() -> int { return network.missing(); }",
             header+"define alias a = b; define alias b = a; pub fnc main() -> int { return network.answer(); }",
