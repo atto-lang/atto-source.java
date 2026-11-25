@@ -1,0 +1,12 @@
+// A nested actor field projection cannot be returned as a borrow.
+define class Box as
+  pub let int value;
+end
+
+define actor Counter as
+  state { let Box box; }
+  leak(): borrow int {
+    return rt borrow self.box.value;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end

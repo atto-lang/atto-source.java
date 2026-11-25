@@ -1,0 +1,8 @@
+// A borrow of actor self cannot escape the mailbox execution.
+define actor Counter as
+  state { let int count; }
+  leak(): borrow Counter {
+    return rt borrow self;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
