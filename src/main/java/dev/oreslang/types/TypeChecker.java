@@ -3060,6 +3060,10 @@ public final class TypeChecker {
 
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
         if (!insideActorLexicalBoundary() || lexicalClassOrigin == target) return;
+        // The linker admits a class identity only after checking a unique
+        // explicit cross-unit import. Never infer authority from its spelling.
+        if (target.actorKind() == Ast.ActorKind.NONE
+                && linkedClassNames.containsKey(target)) return;
         throw new IllegalArgumentException(
                 "actor '" + lexicalClassOrigin.name()
                         + "' cannot implicitly access sibling "
@@ -3074,6 +3078,8 @@ public final class TypeChecker {
         Ast.ClassDecl localClass = findClass(name);
         if (localClass != null) {
             if (localClass == lexicalClassOrigin || isExplicitActorParent(localClass)) return;
+            if (localClass.actorKind() == Ast.ActorKind.NONE
+                    && linkedClassNames.containsKey(localClass)) return;
             throw new IllegalArgumentException(
                     "actor '" + lexicalClassOrigin.name()
                             + "' cannot use same-file type '" + name
