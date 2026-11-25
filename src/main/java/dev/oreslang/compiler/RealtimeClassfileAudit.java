@@ -219,6 +219,19 @@ public final class RealtimeClassfileAudit {
                      0x74,                                 // ineg
                      0x7e,0x80,0x82,                       // iand,ior,ixor
                      0xac -> width = 1;                    // ireturn
+                case 0x59 -> {                            // dup for primitive assignment expression
+                    // The admitted static methods have only primitive descriptors,
+                    // integer constants and integer operations. Permit duplication
+                    // only in javac's dup; istore sequence for a scratch assignment.
+                    // This is an opcode/effect audit, not a substitute for the JVM
+                    // verifier's operand-stack and definite-initialization checks.
+                    if (pc + 1 >= code.length) deny("truncated primitive dup in " + methodId);
+                    int next = code[pc + 1] & 0xff;
+                    if (next != 0x36 && (next < 0x3b || next > 0x3e)) {
+                        deny("primitive dup must immediately precede istore in " + methodId);
+                    }
+                    width = 1;
+                }
                 case 0x10,0x15,0x36 -> width = 2;         // bipush,iload,istore
                 case 0x11 -> width = 3;                    // sipush
                 case 0x99,0x9a,0x9b,0x9c,0x9d,0x9e,       // if*
