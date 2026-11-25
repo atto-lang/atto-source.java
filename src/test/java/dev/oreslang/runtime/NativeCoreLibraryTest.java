@@ -11,7 +11,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -64,46 +63,44 @@ final class NativeCoreLibraryTest {
 
 
     @Test
-    void everyPackagedStdModuleIsPureOreslangAndHasOnlyStdDependencies() throws Exception {
+    void everyRegisteredStdModuleIsPackagedAndHasCompilerOwnedDependencies() throws Exception {
         Path root = Path.of("stdlib");
         assertTrue(Files.isDirectory(root), "packaged stdlib source root must exist");
 
-        try (var stream = Files.walk(root)) {
-            List<Path> modules = stream
-                    .filter(Files::isRegularFile)
-                    .filter(path -> !path.startsWith(root.resolve("alloc")))
-                    .filter(path -> path.toString().endsWith(".ores") || path.toString().endsWith(".atto"))
-                    .sorted()
-                    .toList();
-            assertFalse(modules.isEmpty(), "native-first stdlib must contain Oreslang modules");
-            Set<String> actual = modules.stream()
-                    .map(path -> root.relativize(path).toString().replace((char) 92, '/'))
-                    .collect(Collectors.toSet());
-            assertEquals(actual, CoreLibrarySources.packagedSourcePaths(),
-                    "every packaged .atto/.ores file must be explicitly registered and vice versa");
+        Set<String> registered = CoreLibrarySources.packagedSourcePaths();
+        assertFalse(registered.isEmpty());
+        for (String relative : registered.stream().sorted().toList()) {
+            Path module = root.resolve(relative);
+            String importPath = "ores.std/" + relative;
+            String source = CoreLibrarySources.source(importPath);
+            assertEquals(Files.readString(module), source, relative);
+            MixedSourceUnit unit = MixedSourceUnit.parse(
+                    CoreLibrarySources.unitId(importPath),
+                    module.getFileName().toString(),
+                    source);
 
-            for (Path module : modules) {
-                String source = Files.readString(module);
-                String relative = root.relativize(module).toString().replace('\\', '/');
-                String importPath = "std/" + relative.substring(0, relative.lastIndexOf('.'));
-                MixedSourceUnit unit = MixedSourceUnit.parse(
-                        CoreLibrarySources.unitId(importPath),
-                        module.getFileName().toString(),
-                        source);
+            assertFalse(unit.hasJavaSource(), () -> relative + " contains Java source islands");
+            assertFalse(source.contains("java:"), () -> relative + " contains a java: host import");
 
-                assertFalse(unit.hasJavaSource(),
-                        () -> relative + " contains Java source islands");
-                assertFalse(source.contains("java:"),
-                        () -> relative + " contains a java: host import");
-
-                var program = dev.oreslang.parser.Parser.parse(unit.oresSource());
-                for (var imported : program.imports()) {
-                    assertTrue(
-                            CoreLibrarySources.isCoreImport(imported.path()),
-                            () -> relative + " depends on non-std module " + imported.path());
+            var program = assertDoesNotThrow(
+                    () -> dev.oreslang.parser.Parser.parse(unit.oresSource()), relative);
+            for (var imported : program.imports()) {
+                String dependency = imported.path();
+                if (CoreLibrarySources.isLayeredLibraryImport(dependency)) {
+                    CoreLibrarySources.librarySource(CoreLibrarySources.libraryUnit(dependency));
+                } else if (CoreLibrarySources.isOresCoreImport(dependency)) {
+                    CoreLibrarySources.oresCoreSource(dependency);
+                } else {
+                    assertTrue(CoreLibrarySources.isStdImport(dependency),
+                            () -> relative + " depends on non-library module " + dependency);
+                    CoreLibrarySources.source(dependency);
                 }
             }
         }
+        // The archive also ships source material for direct-source tools.
+        assertTrue(Files.isRegularFile(root.resolve("replay_stream.atto")));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.source("atto.std/replay_stream"));
     }
 
 

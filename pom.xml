@@ -126,10 +126,30 @@
         <configuration>
           <archive>
             <manifest>
+              <addClasspath>true</addClasspath>
+              <classpathPrefix>lib/</classpathPrefix>
               <mainClass>dev.oreslang.launcher.OresMain</mainClass>
             </manifest>
           </archive>
         </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.8.1</version>
+        <executions>
+          <execution>
+            <id>copy-cli-runtime</id>
+            <phase>prepare-package</phase>
+            <goals>
+              <goal>copy-dependencies</goal>
+            </goals>
+            <configuration>
+              <includeScope>runtime</includeScope>
+              <outputDirectory>${project.build.directory}/lib</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
@@ -137,7 +157,27 @@
         <version>3.5.0</version>
         <configuration>
           <mainClass>dev.oreslang.launcher.OresMain</mainClass>
+          <!-- VM process-wide watchdog/timer daemons live until the CLI host exits. -->
+          <cleanupDaemonThreads>false</cleanupDaemonThreads>
         </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.5.2</version>
+        <configuration>
+          <systemPropertyVariables>
+            <atto.cli.jar>${project.build.directory}/${project.build.finalName}.jar</atto.cli.jar>
+          </systemPropertyVariables>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>
@@ -163,9 +203,8 @@
                 <goals><goal>exec</goal></goals>
                 <configuration>
                   <executable>sh</executable>
-                  <arguments>
-                    <argument>${project.basedir}/scripts/build-native-thread.sh</argument>
-                  </arguments>
+                  <workingDirectory>${project.basedir}</workingDirectory>
+                  <commandlineArgs>scripts/build-native-thread.sh</commandlineArgs>
                 </configuration>
               </execution>
             </executions>

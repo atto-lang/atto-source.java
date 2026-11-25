@@ -135,6 +135,7 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
+        requireCheckedImportProfiles(sources, programs, importResolutions);
         if (policy != null) {
             for (Ast.Program program : programs.values()) {
                 CapabilityChecker.check(program, policy, permissionCheckMode);
@@ -301,6 +302,7 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
+        requireCheckedImportProfiles(sources, programs, importResolutions);
         int exitStatus = 0;
         String entryId = unitId(entry);
         MixedSourceUnit entryUnit = units.get(entryId);
@@ -347,6 +349,7 @@ public final class LinkedProgramRunner {
                         IncrementalCompiler.CompiledUnit unit = build.units().get(id);
                         Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
                                 .mimeType(OresLanguage.MIME_TYPE)
+                                .cached(false)
                                 .buildLiteral();
                         try (OresLanguage.PrecheckedProgramScope ignored =
                                 OresLanguage.openPrecheckedProgram(
@@ -482,6 +485,33 @@ public final class LinkedProgramRunner {
             programs.put(source.getKey(), Parser.parse(source.getValue()));
         }
         return programs;
+    }
+
+    /** Validate resolved providers, including extensionless paths and packaged libraries. */
+    private static void requireCheckedImportProfiles(Map<String, String> sources,
+            Map<String, Ast.Program> programs, Map<String, Map<String, String>> importResolutions) {
+        Set<String> checked = new LinkedHashSet<>();
+        for (Map.Entry<String, String> source : sources.entrySet()) {
+            try {
+                if (AttoCheckedI64Profile.select(source.getValue(), source.getKey())) {
+                    checked.add(source.getKey());
+                }
+            } catch (IllegalArgumentException invalid) {
+                throw new SourceUnitDiagnosticException(source.getKey(), "", "", invalid);
+            }
+        }
+        for (String id : checked) {
+            Map<String, String> resolutions = importResolutions.getOrDefault(id, Map.of());
+            for (Ast.ImportDecl imported : programs.get(id).imports()) {
+                String provider = resolutions.get(imported.path());
+                if (provider == null || !checked.contains(provider)) {
+                    throw new SourceUnitDiagnosticException(id, "", "",
+                            new IllegalArgumentException(
+                                    "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: import '"
+                                            + imported.path() + "' requires a resolved checked-i64 source unit"));
+                }
+            }
+        }
     }
 
     private static Map<String, String> oresSources(Map<String, MixedSourceUnit> units) {
@@ -629,8 +659,9 @@ public final class LinkedProgramRunner {
 
     /**
      * Collects compiler-owned hosted source under ores.std/* (and the temporary
-     * legacy std/* spelling). Hosted std may depend on ores.core or ores.std,
-     * but never on application/ambient modules or Java source islands.
+     * legacy std/* spelling). Hosted std may depend on registered library
+     * units, while application imports and Java source islands stay outside
+     * the packaged library graph.
      */
     private static void collectStdImportClosure(
             String importPath,
@@ -662,6 +693,10 @@ public final class LinkedProgramRunner {
                         "ores.std cannot import Java host classes: "
                                 + importPath + " -> " + imported.path());
             }
+            if (CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
+                CoreLibrarySources.libraryUnit(imported.path());
+                continue;
+            }
             if (CoreLibrarySources.isStdImport(imported.path())) {
                 CoreLibrarySources.unitId(imported.path());
                 continue;
@@ -677,6 +712,14 @@ public final class LinkedProgramRunner {
 
         units.put(id, mixed);
         for (Ast.ImportDecl imported : program.imports()) {
+            if (CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
+                CoreLibrarySources.LibraryUnit library =
+                        CoreLibrarySources.libraryUnit(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), library.unitId());
+                collectLayeredLibraryClosure(library, units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
             if (CoreLibrarySources.isStdImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);

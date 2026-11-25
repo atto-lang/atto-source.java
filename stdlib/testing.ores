@@ -283,7 +283,7 @@ pub fnc check_fuzz_int_cases(
     return fail("fuzz samples must be between 1 and 4096");
   fi
 
-  let int state = seed % 2147483646;
+  let int state = Integer.rem(seed, 2147483646);
   if state < 0; do
     state = 0 - state;
   fi
@@ -295,8 +295,8 @@ pub fnc check_fuzz_int_cases(
       break;
     } fi
 
-    state = (state * 48271) % 2147483647;
-    let int generated = (state % 200001) - 100000;
+    state = Integer.rem(state * 48271, 2147483647);
+    let int generated = Integer.rem(state, 200001) - 100000;
     let TestOutcome outcome = property(generated);
 
     if !outcome.passed; do
@@ -304,7 +304,7 @@ pub fnc check_fuzz_int_cases(
       // side-effect-free for this shrink to be a useful reproduction.
       // Bounded, deterministic candidate reduction. Integer / would
       // produce float in Oreslang, so use an integer remainder instead.
-      let int reduced = generated % 10;
+      let int reduced = Integer.rem(generated, 10);
       if reduced != generated; do
         let TestOutcome smaller = property(reduced);
         if !smaller.passed; do

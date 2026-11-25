@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
@@ -94,6 +95,8 @@ public class GeneratorCancellationInterruptionTest {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch cleanupStarted = new CountDownLatch(1);
         CountDownLatch allowCleanupExit = new CountDownLatch(1);
+        CountDownLatch exitCallbackEntered = new CountDownLatch(1);
+        CompletableFuture<Void> allowExitCallback = new CompletableFuture<>();
         AsyncRuntime runtime = new AsyncRuntime();
         var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
             entered.countDown();
@@ -116,6 +119,11 @@ public class GeneratorCancellationInterruptionTest {
         try {
             OresFuture<GeneratorRuntime.Step<Integer>> pull = generator.nextStep();
             assertTrue(entered.await(3, TimeUnit.SECONDS));
+            OresFuture<Void> pullExit = runtime.taskExitReceipt(pull);
+            pullExit.whenCompleteRuntime((ignored, failure) -> {
+                exitCallbackEntered.countDown();
+                allowExitCallback.completeOnTimeout(null, 10, TimeUnit.SECONDS).join();
+            });
             assertTrue(pull.cancel(true));
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> pull.get(3, TimeUnit.SECONDS));
@@ -129,11 +137,13 @@ public class GeneratorCancellationInterruptionTest {
                     () -> close.get(100, TimeUnit.MILLISECONDS));
             allowCleanupExit.countDown();
             assertNull(close.get(3, TimeUnit.SECONDS));
-            assertNull(runtime.taskExitReceipt(pull).get(3, TimeUnit.SECONDS));
+            assertTrue(exitCallbackEntered.await(3, TimeUnit.SECONDS));
+            assertNull(pullExit.get(3, TimeUnit.SECONDS));
             assertTrue(generator.nextStep().get(3, TimeUnit.SECONDS).done(),
-                    "cancelled admitted pull must not leave an orphan activation");
+                    "pull retirement must be visible before its callbacks finish");
         } finally {
             allowCleanupExit.countDown();
+            allowExitCallback.complete(null);
             generator.close();
             runtime.close();
         }

@@ -83,6 +83,7 @@ public final class OwnershipChecker {
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    private final Map<String, Set<Integer>> linkedSuspendingFunctions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     // Ownership must agree with the typed nominal HasFuture<T> projection:
@@ -195,6 +196,14 @@ public final class OwnershipChecker {
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<Ast.BindingStmt, String> validatedShortAliases) {
+        return checkWithLinkedMetadata(program, linkedClasses, validatedShortAliases, Map.of());
+    }
+
+    /** Imported modules supply suspension boundaries after linked type checking. */
+    public static Ast.Program checkWithLinkedMetadata(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            Map<String, Ast.ModuleDecl> linkedModules) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
@@ -247,6 +256,17 @@ public final class OwnershipChecker {
             checker.rejectBorrowedFields(declaration);
             checker.classes.put(name, declaration);
             checker.linkedClassLayouts.add(declaration);
+        }
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            for (Ast.Decl declaration : entry.getValue().declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.suspends() && !fn.generator()) {
+                    checker.linkedSuspendingFunctions
+                            .computeIfAbsent(entry.getKey() + "." + fn.name(), ignored -> new HashSet<>())
+                            .add(fn.parameters().size());
+                }
+            }
         }
         checker.validate(program);
         checker.publishTaskAdmissions();
@@ -360,6 +380,7 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        rejectBorrowedSuspensionParameters(fn.suspends(), fn.parameters());
         Scope scope = new Scope(null, fn.nonLexical());
         if (borrowMirAudit != null) {
             borrowMirAudit.beginFunction(fn.name(),
@@ -474,6 +495,7 @@ public final class OwnershipChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            rejectBorrowedSuspensionParameters(method.suspends(), method.parameters());
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -921,9 +943,10 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
-            if (selected.mode() == Ast.WaitMode.BLOCKING
+            boolean waitsForWinner = selected.mode() == Ast.WaitMode.BLOCKING
                     && selected.arms().stream().noneMatch(arm ->
-                            arm.operation() == Ast.ChannelOperation.DEFAULT)) {
+                            arm.operation() == Ast.ChannelOperation.DEFAULT);
+            if (waitsForWinner) {
                 // Without a default arm, the mailbox lane can yield while
                 // waiting for a winner. A default arm makes the selection
                 // immediately decidable, so no borrow-suspension ban is needed.
@@ -947,6 +970,11 @@ public final class OwnershipChecker {
                     continue;
                 }
                 ValueInfo source = checkExpr(arm.channel(), scope, false);
+                if (waitsForWinner || selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    String operand = arm.operation() == Ast.ChannelOperation.AWAIT
+                            ? "Future" : "channel";
+                    requireOwnedWaitOperand(source, "select", operand);
+                }
                 Ast.TypeRef element;
                 if (arm.operation() == Ast.ChannelOperation.AWAIT) {
                     if (!source.type.name().equals("Future")
@@ -1581,12 +1609,6 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
-                    // Main permits an explicit copy from an implicit immutable self receiver
-                    // (certified immutable fields); a nested borrow inside the copied type
-                    // is still never duplicated.
-                    if (containsBorrowType(source.type)) {
-                        throw error("rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
-                    }
                     CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
                     if (projected != null && projected.noCopy()) {
                         throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy field '" + projected.origin() + "'");
@@ -1596,6 +1618,9 @@ public final class OwnershipChecker {
                         // Read the loan but return independent immutable data.
                         // The source binding keeps its existing loan/lifetime.
                         yield new ValueInfo(source.type.borrowedTarget(), ValueKind.COPY, null);
+                    }
+                    if (containsBorrowType(source.type)) {
+                        throw error("rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
                     }
                     Ast.ClassDecl sourceClass = source.type == null ? null : findClass(source.type.name());
                     if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
@@ -1687,6 +1712,14 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            if (isBorrowValue(source)) {
+                if (cast.mode() == Ast.CastMode.OPTIONAL) {
+                    throw error("optional cast of borrowed value requires a checked Option loan lifetime");
+                }
+                if (!cast.targetType().isBorrow()) {
+                    throw error("borrowed value cannot be bound as an owned type through a cast");
+                }
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
@@ -1718,6 +1751,14 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
+            if (isBorrowValue(left) || isBorrowValue(right)) {
+                if (left.borrowSource != null && left.borrowSource == right.borrowSource
+                        && left.kind == right.kind && left.borrowLease == right.borrowLease
+                        && left.type.equals(right.type)) {
+                    return left;
+                }
+                throw error("conditional cannot merge borrowed values without a checked result lifetime");
+            }
             Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
             return new ValueInfo(
                     joinedType,
@@ -2014,16 +2055,18 @@ public final class OwnershipChecker {
             return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
-            checkSuspensionBorrows(scope, "await");
             // HasFuture.get_future() is a synchronous immutable receiver loan,
             // not an implicit ownership transfer of the capability object.
             // Preserve reusability of named capabilities across two awaits.
             // Unknown expressions keep the existing conservative move rule.
             Ast.TypeRef operandType = syntacticType(awaited.expression(), scope);
+            rejectBorrowedFutureResult(operandType);
+            checkSuspensionBorrows(scope, "await");
             boolean borrowCapability = hasFutureResult(
                     operandType, new LinkedHashSet<>()) != null;
             ValueInfo awaitedValue = checkExpr(
                     awaited.expression(), scope, borrowCapability ? false : consuming);
+            requireOwnedWaitOperand(awaitedValue, "await", "");
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -2042,6 +2085,9 @@ public final class OwnershipChecker {
                 throw error("cannot register a channel waiter while holding a MutexGuard");
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
+            if (channelOp.mode() != Ast.WaitMode.IMMEDIATE) {
+                requireOwnedWaitOperand(channel, "register a channel operation on", "channel");
+            }
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
@@ -2104,7 +2150,10 @@ public final class OwnershipChecker {
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
                 throw error("cannot register dynamic select while holding a MutexGuard");
             }
-            checkExpr(selected.cases(), scope, false);
+            ValueInfo cases = checkExpr(selected.cases(), scope, false);
+            if (selected.mode() != Ast.WaitMode.IMMEDIATE) {
+                requireOwnedWaitOperand(cases, "select from", "case-set");
+            }
             Ast.TypeRef selectedResult = Ast.TypeRef.simple("SelectResult");
             Ast.TypeRef result = switch (selected.mode()) {
                 case BLOCKING -> selectedResult;
@@ -2655,8 +2704,14 @@ public final class OwnershipChecker {
 
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
+            String name = namespace.name() + "." + qualified.member();
+            Set<Integer> linkedArities = linkedSuspendingFunctions.get(name);
+            if (linkedArities != null && scope.lookup(namespace.name()) == null
+                    && linkedArities.contains(syntacticCallArgumentTypes(call.arguments(), scope).size())) {
+                checkSuspensionBorrows(scope, "suspends call " + name);
+            }
             Ast.FunctionDecl fn = findFunction(
-                    namespace.name() + "." + qualified.member(),
+                    name,
                     syntacticCallArgumentTypes(call.arguments(), scope).size());
             if (fn != null) {
                 CallSignature signature = specializeCall(
@@ -4258,6 +4313,29 @@ public final class OwnershipChecker {
                 && (value.kind == ValueKind.IMM_BORROW
                     || value.kind == ValueKind.MUT_BORROW
                     || (value.type != null && value.type.isBorrow()));
+    }
+
+    private void requireOwnedWaitOperand(ValueInfo value, String operation, String operand) {
+        rejectBorrowedFutureResult(value.type);
+        if (isBorrowValue(value) || containsBorrowType(value.type)) {
+            String kind = operand.isEmpty() ? "" : operand + " ";
+            throw error("cannot " + operation + " a borrowed " + kind + "operand");
+        }
+    }
+
+    private void rejectBorrowedFutureResult(Ast.TypeRef type) {
+        if (type != null && type.name().equals("Future") && containsBorrowType(type)) {
+            throw error("cannot suspend on a Future containing borrowed data");
+        }
+    }
+
+    private void rejectBorrowedSuspensionParameters(boolean suspends, List<Ast.Param> parameters) {
+        if (!suspends) return;
+        for (Ast.Param parameter : parameters) {
+            if (containsBorrowType(parameter.type())) {
+                throw error("suspending callable cannot take borrowed parameter '" + parameter.name() + "'");
+            }
+        }
     }
 
     private boolean isIncomingBorrow(VarState state) {
@@ -6941,13 +7019,26 @@ public final class OwnershipChecker {
     private boolean containsBorrowType(Ast.TypeRef type, Set<String> visitingAliases) {
         if (type == null) return false;
         if (type.isBorrow()) return true;
-        for (Ast.TypeRef child : type.arguments()) {
-            if (containsBorrowType(child, visitingAliases)) return true;
+        boolean callableContract = (type.name().equals("Fnc") || type.name().equals("Function"))
+                && !type.arguments().isEmpty()
+                && checkedProgram.imports().stream().noneMatch(imported -> imported.names().stream()
+                        .anyMatch(name -> ImportRules.localName(imported, name).equals(type.name())));
+        if (!callableContract) {
+            for (Ast.TypeRef child : type.arguments()) {
+                if (containsBorrowType(child, visitingAliases)) return true;
+            }
         }
         for (Ast.ModuleDecl module : checkedProgram.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.TypeAliasDecl alias)
                         || !alias.name().equals(type.name())) continue;
+                if (callableContract) {
+                    // User aliases can shadow the built-in callable type.
+                    for (Ast.TypeRef child : type.arguments()) {
+                        if (containsBorrowType(child, visitingAliases)) return true;
+                    }
+                    callableContract = false;
+                }
                 if (type.inferArguments()
                         || type.arguments().size() != alias.genericParameters().size()) {
                     return true;
@@ -6964,7 +7055,9 @@ public final class OwnershipChecker {
                 }
             }
         }
-        return false;
+        // A built-in callable receives its parameter loans from callers.
+        // Captured loans are checked separately when the closure is created.
+        return callableContract && containsBorrowType(type.arguments().getLast(), visitingAliases);
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {

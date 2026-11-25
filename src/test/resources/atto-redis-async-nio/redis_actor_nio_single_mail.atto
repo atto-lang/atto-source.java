@@ -8,7 +8,7 @@ define actor RedisKvSingleMail as
   let Map<string,string> values;
 
   on_start(): void {
-    self.values = ~map<string,string>();
+    self.values = Map.of<string,string>();
     return;
   }
 

@@ -14,6 +14,7 @@ import dev.oreslang.types.ReadonlyShapeProjectionV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresVector;
+import dev.oreslang.runtime.OresSequence;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -185,94 +186,18 @@ public final class OresEvalRootNode extends RootNode {
         return arguments.length == 1 && command.equals(arguments[0]);
     }
 
-    /**
-     * VM-owned sequence storage remembers the source collection constructor.
-     * Array/List/Vector currently share an ArrayList representation, but the
-     * native .atto method dispatcher must not silently turn Vector or List
-     * calls into the Array implementation. This tag carries no guest authority.
-     */
-    private static final class NativeAttoSequence extends ArrayList<Object> {
+    /** Preserves the Array or List storage kind across function results. */
+    private static final class NativeAttoSequence extends OresSequence {
         private final String kind;
-        // Positive values are active read-loan counts; -1 is an active writer.
-        // This is nonparking metadata admission, not a host-language lock.
-        private final AtomicInteger accessState = new AtomicInteger();
 
         private NativeAttoSequence(String kind) {
-            if (!Set.of("Array", "Vector", "List").contains(kind)) {
+            if (!Set.of("Array", "List").contains(kind)) {
                 throw new IllegalArgumentException("unsupported Atto sequence kind " + kind);
             }
             this.kind = kind;
         }
 
-        private String kind() { return kind; }
-
-        private void acquireRead() {
-            for (;;) {
-                int state = accessState.get();
-                if (state < 0 || state == Integer.MAX_VALUE) {
-                    throw new IllegalStateException(
-                            "collection cannot acquire read loan while mutating or exhausted");
-                }
-                if (accessState.compareAndSet(state, state + 1)) return;
-            }
-        }
-
-        private void releaseRead() {
-            for (;;) {
-                int state = accessState.get();
-                if (state <= 0) throw new IllegalStateException("unbalanced collection read loan");
-                if (accessState.compareAndSet(state, state - 1)) return;
-            }
-        }
-
-        private void acquireWrite() {
-            if (!accessState.compareAndSet(0, -1)) {
-                throw new IllegalStateException(
-                        "collection mutation during map/filter/reduce read loan is forbidden");
-            }
-        }
-
-        private void releaseWrite() {
-            if (!accessState.compareAndSet(-1, 0)) {
-                throw new IllegalStateException("unbalanced collection write loan");
-            }
-        }
-
-        @Override public boolean add(Object item) {
-            acquireWrite();
-            try { return super.add(item); }
-            finally { releaseWrite(); }
-        }
-
-        @Override public void add(int index, Object item) {
-            acquireWrite();
-            try { super.add(index, item); }
-            finally { releaseWrite(); }
-        }
-
-        @Override public Object set(int index, Object item) {
-            acquireWrite();
-            try { return super.set(index, item); }
-            finally { releaseWrite(); }
-        }
-
-        @Override public Object remove(int index) {
-            acquireWrite();
-            try { return super.remove(index); }
-            finally { releaseWrite(); }
-        }
-
-        @Override public boolean remove(Object item) {
-            acquireWrite();
-            try { return super.remove(item); }
-            finally { releaseWrite(); }
-        }
-
-        @Override public void clear() {
-            acquireWrite();
-            try { super.clear(); }
-            finally { releaseWrite(); }
-        }
+        @Override public String kind() { return kind; }
     }
 
     private static final class Evaluator
@@ -2697,6 +2622,16 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (expressionContainsPotentialSuspension(call.callee(), seen)) return true;
                 if (call.callee() instanceof Ast.MemberExpr member) {
+                    if (nativeCollectionCombinator(member.member())) return true;
+                    // A module-qualified function can need a continuation even
+                    // when the caller and callee are both declared synchronous.
+                    // In particular, recursive calls already use heap frames.
+                    if (member.receiver() instanceof Ast.NameExpr receiver
+                            && modules.containsKey(receiver.name())) {
+                        Ast.FunctionDecl target = findQualifiedFunction(
+                                receiver.name() + "." + member.member(), call.arguments().size());
+                        if (callableMaySuspend(target, seen)) return true;
+                    }
                     // Resolve local method families conservatively across
                     // overrides, without turning every builtin call into a task.
                     // Declaration aliases refer to the same AST object. Structural
@@ -2744,17 +2679,8 @@ public final class OresEvalRootNode extends RootNode {
                         // a first-class Future.
                         return true;
                     }
-                    Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
-                    if (target != null) {
-                        // Creating a generator activation does not pull or await it.
-                        if (target.generator()) return false;
-                        return target.async() || target.suspends()
-                                || target.actorKind() != Ast.ActorKind.NONE
-                                || (!target.async()
-                                        && functionContainsPotentialSuspension(
-                                                target,
-                                                seen));
-                    }
+                    return callableMaySuspend(
+                            findFunction(name.name(), call.arguments().size()), seen);
                 }
                 return false;
             }
@@ -2832,6 +2758,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean functionNameBoundLocally(String name) {
             return false;
+        }
+
+        private boolean callableMaySuspend(Ast.FunctionDecl target, Set<Object> seen) {
+            // Creating a generator activation does not pull or await it.
+            return target != null && !target.generator()
+                    && (target.async() || target.suspends() || target.actorKind() != Ast.ActorKind.NONE
+                            || functionContainsPotentialSuspension(target, seen));
         }
 
         private void runBlock(
@@ -6130,14 +6063,16 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            Invocation invocation;
                             try {
-                                Invocation invocation = prepareExplicitImportInvocation(
+                                invocation = prepareExplicitImportInvocation(
                                         imported.member(), args);
-                                completeSourceInvocation(t, invocation,
-                                        invocationDeclaresAsync(invocation), env, continuation);
                             } catch (RuntimeException | Error failure2) {
                                 continuation.accept(t, null, failure2);
+                                return;
                             }
+                            completeSourceInvocation(t, invocation,
+                                    invocationDeclaresAsync(invocation), env, continuation);
                         });
                 return;
             }
@@ -6160,13 +6095,9 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
-                            try {
-                                Invocation invocation = functionInvocation(fn, args);
-                                completeSourceInvocation(t, invocation,
-                                        invocationDeclaresAsync(invocation), env, continuation);
-                            } catch (RuntimeException | Error failure2) {
-                                continuation.accept(t, null, failure2);
-                            }
+                            Invocation invocation = functionInvocation(fn, args);
+                            completeSourceInvocation(t, invocation,
+                                    invocationDeclaresAsync(invocation), env, continuation);
                         });
                 return;
             }
@@ -6275,16 +6206,6 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
-                                // A suspends function is a *call in the same
-                                // logical execution*, not a new Task/Future.
-                                // Keep its live source continuation in the
-                                // caller's heap-owned SourceTask across await.
-                                if (direct.suspends()
-                                        && direct.actorKind() == Ast.ActorKind.NONE) {
-                                    runInlineSuspendsFunction(
-                                            t, direct, values, continuation);
-                                    return;
-                                }
                                 Invocation invocation;
                                 boolean declaredFuture;
                                 try {
@@ -6327,6 +6248,12 @@ public final class OresEvalRootNode extends RootNode {
                                     (t2, values, failure2) -> {
                                         if (failure2 != null) {
                                             continuation.accept(t2, null, failure2);
+                                            return;
+                                        }
+                                        if (receiver instanceof OresSequence sequence
+                                                && nativeCollectionCombinator(member.member())) {
+                                            runInlineCollectionCombinator(t2, member.member(),
+                                                    sequence, values, continuation);
                                             return;
                                         }
                                         Invocation invocation;
@@ -6410,6 +6337,23 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation,
                 boolean tail) {
+            if (invocation.kind() == InvocationKind.FUNCTION
+                    && invocation.target() instanceof Ast.FunctionDecl function
+                    && function.suspends() && !function.generator()
+                    && function.actorKind() == Ast.ActorKind.NONE
+                    && !function.name().equals("init")) {
+                if (env.hasLiveMutexGuards()) {
+                    task.dispatchImmediateSourceCallback(
+                            () -> continuation.accept(task, null, new IllegalStateException(
+                                    "cannot call a suspends function while holding a live MutexGuard")));
+                    return;
+                }
+                // Enter the callee's lexical environment on the caller's task,
+                // including calls resolved in another source unit.
+                task.dispatchImmediateSourceCallback(() -> invocation.owner().runInlineSuspendsFunction(
+                        task, function, invocation.arguments(), continuation));
+                return;
+            }
             // Separate callee exceptions from consumer exceptions. Dispatching
             // the consumer within an invocation catch would deliver a failure
             // twice if downstream threw during synchronous completion.
@@ -6964,9 +6908,7 @@ public final class OresEvalRootNode extends RootNode {
                         : HttpResponseDraft.text(requireString(args.getFirst(), "HttpResponse body"));
             }
             if (created.type().name().equals("Array")
-                    || created.type().name().equals("List")
-                    || (created.type().name().equals("Vector")
-                    && findClass("Vector") == null)) {
+                    || created.type().name().equals("List")) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
                             created.type().name()
@@ -7052,14 +6994,7 @@ public final class OresEvalRootNode extends RootNode {
                                             ? detachAsyncArguments(normalized, fn.parameters())
                                             : normalized);
 
-                    if (fn.async()) {
-                        return future;
-                    }
-
-                    if (fn.returnType().name().equals("Future")) {
-                        return chainFuture(future, values -> values.getFirst(), true, false);
-                    }
-                    return returnSourceTaskResult(future, false);
+                    return returnSourceTaskResult(future, fn.async(), fn.returnType());
                 }
 
                 return callFunctionBodyRaw(fn, normalized);
@@ -7090,9 +7025,7 @@ public final class OresEvalRootNode extends RootNode {
                                                         fn,
                                                         delivered)));
 
-                return fn.async()
-                        ? completion
-                        : returnSourceTaskResult(completion, false);
+                return returnSourceTaskResult(completion, fn.async(), fn.returnType());
             }
 
             return context.actors().invoke(
@@ -7104,12 +7037,16 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object returnSourceTaskResult(
                 OresFuture<?> future,
-                boolean declaredFuture) {
-            if (declaredFuture
-                    || ActorRuntime.inActorExecution()
-                    || OresScheduler.current() != null) {
-                return future;
+                boolean asynchronous,
+                Ast.TypeRef resultType) {
+            if (asynchronous) return future;
+            if (resultType.name().equals("Future")) {
+                // A synchronous callable can use a source task for fairness.
+                // Hide that task's Future so the caller sees the declared
+                // Future, with any nesting in its payload intact.
+                return chainFuture(future, values -> values.getFirst(), true, false);
             }
+            if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) return future;
             return future.join();
         }
 
@@ -7364,7 +7301,7 @@ public final class OresEvalRootNode extends RootNode {
                                 fn.async()
                                         ? detachAsyncArguments(args, fn.parameters())
                                         : args);
-                return returnSourceTaskResult(future, fn.async());
+                return returnSourceTaskResult(future, fn.async(), fn.returnType());
             }
 
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
@@ -7467,7 +7404,7 @@ public final class OresEvalRootNode extends RootNode {
             if (method.async() || methodContainsPotentialSuspension(method)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(method, receiver, args);
-                return returnSourceTaskResult(future, method.async());
+                return returnSourceTaskResult(future, method.async(), method.returnType());
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
@@ -9564,9 +9501,7 @@ public final class OresEvalRootNode extends RootNode {
                     return instantiateEvaluated(created, args, env);
                 }
                 if (created.type().name().equals("Array")
-                        || created.type().name().equals("List")
-                        || (created.type().name().equals("Vector")
-                    && findClass("Vector") == null)) {
+                        || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException(
                                 created.type().name()
@@ -9806,8 +9741,57 @@ public final class OresEvalRootNode extends RootNode {
             return result;
         }
 
+        private static boolean nativeCollectionCombinator(String member) {
+            return member.equals("map") || member.equals("filter") || member.equals("reduce");
+        }
+
+        private void runInlineCollectionCombinator(SourceTask task, String operation,
+                OresSequence receiver, List<Object> arguments, SourceValueCont continuation) {
+            final Invocation invocation;
+            try {
+                invocation = collectionCombinatorInvocation(operation, receiver, arguments);
+                receiver.acquireRead();
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+            SourceCleanupFrame loan = task.registerSourceCleanup((owner, finished) -> {
+                receiver.releaseRead();
+                finished.accept(owner, SourceFlow.normal());
+            });
+            // Keep the trusted read loan in the caller's continuation while
+            // the source loop cooperates. Retire it before delivering the
+            // scalar or collection result to the next expression.
+            runInlineSuspendsFunction(task, (Ast.FunctionDecl) invocation.target(),
+                    invocation.arguments(), (owner, result, failure) -> {
+                        owner.disarmSourceCleanup(loan);
+                        receiver.releaseRead();
+                        continuation.accept(owner, result, failure);
+                    });
+        }
+
         private Object invokeNativeAttoCollectionMethod(
                 String operation, List<?> receiver, List<Object> arguments) {
+            if (!(receiver instanceof OresSequence typed)) {
+                throw new IllegalArgumentException(
+                        "collection." + operation
+                                + " requires compiler-owned Atto sequence storage");
+            }
+            if (OresScheduler.current() != null || ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "collection." + operation + " requires a direct resumable call");
+            }
+            Invocation invocation = collectionCombinatorInvocation(operation, typed, arguments);
+            typed.acquireRead();
+            try {
+                return invoke(invocation);
+            } finally {
+                typed.releaseRead();
+            }
+        }
+
+        private Invocation collectionCombinatorInvocation(
+                String operation, OresSequence receiver, List<Object> arguments) {
             int count = operation.equals("reduce") ? 2 : 1;
             if (arguments.size() != count) {
                 throw new IllegalArgumentException(
@@ -9818,30 +9802,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "collection." + operation + " requires an Atto callback");
             }
-            if (!(receiver instanceof NativeAttoSequence typed)) {
+            String kind = receiver.kind().toLowerCase(java.util.Locale.ROOT);
+            if (kind.equals("vector") && findClass("Vector") != null) {
                 throw new IllegalArgumentException(
-                        "collection." + operation
-                                + " requires compiler-owned Atto sequence storage");
+                        "core Vector combinator is ambiguous with a source-defined Vector class");
             }
-            // Reads can nest; an exclusive writer (including a callback
-            // mutating the input through another alias) is denied immediately.
-            // The finally arm also covers throw/panic/callback failures.
-            typed.acquireRead();
-            try {
-                String kind = typed.kind().toLowerCase(java.util.Locale.ROOT);
-                if (kind.equals("vector") && findClass("Vector") != null) {
-                    throw new IllegalArgumentException(
-                            "core Vector combinator is ambiguous with a source-defined Vector class");
-                }
-                Ast.FunctionDecl nativeFunction =
-                        NativeAttoCollectionModule.function(operation + "_" + kind);
-                ArrayList<Object> inputs = new ArrayList<>(1 + count);
-                inputs.add(receiver);
-                inputs.addAll(arguments);
-                return callFunction(nativeFunction, inputs);
-            } finally {
-                typed.releaseRead();
-            }
+            Ast.FunctionDecl nativeFunction =
+                    NativeAttoCollectionModule.function(operation + "_" + kind);
+            ArrayList<Object> inputs = new ArrayList<>(1 + count);
+            inputs.add(receiver);
+            inputs.addAll(arguments);
+            return functionInvocation(nativeFunction, inputs);
         }
 
         private static final class NativeAttoCollectionModule {
@@ -10246,6 +10217,9 @@ public final class OresEvalRootNode extends RootNode {
                         String host = requireString(args.get(0), "network.listen_async host");
                         if (!(args.get(1) instanceof Number port) || !isIntegral(port)) {
                             throw new IllegalArgumentException("listener port must be integer");
+                        }
+                        if (port.longValue() < 0 || port.longValue() > 65535) {
+                            throw new IllegalArgumentException("listener port must be in 0..65535");
                         }
                         return dev.oreslang.runtime.AsyncNioTcp.listenAsync(
                                 context, host, port.intValue());
@@ -11845,7 +11819,7 @@ public final class OresEvalRootNode extends RootNode {
                                 fn.async()
                                         ? detachAsyncArguments(args, fn.parameters())
                                         : args);
-                return returnSourceTaskResult(future, fn.async());
+                return returnSourceTaskResult(future, fn.async(), fn.returnType());
             }
             return callStaticFunctionBodyRaw(fn, args);
         }
@@ -11971,6 +11945,11 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "import target '" + imported.path() + "' for '" + codeUnitId
                                 + "' is not linked yet; all members of an import cycle must be linked before init");
+            }
+            if (checkedI64Arithmetic && !evaluator.checkedI64Arithmetic) {
+                throw new IllegalArgumentException(
+                        "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: import '" + imported.path()
+                                + "' resolves to a source unit outside the checked-i64 profile");
             }
             return evaluator;
         }
@@ -13327,7 +13306,8 @@ public final class OresEvalRootNode extends RootNode {
             if (declared.name().equals("Array") || declared.name().equals("List")) {
                 if (declared.arguments().size() != 1) return value;
                 List<?> items = asSequence(value);
-                ArrayList<Object> shaped = new ArrayList<>(items.size());
+                ArrayList<Object> shaped = items instanceof NativeAttoSequence sequence
+                        ? new NativeAttoSequence(sequence.kind()) : new ArrayList<>(items.size());
                 for (int i = 0; i < items.size(); i++) {
                     shaped.add(shapeReturnedValue(declared.arguments().getFirst(), items.get(i), callable + "[" + i + "]", resolving));
                 }

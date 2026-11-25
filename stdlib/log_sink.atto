@@ -1,10 +1,7 @@
-// Optional AttoLang-only async stdout adapter for namespace log.
-// Requires the pending capability-checked stdio.stdout.log_async API.
-// NOT part of the core admission path, and not a production sink until the
-// pending runtime API and guest import/typechecker/AOT tests are integrated.
+// Optional async stdout adapter for std/log. Requires STDOUT capability.
 namespace log_sink;
 
-import * as log from "./log.atto";
+import * as log from "atto.std/log";
 
 // Strict single-line token admission. This intentionally fails closed instead
 // of attempting to implement generic JSON escaping without a verified codec.
@@ -24,7 +21,7 @@ pub fnc safe_component(String text, int max_scalars) -> bool {
   return true;
 }
 
-pub fnc valid_for_line(log.LogEntry record) -> bool {
+pub fnc valid_for_line(borrow log.LogEntry record) -> bool {
   if !log.valid_entry(record); do return false; fi
   if !safe_component(record.target, 1024); do return false; fi
   if !safe_component(record.message, 8192); do return false; fi
@@ -41,8 +38,8 @@ pub fnc valid_for_line(log.LogEntry record) -> bool {
 // or ACK any record. The caller may ACK *only* after successful completion.
 // The runtime must enforce UTF-8 record and global pending-byte budgets;
 // a successful Future is NOT an fsync or durable delivery receipt.
-pub async routine write_record(log.LogEntry record): bool {
-  if !valid_for_line(record); do return false; fi
+pub async fnc write_record(log.LogEntry record): bool {
+  if !valid_for_line(rt borrow record); do return false; fi
   await stdio.stdout.log_async(
     "severity=", log.severity_name(record.severity),
     "|target=", record.target,

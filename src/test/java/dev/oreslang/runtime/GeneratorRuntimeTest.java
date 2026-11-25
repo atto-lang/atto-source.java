@@ -169,11 +169,9 @@ final class GeneratorRuntimeTest {
             }
             closing.get(2, TimeUnit.SECONDS);
             closer.join();
-            // Single-flight contract: await the outstanding pull before the
-            // next one. close() does not wait for an in-flight pull's
-            // completion callback, so pulling again without this races it
-            // (the overlap is rejected by design). The pull must still settle
-            // promptly once the producer exits; either outcome is valid here.
+            // Close retires the producer. Await the outstanding pull before
+            // requesting another one. The pull must settle promptly once
+            // the producer exits.
             try {
                 outstanding.get().get(2, TimeUnit.SECONDS);
             } catch (java.util.concurrent.ExecutionException settledByClose) {
@@ -185,6 +183,22 @@ final class GeneratorRuntimeTest {
             allowExit.countDown();
             generator.close();
             runtime.close();
+        }
+    }
+
+    @Test
+    void observedAsyncPullResultImmediatelyAllowsNextPull() throws Exception {
+        int values = 1_000;
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+                 for (int i = 0; i < values; i++) emitter.emit(i);
+             })) {
+            for (int i = 0; i < values; i++) {
+                // A waiting host thread may see the result before the
+                // backing carrier has drained its completion callbacks.
+                assertEquals(i, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+            }
+            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
         }
     }
 

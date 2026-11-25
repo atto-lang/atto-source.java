@@ -271,18 +271,19 @@ public final class IncrementalCompiler {
                 }
             }
             try {
+                Map<String, Ast.ModuleDecl> linkedModules =
+                        linkedImportedModules(id, parsed.get(id), parsed, normalizedImportResolutions);
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                                 stagedParsed.get(id).rawProgram(),
                                 linked.classes(), linked.aliases(), contracts,
-                                linkedImportedModules(id, parsed.get(id), parsed,
-                                        normalizedImportResolutions),
+                                linkedModules,
                                 linkedImportedFunctions(id, parsed.get(id), parsed,
                                         normalizedImportResolutions),
                                 strictAtto);
                 checked = analysis.program();
-                OwnershipChecker.checkWithImportedClasses(
-                        checked, linked.ownershipClasses(), analysis.shortInferredAliases());
+                OwnershipChecker.checkWithLinkedMetadata(
+                        checked, linked.ownershipClasses(), analysis.shortInferredAliases(), linkedModules);
             } catch (IllegalArgumentException invalid) {
                 Ast.Program sourceProgram = parsed.get(id);
                 String moduleName = sourceProgram.modules().size() == 1
@@ -324,18 +325,22 @@ public final class IncrementalCompiler {
             String id, Ast.Program program, Map<String, Ast.Program> parsed,
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Ast.ModuleDecl> result = new LinkedHashMap<>();
+        Map<String, String> localNamespaces =
+                resolvedNamespaceImports(id, program, parsed.keySet(), importResolutions);
         for (Ast.ImportDecl imported : program.imports()) {
             if (imported.wildcard() && imported.namespace() != null
                     && !ImportRules.isJavaPath(imported.path())) {
                 // `import * as alias from "./file.atto"`: the target's
                 // file-root public declarations, linked under the alias.
-                String targetId = ImportGraph.resolveImportUnitId(
-                        id, imported, parsed.keySet(), importResolutions);
+                String targetId = localNamespaces.get(imported.namespace());
                 Ast.Program target = targetId == null ? null : parsed.get(targetId);
                 if (target == null) continue;
+                Map<String, String> namespaceAliases = rebindNamespaceImports(
+                        targetId, target, localNamespaces, parsed.keySet(), importResolutions);
                 for (Ast.ModuleDecl module : target.modules()) {
                     if (!module.name().equals(Parser.ROOT_MODULE)) continue;
-                    Ast.ModuleDecl qualified = ForeignModuleQualifier.qualify(imported.namespace(), module);
+                    Ast.ModuleDecl qualified = ForeignModuleQualifier.qualify(
+                            imported.namespace(), module, namespaceAliases);
                     if (result.putIfAbsent(imported.namespace(), new Ast.ModuleDecl(imported.namespace(),
                             qualified.annotations(), qualified.contracts(), qualified.declarations())) != null) {
                         throw new IllegalArgumentException(
@@ -364,6 +369,37 @@ public final class IncrementalCompiler {
             }
         }
         return result;
+    }
+
+    private static Map<String, String> resolvedNamespaceImports(
+            String id, Ast.Program program, Set<String> units,
+            Map<String, Map<String, String>> importResolutions) {
+        Map<String, String> namespaces = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (!imported.wildcard() || imported.namespace() == null
+                    || ImportRules.isJavaPath(imported.path())) continue;
+            String target = ImportGraph.resolveImportUnitId(id, imported, units, importResolutions);
+            if (target != null) namespaces.put(imported.namespace(), target);
+        }
+        return namespaces;
+    }
+
+    private static Map<String, String> rebindNamespaceImports(
+            String providerId, Ast.Program provider, Map<String, String> localNamespaces,
+            Set<String> units, Map<String, Map<String, String>> importResolutions) {
+        Map<String, String> aliases = new LinkedHashMap<>();
+        resolvedNamespaceImports(providerId, provider, units, importResolutions)
+                .forEach((foreignAlias, target) -> {
+                    List<String> candidates = localNamespaces.entrySet().stream()
+                            .filter(entry -> entry.getValue().equals(target))
+                            .map(Map.Entry::getKey)
+                            .toList();
+                    // Without a unique local spelling, leave this signature
+                    // opaque. An unrelated local alias must not capture it.
+                    aliases.put(foreignAlias, candidates.size() == 1
+                            ? candidates.getFirst() : "<unlinked namespace " + foreignAlias + ">");
+                });
+        return aliases;
     }
 
     /** Declarations behind explicit `import fnc f from ...` bindings, by local name. */

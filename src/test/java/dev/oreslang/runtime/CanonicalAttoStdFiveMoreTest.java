@@ -59,8 +59,8 @@ final class CanonicalAttoStdFiveMoreTest {
     }
 
     @Test
-    void computeAttoCompilesAndLinksWithoutClaimingDeviceExecution() throws Exception {
-        expectGuest("compute", "42");
+    void computeAttoValidatesExactLayoutWithoutOverflow() throws Exception {
+        expectGuest("compute", "true\nfalse\ntrue");
     }
 
     @Test

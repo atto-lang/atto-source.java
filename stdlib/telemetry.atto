@@ -89,12 +89,16 @@ define module telemetry as
   // exact W3C 32/16 hex character lengths and nonzero IDs.
   pub fnc is_lower_hex(String input): bool {
     if input == ""; do return false; fi
-    let String rest = input;
-    for (const digit of arr[
-        "0", "1", "2", "3", "4", "5", "6", "7",
-        "8", "9", "a", "b", "c", "d", "e", "f"]) {
-      rest = rest.replace_literal(digit, "");
-    }
+    // This check also runs inside the synchronous CompletedSpan constructor.
+    val String rest = input
+        .replace_literal("0", "").replace_literal("1", "")
+        .replace_literal("2", "").replace_literal("3", "")
+        .replace_literal("4", "").replace_literal("5", "")
+        .replace_literal("6", "").replace_literal("7", "")
+        .replace_literal("8", "").replace_literal("9", "")
+        .replace_literal("a", "").replace_literal("b", "")
+        .replace_literal("c", "").replace_literal("d", "")
+        .replace_literal("e", "").replace_literal("f", "");
     return rest == "";
   }
 
@@ -105,14 +109,20 @@ define module telemetry as
   // The trusted runtime bridge independently validates IDs without splits.
   pub fnc is_exact_lower_hex(String input, int expected_length): bool {
     if !is_lower_hex(input) || expected_length < 1; do return false; fi
-    let int count = 0;
-    for (const digit of arr[
-        "0", "1", "2", "3", "4", "5", "6", "7",
-        "8", "9", "a", "b", "c", "d", "e", "f"]) {
-      val pieces = input.split_literal(digit);
-      count = count + pieces.size - 1;
-    }
+    val int count = count_digit(input, "0") + count_digit(input, "1")
+        + count_digit(input, "2") + count_digit(input, "3")
+        + count_digit(input, "4") + count_digit(input, "5")
+        + count_digit(input, "6") + count_digit(input, "7")
+        + count_digit(input, "8") + count_digit(input, "9")
+        + count_digit(input, "a") + count_digit(input, "b")
+        + count_digit(input, "c") + count_digit(input, "d")
+        + count_digit(input, "e") + count_digit(input, "f");
     return count == expected_length && input.replace_literal("0", "") != "";
+  }
+
+  fnc count_digit(String input, String digit): int {
+    val pieces = input.split_literal(digit);
+    return pieces.size - 1;
   }
 
   pub fnc operation_name(int operation_id): String {
@@ -260,16 +270,4 @@ define module telemetry as
     return new SpanBatch(capacity);
   }
 
-  // Native Atto async HTTP POST building block; not a collector by itself.
-  // This returns only the HTTP status. OTLP partialSuccess must be parsed
-  // by a collector before it acknowledges or drops a buffered batch.
-  // Network policy/NET permission/cancellation are enforced by the same
-  // pinned http.request runtime used by ordinary Atto services.
-  pub async fnc post_otlp_json_async(String endpoint, String json): int {
-    val response = await http.request("POST", endpoint,
-        [("Content-Type", "application/json")], json);
-    val int status = response.status;
-    await response.close();
-    return status;
-  }
 end

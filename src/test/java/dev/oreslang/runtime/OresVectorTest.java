@@ -75,6 +75,25 @@ final class OresVectorTest {
     }
 
     @Test
+    void collectionReadLoanProtectsBoundedVectorUntilRelease() {
+        OresVector vector = new OresVector(3, 1);
+        vector.add(1);
+        vector.acquireRead();
+        try {
+            assertThrows(IllegalStateException.class, () -> vector.set(0, 2));
+            assertThrows(IllegalStateException.class, () -> vector.addAll(List.of(2)));
+            assertThrows(IllegalStateException.class, () -> vector.reserve(3));
+            assertEquals(List.of(1), vector);
+            assertEquals(1, vector.reservedCapacity());
+        } finally {
+            vector.releaseRead();
+        }
+        vector.reserve(3);
+        vector.add(2);
+        assertEquals(List.of(1, 2), vector);
+    }
+
+    @Test
     void dishonestBulkCollectionCannotBypassCapacityThroughToArray() {
         // The collection reports one pending element but supplies three:
         // ArrayList's bulk add uses toArray(), NOT Collection.size().

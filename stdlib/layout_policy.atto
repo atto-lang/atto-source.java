@@ -1,6 +1,8 @@
 // Portable, bounded AoS/SoA/AoSoA address math from DataOrientedLayout.java.
 // This is a VALUE POLICY only. It cannot mint allocation, GPU or region authority.
 // kind: 1=AoS, 2=SoA, 3=AoSoA; all results are signed i64 integers.
+import module num from "atto.core/num";
+
 define module layout_policy as
   fnc power_of_two(int value): bool {
     if value < 1 || value > 4096; do return false; fi
@@ -12,7 +14,7 @@ define module layout_policy as
 
   fnc align_to(int value, int alignment): int {
     if value == 0; do return 0; fi
-    return ((value - 1) / alignment + 1) * alignment;
+    return (num.checked_div(value - 1, alignment).unwrap() + 1) * alignment;
   }
 
   // Caps are intentionally narrower than the Java host planner's.
@@ -39,7 +41,7 @@ define module layout_policy as
     if kind == 2; do
       return Ok(fields * align_to(rows * scalar_bytes, alignment));
     fi
-    val int tiles = (rows + lanes - 1) / lanes;
+    val int tiles = num.checked_div(rows + lanes - 1, lanes).unwrap();
     return Ok(tiles * align_to(fields * lanes * scalar_bytes, alignment));
   }
 
@@ -55,7 +57,7 @@ define module layout_policy as
     if kind == 2; do
       return Ok(field * align_to(rows * scalar_bytes, alignment) + row * scalar_bytes);
     fi
-    val int tile = row / lanes;
+    val int tile = num.checked_div(row, lanes).unwrap();
     val int tile_bytes = align_to(fields * lanes * scalar_bytes, alignment);
     return Ok(tile * tile_bytes + field * lanes * scalar_bytes +
               (row - tile * lanes) * scalar_bytes);

@@ -136,7 +136,10 @@ final class GenericHasFutureAwaitTest {
                 define trait HasFuture<T> as
                     get_future(): Future<T>;
                 end
-                async fnc value(): int { return 9; }
+                async fnc value(): int {
+                    await process.sleep_async(5);
+                    return 9;
+                }
                 define class Counter implements HasFuture<int> as
                     pub get_future(): Future<int> {
                         stdio.stdout.write("P");
@@ -385,7 +388,8 @@ final class GenericHasFutureAwaitTest {
                         end
                         fnc read(Child child): int { return await child; }
                         """));
-        assertTrue(error.getMessage().contains("effective HasFuture"), error.getMessage());
+        assertTrue(error.getMessage().contains("get_future"), error.getMessage());
+        assertTrue(error.getMessage().contains("cannot override inherited public"), error.getMessage());
     }
 
     @Test

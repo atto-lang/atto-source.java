@@ -2,9 +2,13 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.InterruptedByTimeoutException;
 import java.nio.channels.Pipe;
 import java.nio.channels.SelectionKey;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -130,6 +134,34 @@ final class NioReadinessGroupTest {
                     closedFailure.getCause());
         } finally {
             group.close();
+        }
+    }
+
+    @Test
+    void duplexInterestsRetireIndependentlyAndTimeoutAllowsRearm() throws Exception {
+        NioReadinessGroup group = new NioReadinessGroup();
+        try (group; ServerSocketChannel listener = ServerSocketChannel.open()) {
+            listener.bind(new InetSocketAddress("127.0.0.1", 0));
+            try (SocketChannel client = SocketChannel.open(listener.getLocalAddress());
+                    SocketChannel server = listener.accept()) {
+                OresFuture<Integer> read = group.watchDirection(server, SelectionKey.OP_READ, 0);
+                OresFuture<Integer> write = group.watchDirection(server, SelectionKey.OP_WRITE, 0);
+                assertEquals(SelectionKey.OP_WRITE, write.get(5, TimeUnit.SECONDS));
+                assertFalse(read.isDone(), "writable readiness must leave a read armed");
+                client.write(ByteBuffer.wrap(new byte[] { 1 }));
+                assertEquals(SelectionKey.OP_READ, read.get(5, TimeUnit.SECONDS));
+                assertEquals(1, server.read(ByteBuffer.allocate(1)));
+
+                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(25);
+                OresFuture<Integer> timed = group.watchDirection(server, SelectionKey.OP_READ, deadline);
+                var expired = assertThrows(ExecutionException.class, () -> timed.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(InterruptedByTimeoutException.class, expired.getCause());
+                OresFuture<Integer> rearmed = group.watchDirection(server, SelectionKey.OP_READ, 0);
+                client.write(ByteBuffer.wrap(new byte[] { 2 }));
+                assertEquals(SelectionKey.OP_READ, rearmed.get(5, TimeUnit.SECONDS));
+            }
+        } finally {
+            assertTrue(group.awaitStopped(5, TimeUnit.SECONDS));
         }
     }
 }

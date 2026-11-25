@@ -21,6 +21,22 @@ final class OutboundHttpPostGuestTest {
     @TempDir Path root;
 
     @Test
+    void compileRejectsAnUnsupportedRequestBodyType() throws Exception {
+        Path program = root.resolve("bad-post-body.atto");
+        Files.writeString(program, """
+                pub async routine main(): void {
+                  val response = await http.request(
+                    "POST", "http://127.0.0.1:1/", [], false);
+                  await response.close();
+                  return;
+                }
+                """);
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(program));
+        assertTrue(failure.getMessage().contains("argument 4"), failure::getMessage);
+    }
+
+    @Test
     void nativeGuestCanPostUtf8JsonAndBinaryBytesWithoutFramingAccess()
             throws Exception {
         AtomicReference<byte[]> json = new AtomicReference<>();

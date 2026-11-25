@@ -210,10 +210,10 @@ define actor BinaryKvActor as
   }
 
   receive(ActorMail<Tuple[int, List[int], List[int]]> mail): void {
-    const tuple = mail.value;
-    const int kind = tuple[0];
-    const List<int> key = tuple[1];
-    const List<int> value = tuple[2];
+    let tuple = mail.value;
+    let int kind = tuple[0];
+    let List<int> key = tuple[1];
+    let List<int> value = tuple[2];
     if kind == 5; do self.end(); return; fi
     if kind == 1; do self.emit_reply(5, []); return; fi
     if kind == 0; do self.emit_reply(6, []); return; fi
@@ -314,7 +314,7 @@ pub fnc encode_reply(Tuple[int, List[int]] reply): List<int> {
   if reply[0] == 0 then return [36, 45, 49, 13, 10]; fi
   if reply[0] == 1 then return [43, 79, 75, 13, 10]; fi
   if reply[0] == 2; do
-    const List<int> data = reply[1];
+    let List<int> data = reply[1];
     return encode_bulk(rt borrow data);
   fi
   if reply[0] == 3 then return [58, 49, 13, 10]; fi

@@ -88,19 +88,17 @@ final class SuspendsContractLanguageTest {
 
     @Test
     void nativeOreslangSuspendsAwaitValueExecutesThroughGraalFrontend() throws Exception {
-        // Genuine Oreslang parser/typechecker and Polyglot guest execution,
-        // not a host-only OresScheduler mock. Because the producer returns
-        // immediately this does NOT prove pending actor-await lowering.
         String source = """
                 suspends fnc fetch(): int {
+                    await process.sleep_async(5);
                     return 41;
                 }
-                suspends fnc compute(): int {
-                    let int value = await fetch();
+                susp fnc compute(): int {
+                    let int value = fetch();
                     return value + 1;
                 }
-                pub fnc main(): void {
-                    stdio.stdout.write(await compute());
+                pub susp fnc main(): void {
+                    stdio.stdout.write(compute());
                     return;
                 }
                 """;

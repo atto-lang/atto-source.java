@@ -704,9 +704,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "linked module was not uniquely imported: " + alias);
             }
-            // Only concrete, effect-free signatures are linked. Anything else
-            // (Any/generic/async/annotated callables, e.g. std/assert) keeps the
-            // legacy opaque import behavior instead of a nominal mis-typing.
+            // Modules can link signatures individually when other exports
+            // (for example, parameters typed Any) must remain opaque.
             Set<String> linkedNominals = linkedClasses.keySet();
             boolean allConcrete = module.declarations().stream()
                     .allMatch(d -> (d instanceof Ast.FunctionDecl fn
@@ -1756,7 +1755,7 @@ public final class TypeChecker {
         boolean previousAsync = currentAsyncCallable;
         currentActorKind = fn.actorKind();
         currentGenerator = fn.generator();
-        currentAsyncCallable = fn.async() || asyncGeneratorProtocol;
+        currentAsyncCallable = fn.async() || fn.suspends();
         boolean previousMaySuspend = currentMaySuspend;
         Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
         strictCallableReturnSource = strictAttoEquality && !fn.generator() ? fn.returnType() : null;
@@ -2843,9 +2842,11 @@ public final class TypeChecker {
             currentInstanceMethodOwner = method.isStatic() ? null : klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
+            boolean previousAsync = currentAsyncCallable;
             Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
             strictCallableReturnSource = strictAttoEquality ? method.returnType() : null;
             currentMaySuspend = method.async() || method.suspends();
+            currentAsyncCallable = currentMaySuspend;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
@@ -2855,6 +2856,7 @@ public final class TypeChecker {
                 currentInstanceMethodOwner = previousInstanceMethodOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
+                currentAsyncCallable = previousAsync;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -3778,7 +3780,7 @@ public final class TypeChecker {
             Type element;
             if (loop.asyncIteration()) {
                 if (!currentAsyncCallable) {
-                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                    throw new IllegalArgumentException("'for await' requires an async or suspending callable");
                 }
                 element = asyncIterableElementType(iterable);
             } else {
@@ -3799,7 +3801,7 @@ public final class TypeChecker {
             Type element;
             if (loop.asyncIteration()) {
                 if (!currentAsyncCallable) {
-                    throw new IllegalArgumentException("'for await' is only valid inside an async fnc/routine or async generator");
+                    throw new IllegalArgumentException("'for await' requires an async or suspending callable");
                 }
                 element = asyncIterableElementType(iterable);
             } else {
@@ -4865,15 +4867,21 @@ public final class TypeChecker {
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && (namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
                             || env.lookup(namespace.name()) == null)
-                    && modules.containsKey(namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
-                            ? Parser.ROOT_MODULE : namespace.name())) {
+                    && (modules.containsKey(namespace.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                            ? Parser.ROOT_MODULE : namespace.name())
+                        || partiallyLinkedModules.contains(namespace.name())
+                            && functions.containsKey(namespace.name() + "." + qualifiedCall.member()))) {
                 boolean pkgRoot = namespace.name().equals(Parser.PKG_ROOT_NAMESPACE);
                 String moduleName = pkgRoot ? Parser.ROOT_MODULE : namespace.name();
                 if (pkgRoot && qualifiedCall.member().equals("init")) {
                     throw new IllegalArgumentException("pkg::init is a lifecycle hook, not a callable");
                 }
                 // pkg:: is not an actor capability: same-file dependencies remain forbidden.
-                rejectUnimportedModuleNamespace(moduleName);
+                if (!partiallyLinkedModules.contains(moduleName)
+                        && (!moduleName.equals(Parser.IMPORTS_NAMESPACE)
+                            || !linkedImportCallables.contains(qualifiedCall.member()))) {
+                    rejectUnimportedModuleNamespace(moduleName);
+                }
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + (pkgRoot ? "pkg::" : moduleName + ".") + qualifiedCall.member());
@@ -5211,6 +5219,19 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
+                if (receiver instanceof Named namespace && namespace.name().equals("http")
+                        && member.member().equals("request")
+                        && !call.typeArgumentsPresent()) {
+                    Function request = (Function) builtinIoMember(receiver, "request");
+                    List<ExpandedCallArgument> expanded = expandFixedCallArguments(
+                            call.arguments(), env, generics, self, "http.request");
+                    List<Type> parameters = new ArrayList<>(request.parameters());
+                    if (expanded.size() == 4) {
+                        parameters.add(new Union(List.of(Primitive.STRING, new ListType(Primitive.INT))));
+                    }
+                    return checkFunctionValueCall(expanded, new Function(parameters, request.result()),
+                            env, generics, self, true);
+                }
                 if (member.member().equals("unwrap_all")
                         && receiver instanceof Named outer
                         && outer.name().equals("Option")
@@ -6115,29 +6136,9 @@ public final class TypeChecker {
             }
             Type callee = typeOf(call.callee(), env, generics, self);
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
-            List<ExpandedCallArgument> expanded =
-                    expandFixedCallArguments(
-                            call.arguments(), env, generics, self,
-                            "function value call");
-            if (fn.parameters().size() != expanded.size()) throw new IllegalArgumentException("call arity mismatch");
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                ExpandedCallArgument argument = expanded.get(i);
-                if (argument.expression() != null) {
-                    validateLambdaArgument(argument.expression(), fn.parameters().get(i), env, generics, self);
-                }
-                Type actualArgument = expandedCallArgumentType(
-                        argument, fn.parameters().get(i), env, generics, self);
-                requireReadonlyCapabilityPreserved(
-                        actualArgument,
-                        fn.parameters().get(i),
-                        "argument " + (i + 1) + " to function");
-                requireMutableReferentCompatible(
-                        actualArgument,
-                        fn.mutableParameters().get(i),
-                        "argument " + (i + 1) + " to mutable function parameter");
-                requireAssignable(actualArgument, fn.parameters().get(i), "argument " + (i + 1));
-            }
-            return fn.result();
+            return checkFunctionValueCall(expandFixedCallArguments(
+                    call.arguments(), env, generics, self, "function value call"),
+                    fn, env, generics, self, false);
         }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr namespace
@@ -6467,9 +6468,15 @@ public final class TypeChecker {
                         || name.name().equals("http")
                         || name.name().equals("env"))) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) {
-                if (partiallyLinkedModules.contains(name.name())) {
+                if (partiallyLinkedModules.contains(name.name()) && env.lookup(name.name()) == null) {
                     Ast.FunctionDecl linked =
                             findSingleQualifiedFunction(name.name() + "." + member.member());
+                    if (linked != null && linked.suspends()) {
+                        throw new IllegalArgumentException(
+                                "suspends function '" + name.name() + "." + member.member()
+                                        + "' cannot be used as a first-class callable until Fnc types encode suspension; "
+                                        + "invoke it directly from an async or suspends callable");
+                    }
                     if (linked != null) return trapFunctionType(linked, Set.of(), null);
                 }
                 return Unknown.INSTANCE;
@@ -7759,6 +7766,35 @@ public final class TypeChecker {
                         || type.name().equals("Bool") || type.name().equals("string")
                         || type.name().equals("String") || type.name().equals("Symbol")
                         || type.name().equals("Bytes"));
+    }
+
+    private Type checkFunctionValueCall(
+            List<ExpandedCallArgument> expanded, Function fn,
+            Env env, Set<String> generics, Type self, boolean copiesHttpHeaders) {
+        if (fn.parameters().size() != expanded.size()) {
+            throw new IllegalArgumentException("call arity mismatch");
+        }
+        for (int i = 0; i < fn.parameters().size(); i++) {
+            ExpandedCallArgument argument = expanded.get(i);
+            Type parameter = fn.parameters().get(i);
+            if (argument.expression() != null) {
+                validateLambdaArgument(argument.expression(), parameter, env, generics, self);
+            }
+            Type actual = expandedCallArgumentType(argument, parameter, env, generics, self);
+            requireReadonlyCapabilityPreserved(actual, parameter, "argument " + (i + 1) + " to function");
+            requireMutableReferentCompatible(
+                    actual, fn.mutableParameters().get(i),
+                    "argument " + (i + 1) + " to mutable function parameter");
+            if (copiesHttpHeaders && i == 2 && actual instanceof ListType headers
+                    && parameter instanceof ListType expected) {
+                // The transport copies header tuples before dispatch. Accept
+                // literal refinements without widening mutable Lists in general.
+                requireAssignable(headers.element(), expected.element(), "http.request header");
+            } else {
+                requireAssignable(actual, parameter, "argument " + (i + 1));
+            }
+        }
+        return fn.result();
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {

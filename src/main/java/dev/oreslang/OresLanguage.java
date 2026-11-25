@@ -182,18 +182,15 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // a host may not quietly ignore a malformed or duplicated directive.
         boolean checkedI64 = AttoCheckedI64Profile.select(text, codeUnitId);
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
+        boolean prechecked = program != null;
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
         }
         // `use default namespace(n);` names the last n folders of this unit.
         program = dev.oreslang.compiler.PackageLayout.NONE.withEffectiveNamespace(codeUnitId, program);
-        // No mixed-profile call graph: an unchecked imported callee could wrap
-        // inside a checked caller until the linker proves transitive profile
-        // compatibility over every source unit and pinned compiled interface.
-        // Compiler-owned core/alloc/std units and explicit .atto files are
-        // themselves checked-i64 .atto units, so the call graph stays in one
-        // profile; anything else (legacy .ores, Java, packages) still fails.
-        if (checkedI64 && program.imports().stream().anyMatch(imported ->
+        // The linked CLI checks each resolved provider's arithmetic profile.
+        // Keep the early path guard for standalone parsing without that graph.
+        if (checkedI64 && !prechecked && program.imports().stream().anyMatch(imported ->
                 !dev.oreslang.stdlib.CoreLibrarySources.isCompilerOwnedAttoImport(imported.path())
                         && !imported.path().endsWith(".atto"))) {
             throw new IllegalArgumentException(

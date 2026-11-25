@@ -1,6 +1,11 @@
-// Source import/linked compilation smoke, NOT GPU/device semantic parity.
+// Source-only descriptor validation through the linked standard library.
 import module compute from "std/compute.atto";
 pub routine main(): void {
-  stdio.println(42);
+  let valid = new compute.BufferLayout(2, 4611686018427387903, 1, 9223372036854775806);
+  let overflow = new compute.BufferLayout(2, 4611686018427387904, 1, 9223372036854775807);
+  let empty = new compute.BufferLayout(2, 0, 1, 0);
+  stdio.println(compute.valid_exact_buffer_layout(rt borrow valid));
+  stdio.println(compute.valid_exact_buffer_layout(rt borrow overflow));
+  stdio.println(compute.valid_exact_buffer_layout(rt borrow empty));
   return;
 }

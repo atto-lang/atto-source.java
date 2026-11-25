@@ -8,15 +8,15 @@ define actor FramedNioKvActor as
   let Map<string,string> values;
 
   on_start(): void {
-    self.values = ~map<string,string>();
+    self.values = Map.of<string,string>();
     return;
   }
 
   receive(ActorMail<Tuple[int, string, string]> mail): void {
-    const tuple = mail.value;
-    const int kind = tuple[0];
-    const string key = tuple[1];
-    const string value = tuple[2];
+    let tuple = mail.value;
+    let int kind = tuple[0];
+    let string key = tuple[1];
+    let string value = tuple[2];
     if kind == 5; do self.end(); return; fi
     if kind == 3; do
       self.values.set(key, value);
@@ -86,7 +86,7 @@ pub async routine main(): void {
       // No second mailbox wait for VALUE; status and payload share one turn.
       val output = (await worker.outputs.next()).value.unwrap();
       // Explicitly preserve the typed mailbox payload before tuple indexing.
-      const Tuple[string,string] reply = output.value;
+      let Tuple[string,string] reply = output.value;
       await socket.write_resp2_hex_async(reply[0], reply[1]);
     fi
   }

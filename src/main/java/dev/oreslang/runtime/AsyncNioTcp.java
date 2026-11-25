@@ -16,8 +16,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * True NIO2 socket completions for Atto guest Future/await: no blocking
- * Socket/InputStream/OutputStream, Future.get, selector wait, or host IO thread.
+ * Nonblocking TCP for Atto guest Future/await. The VM can drive the socket
+ * operations on a JDK NIO2 group or a selector shared with root carriers.
  *
  * This narrow v1 exposes numeric loopback-only, raw byte vectors (0..255),
  * bounded reads/writes, a single outstanding accept/read/write per direction,
@@ -31,23 +31,24 @@ public final class AsyncNioTcp {
     // socket). Writes keep a deadline so a peer that stops reading is a slow
     // consumer that fails instead of pinning buffers forever (nats-server
     // uses the same 10 s default write_deadline).
-    private static final int WRITE_TIMEOUT_SECONDS = 10;
+    static final int WRITE_TIMEOUT_SECONDS = 10;
     private AsyncNioTcp() { }
 
     public static OresFuture<Listener> listenAsync(
             OresContext context, String host, int port) {
         Objects.requireNonNull(context);
-        if (!"127.0.0.1".equals(host) || port < 1 || port > 65535) {
-            throw new SecurityException("NIO2 Atto listener permits numeric IPv4 loopback only");
+        if (!"127.0.0.1".equals(host) || port < 0 || port > 65535) {
+            throw new SecurityException("Atto async TCP permits numeric IPv4 loopback only");
         }
         context.requirePermission(RuntimePermissions.Permission.NET,
                 host + ":" + port, "network.listen_async");
         try {
-            AsynchronousServerSocketChannel channel =
-                    AsynchronousServerSocketChannel.open(context.vm().nioCompletionGroup());
+            InetSocketAddress address = new InetSocketAddress(
+                    InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), port);
+            TcpListener channel = context.vm().nioReadiness().shared()
+                    ? ReactorTcp.listen(context.vm().nioReadiness(), address)
+                    : listenNio2(context.vm(), address);
             try {
-                channel.bind(new InetSocketAddress(
-                        InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), port), 32);
                 Listener listener = new Listener(context, channel);
                 context.nativeIo().register(listener);
                 return OresFuture.completed(listener);
@@ -60,25 +61,105 @@ public final class AsyncNioTcp {
         }
     }
 
+    interface TcpListener extends AutoCloseable {
+        int port() throws IOException;
+        void accept(CompletionHandler<TcpSocket, Void> handler);
+        @Override void close() throws IOException;
+    }
+
+    interface TcpSocket extends AutoCloseable {
+        void read(ByteBuffer buffer, CompletionHandler<Integer, Void> handler);
+        void write(ByteBuffer buffer, CompletionHandler<Integer, Void> handler);
+        void shutdownInput() throws IOException;
+        void shutdownOutput() throws IOException;
+        @Override void close() throws IOException;
+    }
+
+    private static TcpListener listenNio2(OresVM vm, InetSocketAddress address) throws IOException {
+        AsynchronousServerSocketChannel server =
+                AsynchronousServerSocketChannel.open(vm.nioCompletionGroup());
+        try {
+            return new Nio2Listener(server.bind(address, 32));
+        } catch (IOException | RuntimeException failure) {
+            try {
+                server.close();
+            } catch (IOException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private record Nio2Listener(AsynchronousServerSocketChannel server) implements TcpListener {
+        @Override public int port() throws IOException {
+            return ((InetSocketAddress) server.getLocalAddress()).getPort();
+        }
+
+        @Override public void accept(CompletionHandler<TcpSocket, Void> handler) {
+            server.accept(null, new CompletionHandler<AsynchronousSocketChannel, Void>() {
+                @Override public void completed(AsynchronousSocketChannel socket, Void ignored) {
+                    try {
+                        socket.setOption(StandardSocketOptions.TCP_NODELAY, true);
+                    } catch (IOException | RuntimeException failure) {
+                        try {
+                            socket.close();
+                        } catch (IOException closeFailure) {
+                            failure.addSuppressed(closeFailure);
+                        }
+                        handler.failed(failure, null);
+                        return;
+                    }
+                    handler.completed(new Nio2Socket(socket), null);
+                }
+                @Override public void failed(Throwable failure, Void ignored) {
+                    handler.failed(failure, null);
+                }
+            });
+        }
+
+        @Override public void close() throws IOException {
+            server.close();
+        }
+    }
+
+    private record Nio2Socket(AsynchronousSocketChannel socket) implements TcpSocket {
+        @Override public void read(ByteBuffer buffer, CompletionHandler<Integer, Void> handler) {
+            socket.read(buffer, null, handler);
+        }
+
+        @Override public void write(ByteBuffer buffer, CompletionHandler<Integer, Void> handler) {
+            socket.write(buffer, WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, handler);
+        }
+
+        @Override public void shutdownInput() throws IOException { socket.shutdownInput(); }
+        @Override public void shutdownOutput() throws IOException { socket.shutdownOutput(); }
+        @Override public void close() throws IOException { socket.close(); }
+    }
+
     public static final class Listener implements AutoCloseable {
         private final OresContext context;
-        private final AsynchronousServerSocketChannel channel;
+        private final TcpListener channel;
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicBoolean accepting = new AtomicBoolean();
 
-        private Listener(OresContext context, AsynchronousServerSocketChannel channel) {
+        private Listener(OresContext context, TcpListener channel) {
             this.context = context;
             this.channel = channel;
         }
 
         public int port() {
             try {
-                return ((InetSocketAddress) channel.getLocalAddress()).getPort();
+                return channel.port();
             } catch (IOException failure) {
                 throw new IllegalStateException("listener closed", failure);
             }
         }
 
+        /**
+         * Host cancellation closes the listener, since a posted NIO2
+         * completion-handler accept cannot be withdrawn independently.
+         * Guest code revokes the pending accept through listener.close_async().
+         */
         public OresFuture<Connection> acceptAsync() {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "listener.accept_async");
@@ -88,10 +169,9 @@ public final class AsyncNioTcp {
             }
             return OresFuture.fromCallback(callback -> {
                 try {
-                    channel.accept(null,
-                            new CompletionHandler<AsynchronousSocketChannel, Void>() {
+                    channel.accept(new CompletionHandler<TcpSocket, Void>() {
                         @Override public void completed(
-                                AsynchronousSocketChannel accepted, Void ignored) {
+                                TcpSocket accepted, Void ignored) {
                             accepting.set(false);
                             if (closed.get()) {
                                 try { accepted.close(); } catch (IOException ignoredClose) { }
@@ -99,10 +179,9 @@ public final class AsyncNioTcp {
                                 return;
                             }
                             try {
-                                accepted.setOption(StandardSocketOptions.TCP_NODELAY, true);
                                 Connection connection = new Connection(context, accepted);
                                 context.nativeIo().register(connection);
-                                callback.resolve(connection);
+                                if (!callback.tryResolve(connection)) connection.closeQuietly();
                             } catch (Exception failure) {
                                 try { accepted.close(); } catch (IOException ignoredClose) { }
                                 callback.reject(failure);
@@ -117,6 +196,8 @@ public final class AsyncNioTcp {
                     accepting.set(false);
                     callback.reject(failure);
                 }
+            }, () -> {
+                try { close(); } catch (IOException ignored) { }
             });
         }
 
@@ -138,7 +219,7 @@ public final class AsyncNioTcp {
 
     public static final class Connection implements AutoCloseable {
         private final OresContext context;
-        private final AsynchronousSocketChannel channel;
+        private final TcpSocket channel;
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicBoolean reading = new AtomicBoolean();
         private final AtomicBoolean writing = new AtomicBoolean();
@@ -146,7 +227,7 @@ public final class AsyncNioTcp {
         private final AtomicInteger readerMode = new AtomicInteger();
         private ByteBuffer respInput = ByteBuffer.allocate(4096);
 
-        private Connection(OresContext context, AsynchronousSocketChannel channel) {
+        private Connection(OresContext context, TcpSocket channel) {
             this.context = context;
             this.channel = channel;
         }
@@ -185,7 +266,7 @@ public final class AsyncNioTcp {
                         }
                         if (count == 0) {
                             try {
-                                channel.read(buffer, null, this);
+                                channel.read(buffer, this);
                             } catch (RuntimeException failure) {
                                 reading.set(false);
                                 callback.reject(failure);
@@ -205,7 +286,7 @@ public final class AsyncNioTcp {
                     }
                 };
                 try {
-                    channel.read(buffer, null, handler);
+                    channel.read(buffer, handler);
                 } catch (RuntimeException failure) {
                     reading.set(false);
                     callback.reject(failure);
@@ -251,8 +332,7 @@ public final class AsyncNioTcp {
                         }
                         if (buffer.hasRemaining()) {
                             try {
-                                channel.write(buffer, WRITE_TIMEOUT_SECONDS,
-                                        TimeUnit.SECONDS, null, this);
+                                channel.write(buffer, this);
                             } catch (RuntimeException failure) {
                                 writing.set(false);
                                 retire.run();
@@ -276,7 +356,7 @@ public final class AsyncNioTcp {
                         retire.run();
                         callback.resolve(null);
                     } else {
-                        channel.write(buffer, WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, handler);
+                        channel.write(buffer, handler);
                     }
                 } catch (RuntimeException failure) {
                     writing.set(false);
@@ -305,7 +385,7 @@ public final class AsyncNioTcp {
             ByteBuffer buffer = ByteBuffer.allocate(maxBytes);
             return OresFuture.fromCallback(callback -> {
                 try {
-                    channel.read(buffer, null,
+                    channel.read(buffer,
                             new CompletionHandler<Integer, Void>() {
                         @Override public void completed(Integer count, Void ignored) {
                             if (closed.get()) {
@@ -321,7 +401,7 @@ public final class AsyncNioTcp {
                             if (count == 0) {
                                 // Keep the admission claim until a real byte/EOF arrives.
                                 try {
-                                    channel.read(buffer, null, this);
+                                    channel.read(buffer, this);
                                 } catch (RuntimeException failure) {
                                     reading.set(false);
                                     callback.reject(failure);
@@ -405,7 +485,7 @@ public final class AsyncNioTcp {
                 respInput = enlarged;
             }
             try {
-                channel.read(respInput, null,
+                channel.read(respInput,
                         new CompletionHandler<Integer, Void>() {
                     @Override public void completed(Integer count, Void ignored) {
                         if (count == null || count < 0) {
@@ -515,8 +595,7 @@ public final class AsyncNioTcp {
                         }
                         if (buffer.hasRemaining()) {
                             try {
-                                channel.write(buffer, WRITE_TIMEOUT_SECONDS,
-                                        TimeUnit.SECONDS, null, this);
+                                channel.write(buffer, this);
                             } catch (RuntimeException failure) {
                                 writing.set(false);
                                 callback.reject(failure);
@@ -537,8 +616,7 @@ public final class AsyncNioTcp {
                         writing.set(false);
                         callback.resolve(null);
                     } else {
-                        channel.write(buffer, WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS,
-                                null, handler);
+                        channel.write(buffer, handler);
                     }
                 } catch (RuntimeException failure) {
                     writing.set(false);

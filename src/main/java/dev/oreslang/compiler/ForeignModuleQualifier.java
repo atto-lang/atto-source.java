@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -27,10 +28,13 @@ import java.util.Set;
 final class ForeignModuleQualifier {
     private final String alias;
     private final Set<String> nominals;
+    private final Map<String, String> namespaceAliases;
 
-    private ForeignModuleQualifier(String alias, Set<String> nominals) {
+    private ForeignModuleQualifier(String alias, Set<String> nominals,
+                                   Map<String, String> namespaceAliases) {
         this.alias = alias;
         this.nominals = nominals;
+        this.namespaceAliases = namespaceAliases;
     }
 
     /** Names of the nominal declarations a module owns. */
@@ -47,7 +51,13 @@ final class ForeignModuleQualifier {
     }
 
     static Ast.ModuleDecl qualify(String alias, Ast.ModuleDecl module) {
-        ForeignModuleQualifier qualifier = new ForeignModuleQualifier(alias, nominalNames(module));
+        return qualify(alias, module, Map.of());
+    }
+
+    static Ast.ModuleDecl qualify(String alias, Ast.ModuleDecl module,
+                                  Map<String, String> namespaceAliases) {
+        ForeignModuleQualifier qualifier =
+                new ForeignModuleQualifier(alias, nominalNames(module), namespaceAliases);
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
         for (Ast.Decl declaration : module.declarations()) {
             declarations.add((Ast.Decl) qualifier.rewrite(declaration, Set.of()));
@@ -57,7 +67,7 @@ final class ForeignModuleQualifier {
     }
 
     static Ast.ClassDecl qualify(String alias, Ast.ModuleDecl owner, Ast.ClassDecl klass) {
-        return (Ast.ClassDecl) new ForeignModuleQualifier(alias, nominalNames(owner))
+        return (Ast.ClassDecl) new ForeignModuleQualifier(alias, nominalNames(owner), Map.of())
                 .rewrite(klass, Set.of());
     }
 
@@ -74,6 +84,15 @@ final class ForeignModuleQualifier {
         if (nominals.contains(name) && !generics.contains(name)) {
             name = alias + "." + name;
             changed = true;
+        } else {
+            int separator = name.indexOf('.');
+            if (separator >= 0) {
+                String replacement = namespaceAliases.get(name.substring(0, separator));
+                if (replacement != null) {
+                    name = replacement + name.substring(separator);
+                    changed = true;
+                }
+            }
         }
         return changed ? new Ast.TypeRef(name, arguments, ref.inferArguments()) : ref;
     }

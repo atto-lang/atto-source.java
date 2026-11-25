@@ -5,23 +5,23 @@ import { readFileSync } from 'node:fs';
 const sink = readFileSync(new URL('../stdlib/log_sink.atto', import.meta.url),'utf8');
 const log = readFileSync(new URL('../stdlib/log.atto', import.meta.url),'utf8');
 
-// These are source guards only; the Java/Graal compiler must execute the guest
-// and the #1344 async stdio dependency before an executable sink claim.
+// These source guards complement the packaged guest execution check.
 test('sink is a separate file-level namespace that imports native log', () => {
   assert.match(sink,/^namespace log_sink;$/m);
-  assert.match(sink,/import \* as log from "\.\/log\.atto";/);
+  assert.match(sink,/import \* as log from "atto\.std\/log";/);
   assert.match(log,/^namespace log;$/m);
   assert.doesNotMatch(sink,/define module|java\.|System\.|ffi\.|new Thread/);
 });
 
 test('sink validates record and every variable field before output', () => {
-  const guard = sink.slice(sink.indexOf('pub fnc valid_for_line'),sink.indexOf('pub async routine'));
-  const call = sink.slice(sink.indexOf('pub async routine'));
+  const guard = sink.slice(sink.indexOf('pub fnc valid_for_line'),sink.indexOf('pub async fnc'));
+  const call = sink.slice(sink.indexOf('pub async fnc'));
   assert.ok(guard.indexOf('log.valid_entry(record)') >= 0);
   for (const k of ['target','message','field1_key','field1_value','field2_key','field2_value']) {
     assert.match(guard,new RegExp('safe_component\\(record\\.'+k+','));
   }
-  assert.ok(call.indexOf('valid_for_line(record)') < call.indexOf('await stdio.stdout.log_async'));
+  const validation = call.indexOf('valid_for_line(rt borrow record)');
+  assert.ok(validation >= 0 && validation < call.indexOf('await stdio.stdout.log_async'));
 });
 
 test('source validates one-line text and rejects line-forging delimiters', () => {
@@ -35,7 +35,7 @@ test('source validates one-line text and rejects line-forging delimiters', () =>
 });
 
 test('only privileged async stdio receives completed line; no ACK across await', () => {
-  const write = sink.slice(sink.indexOf('pub async routine write_record'));
+  const write = sink.slice(sink.indexOf('pub async fnc write_record'));
   assert.match(write,/await stdio\.stdout\.log_async\(/);
   assert.match(write,/return true;/);
   assert.doesNotMatch(write,/\.ack_one\(/);

@@ -60,6 +60,8 @@ public final class CoreLibrarySources {
 
     private static final Set<String> STD_SOURCES = Set.of(
             "core.atto", "testing.ores", "assert.atto", "trace.atto", "telemetry.atto",
+            "telemetry_http.atto",
+            "log.atto", "log_sink.atto", "perf.atto", "perf_ids.atto",
             "http_wire.atto", "compute.atto", "db_pool.atto",
             "actor_persistence.atto",
             "data_pool.ores",
@@ -310,10 +312,6 @@ public final class CoreLibrarySources {
 
     public static String oresCoreSource(String importPath) throws IOException {
         String relative = canonicalCoreRelativePath(importPath);
-        if (!CORE_SOURCES.contains(relative)) {
-            throw new IllegalArgumentException(
-                    "unknown compiler-owned ores.core module: " + importPath);
-        }
         return readPackagedSource(CORE_RESOURCE_PREFIX + relative, importPath);
     }
 
@@ -329,6 +327,14 @@ public final class CoreLibrarySources {
             relative = relative.substring(0, relative.length() - ".atto".length()) + ".ores";
         }
         return STD_UNIT_PREFIX + relative;
+    }
+
+    /** Canonical Atto modules whose linked unit IDs retain a legacy suffix. */
+    public static boolean isMigratedAttoUnitId(String unitId) {
+        if (unitId.equals(CORE_UNIT_PREFIX + "numeric.ores")) return true;
+        if (!unitId.startsWith(STD_UNIT_PREFIX) || !unitId.endsWith(".ores")) return false;
+        String stem = unitId.substring(STD_UNIT_PREFIX.length(), unitId.length() - ".ores".length());
+        return MIGRATED_STD_STEMS.contains(stem) && STD_SOURCES.contains(stem + ".atto");
     }
 
     public static String source(String importPath) throws IOException {
@@ -364,8 +370,12 @@ public final class CoreLibrarySources {
         // .ores spelling of a migrated core module is an explicit closed alias
         // to the same unit (no ambient file-system or extension probing).
         String relative = canonicalPathBody(importPath, CORE_IMPORT_PREFIX, CORE_SOURCES);
-        if (relative.equals("numeric.ores")) return "numeric.atto";
-        if (relative.equals("protocols.ores")) return "protocols.atto";
+        if (relative.equals("numeric.ores")) relative = "numeric.atto";
+        if (relative.equals("protocols.ores")) relative = "protocols.atto";
+        if (!CORE_SOURCES.contains(relative)) {
+            throw new IllegalArgumentException(
+                    "unknown compiler-owned ores.core module: " + importPath);
+        }
         return relative;
     }
 

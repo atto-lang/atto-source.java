@@ -125,8 +125,8 @@ public final class OresVM implements AutoCloseable {
     private volatile StartupState startupState = StartupState.NEW;
 
     private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor,
-            Executor rootAdmission) {
-        this(controlParallelism, turnExecutor, rootAdmission,
+            Executor rootAdmission, boolean sharedSelector) {
+        this(controlParallelism, turnExecutor, rootAdmission, sharedSelector,
                 Integer.getInteger("ores.runtime.physical-stop.parallelism",
                         DEFAULT_PHYSICAL_STOP_PARALLELISM),
                 Integer.getInteger("ores.runtime.physical-stop.queue-capacity",
@@ -134,7 +134,7 @@ public final class OresVM implements AutoCloseable {
     }
 
     private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor,
-            Executor rootAdmission, int physicalParallelism, int physicalQueue) {
+            Executor rootAdmission, boolean sharedSelector, int physicalParallelism, int physicalQueue) {
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
         ActorHeapAdmission.requireSupportedTenantIsolationMode(
@@ -152,8 +152,10 @@ public final class OresVM implements AutoCloseable {
                 .unstarted(LogicalStackQuota.carrierBody(
                         LogicalStackQuota.CARRIER_STACK_BYTES, runnable));
 
+        this.nioReadiness = new NioReadinessGroup(sharedSelector ? this::signalNioWork : null);
         this.controlExecutor = new LocalityCarrierPool(
-                controlParallelism, DEFAULT_QUEUE_CAPACITY, factory);
+                controlParallelism, DEFAULT_QUEUE_CAPACITY, factory,
+                sharedSelector ? nioReadiness : null);
 
         // Limits are fixed at VM startup; no mutable global/test properties
         // may affect physical STOP capacity after admission.
@@ -188,9 +190,6 @@ public final class OresVM implements AutoCloseable {
             throw failure;
         }
         this.rootScheduler = initializedRoot;
-        // Construction owns no selector or reactor thread. The first accepted
-        // readiness watch starts the VM-owned reactor lazily.
-        this.nioReadiness = new NioReadinessGroup();
         try {
             startup();
         } catch (RuntimeException | Error failure) {
@@ -199,6 +198,10 @@ public final class OresVM implements AutoCloseable {
             shutdownPhysicalStops();
             throw failure;
         }
+    }
+
+    private void signalNioWork() {
+        controlExecutor.signalExternalWork();
     }
 
     /**
@@ -239,9 +242,15 @@ public final class OresVM implements AutoCloseable {
      */
     static OresVM createConfigured(OresScheduler.TurnExecutor turnExecutor,
             Executor rootAdmission, String configuredControl) {
+        return createConfigured(turnExecutor, rootAdmission, configuredControl,
+                Boolean.getBoolean("ores.runtime.nio.shared-selector"));
+    }
+
+    static OresVM createConfigured(OresScheduler.TurnExecutor turnExecutor,
+            Executor rootAdmission, String configuredControl, boolean sharedSelector) {
         return new OresVM(
                 configuredControlParallelism(configuredControl),
-                turnExecutor, rootAdmission);
+                turnExecutor, rootAdmission, sharedSelector);
     }
 
     /** Test-only deterministic executor limits; no global property mutation. */
@@ -250,7 +259,7 @@ public final class OresVM implements AutoCloseable {
                 configuredControlParallelism(
                         System.getProperty("ores.runtime.control.parallelism")),
                 Runnable::run,
-                null, parallelism, queueCapacity);
+                null, false, parallelism, queueCapacity);
     }
 
     /**

@@ -80,6 +80,34 @@ final class CrossFileLinkedTypingTest {
     }
 
     @Test
+    void aPartiallyLinkedModulePreservesTheSuspendsEffect() {
+        String provider = """
+                define module timer as
+                  pub suspends fnc pause(): int {
+                    await process.sleep_async(1);
+                    return 42;
+                  }
+                  pub fnc unrelated(Any value): void { return; }
+                end
+                """;
+        String imports = "import module timer from \"./timer\";\n";
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(Map.of(
+                "timer.atto", provider,
+                "main.atto", imports + "pub susp fnc main(): int { return timer.pause(); }")));
+        IllegalArgumentException plainCaller = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(Map.of(
+                        "timer.atto", provider,
+                        "main.atto", imports + "pub fnc main(): int { return timer.pause(); }")));
+        assertTrue(plainCaller.getMessage().contains("pause") && plainCaller.getMessage().contains("suspend"),
+                plainCaller::getMessage);
+        IllegalArgumentException reified = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(Map.of(
+                        "timer.atto", provider,
+                        "main.atto", imports + "pub susp fnc main(): int { val callback = timer.pause; return 0; }")));
+        assertTrue(reified.getMessage().contains("cannot be used as a first-class callable"), reified::getMessage);
+    }
+
+    @Test
     void genericFunctionInstantiatesAtTheCallSite() {
         accepts("""
                 import module lib from "./lib.atto";
@@ -251,6 +279,33 @@ final class CrossFileLinkedTypingTest {
                         }
                         """));
         assertTrue(failure.getMessage().contains("boxed"), failure::getMessage);
+    }
+
+    @Test
+    void asyncNamespaceSignatureUsesTheImportedTypeFromTheResolvedFile() {
+        String token = """
+                pub define class Token as
+                  pub val int value;
+                end
+                pub fnc make(): Token { return new Token(17); }
+                """;
+        String sink = """
+                import * as model from "./model.atto";
+                pub async fnc write(model.Token token): int { return token.value; }
+                """;
+        String main = """
+                import * as actual from "./model.atto";
+                import * as model from "./decoy.atto";
+                import * as sink from "./sink.atto";
+                pub async fnc main(): int { return await sink.write(actual.make()); }
+                """;
+        var compiler = new IncrementalCompiler();
+        assertDoesNotThrow(() -> compiler.compile(Map.of(
+                "model.atto", token, "decoy.atto", token, "sink.atto", sink, "main.atto", main)));
+        var failure = assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(
+                "model.atto", token, "decoy.atto", token, "sink.atto", sink,
+                "main.atto", main.replace("actual.make()", "model.make()"))));
+        assertTrue(failure.getMessage().contains("argument 1"), failure::getMessage);
     }
 
     @Test

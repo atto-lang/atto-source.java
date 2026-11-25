@@ -507,21 +507,28 @@ public final class NativeHttp implements AutoCloseable {
                 throw new RejectedExecutionException("discarded HTTP worker pool");
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
+            if (exchange.state.server.ownerHttp() != NativeHttp.this)
+                throw new SecurityException("HTTP handler belongs to another runtime");
             synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
             if (workers != null) {
                 try {
                     Worker worker = worker();
+                    long sequence = nextDispatchSequence();
+                    String token;
                     synchronized (exchange.state) {
+                        // The deadline may have retired the request while
+                        // selecting a worker. Fence that before adding it
+                        // to the worker's outstanding requests.
+                        exchange.checkOwner();
                         exchange.state.poolWorker = worker;
                         worker.requests.add(exchange.state);
                         // Reused workers have no per-request startup. Do not retain
                         // one actor.done callback per completed request.
                         exchange.state.readyNanos = exchange.state.spawnNanos;
+                        token = exchange.moveTo(worker.actor, type, binding,
+                                authorityClass, scopeGeneration, sequence, scopeGeneration > 0);
                     }
-                    sendWithRequestTraceContext(exchange, () -> worker.actor.send(
-                            exchange.moveTo(worker.actor, type, binding,
-                                    authorityClass, scopeGeneration, nextDispatchSequence(),
-                                    scopeGeneration > 0)));
+                    sendWithRequestTraceContext(exchange, () -> worker.actor.send(token));
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
@@ -676,28 +683,51 @@ public final class NativeHttp implements AutoCloseable {
         private void receive(HttpExchange raw) {
             long perf = CorePerf.start();
             try {
-            if (!admission.tryAcquire()) { rejected.incrementAndGet(); reject(raw, 503); return; }
-            State state = null;
-            try {
-                validateRequest(raw);
-                state = new State(this, raw);
-                synchronized (this) {
-                    if (stopped) { admission.release(); reject(raw, 503); return; }
-                    active.add(state); accepted.incrementAndGet();
-                    State timed = state;
-                    long schedulePerf = CorePerf.start();
-                    state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
-                    CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
-                    Exchange exchange = new Exchange(state, hostOwner, 0);
-                    if (waiter == null) pending.add(exchange);
-                    else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
+                if (!admission.tryAcquire()) {
+                    rejected.incrementAndGet();
+                    reject(raw, 503);
+                    return;
                 }
-            } catch (IllegalArgumentException invalid) {
-                admission.release(); reject(raw, invalid instanceof RequestBodyTooLargeException ? 413 : 400);
-            } catch (RuntimeException failure) {
-                if (state != null && active.contains(state)) state.abort(500);
-                else { admission.release(); raw.close(); }
-            }
+                State state = null;
+                boolean admitted = false;
+                OresFuture<Object> next = null;
+                Exchange exchange = null;
+                try {
+                    validateRequest(raw);
+                    synchronized (this) {
+                        if (!stopped) {
+                            state = new State(this, raw);
+                            active.add(state);
+                            accepted.incrementAndGet();
+                            admitted = true;
+                            State timed = state;
+                            long schedulePerf = CorePerf.start();
+                            state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
+                            CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
+                            exchange = new Exchange(state, hostOwner, 0);
+                            next = waiter;
+                            waiter = null;
+                            if (next == null) pending.add(exchange);
+                        }
+                    }
+                } catch (IllegalArgumentException invalid) {
+                    if (admitted) state.abort(500);
+                    else {
+                        admission.release();
+                        reject(raw, invalid instanceof RequestBodyTooLargeException ? 413 : 400);
+                    }
+                    return;
+                } catch (RuntimeException failure) {
+                    if (admitted) state.abort(500);
+                    else { admission.release(); raw.close(); }
+                    return;
+                }
+                if (!admitted) {
+                    admission.release();
+                    reject(raw, 503);
+                } else if (next != null) {
+                    next.completeFromRuntime(exchange);
+                }
             } finally {
                 CorePerf.end(CorePerf.HTTP_RECEIVE, perf);
             }
@@ -710,12 +740,16 @@ public final class NativeHttp implements AutoCloseable {
             segments(raw.getRequestURI().getRawPath());
             validateHeadersForAdmission(raw.getRequestHeaders(), raw.getProtocol(), bodyLimit);
         }
-        public synchronized OresFuture<Object> shutdown(int graceMillis) {
+        public OresFuture<Object> shutdown(int graceMillis) {
             supervisor();
             if (graceMillis < 0) throw new IllegalArgumentException("negative drain deadline");
-            if (drained != null) return drained;
-            drained = new OresFuture<>(() -> false, () -> { });
-            stopAccepting();
+            OresFuture<Object> pendingAccept;
+            OresFuture<Object> result;
+            synchronized (this) {
+                if (drained != null) return drained;
+                result = drained = new OresFuture<>(() -> false, () -> { });
+                pendingAccept = stopAcceptingLocked();
+            }
             // Drain must still be driven if the I/O pool was concurrently shut
             // down. A rejected task must not strand the drained Future.
             HttpResponseCleanupDispatcher.dispatch(io, () -> {
@@ -727,21 +761,36 @@ public final class NativeHttp implements AutoCloseable {
                     completeDrain();
                 }
             });
-            return drained;
+            failPendingAccept(pendingAccept);
+            return result;
         }
-        private synchronized void completeDrain() {
-            if (transportStopped && active.isEmpty() && drained != null) drained.completeFromRuntime(null);
+        private void completeDrain() {
+            OresFuture<Object> ready;
+            synchronized (this) {
+                ready = transportStopped && active.isEmpty() ? drained : null;
+            }
+            if (ready != null) ready.completeFromRuntime(null);
         }
-        private synchronized void stopAccepting() {
+        private OresFuture<Object> stopAcceptingLocked() {
             stopped = true;
-            if (waiter != null) { waiter.failFromRuntime(new IllegalStateException("HTTP server closed")); waiter = null; }
+            OresFuture<Object> pendingAccept = waiter;
+            waiter = null;
             pending.clear();
+            return pendingAccept;
+        }
+        private void failPendingAccept(OresFuture<Object> pendingAccept) {
+            if (pendingAccept != null) {
+                pendingAccept.failFromRuntime(new IllegalStateException("HTTP server closed"));
+            }
         }
         @Override public void close() {
-            stopAccepting(); transport.stop(0);
+            OresFuture<Object> pendingAccept;
+            synchronized (this) { pendingAccept = stopAcceptingLocked(); }
+            transport.stop(0);
             synchronized (this) { transportStopped = true; }
             for (State state : active) state.abort(503);
             servers.remove(this); completeDrain();
+            failPendingAccept(pendingAccept);
         }
     }
 
@@ -788,6 +837,7 @@ public final class NativeHttp implements AutoCloseable {
         volatile boolean terminal;
         volatile InputStream activeResponseInput;
         boolean transportClosed;
+        boolean retiring;
         String ticket;
         DispatchReceipt dispatchReceipt;
         final String requestId = UUID.randomUUID().toString();
@@ -875,29 +925,30 @@ public final class NativeHttp implements AutoCloseable {
             // Fresh handlers hold admission through actor finalization. Explicit
             // pools bound worker count separately and release closed exchanges;
             // subsequent mail still waits for the current receive to finish.
+            int completedStatus;
             synchronized (this) {
-                if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
+                if (retiring || !transportClosed
+                        || (poolWorker == null && actor != null && !actor.done().isDone())) return;
+                retiring = true;
+                completedStatus = responseStatus;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 dispatchReceipt = null;
                 if (deadline != null) deadline.cancel(false);
             }
-            if (server.active.remove(this)) {
-                // Logical SERVER completion is the physical HTTP exchange
-                // retirement, not the initial request dispatch or Future
-                // allocation. Terminal racing paths funnel through this
-                // single admission-removal winner.
-                int completedStatus;
-                synchronized (this) { completedStatus = responseStatus; }
-                SemanticTraceBuffer.finish(serverSpan, completedStatus,
-                        completedStatus == 0 || completedStatus >= 500);
-                if (poolWorker != null) poolWorker.requests.remove(this);
-                if (CorePerf.enabled()) {
-                    CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
-                }
-                synchronized (server) { server.pending.removeIf(exchange -> exchange.state == this); }
-                server.admission.release(); server.completed.incrementAndGet(); server.completeDrain();
-                completion.completeFromRuntime((long) responseStatus);
+            SemanticTraceBuffer.finish(serverSpan, completedStatus,
+                    completedStatus == 0 || completedStatus >= 500);
+            if (poolWorker != null) poolWorker.requests.remove(this);
+            if (CorePerf.enabled()) {
+                CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
             }
+            synchronized (server) {
+                server.pending.removeIf(exchange -> exchange.state == this);
+                server.completed.incrementAndGet();
+                server.active.remove(this);
+                server.admission.release();
+            }
+            server.completeDrain();
+            completion.completeFromRuntime((long) completedStatus);
         }
     }
 
@@ -1199,7 +1250,16 @@ public final class NativeHttp implements AutoCloseable {
             });
         }
         public OresFuture<Object> finish() { return operation(() -> { if (!state.committed) throw new IllegalStateException("response not started"); state.finish(); return null; }); }
-        public void abort() { synchronized (state) { checkOwner(); } state.abort(500); }
+        public void abort() {
+            boolean cancelOwner;
+            synchronized (state) {
+                checkOwner();
+                // A pooled handler may deliberately reject this exchange and
+                // continue receiving on the same actor.
+                cancelOwner = state.poolWorker == null;
+            }
+            state.abort(500, cancelOwner);
+        }
 
         /**
          * Host CONTROL cancellation of a request whose capability may already

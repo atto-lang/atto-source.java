@@ -100,19 +100,22 @@ final class CanonicalAttoHostPolicySecondFiveTest {
         AtomicLong clock = new AtomicLong(0);
         var quantum = new SourceCooperationQuantum(clock::get);
         quantum.beginDispatch();
-        for (int backedge = 1; backedge <= 65; backedge++) {
-            assertEquals(backedge == 64, quantum.completedBackedgeNeedsCheck());
+        int interval = SourceCooperationQuantum.LOOP_CHECK_INTERVAL;
+        for (int backedge = 1; backedge <= interval; backedge++) {
+            assertEquals(backedge == interval, quantum.completedBackedgeNeedsCheck());
         }
         assertFalse(quantum.shouldCooperateAtCheck());
-        clock.set(2000000);
-        assertTrue(quantum.shouldCooperateAtCheck());
-        assertTrue(quantum.shouldCooperateAtCheck(true));
-        for (int i = 66; i <= 512; i++) {
-            boolean due = quantum.completedBackedgeNeedsCheck();
-            assertEquals((i % 64 == 0) || i >= 512, due);
+        clock.set(SourceCooperationQuantum.SOFT_DISPATCH_QUANTUM_NANOS);
+        assertFalse(quantum.shouldCooperateAtCheck(true), "poll ticket was consumed");
+        for (int backedge = interval + 1; backedge <= 2 * interval; backedge++) {
+            assertEquals(backedge == 2 * interval, quantum.completedBackedgeNeedsCheck());
         }
         assertTrue(quantum.shouldCooperateAtCheck());
-        expectGuest("cooperation_policy", "false\ntrue\nfalse\nfalse\ntrue\ntrue\n1\n9223372036854775807\nfalse\ntrue\ntrue\ntrue");
+        for (int backedge = 2 * interval + 1; backedge <= 5 * interval; backedge++) {
+            assertEquals(backedge % interval == 0, quantum.completedBackedgeNeedsCheck());
+        }
+        assertTrue(quantum.shouldCooperateAtCheck());
+        expectGuest("cooperation_policy", "false\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\n1\n9223372036854775807\nfalse\ntrue\ntrue\ntrue");
     }
 
     @Test

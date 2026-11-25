@@ -95,8 +95,8 @@ final class NativeTelemetryScopeGuestTest {
             ByteArrayOutputStream stderr = new ByteArrayOutputStream();
             LinkedProgramRunner.run(guest, IsolatePolicy.developer(),
                     ExecutionProfile.serverJit(), stdout, stderr);
-            assertEquals("true\\ntrue\\nfalse\\n2\\n1\\n1111111111111111",
-                    stdout.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+            assertEquals("true\ntrue\nfalse\n2\n1\n1111111111111111",
+                    stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> stderr.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(guest);

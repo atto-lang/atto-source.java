@@ -418,14 +418,30 @@ final class SourceTaskCancelTest {
         // If the loser were not cancelled the scope could never exit. The
         // winner prints after the scope has joined, so output order is fixed.
         assertEquals("|slow-cleanup|winner=1", run("""
+                define class Flag as
+                  pub let int value = 0;
+                end
                 pub async fnc main(): void {
+                  val flag = SharedMutex.new(new Flag());
                   let mut int winner = 0;
                   task scope {
                     let Future<int> fast = task {
+                      let mut int started = 0;
+                      while started == 0 {
+                        rt cooperate;
+                        block {
+                          val g = flag.lock();
+                          started = g.value;
+                        }
+                      }
                       return 1;
                     };
                     let Future<int> slow = task {
                       defer stdio.stdout.write("|slow-cleanup");
+                      block {
+                        val g = flag.lock();
+                        g.value = 1;
+                      }
                       loop {
                         rt cooperate;
                       }
