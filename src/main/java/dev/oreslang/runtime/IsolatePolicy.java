@@ -237,12 +237,18 @@ public record IsolatePolicy(
          * isolate library; ordinary strict/adversarial contexts remain on the
          * non-experimental builder path.
          */
-        if (System.getProperty("polyglot.engine.IsolateLibrary") != null) {
+        boolean explicitIsolateLibrary = System.getProperty("polyglot.engine.IsolateLibrary") != null;
+        if (explicitIsolateLibrary) {
             builder.allowExperimentalOptions(true);
         }
 
         if (!profile.guestJitAllowed() && NativeBuildMode.kind() != NativeBuildMode.Kind.AOT) {
-            try (org.graalvm.polyglot.Engine probe = org.graalvm.polyglot.Engine.create()) {
+            // The probe only inspects the installed engine option descriptors.
+            // Do not consume ambient runtime options (in particular the
+            // experimental isolate library path) in this separate host engine.
+            // The actual restricted Context retains the explicit host setting.
+            try (org.graalvm.polyglot.Engine probe = org.graalvm.polyglot.Engine.newBuilder()
+                    .useSystemProperties(false).build()) {
                 if (probe.getOptions().get("engine.Compilation") != null) {
                     builder.allowExperimentalOptions(true).option("engine.Compilation", "false");
                 }

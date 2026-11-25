@@ -26,6 +26,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/TraceParent.java'
       - 'src/test/java/dev/oreslang/runtime/TraceParentTest.java'
       - 'src/main/resources/META-INF/native-image/dev.oreslang/oreslang/native-image.properties'
+      - 'src/main/java/dev/oreslang/runtime/IsolatePolicy.java'
       - 'pom.xml'
 permissions:
   contents: read
