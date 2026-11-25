@@ -123,6 +123,69 @@ final class RealtimePrimitiveValueMatchTest {
     }
 
     @Test
+    void multiArmExpressionsPreserveShortCircuitAndDistinctScratchSlots() throws Exception {
+        String source = """
+                fnc identity(i32 number): i32 { return number; }
+                fnc choose(i32 number, bool gate): bool {
+                    const bool hit = gate && (match identity(number) over
+                        on 0 -> { return true; }
+                        on 7 -> { return false; }
+                        default -> { return true; }
+                    end);
+                    return hit || (match identity(number) over
+                        on 1 -> { return true; }
+                        on 8 -> { return false; }
+                        default -> { return false; }
+                    end);
+                }
+                """;
+        var artifact = compile(source, 2, 100, 2);
+        assertEquals(2, artifact.classfileReport().verifiedMethods());
+        String generated = java.nio.file.Files.readString(
+                output.resolve(RealtimePrimitiveCompiler.CLASS_NAME + ".java"));
+        assertTrue(generated.contains("int $matchExpr0;"));
+        assertTrue(generated.contains("int $matchExpr1;"));
+        assertTrue(generated.contains("&& (($matchExpr0 = identity(number))")
+                || generated.contains("&& ((($matchExpr0 = identity(number))"));
+        assertTrue(generated.contains("$matchExpr1 = identity(number)"));
+        try (var loader = new URLClassLoader(new URL[] {output.toUri().toURL()}, null)) {
+            var method = loader.loadClass(RealtimePrimitiveCompiler.CLASS_NAME)
+                    .getDeclaredMethod("choose", int.class, boolean.class);
+            method.setAccessible(true);
+            for (int value : new int[] {Integer.MIN_VALUE, 0, 1, 7, 8, Integer.MAX_VALUE}) {
+                for (boolean gate : new boolean[] {false, true}) {
+                    assertEquals((gate && value != 7) || value == 1,
+                            method.invoke(null, value, gate));
+                }
+            }
+        }
+    }
+
+    @Test
+    void multiArmExpressionInDirectCallArgument() throws Exception {
+        String source = """
+                fnc invert(bool flag): bool { return !flag; }
+                fnc choose(i32 number): bool {
+                    return invert(match number over
+                        on 0 -> { return true; }
+                        on 7 -> { return false; }
+                        default -> { return true; }
+                    end);
+                }
+                """;
+        var artifact = compile(source, 1, 100, 2);
+        assertEquals(2, artifact.classfileReport().verifiedMethods());
+        try (var loader = new URLClassLoader(new URL[] {output.toUri().toURL()}, null)) {
+            var method = loader.loadClass(RealtimePrimitiveCompiler.CLASS_NAME)
+                    .getDeclaredMethod("choose", int.class);
+            method.setAccessible(true);
+            assertEquals(false, method.invoke(null, 0));
+            assertEquals(true, method.invoke(null, 7));
+            assertEquals(false, method.invoke(null, Integer.MIN_VALUE));
+        }
+    }
+
+    @Test
     void multiArmUnselectedRecursionIsNotAdmitted() {
         String source = """
                 fnc choose(i32 number): bool {
