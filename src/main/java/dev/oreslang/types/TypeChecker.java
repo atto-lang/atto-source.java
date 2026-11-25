@@ -3607,7 +3607,9 @@ public final class TypeChecker {
                     yield Primitive.BOOL;
                 }
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
-                case "-", "*", "%" -> numericJoin(left, right, binary.operator());
+                case "-", "*" -> numericJoin(left, right, binary.operator());
+                case "%" -> throw new IllegalArgumentException(
+                        "E_OPERATOR_PERCENT: use Integer.rem(a, b) or Integer.mod(a, b)");
                 case "/" -> {
                     // Numerical v1: integer / integer stays checked i64 and
                     // truncates toward zero. Floating operands retain binary64.

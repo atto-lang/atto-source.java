@@ -11780,7 +11780,9 @@ public final class OresEvalRootNode extends RootNode {
         private Object binary(String op, Object left, Object right) {
             return switch (op) {
                 case "+" -> add(left, right); case "-" -> numeric(left, right, '-'); case "*" -> numeric(left, right, '*');
-                case "/" -> numeric(left, right, '/'); case "%" -> numeric(left, right, '%');
+                case "/" -> numeric(left, right, '/');
+                case "%" -> throw new IllegalArgumentException(
+                        "E_OPERATOR_PERCENT: use Integer.rem(a, b) or Integer.mod(a, b)");
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
@@ -11987,7 +11989,7 @@ public final class OresEvalRootNode extends RootNode {
                 long x = a.longValue(), y = b.longValue();
                 // Check mathematical signed-i64 operations before publication,
                 // including MIN/-1 (which the JVM would silently wrap).
-                if ((op == '/' || op == '%') && y == 0L) {
+                if (op == '/' && y == 0L) {
                     throw new DivisionByZeroError("checked signed i64 " + op);
                 }
                 if (op == '/' && x == Long.MIN_VALUE && y == -1L) {
@@ -11999,7 +12001,6 @@ public final class OresEvalRootNode extends RootNode {
                         case '-' -> Math.subtractExact(x, y);
                         case '*' -> Math.multiplyExact(x, y);
                         case '/' -> x / y;
-                        case '%' -> x % y;
                         default -> throw new IllegalArgumentException("bad numeric operator");
                     };
                 } catch (ArithmeticException overflow) {
@@ -12007,7 +12008,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             double x = a.doubleValue(), y = b.doubleValue();
-            return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+            return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; default -> throw new IllegalArgumentException("bad numeric operator"); };
         }
 
         private long integralLong(Object value) {
