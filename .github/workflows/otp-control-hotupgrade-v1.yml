@@ -1,0 +1,107 @@
+name: OTP split CONTROL and upgrade command contract
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1.java'
+      - 'src/test/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1Smoke.java'
+      - 'src/test/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/OtpSupervisorCommandDispatchTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'docs/OTP_PRIORITY_CONTROL_HOT_UPGRADE_V1.md'
+      - 'docs/OTP_HOT_UPGRADE_PUBLICATION_DECISION_V1.md'
+      - '.github/workflows/otp-control-hotupgrade-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  control-host-and-actor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # PR GITHUB_SHA is normally a synthetic merge commit. Pin to the
+          # reviewed source HEAD so CI never claims to test the wrong tree.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source commit
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "$EXPECTED_HEAD" > target-source-head.txt
+          echo "Exact source HEAD: $EXPECTED_HEAD"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+          cache: maven
+      - name: Standalone exact checked-out host CONTROL smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/otp-control-standalone
+          javac --release 21 -Xlint:all -Werror \
+            -d target/otp-control-standalone \
+            src/main/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1.java \
+            src/test/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1Smoke.java
+          java -ea -cp target/otp-control-standalone \
+            dev.oreslang.runtime.OtpSupervisorCommandLaneV1Smoke \
+            | tee target/otp-control-smoke.txt
+      - name: Focused real ActorRuntime JUnit
+        run: >
+          mvn -B -ntp
+          -Dtest=OtpSupervisorCommandLaneV1Test,OtpSupervisorCommandDispatchTest,ActorSupervisorControlV2Test
+          test
+      - name: Require non-skipped JUnit XML evidence for each class
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          required = {
+              "OtpSupervisorCommandLaneV1Test",
+              "OtpSupervisorCommandDispatchTest",
+              "ActorSupervisorControlV2Test",
+          }
+          suites = {}
+          for xml in Path(".").rglob("surefire-reports/TEST-*.xml"):
+              root = ET.parse(xml).getroot()
+              for suite in ([root] if root.tag == "testsuite" else root.findall(".//testsuite")):
+                  name = suite.get("name", "").rsplit(".", 1)[-1]
+                  if name not in required:
+                      continue
+                  if name in suites:
+                      raise SystemExit(f"duplicate suite receipt for {name}")
+                  tests = int(suite.get("tests", "0"))
+                  failures = int(suite.get("failures", "0"))
+                  errors = int(suite.get("errors", "0"))
+                  skipped = int(suite.get("skipped", "0"))
+                  if tests <= 0 or failures or errors or skipped:
+                      raise SystemExit(
+                          f"invalid {name}: tests={tests} failures={failures} "
+                          f"errors={errors} skipped={skipped}")
+                  suites[name] = tests
+          if set(suites) != required:
+              raise SystemExit(f"missing test suites: {sorted(required-set(suites))}")
+          print("PASS: actual non-skipped JUnit XML receipts", sorted(suites.items()))
+          PY
+      - name: Upload source-owned exact-head evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: otp-control-exact-head-junit-evidence
+          path: |
+            target-source-head.txt
+            target/otp-control-smoke.txt
+            **/surefire-reports/TEST-*.xml
+          if-no-files-found: warn
