@@ -1,0 +1,3 @@
+# Candidate broker-owned inbound IPC session
+
+Ingress consumes one broker Authority before registration, holds the transferred key/binding and replay watermark, and accepts only frame bytes, not per-call key material. Session authentication and key erasure share a memory-only monitor. Session close is serialized with final runtime mailbox publication; tenant retirement and runtime close revoke all registered sessions (bounded 4096 per tenant). Already accepted mailbox messages retain ordinary semantics. Close does not claim physical descriptor closure or interrupt an externally owned InputStream; transport integration must own that lifecycle. No cross-process registry, automatic peer handshake, receipt emission or guest claim.
