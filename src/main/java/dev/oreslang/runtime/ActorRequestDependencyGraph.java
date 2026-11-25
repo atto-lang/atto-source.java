@@ -79,10 +79,19 @@ final class ActorRequestDependencyGraph {
         if (activeEdges == maxEdges) {
             throw new IllegalStateException("actor request dependency capacity exhausted");
         }
-        edges.computeIfAbsent(caller, ignored -> new HashMap<>())
-                .merge(callee, 1, Integer::sum);
+        // Allocate the only release capability before publishing its edge.
+        // Failure to allocate must not leave a permanent dependency behind.
+        Lease lease = new Lease(caller, callee);
+        Map<ActorIdentity, Integer> outgoing = edges.get(caller);
+        if (outgoing == null) {
+            outgoing = new HashMap<>();
+            outgoing.put(callee, 1);
+            edges.put(caller, outgoing);
+        } else {
+            outgoing.merge(callee, 1, Integer::sum);
+        }
         activeEdges++;
-        return new Lease(caller, callee);
+        return lease;
     }
 
     synchronized int activeCount() { return activeEdges; }
@@ -94,13 +103,17 @@ final class ActorRequestDependencyGraph {
     private boolean canReach(ActorIdentity start, ActorIdentity target) {
         Set<ActorIdentity> seen = new HashSet<>();
         ArrayDeque<ActorIdentity> queue = new ArrayDeque<>();
+        seen.add(start);
         queue.add(start);
         while (!queue.isEmpty()) {
             ActorIdentity current = queue.removeFirst();
-            if (!seen.add(current)) continue;
             if (current.equals(target)) return true;
             var successors = edges.get(current);
-            if (successors != null) queue.addAll(successors.keySet());
+            if (successors != null) {
+                for (ActorIdentity successor : successors.keySet()) {
+                    if (seen.add(successor)) queue.addLast(successor);
+                }
+            }
         }
         return false;
     }
