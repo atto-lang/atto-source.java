@@ -164,6 +164,14 @@ public final class ChannelRuntime {
         private final WriteChannel<T> input;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
+        /**
+         * Actor inbox/continuation channels never participate in guest select.
+         * They use one independent monitor per bounded FIFO, avoiding the
+         * process-wide fair multi-channel coordinator convoy measured in Spin.
+         * This is still Channel<T>, not a Java-owned actor storage bypass.
+         */
+        private final boolean runtimePrivateMailbox;
+        private final Object runtimeMailboxLock = new Object();
         private boolean closed;
         private Throwable closeCause;
 
@@ -177,6 +185,22 @@ public final class ChannelRuntime {
          * it is admitted atomically across every participating channel.
          */
         public Channel(int capacity, int maxPendingRegistrations) {
+            this(capacity, maxPendingRegistrations, false);
+        }
+
+        /**
+         * Only ActorRuntime is authorized to construct a select-ineligible
+         * channel. Guest and host general-purpose channels always retain the
+         * existing global atomic multi-channel select coordinator.
+         */
+        static <T> Channel<T> runtimePrivateMailbox(int capacity) {
+            if (capacity < 1) throw new IllegalArgumentException(
+                    "internal actor mailbox requires positive capacity");
+            return new Channel<>(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS, true);
+        }
+
+        private Channel(int capacity, int maxPendingRegistrations,
+                boolean runtimePrivateMailbox) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
@@ -187,6 +211,7 @@ public final class ChannelRuntime {
             }
             this.capacity = capacity;
             this.maxPendingRegistrations = maxPendingRegistrations;
+            this.runtimePrivateMailbox = runtimePrivateMailbox;
             this.output = new ReadChannel<>(this);
             this.input = new WriteChannel<>(this);
         }
@@ -200,6 +225,7 @@ public final class ChannelRuntime {
         }
 
         public int pendingRegistrations() {
+            if (runtimePrivateMailbox) return 0;
             COORDINATOR.lock();
             try {
                 return registrations.size();
@@ -209,6 +235,9 @@ public final class ChannelRuntime {
         }
 
         public int size() {
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) { return buffer.size(); }
+            }
             COORDINATOR.lock();
             try {
                 return buffer.size();
@@ -222,6 +251,9 @@ public final class ChannelRuntime {
         }
 
         public boolean isClosed() {
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) { return closed; }
+            }
             COORDINATOR.lock();
             try {
                 return closed;
@@ -232,11 +264,15 @@ public final class ChannelRuntime {
 
         /** Stable write-only view; the full channel retains close authority. */
         public WriteChannel<T> input() {
+            if (runtimePrivateMailbox) throw new IllegalStateException(
+                    "runtime-private actor inbox cannot be exposed as a guest channel");
             return input;
         }
 
         /** Stable read-only view; the full channel retains close authority. */
         public ReadChannel<T> output() {
+            if (runtimePrivateMailbox) throw new IllegalStateException(
+                    "runtime-private actor inbox cannot be exposed as a guest channel");
             return output;
         }
 
@@ -245,6 +281,13 @@ public final class ChannelRuntime {
          * method returns empty.
          */
         public Optional<T> tryRead() {
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) {
+                    if (!buffer.isEmpty()) return Optional.of(buffer.removeFirst());
+                    if (closed) throw closedFailure();
+                    return Optional.empty();
+                }
+            }
             Optional<SelectResult> result =
                     SelectSet.of(read(this)).trySelect(SelectPolicy.PRIORITY);
             if (result.isEmpty()) return Optional.empty();
@@ -256,6 +299,17 @@ public final class ChannelRuntime {
         /** Runtime-only drain of committed mailbox values, including after close. */
         boolean drainOne(java.util.function.Consumer<? super T> consumer) {
             Objects.requireNonNull(consumer, "consumer");
+            if (runtimePrivateMailbox) {
+                T value;
+                synchronized (runtimeMailboxLock) {
+                    if (buffer.isEmpty()) return false;
+                    value = buffer.removeFirst();
+                }
+                // Never invoke cleanup or Future/guest callbacks while holding
+                // a mailbox monitor; STOP may re-enter actor accounting.
+                consumer.accept(value);
+                return true;
+            }
             ArrayList<Runnable> completions = new ArrayList<>();
             T value;
             COORDINATOR.lock();
@@ -293,6 +347,14 @@ public final class ChannelRuntime {
          */
         public boolean tryWrite(T value) {
             requireValue(value);
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) {
+                    if (closed) throw closedFailure();
+                    if (buffer.size() >= capacity) return false;
+                    buffer.addLast(value);
+                    return true;
+                }
+            }
             return SelectSet.of(write(this, value))
                     .trySelect(SelectPolicy.PRIORITY)
                     .isPresent();
@@ -302,6 +364,8 @@ public final class ChannelRuntime {
          * Scheduler-friendly receive registration.
          */
         public OresFuture<T> readAsync() {
+            if (runtimePrivateMailbox) throw new IllegalStateException(
+                    "runtime-private actor inbox cannot register async select readers");
             OresFuture<SelectResult> selected =
                     SelectSet.of(read(this)).selectAsync(SelectPolicy.PRIORITY);
             return mapSelection(selected, result -> {
@@ -316,6 +380,8 @@ public final class ChannelRuntime {
          */
         public OresFuture<Void> writeAsync(T value) {
             requireValue(value);
+            if (runtimePrivateMailbox) throw new IllegalStateException(
+                    "runtime-private actor inbox cannot register async select writers");
             OresFuture<SelectResult> selected =
                     SelectSet.of(write(this, value))
                             .selectAsync(SelectPolicy.PRIORITY);
@@ -346,6 +412,14 @@ public final class ChannelRuntime {
          * re-arbitrate atomically across all of their cases.
          */
         public void close(Throwable cause) {
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) {
+                    if (closed) return;
+                    closed = true;
+                    closeCause = cause;
+                }
+                return;
+            }
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
