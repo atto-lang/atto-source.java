@@ -55,13 +55,13 @@ final class AttoBytesV1GuestTest {
         assertEquals(String.join("\n", "5", "1", "2", "true", "false", "true"),
                 run("""
                         pub fnc main(): void {
-                          let Map<Bytes, Bytes> m = ~map<Bytes, Bytes>();
+                          let Map<Bytes, Bytes> m = Map.of<Bytes, Bytes>();
                           m.set(Bytes.from_string("k"), Bytes.from_string("value"));
                           val first = m.get_optional(Bytes.from_string("k")).unwrap();
                           first.close();
                           val second = m.get_optional(Bytes.from_string("k")).unwrap();
                           stdio.println(second.size());
-                          let Map<Bytes, int> counts = ~map<Bytes, int>();
+                          let Map<Bytes, int> counts = Map.of<Bytes, int>();
                           counts.set(Bytes.from_string("a"), 1);
                           counts.set(Bytes.from_list([97]), 2);
                           stdio.println(counts.size);
@@ -109,7 +109,7 @@ final class AttoBytesV1GuestTest {
         RuntimeException moved = assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                         pub fnc main(): void {
-                          let Map<Bytes, Bytes> m = ~map<Bytes, Bytes>();
+                          let Map<Bytes, Bytes> m = Map.of<Bytes, Bytes>();
                           val v = Bytes.from_string("v");
                           m.set(Bytes.from_string("k"), v);
                           stdio.println(v.size());
