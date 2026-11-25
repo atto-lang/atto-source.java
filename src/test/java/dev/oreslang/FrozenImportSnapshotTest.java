@@ -27,10 +27,18 @@ final class FrozenImportSnapshotTest {
         Arrays.fill(source,(byte)'x');
         assertEquals(SOURCE,snapshot.providerSource("network"));
         assertEquals("network",snapshot.namespaceForSubpath("network/http"));
+        assertEquals("network",snapshot.selectNamespace(NAME,"api.network"));
+        assertEquals("network",snapshot.selectNamespace(NAME+"/network/http","other"));
+        assertThrows(IllegalArgumentException.class,()->snapshot.selectNamespace(NAME+"/src/network","network"));
+        assertThrows(IllegalArgumentException.class,()->snapshot.selectNamespace("@wrong/project/package","network"));
         var scope=new StaticImportGraph();
         var view=snapshot.functionView();
         scope.bindRoot(view,"p",StaticImportGraph.Tier.DELIBERATE);
         assertEquals("network.answer",scope.resolve("p.network.answer").path());
+        snapshot.bindNamespace(scope,NAME+"/network/http","net","api",true);
+        assertSame(view,snapshot.functionView());
+        assertEquals("network.answer",scope.resolve("api.answer").path());
+        assertThrows(IllegalArgumentException.class,()->snapshot.bindNamespace(scope,NAME,"network","hiddenRename",false));
         assertTrue(assertThrows(IllegalArgumentException.class,()->scope.resolve("p.network.secret")).getMessage().startsWith("E_PRIVATE"));
         assertThrows(IllegalArgumentException.class,()->snapshot.namespaceForSubpath("src/network"));
     }
