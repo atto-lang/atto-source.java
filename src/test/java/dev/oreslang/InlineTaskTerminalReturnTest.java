@@ -69,7 +69,7 @@ final class InlineTaskTerminalReturnTest {
         String early = """
                 pub fnc main(): int {
                   return sync task<int> {
-                    if true { return 42; } fi
+                    loop { return 42; }
                     return 1;
                   };
                 }
@@ -187,5 +187,70 @@ final class InlineTaskTerminalReturnTest {
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheckStrictAtto(source));
         }
+    }
+
+    @Test void boundedConditionalReturnsStayInsideTaskAndPreserveWriteback() throws Exception {
+        String source = """
+                fnc calculate(bool first): int {
+                  let int count = 0;
+                  val int result = sync task<int> {
+                    if first do
+                      count = 2;
+                      return 40;
+                    fi
+                    count = 3;
+                    return 39;
+                  };
+                  return result + count;
+                }
+                pub fnc main(): int {
+                  if calculate(true) neq 42 do return 1; fi
+                  return calculate(false);
+                }
+                """;
+        assertEquals(42L, run(source));
+        assertEquals(42L, run(source.replace("if first do", "if first then")));
+    }
+
+    @Test void earlyReturnPayloadAndConditionAreCheckedOnBothPaths() {
+        for (String source : new String[] {
+                """
+                pub fnc main(): int {
+                  return sync task<int> {
+                    if false do return true; fi
+                    return 42;
+                  };
+                }
+                """,
+                """
+                pub fnc main(): int {
+                  val int number = 1;
+                  return sync task<int> {
+                    if number do return 42; fi
+                    return 1;
+                  };
+                }
+                """
+        }) {
+            assertDoesNotThrow(() -> Parser.parseStrictAtto(source));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheckStrictAtto(source));
+        }
+    }
+
+    @Test void boundedConditionalReturnCannotChangeFallthroughDeclarationScope() {
+        String source = """
+                pub fnc main(): int {
+                  return sync task<int> {
+                    val int local = 40;
+                    if false do return 42; fi
+                    val int local = 2;
+                    return local;
+                  };
+                }
+                """;
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> Parser.parseStrictAtto(source)).getMessage()
+                .contains("E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED"));
     }
 }
