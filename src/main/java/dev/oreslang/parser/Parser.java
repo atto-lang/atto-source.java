@@ -3019,12 +3019,6 @@ public final class Parser {
                 nonLexicalSeen = true;
                 nonLexical = true;
             } else if (match(TRAP)) {
-                // The canonical trap! callable modifier must eventually
-                // produce Result<T,Error>, never the legacy Option<T> path.
-                if ("trap!".equals(previous().lexeme())) {
-                    throw error(previous(),
-                            "TRAP_BANG_RESULT_LOWERING_UNVERIFIED: trap! fnc requires checked Result and unwind lowering");
-                }
                 if (trapSeen) throw error(previous(), "duplicate 'trap' modifier");
                 trapSeen = true;
                 trapped = true;
@@ -6817,12 +6811,7 @@ public final class Parser {
             return new Ast.TaskExpr(domain, parseBlock(), false);
         }
 
-        // Keep canonical trap! distinct from historical Option-valued trap.
-        // Only the type checker may admit its checked Result semantics.
-        if (match(TRAP)) {
-            boolean canonicalResult = "trap!".equals(previous().lexeme());
-            return new Ast.TrapExpr(parseUnary(), canonicalResult);
-        }
+        if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
