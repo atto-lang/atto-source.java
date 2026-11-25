@@ -16,7 +16,7 @@ Clean supervisor exit and failures that first appear in final cleanup also queue
 
 ## Restart safety
 
-This draft adds **manual, host-only top-down replacement with strict checks** and an explicit opt-in permanent ONE_FOR_ONE admission policy for a guardian child. It is NOT automatic restart orchestration.
+This draft adds **manual, host-only top-down replacement with strict checks** and an explicit opt-in permanent ONE_FOR_ONE admission policy for a fixed guardian cohort. It is NOT automatic restart orchestration.
 
 `restartBlocker(nodeId)` refuses to issue a permit while CONTROL is faulty, the node still lives, any supervised descendant is not logically DONE, any failure notice is unacknowledged, the parent has not been replaced into a live generation, or a separately supplied **native/FFI physical-release verifier** rejects any affected actor. Java `done()` is insufficient to pass that final gate.
 
@@ -26,18 +26,18 @@ The release verifiers in the synthetic-oracle JUnit tests is intentionally `ref 
 
 ### Opt-in restart circuit integration (wave 10)
 
-`attachRestartManagedRoot(ref, config)` explicitly binds a single-child restart circuit to a guardian child before activation. The exact circuit source is copied from Java #903, not a separate implementation. This scope is permanent ONE_FOR_ONE; it is **not a shared budget across siblings**, and nested manual recovery remains unchanged.
+`attachRestartManagedRoot(ref, config)` explicitly binds a single-child restart circuit to a guardian child before activation. The exact circuit source is copied from Java #903, not a separate implementation. The single-child convenience API delegates to `attachRestartManagedRoots(roots, config)`, which binds one circuit across a fixed, declaration-ordered guardian cohort. Each slot has its own single-use permit and pending plan; the intensity window and sticky escalation are shared. The host must register all children before activation. This is not an implicit global guardian budget or a nested supervisor policy.
 
 Only after terminal ACK and independently authenticated physical retirement does `reserveRestart` admit and charge the episode once. The returned single-use permit retains the exact old generation. `restartDelayRemainingNanos` is a nonblocking scheduler input; it does not start a timer. `attachReplacement` independently enforces elapsed backoff, generation and parent authorization before consuming the permit, then carries the same policy to the successor. Failed attachment leaves the old successor slot permanently fenced. Escalation blocks every subsequent reservation even after budget expiry.
 
-The added real ActorRuntime test uses an injected monotonic clock across signed wrap and a synthetic physical-release oracle, tests early denial without permit loss, successor budget exhaustion and sticky escalation. It does not certify native/FFI physical release. Timer scheduling, automatic parent recovery, group-wide budgets, declaration-ordered strategies, and integration with the canonical production CONTROL lineage remain outstanding.
+The added real ActorRuntime test uses an injected monotonic clock across signed wrap and a synthetic physical-release oracle, tests early denial without permit loss, successor budget exhaustion and sticky escalation. It does not certify native/FFI physical release. Wave 11 adds two real ActorRuntime test scenarios: cross-slot exhaustion invalidates pending permits, and a successful successor retains the shared budget. Attachment claims serialize against further decisions within the same cohort; partial registration or failed managed attachment poisons the coordinator rather than silently shrinking the cohort. Escalation closes cohort admission but does not itself stop surviving siblings. Automatic timer scheduling, parent-driven retirement, nested supervisor budgets, ONE_FOR_ALL/REST_FOR_ONE orchestration, and canonical CONTROL integration remain outstanding.
 
 ## Executable regression inventory
 
 - Previously executed (host-only): standalone JDK 21, `javac -Xlint:all -Werror`, 557 passing assertions on exact Git blobs `6934a266090a16361154a7fa24859d99c46a6470` (escrow) and `bfa4618c1e76041c8e5a90ad4950abdef73e1602` (test).
 - New coordinator: compile-only under JDK 21 against **minimal stub ActorRuntime interfaces**, not a full source tree compile. GitHub blob verification pins the actual committed coordinator `18463efa99db15d3ff4b0ec650214add03747375`, bridge `55f4feb55c4892c43612dbcfffe1127666299750`, full ActorRuntime `0760e04d1ccc57828317aebe9416324e08185b34`.
-- Real runtime JUnit: **8 tests authored, NOT EXECUTED**. The parent suite's obsolete `acknowledgeCommitted` call was fixed. New cases cover nested automatic cancellation, unaffected sibling, pending-failure/release denial, synthetic restart permitting, duplicate-permit denial, three-level top-down replacement, stale ActorRefs, and rejecting an inline CONTROL executor.
-- JDK25 exact-blob workflow now requires both suites' Surefire XML (`3 + 5` cases, zero failures/errors/skips) and the pre-existing 557 standalone assertions. A zero-step Actions failure is **NOT_EXECUTED**, not a proof of correctness.
+- Real runtime JUnit: **10 tests authored, NOT EXECUTED**. The parent suite's obsolete `acknowledgeCommitted` call was fixed. New cases cover nested automatic cancellation, unaffected sibling, pending-failure/release denial, synthetic restart permitting, duplicate-permit denial, three-level top-down replacement, stale ActorRefs, and rejecting an inline CONTROL executor.
+- JDK25 exact-blob workflow now requires both suites' Surefire XML (`3 + 7` cases, zero failures/errors/skips) and the pre-existing 557 standalone assertions. A zero-step Actions failure is **NOT_EXECUTED**, not a proof of correctness.
 
 ## P0 release gates and known limitations
 
@@ -45,7 +45,7 @@ The added real ActorRuntime test uses an injected monotonic clock across signed 
 2. **Reconcile terminal ledger lineages**: Java #1222 and #1320 have independent stronger pre-reserved CONTROL mechanisms. Do not merge multiple active ledgers/ACK authorities. This experimental bridge stays off by default until one canonical implementation is chosen.
 3. Connect trusted CONTROL scheduling to the production supervisor `SupervisorShutdownTree` / `SupervisorProcess` decision commit fence and real child/group ownership. This draft only coordinates opt-in policy parentage. It does not prove all executor work was admitted to a single runtime-wide CONTROL lane.
 4. Add genuine native/FFI/heap/stack/borrowed-loan release receipts; no `PhysicalRelease` event may be synthesized from Java `done()`. Verify no accepted in-flight DATA or nested actor escape during failure fencing.
-5. Extend the opt-in single-child restart budget/backoff to shared supervisor budgets, automatic timers, one-for-all/rest-for-one policy, supervisor policy hooks, and source-level `define supervisor` compilation with actual guest semantics.
+5. Extend the opt-in guardian cohort budget/backoff to nested supervisor budgets, automatic timers, one-for-all/rest-for-one policy, supervisor policy hooks, and source-level `define supervisor` compilation with actual guest semantics.
 6. Run TLA+ TLC for conformance #659 and compare actual Java transition traces. Then independently certify LLVM, .NET NativeAOT, Wasm and Forge. A full in-process guardian crash requires an OS guardian and crash-consistent WAL, not this prototype.
 
 This branch MUST remain DRAFT / NOT_CERTIFIED. No cross-organization private-source mirror, hidden CI bypass, or source-main mutation is authorized by the code.
