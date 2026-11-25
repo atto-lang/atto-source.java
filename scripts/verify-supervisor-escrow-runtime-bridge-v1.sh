@@ -20,12 +20,14 @@ verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRace
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java b1198abedece2d0783617749208024a8cab9adbd
 
 verify_blob src/main/java/dev/oreslang/runtime/ActorDataDecodeEscrowV1.java bf446a36d0f542b1d959aea8f7431545b323beb9
-verify_blob src/main/java/dev/oreslang/types/PortableCodecRegistry.java 714390ba6383f8494327563b09d29af59073145e
+verify_blob src/main/java/dev/oreslang/types/PortableCodecRegistry.java 6f0746880e089512362d3f39a5e7dcecb8986fdb
 verify_blob src/main/java/dev/oreslang/runtime/MessagePackWireV2.java 4f0ac0236d97af104eb166ecaa9a8a9c9bfb1673
-verify_blob src/test/java/dev/oreslang/types/ActorDataDescriptorFixture.java 994515f6f0c1b9d0985456da486300e468ddfb4d
+verify_blob src/test/java/dev/oreslang/types/ActorDataDescriptorFixture.java f3ec6dfd06fcdd3f083edf7b2367fc68848439a5
 verify_blob src/test/java/dev/oreslang/runtime/ActorSerializedI64AdmissionTest.java 4700d07709968e939bf3ecfb2d85febcfee08f62
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorSerializedDataIntegrationTest.java 7c74d91933372e636d78f6eae1ae31fbd00c6445
-verify_blob src/test/standalone/dev/oreslang/runtime/ActorDataDecodeEscrowHarness.java 733f8a3ded0fcceccb94df131cfb1c4c146a8017
+verify_blob src/test/standalone/dev/oreslang/runtime/ActorDataDecodeEscrowHarness.java ffc560b3f2c47f1455f5aaa4d6e7deebb42eda7e
+
+verify_blob src/main/java/dev/oreslang/runtime/ActorDataMessagePackPlanV1.java 63094fa8c5444fd44b3dfc1a13c630c7f77e0182
 
 # The existing dependency-free 557-assertion host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
@@ -34,6 +36,7 @@ bash scripts/verify-supervisor-failure-escrow-v1.sh
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 javac -d "$out" \
+  src/main/java/dev/oreslang/runtime/ActorDataMessagePackPlanV1.java \
   src/main/java/dev/oreslang/runtime/ActorDataDecodeEscrowV1.java \
   src/main/java/dev/oreslang/types/PortableCodecRegistry.java \
   src/main/java/dev/oreslang/runtime/MessagePackWireV2.java \

@@ -10,6 +10,10 @@ public final class ActorDataDecodeEscrowHarness {
         if (!value) throw new AssertionError(name);
         checks++;
     }
+    private static void deny(Runnable action, String name) {
+        try { action.run(); } catch (IllegalArgumentException expected) { checks++; return; }
+        throw new AssertionError(name);
+    }
     public static void main(String[] args) throws Exception {
         Descriptor pin = ActorDataDescriptorFixture.scalar(Purpose.ACTOR_DATA, Format.MESSAGEPACK_V2);
         byte[] wire = MessagePackWireV2.encode(pin.schemaId(), MessagePackWireV2.Shape.i64(), 42L);
@@ -61,6 +65,37 @@ public final class ActorDataDecodeEscrowHarness {
         check(closing.reserve(8, pin.format(), pin.schemaId(), 1, pin.fingerprintHex(), wire.length) == null, "closed endpoint denial");
         closing.finishMailboxDecode(active); closing.finishMailboxDecode(active);
         check(closing.snapshot().availableBytes() == bytes, "active settlement once");
+        // Exercise descriptor-derived nested shape using the actual wire
+        // encoder and decoder, not a text parser or fake materializer.
+        var shape = new Sequence(SequenceKind.LIST,
+                new Sequence(SequenceKind.LIST, new Scalar(ScalarKind.I64), -1), -1);
+        Descriptor nestedPin = ActorDataDescriptorFixture.shape(Purpose.ACTOR_DATA, Format.MESSAGEPACK_V2, shape);
+        var plan = new ActorDataMessagePackPlanV1(nestedPin);
+        byte[] nestedWire = MessagePackWireV2.encode(nestedPin.schemaId(),
+                MessagePackWireV2.Shape.list(MessagePackWireV2.Shape.list(MessagePackWireV2.Shape.i64())),
+                java.util.List.of(java.util.List.of(1L, 2L), java.util.List.of(3L)));
+        long nestedBytes = ActorDataMessagePackPlanV1.logicalBytes(nestedWire.length);
+        long nestedWork = ActorDataMessagePackPlanV1.logicalWork(nestedWire.length);
+        check(java.util.List.of(java.util.List.of(1L, 2L), java.util.List.of(3L)).equals(
+                plan.decodeOwned(nestedPin.format(), nestedPin.schemaId(), 1, nestedPin.fingerprintHex(),
+                        nestedWire, nestedBytes, nestedWork)), "descriptor-derived nested wire");
+        deny(() -> plan.decodeOwned(nestedPin.format(), nestedPin.schemaId(), 1, nestedPin.fingerprintHex(),
+                nestedWire, nestedBytes - 1, nestedWork), "nested one byte under budget");
+        deny(() -> plan.decodeOwned(nestedPin.format(), nestedPin.schemaId(), 1, nestedPin.fingerprintHex(),
+                nestedWire, nestedBytes, nestedWork - 1), "nested one work under budget");
+        deny(() -> plan.decodeOwned(nestedPin.format(), nestedPin.schemaId(), 1, pin.fingerprintHex(),
+                nestedWire, nestedBytes, nestedWork), "wrong descriptor fingerprint");
+        deny(() -> plan.decodeOwned(nestedPin.format(), nestedPin.schemaId(), 1, nestedPin.fingerprintHex(),
+                wire, nestedBytes, nestedWork), "wrong wire shape hash");
+        var fixed = ActorDataDescriptorFixture.shape(Purpose.ACTOR_DATA, Format.MESSAGEPACK_V2,
+                new Sequence(SequenceKind.FIXED_ARRAY, new Scalar(ScalarKind.I64), 2));
+        deny(() -> new ActorDataMessagePackPlanV1(fixed), "unverified fixed guest representation");
+        var utf = ActorDataDescriptorFixture.shape(Purpose.ACTOR_DATA, Format.MESSAGEPACK_V2,
+                new Scalar(ScalarKind.UTF8));
+        byte[] utfWire = MessagePackWireV2.encode(utf.schemaId(), MessagePackWireV2.Shape.string(), "Perú");
+        check("Perú".equals(new ActorDataMessagePackPlanV1(utf).decodeOwned(utf.format(), utf.schemaId(),
+                1, utf.fingerprintHex(), utfWire, ActorDataMessagePackPlanV1.logicalBytes(utfWire.length),
+                ActorDataMessagePackPlanV1.logicalWork(utfWire.length))), "descriptor UTF8");
         // Race commit vs cancellation: either linearization is acceptable.
         try (var pool = Executors.newFixedThreadPool(2)) {
             for (int i = 0; i < 100; i++) {

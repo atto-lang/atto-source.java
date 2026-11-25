@@ -108,16 +108,18 @@ public final class PortableCodecRegistry {
         private final String schemaId;
         private final int version;
         private final String canonicalShape;
+        private final Shape shape;
         private final String fingerprintHex;
 
         private Descriptor(Format format, Purpose purpose, String resolvedType,
-                           String schemaId, int version, String canonicalShape) {
+                           String schemaId, int version, String canonicalShape, Shape shape) {
             this.format = format;
             this.purpose = purpose;
             this.resolvedType = resolvedType;
             this.schemaId = schemaId;
             this.version = version;
             this.canonicalShape = canonicalShape;
+            this.shape = shape;
             // Deliberate domain separation: this is NOT the MessagePack v2
             // envelope's established shape hash and cannot replace it.
             String commitment = "oreslang.codec.registry.v1\n" + format + "\n"
@@ -132,6 +134,8 @@ public final class PortableCodecRegistry {
         public String schemaId() { return schemaId; }
         public int version() { return version; }
         public String canonicalShape() { return canonicalShape; }
+        /** Immutable, validated compiler shape; no wire-selected type lookup. */
+        public Shape shape() { return shape; }
         public String fingerprintHex() { return fingerprintHex; }
     }
 
@@ -169,7 +173,7 @@ public final class PortableCodecRegistry {
             }
             String canonical = canonicalShape(shape, format);
             Descriptor proposal = new Descriptor(format, purpose, resolvedType, schemaId,
-                    version, canonical);
+                    version, canonical, shape);
             TypeKey typeKey = new TypeKey(format, purpose, resolvedType, version);
             SchemaKey schemaKey = new SchemaKey(format, purpose, schemaId, version);
             Descriptor typePrevious = byType.get(typeKey);
