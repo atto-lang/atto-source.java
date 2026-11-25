@@ -17,6 +17,7 @@ on:
       - 'src/test/java/dev/oreslang/launcher/FrozenPackageCommandTest.java'
       - 'src/main/java/dev/oreslang/imports/FrozenDependencyGraph.java'
       - 'src/test/java/dev/oreslang/FrozenDependencyGraphTest.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenProviderLinker.java'
       - 'pom.xml'
 permissions:
   contents: read
