@@ -184,12 +184,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                         }
                     },
                     () -> {
+                        boolean confirmed = false;
                         try {
-                            // Close first so a receipt reader blocked in kernel I/O
-                            // is interrupted without waiting on readGate.
                             socket.close();
+                            confirmed = true;
                         } finally {
-                            destroyAuthenticationMaterialAfterPhysicalClose();
+                            destroyAuthenticationMaterialAfterPhysicalClose(confirmed);
                         }
                     },
                     this.cleanupScheduler);
@@ -206,12 +206,20 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
     }
 
-    private void destroyAuthenticationMaterialAfterPhysicalClose() {
-        // Serialize erasure with memory-only authentication and receipt ledger
-        // application, not the potentially blocked physical read. Close intent
-        // already fences fresh readers; a late frame cannot use retired keys.
-        // Never wait for a kernel read to finish after an ambiguous close.
-        // An admitted reader acquires this gate only AFTER reading its frame.
+    private void destroyAuthenticationMaterialAfterPhysicalClose(boolean confirmed) {
+        // A successful close preserves already-admitted receipt transactions.
+        // An ambiguous close may leave a kernel reader blocked indefinitely;
+        // revoke authentication directly, without waiting for that read.
+        if (confirmed) {
+            synchronized (readGate) {
+                retireAuthenticationMaterial();
+            }
+        } else {
+            retireAuthenticationMaterial();
+        }
+    }
+
+    private void retireAuthenticationMaterial() {
         synchronized (encodingKeyGate) {
             authenticationRetired = true;
             Arrays.fill(this.macKey, (byte) 0);
@@ -448,7 +456,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                         // traffic. Drain any reader already inside readGate and
                         // destroy the transferred key/binding before reporting
                         // close completion.
-                        destroyAuthenticationMaterialAfterPhysicalClose();
+                        destroyAuthenticationMaterialAfterPhysicalClose(abortFailure == null);
                     } finally {
                         try {
                             sessionLease.completeExternalPhysicalClose(abortFailure);
