@@ -490,48 +490,8 @@ public final class RealtimePrimitiveCompiler {
 
     private static void emitMultiArmMatchReturn(StringBuilder out, Ast.MatchExpr matched, String indent) {
         validateMultiArmMatch(matched);
-        // '
-        if (expr instanceof Ast.LiteralExpr lit) return String.valueOf(lit.value());
-        if (expr instanceof Ast.NameExpr name) return name.name();
-        if (expr instanceof Ast.BinaryExpr b) {
-            // Checked source equality is normalized by Parser to eq/neq.
-            // Java source is only an intermediate build artifact; translate
-            // at emission, never accept an interpreter or dynamic dispatch.
-            String operator = switch (b.operator()) {
-                case "eq", "==" -> "==";
-                case "neq", "!=" -> "!=";
-                default -> b.operator();
-            };
-            return "(" + emitExpr(b.left()) + " " + operator + " " + emitExpr(b.right()) + ")";
-        }
-        if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
-        if (expr instanceof Ast.MatchExpr matched) {
-            return emitExpr(lowerPrimitiveMatch(matched));
-        }
-        if (expr instanceof Ast.ConditionalExpr conditional) {
-            // Primitive Java conditional bytecode uses forward branches and
-            // evaluates only the selected arm. No boxing or fallback evaluator.
-            return "(" + emitExpr(conditional.condition()) + " ? "
-                    + emitExpr(conditional.whenTrue()) + " : "
-                    + emitExpr(conditional.whenFalse()) + ")";
-        }
-        if (expr instanceof Ast.CallExpr c && c.callee() instanceof Ast.NameExpr name) {
-            List<String> args = new ArrayList<>();
-            for (Ast.Expr arg : c.arguments()) args.add(emitExpr(arg));
-            return name.name() + "(" + String.join(", ", args) + ")";
-        }
-        throw invalid("internal error: admitted expression was not lowered");
-    }
-    private static String sha256(byte[] bytes) {
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
-        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
-    }
-    private static IllegalArgumentException invalid(String text) {
-        return new IllegalArgumentException("RT-PRIMITIVE: " + text);
-    }
-}
- is disallowed by validateIdentifier for every admitted guest
-        // identifier. The explicit block limits the temporary's lexical scope.
+        // Compiler scratch names use a dollar prefix that is forbidden in guest identifiers.
+        // The explicit block limits the temporary's lexical scope.
         String subject = "$matchSubject";
         out.append(indent).append("{\n");
         String inner = indent + "  ";
