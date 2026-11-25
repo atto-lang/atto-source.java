@@ -22,25 +22,28 @@ final class FailureEffectLanguageTest {
     }
 
     @Test
-    void throwIsCatchableAndTrapProducesNone() throws Exception {
+    void throwIsCatchableAndTrapPreservesError() throws Exception {
         String source = """
                 trap fnc fails(): int {
-                  throw "ordinary";
+                  throw new Error("ordinary");
                 }
                 pub fnc main(): void {
                   try {
-                    throw "caught";
+                    throw new Error("caught");
                   } catch (err) {
-                    stdio.stdout.write(err);
+                    stdio.stdout.write(err.message);
                   }
-                  val Option<int> absent = fails();
+                  val Result<int, Error> result = fails();
                   stdio.stdout.write(":");
-                  stdio.stdout.write(absent.is_none());
+                  match result over
+                    on Ok(number) -> { stdio.stdout.write("unexpected success"); }
+                    on Err(failure) -> { stdio.stdout.write(failure.message); }
+                  end
                   return;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("caught:true", run(source));
+        assertEquals("caught:ordinary", run(source));
     }
 
     @Test
@@ -49,12 +52,12 @@ final class FailureEffectLanguageTest {
                 pub fnc main(): void {
                   rt recover {
                     try {
-                      raise "raised";
+                      raise new Error("raised");
                     } catch (err) {
                       stdio.stdout.write("wrong");
                     }
                   } on raise (Error err) {
-                    stdio.stdout.write(err);
+                    stdio.stdout.write(err.message);
                   }
                   stdio.stdout.write(":after");
                   return;
@@ -67,14 +70,14 @@ final class FailureEffectLanguageTest {
     @Test
     void nestedPayloadCallsRemainReachableThroughStaticPasses() throws Exception {
         String source = """
-                fnc payload(): string {
-                  return "kept";
+                fnc payload(): Error {
+                  return new Error("kept");
                 }
                 pub fnc main(): void {
                   rt recover {
                     raise payload();
                   } on raise (Error err) {
-                    stdio.stdout.write(err);
+                    stdio.stdout.write(err.message);
                   }
                   return;
                 }
@@ -89,7 +92,7 @@ final class FailureEffectLanguageTest {
                 pub fnc main(): void {
                   rt recover {
                     try {
-                      panic "actor corrupt";
+                      panic new Error("actor corrupt");
                     } catch (err) {
                       stdio.stdout.write("wrong");
                     }
@@ -108,20 +111,20 @@ final class FailureEffectLanguageTest {
     void strongerRaiseSurvivesFinallyAndDeferThrows() throws Exception {
         String source = """
                 fnc cleanup(): void {
-                  throw "cleanup";
+                  throw new Error("cleanup");
                 }
                 pub fnc main(): void {
                   rt recover {
                     defer cleanup();
                     try {
-                      raise "strong";
+                      raise new Error("strong");
                     } catch (err) {
                       stdio.stdout.write("wrong");
                     } finally {
-                      throw "weaker";
+                      throw new Error("weaker");
                     }
                   } on raise (Error err) {
-                    stdio.stdout.write(err);
+                    stdio.stdout.write(err.message);
                   }
                   return;
                 }
@@ -136,11 +139,11 @@ final class FailureEffectLanguageTest {
                 pub fnc main(): void {
                   rt recover {
                     try {
-                      raise "earlier raise";
+                      raise new Error("earlier raise");
                     } catch (err) {
                       stdio.stdout.write("wrong");
                     } finally {
-                      panic "new panic";
+                      panic new Error("new panic");
                     }
                   } on raise (Error err) {
                     stdio.stdout.write("wrong");
@@ -160,12 +163,12 @@ final class FailureEffectLanguageTest {
                   rt recover {
                     try {
                       rt cooperate;
-                      raise "after-suspension";
+                      raise new Error("after-suspension");
                     } catch (err) {
                       stdio.stdout.write("wrong");
                     }
                   } on raise (Error err) {
-                    stdio.stdout.write(err);
+                    stdio.stdout.write(err.message);
                   }
                   return;
                 }
@@ -178,21 +181,30 @@ final class FailureEffectLanguageTest {
     void deferredCleanupThrowCannotDowngradeSuspendedRaise() throws Exception {
         String source = """
                 fnc cleanup(): void {
-                  throw "cleanup";
+                  throw new Error("cleanup");
                 }
                 pub async routine main(): void {
                   rt recover {
                     defer cleanup();
                     rt cooperate;
-                    raise "preserved";
+                    raise new Error("preserved");
                   } on raise (Error err) {
-                    stdio.stdout.write(err);
+                    stdio.stdout.write(err.message);
                   }
                   return;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         assertEquals("preserved", run(source));
+    }
+
+    @Test
+    void scalarPayloadsDoNotImplementExceptionalEffectTraits() {
+        for (String keyword : new String[] {"throw", "raise", "panic", "throw!", "raise!", "panic!"}) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    OresCompiler.parseAndTypeCheck("pub fnc main(): void { "
+                            + keyword + " \"not an error\"; }"), keyword);
+        }
     }
 
     @Test
