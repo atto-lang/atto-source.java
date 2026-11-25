@@ -80,6 +80,38 @@ final class OutboundHttpBodyPipeTest {
         } finally { pipe.cancel(); }
     }
 
+    @Test void closeDuringClaimedDeliveryRetiresUnpublishedOwnedBytes() throws Exception {
+        var pipe = pipe();
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var unpublished = new java.util.concurrent.atomic.AtomicReference<OresBytes>();
+        var pending = pipe.read(ROOT, 1, raw -> {
+            var owned = OresBytes.fromDetached(raw);
+            unpublished.set(owned);
+            entered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("delivery not released");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+            return owned;
+        });
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var writer = executor.submit(() -> { pipe.write(new byte[] {7}, 0, 1); return null; });
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                assertEquals(7, unpublished.get().byteAt(0));
+                pipe.cancel();
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> pending.get(2, TimeUnit.SECONDS));
+                assertInstanceOf(java.util.concurrent.CancellationException.class, failure.getCause());
+            } finally { release.countDown(); }
+            writer.get(5, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class, () -> unpublished.get().size());
+        } finally { pipe.cancel(); }
+    }
+
     @Test void explicitCloseAfterEofRevokesUnreadBufferedBytes() throws Exception {
         var pipe = pipe();
         pipe.write(new byte[] {1, 2, 3}, 0, 3);
