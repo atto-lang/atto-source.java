@@ -251,6 +251,66 @@ final class ActorPubSubConcurrencyTest {
         }
     }
 
+    @Test
+    void reliableFanoutNotifiesPendingReadersOutsideMembershipFence() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "callback-fence", ActorEventBus.DeliveryPolicy.RELIABLE, 2);
+            var subscribed = new CountDownLatch(2);
+            var leftRead = new AtomicReference<OresFuture<ActorEventBus.Event<String>>>();
+            var rightRead = new AtomicReference<OresFuture<ActorEventBus.Event<String>>>();
+            var left = runtime.<String>spawnShared(() -> (message, context) -> {
+                join.join();
+                leftRead.set(topic.subscribe().readAsync());
+                subscribed.countDown();
+            });
+            var right = runtime.<String>spawnShared(() -> (message, context) -> {
+                join.join();
+                rightRead.set(topic.subscribe().readAsync());
+                subscribed.countDown();
+            });
+            left.send("subscribe");
+            right.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+            var worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+            var callbackFailure = new AtomicReference<Throwable>();
+            var callbackDone = new CountDownLatch(1);
+            try {
+                leftRead.get().whenCompleteRuntime((value, failure) -> {
+                    try {
+                        assertNull(failure);
+                        assertEquals("payload", value.value());
+                        // This other carrier must be able to acquire the
+                        // membership fence before the callback returns.
+                        worker.submit(() -> group.leave(right)).get(3, TimeUnit.SECONDS);
+                    } catch (Throwable problem) {
+                        callbackFailure.set(problem);
+                    } finally {
+                        callbackDone.countDown();
+                    }
+                });
+                var receipt = group.events().tryPublishReliableSystem(
+                        "callback-fence", "payload").orElseThrow();
+                assertEquals(2, receipt.accepted());
+                assertTrue(callbackDone.await(5, TimeUnit.SECONDS));
+                assertNull(callbackFailure.get(),
+                        "read notification ran under an outer membership lock");
+                assertTrue(receipt.completion().isDone());
+                assertFalse(receipt.completion().isCompletedExceptionally());
+                assertEquals("payload", rightRead.get().join().value(),
+                        "other already-admitted recipient must not be lost to reentrant leave");
+                assertFalse(group.contains(right));
+                assertEquals(0L, runtime.sharedMemoryBytes());
+            } finally {
+                worker.shutdownNow();
+                left.stop();
+                right.stop();
+            }
+        }
+    }
+
     private static ActorRuntime.ActorRef<String> publisher(
             ActorRuntime runtime,
             ActorRuntime.ActorGroupJoinCapability join,
