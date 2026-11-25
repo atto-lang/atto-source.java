@@ -7884,7 +7884,8 @@ public final class OresEvalRootNode extends RootNode {
             // An actor object currently lacks runtime provenance proving that
             // the source and destination allocations belong to the same actor
             // heap. Do not duplicate it under an evaluator-global owner tag.
-            if (ActorRuntime.inActorExecution() && value instanceof OresObject) {
+            if (ActorRuntime.inActorExecution() && (value instanceof OresObject
+                    || value instanceof TypedGuestSequence)) {
                 throw new IllegalArgumentException(
                         "E_COPY_DOMAIN: actor-heap copy requires a generation/arena ownership proof");
             }
@@ -7899,7 +7900,7 @@ public final class OresEvalRootNode extends RootNode {
                         new java.util.IdentityHashMap<>(), new int[]{0}, 0);
             }
             if (!(value instanceof OresObject original)) {
-                return copyExplicitImmutableV1(value);
+                return copyExplicitImmutableV1(value, 0);
             }
             if (original.owner != this) {
                 throw new IllegalArgumentException(
@@ -7921,16 +7922,19 @@ public final class OresEvalRootNode extends RootNode {
          * mutable *handles* as trivially Copy, but that is not a logical copy
          * of the owned pointee. Never silently turn explicit copy into share.
          */
-        private Object copyExplicitImmutableV1(Object value) {
-            if (value == null || value instanceof Number
-                    || value instanceof Boolean || value instanceof String) return value;
+        private Object copyExplicitImmutableV1(Object value, int depth) {
+            if (depth > 32) {
+                throw new IllegalArgumentException("E_COPY_BUDGET: immutable sum copy depth exceeded");
+            }
+            if (value == null || dev.oreslang.types.CopyScalarAdmission.isImmutableScalar(value))
+                return value;
             if (value instanceof OptionValue option) {
                 return option.present()
-                        ? new OptionValue(true, copyExplicitImmutableV1(option.value()))
+                        ? new OptionValue(true, copyExplicitImmutableV1(option.value(), depth + 1))
                         : new OptionValue(false, null);
             }
             if (value instanceof ResultValue result) {
-                return new ResultValue(result.ok(), copyExplicitImmutableV1(result.value()));
+                return new ResultValue(result.ok(), copyExplicitImmutableV1(result.value(), depth + 1));
             }
             throw new IllegalArgumentException(
                     "E_COPY_UNPROVEN: explicit copy cannot alias a mutable guest handle or untyped collection");
@@ -7949,7 +7953,7 @@ public final class OresEvalRootNode extends RootNode {
                 boolean valid = switch (scalar.typeName()) {
                     case "string", "String" -> value instanceof String;
                     case "bool", "Bool" -> value instanceof Boolean;
-                    default -> value instanceof Number;
+                    default -> dev.oreslang.types.CopyScalarAdmission.isImmutableNumber(value);
                 };
                 if (!valid) {
                     throw new IllegalArgumentException(
