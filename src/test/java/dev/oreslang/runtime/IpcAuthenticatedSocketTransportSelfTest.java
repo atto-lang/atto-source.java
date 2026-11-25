@@ -203,6 +203,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
              Socket client = new Socket(
                      InetAddress.getLoopbackAddress(), server.getLocalPort());
              Socket peer = server.accept()) {
+            check(peer.isConnected());
             var occupiedBridge = new IpcReceiptCompletionBridge(1);
             occupiedBridge.claimPhysicalTransport(
                     new Object(), configMessage, 13);
