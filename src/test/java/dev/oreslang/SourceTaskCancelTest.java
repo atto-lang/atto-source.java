@@ -262,15 +262,33 @@ final class SourceTaskCancelTest {
     void failingChildCancelsItsSiblingsByDefault() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         PolyglotException error = assertThrows(PolyglotException.class, () -> run("""
+                define class Started as
+                  pub let int value = 0;
+                end
                 pub async fnc main(): void {
+                  val started = SharedMutex.new(new Started());
                   task scope {
                     let Future<void> looping = task {
                       defer stdio.stdout.write("sibling-cancelled");
+                      block {
+                        val g = started.lock();
+                        g.value = 1;
+                      }
                       loop {
                         rt cooperate;
                       }
                       return;
                     };
+                    // Ensure the sibling has actually begun before failure:
+                    // a task cancelled before its first turn owns no defers.
+                    let mut int seen = 0;
+                    while seen == 0 {
+                      rt cooperate;
+                      block {
+                        val g = started.lock();
+                        seen = g.value;
+                      }
+                    }
                     let Future<int> failing = task {
                       rt cooperate;
                       val Array<int> missing = new Array<int>();
@@ -418,18 +436,37 @@ final class SourceTaskCancelTest {
         // If the loser were not cancelled the scope could never exit. The
         // winner prints after the scope has joined, so output order is fixed.
         assertEquals("|slow-cleanup|winner=1", run("""
+                define class Started as
+                  pub let int value = 0;
+                end
                 pub async fnc main(): void {
+                  val signal = SharedMutex.new(new Started());
                   let mut int winner = 0;
                   task scope {
-                    let Future<int> fast = task {
-                      return 1;
-                    };
                     let Future<int> slow = task {
                       defer stdio.stdout.write("|slow-cleanup");
+                      block {
+                        val g = signal.lock();
+                        g.value = 1;
+                      }
                       loop {
                         rt cooperate;
                       }
                       return 2;
+                    };
+                    // Ensure the loser owns a live cleanup frame before the
+                    // fast task wins. Pre-first-turn cancellation has no
+                    // frame to unwind and must not be called a leak.
+                    let mut int seen = 0;
+                    while seen == 0 {
+                      rt cooperate;
+                      block {
+                        val g = signal.lock();
+                        seen = g.value;
+                      }
+                    }
+                    let Future<int> fast = task {
+                      return 1;
                     };
                     winner = await Future.first([fast, slow]);
                   }

@@ -4570,30 +4570,15 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MapLiteralExpr map) {
-                    // Flatten into the existing exactly-once source task
-                    // evaluator: key[0], value[0], key[1], value[1], ...
-                    // An error or suspension never publishes a partial Map.
-                    ArrayList<Ast.Expr> expressions = new ArrayList<>(map.entries().size() * 2);
-                    for (Ast.MapEntryExpr entry : map.entries()) {
-                        expressions.add(entry.key());
-                        expressions.add(entry.value());
-                    }
-                    evalSuspendableArguments(
-                            task, expressions, env,
-                            (t, values, failure) -> {
-                                if (failure != null) {
-                                    continuation.accept(t, null, failure);
-                                    return;
-                                }
-                                Object built;
-                                try {
-                                    built = buildPopulatedMap(map, values, env);
-                                } catch (RuntimeException | Error invalid) {
-                                    continuation.accept(t, null, invalid);
-                                    return;
-                                }
-                                continuation.accept(t, built, null);
-                            });
+                    // The generic argument evaluator recurses synchronously
+                    // for every ready expression. A large Map with one final
+                    // await used to retain thousands of Java stack frames.
+                    // Store the continuation on the SourceTask's existing
+                    // reduction- and time-budgeted heap trampoline instead.
+                    evalSuspendableMapEntryAt(
+                            task, map, env,
+                            new ArrayList<>(map.entries().size() * 2),
+                            0, continuation);
                     return;
                 }
 
@@ -4715,6 +4700,65 @@ public final class OresEvalRootNode extends RootNode {
                                                     "value match arm cannot break/continue an enclosing loop"));
                         }
                     });
+        }
+
+        /**
+         * Map-specific source-task trampoline. Precisely one key then value is
+         * evaluated for each entry. Each subsequent entry starts from the
+         * existing heap-owned continuation slot, so even MAX_ENTRIES entries
+         * cannot exhaust the Java stack or bypass scheduler reductions.
+         *
+         * Cancellation is owned by SourceTask.resumeSource: the authenticated
+         * cleanup dispatch clears awaitingContinuation and pendingLoopContinuation
+         * before unwinding lexical cleanup. It must not deliver cancellation
+         * into this normal expression continuation or publish the staged Map.
+         * All staged values are COPY-only scalars by independent ownership
+         * admission, so discarded frames hold no affine resources/loans.
+         */
+        private void evalSuspendableMapEntryAt(
+                SourceTask task,
+                Ast.MapLiteralExpr map,
+                Env env,
+                ArrayList<Object> values,
+                int index,
+                SourceValueCont continuation) {
+            if (index == map.entries().size()) {
+                Object finished;
+                try {
+                    finished = buildPopulatedMap(map, values, env);
+                } catch (RuntimeException | Error failure) {
+                    values.clear();
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                values.clear();
+                continuation.accept(task, finished, null);
+                return;
+            }
+            Ast.MapEntryExpr entry = map.entries().get(index);
+            evalSuspendableExpr(task, entry.key(), env, (keyTask, key, keyError) -> {
+                if (keyError != null) {
+                    values.clear();
+                    continuation.accept(keyTask, null, keyError);
+                    return;
+                }
+                evalSuspendableExpr(keyTask, entry.value(), env,
+                        (valueTask, value, valueError) -> {
+                            if (valueError != null) {
+                                values.clear();
+                                continuation.accept(valueTask, null, valueError);
+                                return;
+                            }
+                            values.add(key);
+                            values.add(value);
+                            valueTask.scheduleLoopContinuation(
+                                    env,
+                                    (nextTask, ignored, ignoredFailure) ->
+                                            evalSuspendableMapEntryAt(
+                                                    nextTask, map, env, values,
+                                                    index + 1, continuation));
+                        });
+            });
         }
 
         private void evalSuspendableArguments(
@@ -5356,13 +5400,51 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException(
                                 "cannot suspend on an implicit Future while holding a live MutexGuard");
                     }
+                    // A synchronous suspends callable is an *owned implicit
+                    // source-task invocation*, unlike an explicitly returned
+                    // Future that may belong to another owner. The caller
+                    // must keep its callee alive until completion, and a
+                    // cancellation of the caller must request cancellation
+                    // of this callee AND await physical cleanup before
+                    // publishing the parent's cancellation outcome.
+                    //
+                    // Register the frame only after the pending-Future/guard
+                    // admission gates. The scheduler's authenticated cleanup
+                    // dispatch, not a guest catch block, owns unwinding.
+                    SourceCleanupFrame ownedCallee = task.registerSourceCleanup(
+                            (owner, finished) -> {
+                                try {
+                                    future.cancel(false);
+                                    if (future.isDone()) {
+                                        Throwable settledFailure = null;
+                                        try {
+                                            future.join();
+                                        } catch (RuntimeException | Error error) {
+                                            settledFailure = error;
+                                        }
+                                        finished.accept(owner,
+                                                settledFailure instanceof Error fatal
+                                                        ? SourceFlow.throwing(fatal)
+                                                        : SourceFlow.normal());
+                                        return;
+                                    }
+                                    owner.suspend(
+                                            future,
+                                            (resumed, ignored, failure) ->
+                                                    finished.accept(resumed,
+                                                            failure instanceof Error fatal
+                                                                    ? SourceFlow.throwing(fatal)
+                                                                    : SourceFlow.normal()));
+                                } catch (RuntimeException | Error failure) {
+                                    finished.accept(owner, SourceFlow.throwing(failure));
+                                }
+                            });
                     task.suspend(
                             future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
+                            (t, value, failure) -> {
+                                t.disarmSourceCleanup(ownedCallee);
+                                continuation.accept(t, value, failure);
+                            });
                 } else {
                     continuation.accept(
                             task,
