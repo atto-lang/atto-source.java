@@ -4890,8 +4890,14 @@ public final class TypeChecker {
                 if (pkgRoot && qualifiedCall.member().equals("init")) {
                     throw new IllegalArgumentException("pkg::init is a lifecycle hook, not a callable");
                 }
-                // pkg:: is not an actor capability: same-file dependencies remain forbidden.
-                rejectUnimportedModuleNamespace(moduleName);
+                // Only a linker-checked named function in the synthetic import
+                // namespace is an explicit cross-unit dependency. pkg:: and
+                // all ambient same-file namespaces remain forbidden.
+                if (!(moduleName.equals(Parser.IMPORTS_NAMESPACE)
+                        && linkedImportCallables.contains(qualifiedCall.member())
+                        && importedFunctions.containsKey(qualifiedCall.member()))) {
+                    rejectUnimportedModuleNamespace(moduleName);
+                }
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + (pkgRoot ? "pkg::" : moduleName + ".") + qualifiedCall.member());
