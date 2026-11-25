@@ -666,7 +666,13 @@ final class ActorArtifactAdmissionTest {
                         ActorIpcSessionV1.Lane.CONTROL, ActorIpcSessionV1.FrameKind.READY,
                         1, 0, new byte[0]));
                 assertThrows(SecurityException.class, () -> runtime.bindIpcStringReceiver(session, foreign));
+                var group = runtime.createActorGroup();
+                ActorRuntime.ActorRef<String> managed = runtime.spawnPrivateTrusted(
+                        context -> (message, ctx) -> { });
+                group.manageWorker(managed);
+                assertThrows(SecurityException.class, () -> runtime.bindIpcStringReceiver(session, managed));
                 runtime.bindIpcStringReceiver(session, receiver);
+                assertThrows(SecurityException.class, () -> group.manageWorker(receiver));
                 assertThrows(IllegalStateException.class, () -> runtime.bindIpcStringReceiver(session, receiver));
                 for (int i=1; i<=2; i++) {
                     byte[] wire = ActorIpcSessionV1.encodeWorkerFrame(bootstrap, artifact,
@@ -683,6 +689,7 @@ final class ActorArtifactAdmissionTest {
                             assertThrows(SecurityException.class, () -> runtime.forwardIpcString(session, decoded));
                         } else {
                             runtime.retireBoundIpcSession(session);
+                            assertThrows(SecurityException.class, () -> group.manageWorker(receiver));
                             assertThrows(SecurityException.class, () -> runtime.forwardIpcString(session, decoded));
                             assertTrue(decoded.liveFor(session));
                         }
