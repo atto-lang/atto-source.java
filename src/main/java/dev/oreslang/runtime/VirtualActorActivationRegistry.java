@@ -298,7 +298,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             long candidateIncarnation = initializer
                     ? (generationSupplier == null ? nextIncarnation + 1 : generationSupplier.getAsLong())
                     : slot.incarnation;
-            if (initializer && (candidateIncarnation <= slot.incarnation || candidateIncarnation <= 0))
+            if (initializer && (candidateIncarnation <= nextIncarnation || candidateIncarnation <= slot.incarnation || candidateIncarnation <= 0))
                 throw new IllegalStateException("virtual actor generation is not monotonic");
             // Never mark an activation live before its capability is allocated.
             // Out-of-memory or constructor failure must not strand a slot as
@@ -306,7 +306,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             Activation candidate = new Activation(slot, candidateIncarnation, initializer);
             if (initializer) {
                 advanceRevision();
-                nextIncarnation = Math.max(nextIncarnation, candidateIncarnation);
+                nextIncarnation = candidateIncarnation;
                 slot.incarnation = candidateIncarnation;
                 slot.active = true;
                 slot.published = false;
@@ -446,9 +446,13 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     LocalObservation inspectForHost(LogicalRef logical) {
         Objects.requireNonNull(logical, "logical");
-        if (logical.slot.owner != this)
-            throw new IllegalArgumentException("foreign virtual actor logical reference");
-        return inspectExistingForHost(logical.slot.identity);
+        synchronized (monitor) {
+            if (logical.slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (slots.get(logical.slot.identity) != logical.slot)
+                throw new IllegalStateException("discarded virtual actor logical reference");
+            return inspectExistingForHost(logical.slot.identity);
+        }
     }
 
     public int outstanding(LogicalRef logical) {
