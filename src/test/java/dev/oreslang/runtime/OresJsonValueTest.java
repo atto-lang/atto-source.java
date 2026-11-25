@@ -413,6 +413,35 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void arrayOwnedLookupDetachesNestedMutableObjectsInBothDirections() {
+        var fields = OresJsonValue.objectMap();
+        fields.put("name", OresJsonValue.of("original"));
+        var array = OresJsonValue.array(List.of(OresJsonValue.object(fields)));
+        var copy = (OresJsonValue.ObjectValue) OresJsonValue.atOwned(array, 0).orElseThrow();
+        assertNotSame(fields, copy.fields());
+        copy.fields().put("name", OresJsonValue.of("copy"));
+        assertEquals("[{\"name\":\"original\"}]", OresJsonValue.stringify(array));
+        fields.put("name", OresJsonValue.of("source"));
+        assertEquals("{\"name\":\"copy\"}", OresJsonValue.stringify(copy));
+    }
+
+    @Test
+    void ownedLookupsFailClosedAtSnapshotQuotaWithoutMutatingSource() {
+        String large = "x".repeat(OresJsonValue.DEFAULT_STRINGIFY_UTF8_BYTES);
+        var fields = OresJsonValue.objectMap();
+        fields.put("large", OresJsonValue.of(large));
+        var object = OresJsonValue.object(fields);
+        var array = OresJsonValue.array(List.of(OresJsonValue.of(large)));
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.getOwned(object, "large"));
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.atOwned(array, 0));
+        assertEquals(1, fields.size());
+        assertEquals(large, ((OresJsonValue.StringValue) fields.lookup("large").value()).value());
+        assertEquals(large, ((OresJsonValue.StringValue)
+                ((OresJsonValue.ArrayValue) array).values().get(0)).value());
+        assertTrue(OresJsonValue.getOwned(object, "missing").isEmpty());
+    }
+
+    @Test
     void nestedObjectsRemainValidWhenAcyclic() {
         OresKeyedMap<String, OresJsonValue> address =
                 OresJsonValue.objectMap();
