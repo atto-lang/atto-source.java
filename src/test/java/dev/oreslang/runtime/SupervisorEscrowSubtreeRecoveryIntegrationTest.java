@@ -274,4 +274,99 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
         }
     }
 
+
+    @Test
+    void cohortSharesBudgetAndEscalationInvalidatesOtherPendingPermit()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> true);
+            var clock = new java.util.concurrent.atomic.AtomicLong(1);
+            ActorRuntime.ActorRef<String> first = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        throw new IllegalStateException("first");
+                    });
+            ActorRuntime.ActorRef<String> second = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        throw new IllegalStateException("second");
+                    });
+            var config = new ActorSupervisorRestartCircuit.Config(2, 1, 1_000, 100, 100, 0);
+            assertThrows(IllegalArgumentException.class,
+                    () -> recovery.attachRestartManagedRoots(java.util.List.of(first, first),
+                            config, clock::get));
+            var nodes = recovery.attachRestartManagedRoots(java.util.List.of(first, second),
+                    config, clock::get);
+            first.send("fail");
+            assertThrows(ExecutionException.class,
+                    () -> first.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(nodes.get(0)), () -> { }));
+            var permit = recovery.reserveRestart(nodes.get(0));
+            assertEquals(100L, recovery.restartDelayRemainingNanos(permit));
+            assertTrue(second.isAlive(), "one-for-one must leave its sibling running");
+
+            second.send("fail");
+            assertThrows(ExecutionException.class,
+                    () -> second.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(nodes.get(1)), () -> { }));
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(nodes.get(1)));
+            for (long node : nodes) {
+                assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.RESTART_ESCALATED,
+                        recovery.restartBlocker(node));
+            }
+            clock.addAndGet(2_000);
+            assertThrows(IllegalStateException.class,
+                    () -> recovery.restartDelayRemainingNanos(permit));
+            ActorRuntime.ActorRef<String> replacement = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            assertThrows(IllegalStateException.class,
+                    () -> recovery.attachReplacement(permit, replacement, null));
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(nodes.get(1)));
+            assertNull(recovery.controlFault(), "policy escalation is not an executor fault");
+        }
+    }
+
+    @Test
+    void cohortBudgetPersistsAfterSuccessfulReplacementAcrossDifferentSlots()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> true);
+            var clock = new java.util.concurrent.atomic.AtomicLong(10);
+            ActorRuntime.ActorRef<String> first = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        throw new IllegalStateException("first");
+                    });
+            ActorRuntime.ActorRef<String> second = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        throw new IllegalStateException("second");
+                    });
+            var nodes = recovery.attachRestartManagedRoots(java.util.List.of(first, second),
+                    new ActorSupervisorRestartCircuit.Config(2, 1, 1_000, 0, 0, 0), clock::get);
+            first.send("fail");
+            assertThrows(ExecutionException.class,
+                    () -> first.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(nodes.get(0)), () -> { }));
+            var permit = recovery.reserveRestart(nodes.get(0));
+            ActorRuntime.ActorRef<String> replacement = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            long successor = recovery.attachReplacement(permit, replacement, null);
+            replacement.getReady().get(5, TimeUnit.SECONDS);
+            assertTrue(replacement.isAlive());
+
+            second.send("fail");
+            assertThrows(ExecutionException.class,
+                    () -> second.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(nodes.get(1)), () -> { }));
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(nodes.get(1)));
+            assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.RESTART_ESCALATED,
+                    recovery.restartBlocker(successor));
+            assertTrue(replacement.isAlive(),
+                    "escalation closes admission; parent-driven retirement is separate");
+        }
+    }
+
 }
