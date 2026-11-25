@@ -369,4 +369,132 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
         }
     }
 
+
+    @Test
+    void restartWakeupIsSingleFlightCancellableAndDoesNotConsumePermit()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor(
+                     r -> new Thread(r, "restart-test-control"));
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> true);
+            var clock = new java.util.concurrent.atomic.AtomicLong(1);
+            ActorRuntime.ActorRef<String> first = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        throw new IllegalStateException("failure");
+                    });
+            long node = recovery.attachRestartManagedRoot(first,
+                    new ActorSupervisorRestartCircuit.Config(1, 1, 1_000, 100, 100, 0),
+                    clock::get);
+            first.send("fail");
+            assertThrows(ExecutionException.class,
+                    () -> first.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(node), () -> { }));
+            var permit = recovery.reserveRestart(node);
+            var gate = new CountDownLatch(1);
+            var entered = new CountDownLatch(1);
+            timer.execute(() -> {
+                entered.countDown();
+                try {
+                    if (!gate.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("timer gate timed out");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var cancelled = recovery.scheduleRestartWakeup(permit, timer);
+                assertThrows(IllegalStateException.class,
+                        () -> recovery.scheduleRestartWakeup(permit, timer));
+                assertTrue(recovery.cancelRestartWakeup(cancelled));
+                assertFalse(recovery.cancelRestartWakeup(cancelled));
+                assertTrue(cancelled.completion().toCompletableFuture().isCompletedExceptionally());
+
+                // Inject a scheduler which rejects submissions. Rejection must
+                // remove its wakeup reservation and leave the permit reusable.
+                try (var rejected = Executors.newSingleThreadScheduledExecutor()) {
+                    rejected.shutdown();
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            () -> recovery.scheduleRestartWakeup(permit, rejected));
+                }
+                clock.addAndGet(100);
+                var valid = recovery.scheduleRestartWakeup(permit, timer);
+                var observedThread = new AtomicReference<String>();
+                var observed = valid.completion().thenRun(() ->
+                        observedThread.set(Thread.currentThread().getName()));
+                ActorRuntime.ActorRef<String> replacement = runtime.spawnPrivate(
+                        ignored -> (message, turn) -> { });
+                assertThrows(IllegalStateException.class,
+                        () -> recovery.attachReplacement(permit, replacement, null));
+                gate.countDown();
+                observed.toCompletableFuture().get(5, TimeUnit.SECONDS);
+                assertEquals("restart-test-control", observedThread.get());
+                assertFalse(recovery.cancelRestartWakeup(valid));
+                long successor = recovery.attachReplacement(permit, replacement, null);
+                assertNotEquals(node, successor);
+                assertThrows(IllegalStateException.class,
+                        () -> recovery.scheduleRestartWakeup(permit, timer));
+            } finally {
+                gate.countDown();
+            }
+        }
+    }
+
+    @Test
+    void queuedRestartWakeupRevalidatesCohortEscalationBeforeNotification()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor();
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> true);
+            var clock = new java.util.concurrent.atomic.AtomicLong(1);
+            ActorRuntime.ActorRef<String> a = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { throw new IllegalStateException("a"); });
+            ActorRuntime.ActorRef<String> b = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { throw new IllegalStateException("b"); });
+            var nodes = recovery.attachRestartManagedRoots(java.util.List.of(a, b),
+                    new ActorSupervisorRestartCircuit.Config(2, 1, 1_000, 0, 0, 0), clock::get);
+            a.send("fail");
+            assertThrows(ExecutionException.class, () -> a.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(nodes.get(0)), () -> { }));
+            var permit = recovery.reserveRestart(nodes.get(0));
+            var gate = new CountDownLatch(1);
+            var entered = new CountDownLatch(1);
+            timer.execute(() -> {
+                entered.countDown();
+                try {
+                    if (!gate.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("timer gate timed out");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var wakeup = recovery.scheduleRestartWakeup(permit, timer);
+                b.send("fail");
+                assertThrows(ExecutionException.class, () -> b.done().get(5, TimeUnit.SECONDS));
+                assertTrue(bridge.commitAndAcknowledge(bridge.deliver(nodes.get(1)), () -> { }));
+                assertThrows(IllegalStateException.class,
+                        () -> recovery.reserveRestart(nodes.get(1)));
+                gate.countDown();
+                var denied = assertThrows(ExecutionException.class,
+                        () -> wakeup.completion().toCompletableFuture().get(5, TimeUnit.SECONDS));
+                assertInstanceOf(IllegalStateException.class, denied.getCause());
+                assertFalse(recovery.cancelRestartWakeup(wakeup));
+                assertThrows(IllegalStateException.class,
+                        () -> recovery.scheduleRestartWakeup(permit, timer));
+            } finally {
+                gate.countDown();
+            }
+        }
+    }
+
 }
