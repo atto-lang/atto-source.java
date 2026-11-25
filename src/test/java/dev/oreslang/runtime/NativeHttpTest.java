@@ -294,7 +294,7 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               val worker = spawn Reused();
-              await worker.ready;
+              await worker.get_ready();
 
               // Keep both requests admitted before delivering either to
               // the shared actor. Response envelopes must not cross streams.
@@ -309,7 +309,7 @@ class NativeHttpTest {
               stdio.println(server.active);
 
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -350,7 +350,7 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               val worker = spawn Reused();
-              await worker.ready;
+              await worker.get_ready();
 
               val first = await server.accept();
               val firstDone = first.completion;
@@ -364,7 +364,7 @@ class NativeHttpTest {
               stdio.println(server.active);
 
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -406,12 +406,12 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 1, 1024, 10000);
               stdio.println(server.port);
               val worker = spawn Persistent();
-              await worker.ready;
+              await worker.get_ready();
               __STEPS__
               stdio.println("reused-20");
               stdio.println(server.active);
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -554,9 +554,9 @@ class NativeHttpTest {
                   val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
                   stdio.println(server.port);
                   val request = await server.accept();
-                  val done = request.completion;
+                  val completion = request.completion;
                   http.handler("Hello").dispatch(rt mut borrow request);
-                  stdio.println(await done);
+                  stdio.println(await completion);
                   await server.shutdown(0);
                   return;
                 }
