@@ -469,4 +469,55 @@ final class IpcSupervisorIngressIntegrationTest {
         assertThrows(IOException.class,()->floatPlan.preflight(nan));
     }
 
+    private static IpcProtobufDataPlanV1 protobufPlan(){
+        return new IpcProtobufDataPlanV1("node.v1",1,"Node",java.util.List.of(
+                new IpcProtobufDataPlanV1.Node("Node",IpcProtobufDataPlanV1.Kind.MESSAGE,java.util.List.of(
+                        new IpcProtobufDataPlanV1.Field(2,"next","Node"),new IpcProtobufDataPlanV1.Field(1,"values","Packed"))),
+                new IpcProtobufDataPlanV1.Node("Packed",IpcProtobufDataPlanV1.Kind.PACKED,java.util.List.of(
+                        new IpcProtobufDataPlanV1.Field(0,"element","U64"))),
+                new IpcProtobufDataPlanV1.Node("U64",IpcProtobufDataPlanV1.Kind.VARINT,java.util.List.of())),
+                new IpcProtobufDataPlanV1.Limits(1024,8192,4096,16,32,4));
+    }
+    @Test void registeredProtobufMatchesCanonicalDigestAndPublishesNestedValues()throws Exception{
+        var plan=protobufPlan();
+        var reference=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.PROTOBUF,1,"node.v1",
+                HexFormat.of().parseHex("4a236e0ad94e1abe167060795850a16747ae5fd1d7c929151bc4ad4eed8bfebf"));
+        plan.requireBinding(reference);
+        byte[] key=new byte[32],connection=new byte[16];Arrays.fill(key,(byte)7);Arrays.fill(connection,(byte)8);
+        var delivered=new java.util.concurrent.atomic.AtomicReference<Object>();
+        try(ActorRuntime runtime=new ActorRuntime()){
+            var child=runtime.<Object>spawnPrivateTrusted(ignored->(message,turn)->delivered.set(message));
+            var budget=runtime.registerIpcIngressTenant("tenant",1024*1024,2);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
+            byte[] good=IpcSchemaBoundDataV1.wrap(reference,new byte[]{10,2,1,2,18,3,10,1,3});
+            byte[] bad=IpcSchemaBoundDataV1.wrap(reference,new byte[]{10,1,(byte)128});
+            var first=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "real-protobuf",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bad)),
+                    1,child.generation(),3,4,1,1);
+            var second=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "real-protobuf",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(good)),
+                    1,child.generation(),3,4,2,2);
+            try(var ingress=new IpcPinnedActorIngressV1<>(child,first,authority(5,connection,key),reference,budget,8192,plan)){
+                assertThrows(IOException.class,()->ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(first,bad,5,connection,key)));
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+                ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(second,good,5,connection,key));
+                child.drain().get(5,TimeUnit.SECONDS);
+                assertEquals(java.util.List.of(java.util.List.of(1L,java.util.List.of(1L,2L)),
+                        java.util.List.of(2L,java.util.List.of(java.util.List.of(1L,java.util.List.of(3L))))),delivered.get());
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            }
+        }
+    }
+    @Test void protobufSharedBudgetRejectsMalformedPackedAndRecursiveInputs()throws Exception{
+        var plan=protobufPlan();
+        var good=java.nio.ByteBuffer.wrap(new byte[]{10,2,1,2,10,1,3}).asReadOnlyBuffer();
+        long credit=plan.preflight(good);
+        assertEquals(java.util.List.of(java.util.List.of(1L,java.util.List.of(1L,2L)),java.util.List.of(1L,java.util.List.of(3L))),plan.decode(good,credit));
+        assertThrows(IOException.class,()->plan.decode(good,credit-1));
+        for(byte[] bad:new byte[][]{{8,1},{0},{26,0},{10,1,(byte)128},{18,2,10,1},{18,1,0},{10,10,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,2},
+                {18,8,18,6,18,4,18,2,18,0}}){
+            assertThrows(IOException.class,()->plan.preflight(java.nio.ByteBuffer.wrap(bad).asReadOnlyBuffer()));
+        }
+    }
+
 }
