@@ -1,0 +1,5 @@
+namespace counter;
+define state on actor CounterActor as {
+    let int value : 0;
+    let bool enabled : true;
+}
