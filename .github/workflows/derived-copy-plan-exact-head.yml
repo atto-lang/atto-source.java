@@ -6,6 +6,8 @@ on:
       - 'src/main/java/dev/oreslang/types/DerivedGraphCopyPlan.java'
       - 'src/main/java/dev/oreslang/types/GraphCopyTransaction.java'
       - 'src/main/java/dev/oreslang/types/GraphTopology.java'
+      - 'src/main/java/dev/oreslang/types/CopyScalarAdmission.java'
+      - 'tests/graph-topology-host/CopyScalarAdmissionTest.java'
       - 'tests/graph-topology-host/TopologyTest.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
@@ -16,6 +18,8 @@ on:
       - 'src/test/java/dev/oreslang/DerivedCopyPlanGuestTest.java'
       - 'src/test/java/dev/oreslang/CopyPolicyCompilerTest.java'
       - '.github/workflows/derived-copy-plan-exact-head.yml'
+  push:
+    branches: [feat/derived-copy-plan-v1-20261116]
   workflow_dispatch:
 permissions:
   contents: read
@@ -54,6 +58,14 @@ jobs:
             tests/graph-topology-host/TopologyTest.java
           java -Xss256k -cp "$RUNNER_TEMP/graph-topology" TopologyTest
           echo 'GRAPH_TOPOLOGY_SCOPE=HOST_COMPONENT_ONLY'
+      - name: Execute exact scalar-copy host admission harness
+        run: |
+          set -euo pipefail
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/copy-scalar" \
+            src/main/java/dev/oreslang/types/CopyScalarAdmission.java \
+            tests/graph-topology-host/CopyScalarAdmissionTest.java
+          java -cp "$RUNNER_TEMP/copy-scalar" CopyScalarAdmissionTest
+          echo 'COPY_SCALAR_SCOPE=HOST_COMPONENT_ONLY'
       - name: Run actual type-checker and GraalVM guest-copy JUnit
         shell: bash
         run: |
