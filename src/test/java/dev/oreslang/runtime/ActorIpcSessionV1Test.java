@@ -56,6 +56,76 @@ final class ActorIpcSessionV1Test {
     }
 
     @Test
+    void quotaBackpressureDoesNotConsumeSequenceAndAuthFailureReleasesCredit() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            ActorDataDecodeQuotaV1 quota = new ActorDataDecodeQuotaV1(64 * 1024, 1);
+            byte[] output = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                    ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, new byte[]{7});
+            var held = quota.tryReserve(1);
+            assertNotNull(held);
+            assertNull(session.tryAcceptWorkerDataFrame(output, quota));
+            assertFalse(session.poisoned());
+            held.close();
+            held.close();
+            assertEquals(0, quota.active());
+            assertEquals(0L, quota.usedBytes());
+            var frame = session.tryAcceptWorkerDataFrame(output, quota);
+            assertNotNull(frame);
+            assertEquals(1L, frame.frameSequence());
+            assertEquals(0L, quota.usedBytes());
+            assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.tryAcceptWorkerDataFrame(output, quota));
+            assertTrue(session.poisoned());
+            assertEquals(0L, quota.usedBytes());
+            assertEquals(0, quota.active());
+        }
+    }
+
+    @Test
+    void dataPathRejectsEvenAuthenticatedControlAndReleasesCredit() {
+        ActorArtifact<Object> artifact = artifact("ImageWorker", MESSAGE_ABI, ARTIFACT);
+        try (ActorIpcSessionV1 session = ActorIpcSessionV1.create(
+                artifact, UUID.randomUUID(), 1, 1);
+             ActorIpcSessionV1.BootstrapMaterial bootstrap =
+                     session.claimBootstrapForTrustedLauncher()) {
+            ready(session, bootstrap, artifact);
+            ActorDataDecodeQuotaV1 quota = new ActorDataDecodeQuotaV1(64 * 1024, 1);
+            byte[] complete = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.CONTROL,
+                    ActorIpcSessionV1.FrameKind.COMPLETE, 2, 9, new byte[0]);
+            assertThrows(ActorIpcSessionV1.ProtocolException.class,
+                    () -> session.tryAcceptWorkerDataFrame(complete, quota));
+            assertTrue(session.poisoned());
+            assertEquals(0L, quota.usedBytes());
+        }
+    }
+
+    @Test
+    void sharedTenantQuotaCannotOverbookAcrossThreads() throws Exception {
+        ActorDataDecodeQuotaV1 quota = new ActorDataDecodeQuotaV1(1024, 2);
+        var held = quota.tryReserve(1024);
+        assertNotNull(held);
+        var other = new java.util.concurrent.FutureTask<>(() -> quota.tryReserve(1));
+        Thread t = new Thread(other);
+        t.start();
+        assertNull(other.get(5, java.util.concurrent.TimeUnit.SECONDS));
+        t.join();
+        held.close();
+        assertEquals(0L, quota.usedBytes());
+        try (var a = quota.tryReserve(1); var b = quota.tryReserve(1)) {
+            assertNotNull(a);
+            assertNotNull(b);
+            assertNull(quota.tryReserve(1));
+        }
+        assertEquals(0, quota.active());
+        assertEquals(0L, quota.usedBytes());
+    }
+
+    @Test
     void bootstrapMaterialIsSingleConsumerAndDestroyable() {
         ActorArtifact<Object> artifact = artifact(
                 "ImageWorker", MESSAGE_ABI, ARTIFACT);
