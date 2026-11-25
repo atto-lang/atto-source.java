@@ -56,8 +56,31 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         private final RestartPermit permit;
         private final CompletableFuture<Void> ready = new CompletableFuture<>();
         private ScheduledFuture<?> timer; // guarded by recovery lock
-        private RestartWakeup(RestartPermit permit) { this.permit = permit; }
+        private final RestartJob job;
+        private RestartWakeup(RestartPermit permit, RestartJob job) {
+            this.permit = permit;
+            this.job = job;
+        }
         CompletionStage<Void> completion() { return ready.minimalCompletionStage(); }
+    }
+
+    /**
+     * One host-owned automatic replacement attempt. Success means attached
+     * and activation requested, not completion of guest initialization.
+     */
+    static final class RestartJob {
+        private final RestartPermit permit;
+        private final java.util.function.Supplier<ActorRuntime.ActorRef<?>> spawn;
+        private final CompletableFuture<ActorRuntime.ActorRef<?>> result = new CompletableFuture<>();
+        private RestartWakeup wakeup; // guarded by recovery lock
+        private RestartJob(RestartPermit permit,
+                java.util.function.Supplier<ActorRuntime.ActorRef<?>> spawn) {
+            this.permit = permit;
+            this.spawn = spawn;
+        }
+        CompletionStage<ActorRuntime.ActorRef<?>> completion() {
+            return result.minimalCompletionStage();
+        }
     }
 
     /**
@@ -104,6 +127,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     private final Map<Long, Long> successorIds = new HashMap<>();
     // At most one wakeup per exact issued permit. Guarded by lock.
     private final Map<RestartPermit, RestartWakeup> wakeups = new HashMap<>();
+    private final Map<RestartPermit, RestartJob> restartJobs = new HashMap<>();
     private final ThreadLocal<Boolean> submittingWakeup = new ThreadLocal<>();
     private final AtomicReference<Throwable> controlFault = new AtomicReference<>();
     private final ThreadLocal<Boolean> submitting = new ThreadLocal<>();
@@ -411,12 +435,41 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         runtime.requireSupervisorShutdownAuthority("schedule supervisor restart wakeup");
         Objects.requireNonNull(permit, "permit");
         Objects.requireNonNull(scheduler, "scheduler");
-        var wakeup = new RestartWakeup(permit);
+        return scheduleWakeup(permit, scheduler, null);
+    }
+
+    /**
+     * Explicit opt-in automatic replacement after the already admitted
+     * guardian permit becomes ready. The runtime creates a fresh dormant
+     * private actor from the compiler-compatible BehaviorFactory. The
+     * factory itself runs in actor initialization, not on CONTROL.
+     */
+    <M> RestartJob scheduleRestartReplacement(RestartPermit permit,
+            ScheduledExecutorService scheduler, ActorRuntime.BehaviorFactory<M> factory) {
+        runtime.requireSupervisorShutdownAuthority("schedule automatic supervisor replacement");
+        Objects.requireNonNull(permit, "permit");
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(factory, "factory");
+        var job = new RestartJob(permit, () -> runtime.spawnPrivate(factory));
+        scheduleWakeup(permit, scheduler, job);
+        return job;
+    }
+
+    private RestartWakeup scheduleWakeup(RestartPermit permit,
+            ScheduledExecutorService scheduler, RestartJob job) {
+        var wakeup = new RestartWakeup(permit, job);
         final long delay;
         synchronized (lock) {
             delay = remainingDelayLocked(permit);
-            if (wakeups.putIfAbsent(permit, wakeup) != null)
-                throw new IllegalStateException("restart wakeup already scheduled");
+            if (wakeups.containsKey(permit) || restartJobs.containsKey(permit))
+                throw new IllegalStateException("restart wakeup or replacement already scheduled");
+            if (job != null) {
+                if (permit.oldParentId != 1L || !rootPolicies.containsKey(permit.oldNodeId))
+                    throw new IllegalStateException("automatic restart requires a managed guardian slot");
+                restartJobs.put(permit, job);
+                job.wakeup = wakeup;
+            }
+            wakeups.put(permit, wakeup);
         }
 
         try {
@@ -484,8 +537,60 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             }
         }
         // Host continuations must never run under recovery/admission locks.
-        if (failure == null) wakeup.ready.complete(null);
-        else wakeup.ready.completeExceptionally(failure);
+        if (failure == null) {
+            if (wakeup.job != null) runRestartJob(wakeup.job);
+            wakeup.ready.complete(null);
+        } else {
+            if (wakeup.job != null) finishRestartJob(wakeup.job, null, failure);
+            wakeup.ready.completeExceptionally(failure);
+        }
+    }
+
+    private void runRestartJob(RestartJob job) {
+        ActorRuntime.ActorRef<?> replacement = null;
+        try {
+            synchronized (lock) {
+                if (restartJobs.get(job.permit) != job
+                        || remainingDelayLocked(job.permit) != 0)
+                    throw new IllegalStateException("automatic restart no longer admitted");
+            }
+            // Recheck physical release BEFORE allocating the dormant actor.
+            if (restartBlocker(job.permit.oldNodeId) != RestartBlocker.READY)
+                throw new IllegalStateException("automatic restart subtree not reclaimed");
+            replacement = Objects.requireNonNull(job.spawn.get(), "replacement");
+            // The internal claim is required all the way through admission.
+            // Any competing manual attach or duplicate job loses.
+            attachReplacement(job.permit, replacement, null, job);
+            replacement.getReady(); // nonblocking activation; never await on CONTROL
+            finishRestartJob(job, replacement, null);
+        } catch (RuntimeException | Error failure) {
+            if (replacement != null) {
+                try {
+                    runtime.cancel(replacement);
+                } catch (RuntimeException | Error cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                    controlFault.compareAndSet(null, cleanupFailure);
+                }
+            }
+            finishRestartJob(job, null, failure);
+        }
+    }
+
+    private void finishRestartJob(RestartJob job, ActorRuntime.ActorRef<?> replacement,
+            Throwable failure) {
+        synchronized (lock) {
+            if (!restartJobs.remove(job.permit, job)) return;
+        }
+        if (failure == null) job.result.complete(replacement);
+        else job.result.completeExceptionally(failure);
+    }
+
+    boolean cancelRestartJob(RestartJob job) {
+        runtime.requireSupervisorShutdownAuthority("cancel automatic supervisor replacement");
+        Objects.requireNonNull(job, "job");
+        // Once CONTROL has claimed the wakeup, cancellation loses rather
+        // than interrupting creation or recalling an attached actor.
+        return cancelRestartWakeup(job.wakeup);
     }
 
     boolean cancelRestartWakeup(RestartWakeup wakeup) {
@@ -495,14 +600,21 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         synchronized (lock) {
             if (!wakeups.remove(wakeup.permit, wakeup)) return false;
             timer = wakeup.timer;
+            if (wakeup.job != null) restartJobs.remove(wakeup.permit, wakeup.job);
         }
         if (timer != null) timer.cancel(false);
         wakeup.ready.cancel(false);
+        if (wakeup.job != null) wakeup.job.result.cancel(false);
         return true;
     }
 
     long attachReplacement(RestartPermit permit, ActorRuntime.ActorRef<?> replacement,
             ActorRuntime.ActorRef<?> liveParent) {
+        return attachReplacement(permit, replacement, liveParent, null);
+    }
+
+    private long attachReplacement(RestartPermit permit, ActorRuntime.ActorRef<?> replacement,
+            ActorRuntime.ActorRef<?> liveParent, RestartJob job) {
         runtime.requireSupervisorShutdownAuthority("commit supervisor replacement");
         Objects.requireNonNull(permit, "permit");
         Objects.requireNonNull(replacement, "replacement");
@@ -510,7 +622,8 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         // expensive external physical-release verifier.
         synchronized (lock) {
             if (!issued.contains(permit) || permit.used
-                    || successorIds.containsKey(permit.oldNodeId)) {
+                    || successorIds.containsKey(permit.oldNodeId)
+                    || restartJobs.get(permit) != job) {
                 throw new IllegalStateException("stale, foreign or reused restart permit");
             }
         }
@@ -530,7 +643,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             // Recheck after the external verifier and reserve atomically.
             if (controlFault.get() != null || !issued.contains(permit)
                     || permit.used || successorIds.containsKey(permit.oldNodeId)
-                    || actualParent != expectedParent) {
+                    || actualParent != expectedParent || restartJobs.get(permit) != job) {
                 throw new IllegalStateException("stale, reused or misparented restart permit");
             }
             if (wakeups.containsKey(permit))
