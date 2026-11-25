@@ -319,20 +319,31 @@ public final class ActorEventBus implements AutoCloseable {
     <T> Subscription<T> subscribePublisher(
             String name, ActorRuntime.ActorRef<?> publisher) {
         Objects.requireNonNull(publisher, "publisher");
-        requireOpen();
-        group.requireCurrentMember("subscribe to publisher ActorGroup events");
-        if (!runtime.isAlive(publisher)
-                || !runtime.isLiveActorAddress(publisher.address())
-                || !group.isMember(publisher.id())) {
-            throw new SecurityException("publisher must be a live member of this ActorGroup");
-        }
-        return subscribeInternal(name, publisher.address());
+        // Capture both live memberships and install the edge under one
+        // membership fence. Neither publisher nor subscriber can leave and
+        // rejoin between authorization and edge publication.
+        return ChannelRuntime.withDeferredAsyncCompletions(() ->
+                group.withEventAdmissionMembershipFence(() -> {
+                    requireOpen();
+                    group.requireCurrentMember("subscribe to publisher ActorGroup events");
+                    if (!runtime.isAlive(publisher)
+                            || !runtime.isLiveActorAddress(publisher.address())
+                            || !group.isMember(publisher.id())) {
+                        throw new SecurityException(
+                                "publisher must be a live member of this ActorGroup");
+                    }
+                    return this.<T>subscribeInternal(name, publisher.address());
+                }));
     }
 
     public <T> Subscription<T> subscribe(String name) {
-        return subscribeInternal(name, null);
+        return ChannelRuntime.withDeferredAsyncCompletions(() ->
+                group.withEventAdmissionMembershipFence(() ->
+                        this.<T>subscribeInternal(name, null)));
     }
 
+    // Called only with membership -> delivery lock ordering and deferred
+    // channel notifications. This includes the existing-edge fast path.
     private <T> Subscription<T> subscribeInternal(
             String name, ActorRuntime.ActorAddress publisherScope) {
         requireOpen();
