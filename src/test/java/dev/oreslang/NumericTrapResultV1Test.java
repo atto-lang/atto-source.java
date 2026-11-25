@@ -113,6 +113,18 @@ final class NumericTrapResultV1Test {
         for (String spelling : new String[] { "trap", "trap!" }) {
             String guest = """
                     pub fnc quotient(int a, int b): int { return a / b; }
+                    fnc is_zero(Result<int, Error> outcome): bool {
+                      match outcome over
+                        on Ok(value) -> { return false; }
+                        on Err(error) -> { return error is type DivisionByZeroError; }
+                      end
+                    }
+                    fnc is_overflow(Result<int, Error> outcome): bool {
+                      match outcome over
+                        on Ok(value) -> { return false; }
+                        on Err(error) -> { return error is type ArithmeticOverflowError; }
+                      end
+                    }
                     pub fnc main(): int {
                       val Result<int, Error> ok = %1$s quotient(-7, 3);
                       val Result<int, Error> zero = %1$s quotient(7, 0);
@@ -120,9 +132,9 @@ final class NumericTrapResultV1Test {
                       if ok.is_ok() then
                         if ok.unwrap() eq -2 then
                           if zero.is_err() then
-                            if zero.unwrap_err() is type DivisionByZeroError then
+                            if is_zero(zero) then
                               if overflow.is_err() then
-                                if overflow.unwrap_err() is type ArithmeticOverflowError then
+                                if is_overflow(overflow) then
                                   return 42;
                                 fi
                               fi
