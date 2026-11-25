@@ -1,0 +1,38 @@
+name: SharkBench strict UTF-8 guest admission
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/**'
+      - 'src/test/java/dev/oreslang/StringTransformTest.java'
+      - 'src/test/java/dev/oreslang/runtime/Utf8StringAbiTest.java'
+      - '.github/workflows/sharkbench-utf8-admission.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  strict-utf8:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD HEAD^{tree}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+      - name: Execute guest and ABI regression tests
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=StringTransformTest,Utf8StringAbiTest -Dsurefire.failIfNoSpecifiedTests=true test
+          test -z "$(git status --porcelain --untracked-files=all)"
