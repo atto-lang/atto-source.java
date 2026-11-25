@@ -237,4 +237,112 @@ final class ActorRequestReplyRuntimeTest {
             healthy.stop();
         }
     }
+
+    @Test
+    void rootPendingCallBudgetIsIndependentOfRecipientMailboxCapacity() throws Exception {
+        var base = IsolatePolicy.developer();
+        var restricted = new IsolatePolicy(base.capabilities(), base.maxHeapBytes(),
+                2, base.maxWallTime(), base.adversarial());
+        try (var store = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(restricted)) {
+            var image = store.publish("root-request-credits.ores",
+                    Parser.parse("pub routine main(): void { return; }"));
+            var started = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var actor = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                    new Executor(image, started, release), "Worker");
+            try {
+                actor.ready().get(2, TimeUnit.SECONDS);
+                var active = actor.request("block");
+                assertTrue(started.await(2, TimeUnit.SECONDS));
+                var queued = actor.request("queued");
+                assertEquals(2, runtime.pendingRootRequestCount());
+                var exhausted = assertThrows(IllegalStateException.class,
+                        () -> actor.request("cannot-admit"));
+                assertTrue(exhausted.getMessage().contains("caller pending request"),
+                        exhausted.getMessage());
+                assertEquals(2, runtime.pendingRootRequestCount());
+                assertTrue(queued.cancel(false), "queued cancellation frees caller credit");
+                assertEquals(1, runtime.pendingRootRequestCount());
+                var recovered = actor.request("recovered");
+                release.countDown();
+                assertEquals("first", active.get(2, TimeUnit.SECONDS));
+                assertEquals("ok:recovered", recovered.get(2, TimeUnit.SECONDS));
+                assertEquals(0, runtime.pendingRootRequestCount(),
+                        "credits must be released after all settlements");
+            } finally {
+                release.countDown();
+                actor.cancel();
+            }
+        }
+    }
+
+    @Test
+    void terminatingRequestingActorCancelsItsOutstandingChildToServiceCall() throws Exception {
+        try (var store = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("outgoing-actor-lifetime.ores",
+                    Parser.parse("pub routine main(): void { return; }"));
+            var serviceStarted = new CountDownLatch(1);
+            var unblockService = new CountDownLatch(1);
+            var childRequested = new CountDownLatch(1);
+            var serviceExecutor = new Executor(image, serviceStarted, unblockService);
+            var service = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                    serviceExecutor, "Worker");
+            try {
+                service.ready().get(2, TimeUnit.SECONDS);
+                var first = service.request("block");
+                assertTrue(serviceStarted.await(2, TimeUnit.SECONDS));
+
+                ActorRuntime.ActorCodeExecutor requestingChild = new ActorRuntime.ActorCodeExecutor() {
+                    @Override public SharedCodeImageStore.CodeImage codeImage() {
+                        return image;
+                    }
+                    @Override public ActorRuntime.ActorProtocol actorProtocol(String type) {
+                        return ActorRuntime.ActorProtocol.UNARY;
+                    }
+                    @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                            String type, ActorRuntime.ActorContext<Object> context) {
+                        return context.self()::id;
+                    }
+                    @Override public void receiveActor(
+                            String type, ActorRuntime.ActorOwnedGuestState state,
+                            ActorRuntime.ActorInboxMail<Object> mail,
+                            ActorRuntime.ActorContext<Object> context) {
+                        fail("child is unary only");
+                    }
+                    @Override public Object requestActor(
+                            String type, ActorRuntime.ActorOwnedGuestState state,
+                            Object request, ActorRuntime.ActorContext<Object> context) {
+                        var pending = service.request(request);
+                        childRequested.countDown();
+                        return pending;
+                    }
+                };
+                var child = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                        requestingChild, "RequestingChild");
+                try {
+                    child.ready().get(2, TimeUnit.SECONDS);
+                    var pendingChildReply = child.request("must-skip");
+                    assertTrue(childRequested.await(2, TimeUnit.SECONDS));
+                    child.stop();
+                    assertThrows(ExecutionException.class,
+                            () -> pendingChildReply.get(2, TimeUnit.SECONDS));
+                    child.done().get(2, TimeUnit.SECONDS);
+                } finally {
+                    child.cancel();
+                }
+
+                unblockService.countDown();
+                assertEquals("first", first.get(2, TimeUnit.SECONDS));
+                assertEquals("ok:after", service.request("after").get(2, TimeUnit.SECONDS));
+                assertEquals(2, serviceExecutor.executed.get(),
+                        "terminated caller must revoke its queued outbound request");
+                assertEquals(0, runtime.pendingRootRequestCount());
+            } finally {
+                unblockService.countDown();
+                service.cancel();
+            }
+        }
+    }
 }
