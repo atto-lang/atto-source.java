@@ -19,6 +19,7 @@ final class IpcSchemaBoundDataV1 {
     private static final int MAX_BODY = 1024 * 1024;
     private static final int MAX_SCHEMA = 256;
     private static final int MAX_WRAPPED = MAX_BODY + 4 + 1 + 4 + 2 + MAX_SCHEMA + 32 + 4;
+    static final int MAX_AUTHENTICATED_FRAME = MAX_WRAPPED + 1024;
 
     enum Codec {
         MESSAGEPACK(1), PROTOBUF(2), CBOR(3), FLATBUFFERS(4);
@@ -28,13 +29,13 @@ final class IpcSchemaBoundDataV1 {
 
     static final class Binding {
         private final Codec codec;
-        private final int version;
+        private final long version;
         private final byte[] schema;
         private final byte[] digest;
 
-        Binding(Codec codec, int version, String schema, byte[] shapeDigest) {
+        Binding(Codec codec, long version, String schema, byte[] shapeDigest) {
             this.codec = Objects.requireNonNull(codec, "codec");
-            if (version <= 0 || schema == null || schema.isEmpty()
+            if (version <= 0 || version > 0xffffffffL || schema == null || schema.isEmpty()
                     || schema.length() > MAX_SCHEMA
                     || !schema.chars().allMatch(c -> c >= 33 && c <= 126)
                     || shapeDigest == null || shapeDigest.length != 32) {
@@ -43,6 +44,10 @@ final class IpcSchemaBoundDataV1 {
             this.version = version;
             this.schema = schema.getBytes(StandardCharsets.US_ASCII);
             this.digest = shapeDigest.clone();
+        }
+        boolean sameBinding(Binding other){
+            return other!=null&&codec==other.codec&&version==other.version
+                    &&MessageDigest.isEqual(schema,other.schema)&&MessageDigest.isEqual(digest,other.digest);
         }
     }
 
@@ -58,7 +63,7 @@ final class IpcSchemaBoundDataV1 {
         try (DataOutputStream out = new DataOutputStream(raw)) {
             out.writeInt(MAGIC);
             out.writeByte(binding.codec.wire);
-            out.writeInt(binding.version);
+            out.writeInt((int)binding.version);
             out.writeShort(binding.schema.length);
             out.write(binding.schema);
             out.write(binding.digest);
@@ -76,7 +81,7 @@ final class IpcSchemaBoundDataV1 {
         Objects.requireNonNull(expected, "expected binding");
         // Bound the entire unauthenticated frame before the outer decoder's copy.
         // The existing v3 maximum envelope overhead is at most 1024 bytes.
-        if (frame == null || frame.length > MAX_WRAPPED + 1024) {
+        if (frame == null || frame.length > MAX_AUTHENTICATED_FRAME) {
             throw new IOException("schema DATA frame too large");
         }
         var authenticated = IpcAuthenticatedSocketTransport.decodeDataFrame(
@@ -88,7 +93,7 @@ final class IpcSchemaBoundDataV1 {
         if (wrapped.length > MAX_WRAPPED) throw new IOException("schema DATA payload too large");
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(wrapped))) {
             if (in.readInt() != MAGIC || in.readUnsignedByte() != expected.codec.wire
-                    || in.readInt() != expected.version) {
+                    || Integer.toUnsignedLong(in.readInt()) != expected.version) {
                 throw new IOException("schema DATA profile/codec/version mismatch");
             }
             int length = in.readUnsignedShort();
