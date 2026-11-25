@@ -4124,6 +4124,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void leaveId(ActorId actorId) {
+            // Keep removal and physical channel close inside the membership
+            // fence, but publish failed pending reads/writes after unlock.
+            // A completion may otherwise wait on a manager attempting rejoin.
+            ChannelRuntime.withDeferredAsyncCompletions(() -> {
+                leaveIdUnderCompletionFence(actorId);
+                return null;
+            });
+        }
+
+        private void leaveIdUnderCompletionFence(ActorId actorId) {
             ActorGroupColumnarEpoch revoked = null;
             synchronized (groupMembershipLock) {
                 if (!members.remove(actorId)) return;
