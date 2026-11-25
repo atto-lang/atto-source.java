@@ -167,10 +167,30 @@ public final class MessagePackWireV2 {
             for (int i = 0; i < count; i++) value(shape.members().get(fixed(shape.kind()) ? i : 0), values.get(i), depth + 1);
         }
     }
+    /** Trusted endpoint decode ceilings. Expanded bytes are conservative logical
+     * charges, not a measurement of JVM heap or mailbox credits. */
+    public record DecodeLimits(int wire, long expanded, int elements, long work, int depth) {
+        public DecodeLimits {
+            require(wire > 0 && wire <= MAX_BYTES && expanded > 0 && expanded <= 8L*1024*1024
+                    && elements > 0 && elements <= MAX_ELEMENTS && work > 0 && work <= 4L*MAX_BYTES
+                    && depth > 0 && depth <= MAX_DEPTH, "invalid decode limits");
+        }
+        public static DecodeLimits defaults() {
+            return new DecodeLimits(MAX_BYTES,8L*1024*1024,MAX_ELEMENTS,4L*MAX_BYTES,MAX_DEPTH);
+        }
+    }
     private static final class Reader {
-        final byte[] bytes; int at; int nodes;
-        Reader(byte[] bytes) { require(bytes != null && bytes.length <= MAX_BYTES, "wire byte budget"); this.bytes = bytes; }
-        int take() { require(at < bytes.length, "truncated message"); return bytes[at++] & 255; }
+        final byte[] bytes; final DecodeLimits limits; int at; int nodes;
+        long expanded, elements, work;
+        Reader(byte[] bytes, DecodeLimits limits) {
+            require(bytes != null && limits != null && bytes.length <= limits.wire(), "wire byte budget");
+            this.bytes = bytes; this.limits = limits;
+        }
+        private static long add(long used, long amount, long cap) {
+            require(amount >= 0 && amount <= cap-used, "decode resource budget");
+            return used+amount;
+        }
+        int take() { require(at < bytes.length, "truncated message"); work=add(work,1,limits.work()); return bytes[at++] & 255; }
         long uint(int n) { require(n <= bytes.length - at, "truncated number"); long x = 0; for (int i=0;i<n;i++) x=(x<<8)|take(); return x; }
         long signed(int n) { long x=uint(n); if (n < 8 && (x & (1L << (n*8-1))) != 0) x |= -1L << (n*8); return x; }
         int array() {
@@ -203,10 +223,16 @@ public final class MessagePackWireV2 {
             else if (b==0xdb) {n=uint(4);require(n>65535,"noncanonical str32");}
             else throw bad("expected string");
             require(n <= MAX_BYTES && n <= bytes.length-at,"truncated string");
+            // Charge before UTF-8 decoder and result allocation, including a
+            // conservative four bytes per wire byte for transient buffers.
+            expanded=add(expanded,4*n,limits.expanded());
+            work=add(work,n,limits.work());
             String s=utf8(bytes,at,(int)n); at+=(int)n; return s;
         }
         Object value(Shape shape, int depth) {
-            require(depth <= MAX_DEPTH && ++nodes <= MAX_NODES,"value budget exceeded");
+            require(depth <= limits.depth() && ++nodes <= MAX_NODES,"value budget exceeded");
+            work=add(work,1,limits.work());
+            expanded=add(expanded,32,limits.expanded());
             return switch (shape.kind()) {
                 case BOOL -> {int b=take(); require(b==0xc2||b==0xc3,"expected bool"); yield b==0xc3;}
                 case I64 -> integer();
@@ -215,6 +241,8 @@ public final class MessagePackWireV2 {
                 default -> {
                     int n=array(); require(!fixed(shape.kind())||n==shape.members().size(),"fixed sequence arity");
                     require(n <= bytes.length-at && n <= MAX_NODES-nodes,"array exceeds available bytes/nodes");
+                    elements=add(elements,n,limits.elements());
+                    expanded=add(expanded,8L*n,limits.expanded());
                     List<Object> values=new ArrayList<>(n);
                     for (int i=0;i<n;i++) values.add(value(shape.members().get(fixed(shape.kind())?i:0), depth+1));
                     yield values;
@@ -228,8 +256,12 @@ public final class MessagePackWireV2 {
         w.byte1(0xc4); w.byte1(32); w.raw(hash); w.value(pinnedShape,ownedValue,0); return w.out.toByteArray();
     }
     public static Object decode(String pinnedSchemaId, Shape pinnedShape, byte[] untrustedBytes) {
+        return decode(pinnedSchemaId,pinnedShape,untrustedBytes,DecodeLimits.defaults());
+    }
+    public static Object decode(String pinnedSchemaId, Shape pinnedShape, byte[] untrustedBytes, DecodeLimits limits) {
+        require(untrustedBytes != null && limits != null && untrustedBytes.length <= limits.wire(), "wire byte budget");
         schema(pinnedSchemaId); byte[] hash=digest(pinnedShape);
-        Reader r=new Reader(untrustedBytes); require(r.array()==4,"wrong envelope arity");
+        Reader r=new Reader(untrustedBytes,limits); require(r.array()==4,"wrong envelope arity");
         require(r.integer()==2,"wrong version"); require(r.string().equals(pinnedSchemaId),"wrong schema ID");
         require(r.take()==0xc4 && r.take()==32,"wrong digest encoding");
         byte[] actual=new byte[32]; for(int i=0;i<32;i++)actual[i]=(byte)r.take();
