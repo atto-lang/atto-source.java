@@ -3133,9 +3133,8 @@ public final class Parser {
     }
 
     private Ast.Expr parseLogicalXor() {
-        Ast.Expr expr = parseLogicalAnd();
-        while (match(XOR) || matchAdjacentPair(CARET)) expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
-        return expr;
+        // Boolean XOR is a named intrinsic, not a source infix operator.
+        return parseLogicalAnd();
     }
 
     private Ast.Expr parseLogicalAnd() {
@@ -3154,7 +3153,11 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseXor() {
         Ast.Expr expr = parseBitwiseAnd();
-        while (matchSingleOperator(CARET)) expr = new Ast.BinaryExpr("^", expr, parseBitwiseAnd());
+        while (matchAdjacentPair(CARET)) {
+            expr = new Ast.BinaryExpr("^^", expr, parseBitwiseAnd());
+        }
+        if (matchSingleOperator(CARET)) throw error(previous(),
+                "E_OPERATOR_CARET: single infix ^ is invalid; use ^^ for integer XOR");
         return expr;
     }
 

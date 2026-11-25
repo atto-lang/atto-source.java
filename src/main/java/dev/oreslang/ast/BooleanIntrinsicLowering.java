@@ -38,7 +38,7 @@ public final class BooleanIntrinsicLowering {
         final String operator = switch (builtin) {
             case "And" -> "&&";
             case "Or" -> "||";
-            case "Xor" -> "^^";
+            case "Xor" -> "bool_xor"; // internal-only eager Boolean operation
             default -> throw new IllegalArgumentException(
                     "unknown Boolean intrinsic " + builtin);
         };

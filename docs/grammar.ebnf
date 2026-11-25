@@ -279,10 +279,10 @@ expression      = assignment ;
 assignment      = conditional [ "=" assignment ] ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = logic_xor { ( "or" | "||" ) logic_xor } ;
-logic_xor       = logic_and { ( "xor" | "^^" ) logic_and } ;
+logic_xor       = logic_and ;
 logic_and       = bitwise_or { ( "and" | "&&" ) bitwise_or } ;
 bitwise_or      = bitwise_xor { "|" bitwise_xor } ;
-bitwise_xor     = bitwise_and { "^" bitwise_and } ;
+bitwise_xor     = bitwise_and { "^^" bitwise_and } ;
 bitwise_and     = equality { "&" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
@@ -588,7 +588,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      type-pattern form inside match arms.
    - eq, neq, is, and, and or are reserved operator keywords. The word operators
      and/or are short-circuit aliases for &&/|| with identical precedence and
-     left associativity. Logical ^^ has precedence between and and or. They are not ordinary
+     left associativity. Boolean XOR uses Xor(a, b); ^^ is integer XOR. The reserved words are not ordinary
      binding or callable names, though keyword spellings remain legal after
      '.' in the member-name namespace.
    - "matches" evaluates a full pattern predicate; "as" is a checked cast and

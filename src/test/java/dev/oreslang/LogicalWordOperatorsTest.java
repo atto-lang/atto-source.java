@@ -42,8 +42,8 @@ final class LogicalWordOperatorsTest {
                   stdio.println(true && false || true);
                   stdio.println(false or true and false);
                   stdio.println(false || true && false);
-                  stdio.println(true and true ^^ false);
-                  stdio.println(true && true ^^ false);
+                  stdio.println(Xor(true and true, false));
+                  stdio.println(Xor(true && true, false));
                   stdio.println(false and [true][99]);
                   stdio.println(true or [false][99]);
                   stdio.println(false && [true][99]);
@@ -73,19 +73,19 @@ final class LogicalWordOperatorsTest {
     }
 
     @Test
-    void xorKeywordSharesBooleanPrecedenceAndExactlyOnceEvaluationWithCaretPair() throws Exception {
+    void namedXorPreservesEagerEvaluationAndLogicalPrecedence() throws Exception {
         String code = """
                 pub fnc main(): void {
-                  stdio.println(true xor false);
-                  stdio.println(true ^^ false);
-                  stdio.println(true xor true xor true);
-                  stdio.println(true ^^ true ^^ true);
-                  stdio.println(true or true xor true);
-                  stdio.println(true || true ^^ true);
-                  stdio.println(true xor true and false);
-                  stdio.println(true ^^ true && false);
-                  stdio.println(false and [true][99] xor true);
-                  stdio.println(false && [true][99] ^^ true);
+                  stdio.println(Xor(true, false));
+                  stdio.println(BooleanOps.Xor(true, false));
+                  stdio.println(Xor(Xor(true, true), true));
+                  stdio.println(BooleanOps.Xor(BooleanOps.Xor(true, true), true));
+                  stdio.println(true or Xor(true, true));
+                  stdio.println(true || BooleanOps.Xor(true, true));
+                  stdio.println(Xor(true, true and false));
+                  stdio.println(BooleanOps.Xor(true, true && false));
+                  stdio.println(Xor(false and [true][99], true));
+                  stdio.println(BooleanOps.Xor(false && [true][99], true));
                   return;
                 }
                 """;
@@ -110,13 +110,31 @@ final class LogicalWordOperatorsTest {
     void xorEagerlyEvaluatesItsRightOperandAndRejectsNonBooleanTypes() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(
-                        "fnc bad(): bool { return true xor 1; }")));
+                        "fnc bad(): bool { return Xor(true, 1); }")));
         assertThrows(org.graalvm.polyglot.PolyglotException.class,
                 () -> run("""
                         pub fnc main(): void {
-                          stdio.println(true xor [false][99]);
+                          stdio.println(Xor(true, [false][99]));
                         }
                         """));
+    }
+
+    @Test
+    void integerXorAndBooleanXorAreSeparateLanguageOperations() throws Exception {
+        assertEquals("6\ntrue\n", run("""
+                pub fnc main(): void {
+                  stdio.println(12 ^^ 10);
+                  stdio.println(Xor(true, false));
+                }
+                """));
+        for (String expression : new String[]{
+                "true ^^ false", "1 ^^ true", "true xor false", "12 ^ 10", "12 ^ ^ 10"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "pub fnc main(): int { return " + expression + "; }")),
+                    expression);
+        }
     }
 
     @Test

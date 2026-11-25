@@ -30,7 +30,7 @@ final class BooleanIntrinsicLoweringTest {
         assertName("c", nestedOr.right());
 
         Ast.BinaryExpr nestedXor = assertInstanceOf(Ast.BinaryExpr.class, outer.right());
-        assertEquals("^^", nestedXor.operator());
+        assertEquals("bool_xor", nestedXor.operator());
         assertName("a", nestedXor.left());
         assertName("c", nestedXor.right());
 

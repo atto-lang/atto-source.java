@@ -503,6 +503,8 @@ public final class TreeShaker {
                 return switch (binary.operator()) {
                     case "&&" -> left instanceof Boolean l && right instanceof Boolean r ? l && r : UNKNOWN;
                     case "||" -> left instanceof Boolean l && right instanceof Boolean r ? l || r : UNKNOWN;
+                    case "bool_xor" -> left instanceof Boolean l && right instanceof Boolean r ? l ^ r : UNKNOWN;
+                    case "^^" -> left instanceof Long l && right instanceof Long r ? l ^ r : UNKNOWN;
                     case "eq", "==" -> constantEquals(left, right);
                     case "neq", "!=" -> !constantEquals(left, right);
                     case "<" -> compare(left, right, c -> c < 0);

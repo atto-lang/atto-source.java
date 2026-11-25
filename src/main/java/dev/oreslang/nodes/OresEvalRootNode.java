@@ -3303,7 +3303,7 @@ public final class OresEvalRootNode extends RootNode {
                         return;
                     }
 
-                    if (binary.operator().equals("^^")) {
+                    if (binary.operator().equals("bool_xor")) {
                         // XOR is eager but still sequenced: evaluate each operand
                         // exactly once, left-to-right, including across suspension.
                         // Scalar Xor(...) calls lower to this node before execution.
@@ -3354,22 +3354,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                final Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
+                                                    result = binary(binary.operator(), left, right);
                                                 } catch (RuntimeException | Error failure3) {
-                                                    continuation.accept(
-                                                            t2,
-                                                            null,
-                                                            failure3);
+                                                    continuation.accept(t2, null, failure3);
+                                                    return;
                                                 }
+                                                continuation.accept(t2, result, null);
                                             }
                                         });
                             });
@@ -6401,7 +6393,7 @@ public final class OresEvalRootNode extends RootNode {
                     Object left = eval(binary.left(), env);
                     return truth(left) || truth(eval(binary.right(), env));
                 }
-                if (binary.operator().equals("^^")) {
+                if (binary.operator().equals("bool_xor")) {
                     return truth(eval(binary.left(), env)) ^ truth(eval(binary.right(), env));
                 }
                 Object left = eval(binary.left(), env);
@@ -8571,7 +8563,7 @@ public final class OresEvalRootNode extends RootNode {
                 case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
-                case "^" -> integralLong(left) ^ integralLong(right);
+                case "^^" -> integralLong(left) ^ integralLong(right);
                 case "<<" -> integralLong(left) << shiftDistance(right);
                 case ">>" -> integralLong(left) >> shiftDistance(right);
                 case ">>>" -> integralLong(left) >>> shiftDistance(right);

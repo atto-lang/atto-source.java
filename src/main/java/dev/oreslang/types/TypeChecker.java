@@ -2305,12 +2305,12 @@ public final class TypeChecker {
             }
             Type right = typeOf(binary.right(), env, generics, self);
             return switch (binary.operator()) {
-                case "^^" -> {
+                case "bool_xor" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
                     requireAssignable(right, Primitive.BOOL, "logical operand");
                     yield Primitive.BOOL;
                 }
-                case "&", "|", "^", "<<", ">>", ">>>" -> {
+                case "&", "|", "^^", "<<", ">>", ">>>" -> {
                     requireInteger(left, "bitwise left operand");
                     requireInteger(right, "bitwise right operand");
                     yield Primitive.INT;

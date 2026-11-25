@@ -4,11 +4,11 @@
 
 - `and` is a reserved, case-sensitive, short-circuit alias for `&&`.
 - `or` is a reserved, case-sensitive, short-circuit alias for `||`.
-- `xor` is a reserved, case-sensitive alias for Boolean `^^`. It evaluates both operands exactly once, left to right; unlike `and` / `or`, it does not short-circuit.
-- All three word operators use their corresponding symbolic AST operators (`&&`, `||`, and `^^`), with the same Boolean-only typing, evaluation order, associativity and control-flow treatment as the symbolic spellings.
+- Boolean XOR uses `Xor(a, b)`; `xor` remains reserved but is no longer an infix alias. `^^` is exclusively integer bitwise XOR.
+- The two Boolean infix aliases use the `&&` and `||` AST operators. Named Boolean XOR lowers to the internal-only `bool_xor` operation.
 - Evaluation proceeds left to right; `and` does not evaluate its right expression when its left side is false, and `or` does not evaluate its right expression when its left side is true.
 - There is **no implicit truthiness** and no implicit integer-to-Boolean conversion. `and`, `or`, and `xor` are not callable names. Capitalized `And`, `Or`, and `Xor` remain distinct callable builtin families.
-- Precedence, high to low: comparison/equality, bitwise `&`, bitwise `^`, bitwise `|`, logical `and`/`&&`, logical `xor`/`^^`, logical `or`/`||`, ternary `?:`, assignment `=`. Operators of the same precedence are left-associative. Mixing word and symbol spellings must not change meaning.
+- Precedence, high to low: comparison/equality, bitwise `&`, bitwise `^^`, bitwise `|`, logical `and`/`&&`, logical `or`/`||`, ternary `?:`, assignment `=`.
 - After `.`, `and`, `or`, and `xor` can still be member names; declaring bindings or callable names `and`, `or`, or `xor` is invalid, consistent with `eq`/`neq`.
 
 ## Boolean intrinsics
@@ -30,7 +30,7 @@ Scalar builtin calls are not ordinary eager Oreslang function calls after type c
 ```text
 And(a, b, c) -> (a && b) && c
 Or(a, b, c)  -> (a || b) || c
-Xor(a, b)    -> a ^^ b
+Xor(a, b)    -> internal bool_xor(a, b)
 ```
 
 This is required for semantic correctness. A source implementation such as
@@ -102,7 +102,7 @@ Scalar calls do not need variadic source functions. After name resolution and ty
 
 - `And(a, b, c, ...)` lowers to a left-associated `&&` tree.
 - `Or(a, b, c, ...)` lowers to a left-associated `||` tree.
-- `Xor(a, b)` lowers to `a ^^ b`.
+- `Xor(a, b)` lowers to `internal bool_xor(a, b)`.
 - Scalar `Xor` with any arity other than two is rejected before lowering.
 - User-defined functions/modules named `And`, `Or`, `Xor`, or `BooleanOps` are never rewritten.
 - Aggregate one-argument calls stay as calls. Java/Graal routes them through the reserved packaged `@std/core.ores` evaluator after eager aggregate materialization, so user modules cannot shadow the reducer implementation. LLVM aggregate lowering remains a backend follow-up.
