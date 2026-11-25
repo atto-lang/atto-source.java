@@ -66,12 +66,17 @@ public final class FrozenScalarImportCompiler {
         var reader=new Reader(new Lexer(consumer).scan());
         var graph=new StaticImportGraph();
         var aliases=new ArrayList<StaticImportGraph.Alias>();
-        int imports=0;
-        // Only explicit namespace selection from an already supplied snapshot.
-        // Whole-package roots, suffix binding and grouped import lowering are
-        // intentionally outside this initial executable slice.
+        record Import(String source,String selector,String binding,boolean renamed) {}
+        var imports=new ArrayList<Import>();
         while(reader.take("import")) {
-            if(++imports>64) throw fail("E_SOURCE_LIMIT","import budget exceeded");
+            if(imports.size()>=64) throw fail("E_SOURCE_LIMIT","import budget exceeded");
+            if(reader.take("pkg")) {
+                String source=reader.string();
+                String alias=reader.take("as")?reader.path():null;
+                reader.expect(";");
+                imports.add(new Import(source,null,alias,alias!=null));
+                continue;
+            }
             reader.expect("namespace");
             String selector=reader.path(), binding=selector;
             boolean renamed=reader.take("as");
@@ -79,11 +84,7 @@ public final class FrozenScalarImportCompiler {
             reader.expect("from"); reader.expect("pkg");
             String source=reader.string();
             reader.expect(";");
-            String[] parts=source.split("/",-1);
-            if(parts.length<3) throw fail("E_IMPORT_PATH","invalid package selector");
-            var pkg=available.get(String.join("/",Arrays.copyOf(parts,3)));
-            if(pkg==null) throw fail("E_UNBOUND","package not in authenticated snapshot set");
-            pkg.bindNamespace(graph,source,selector,binding,renamed);
+            imports.add(new Import(source,selector,binding,renamed));
         }
         while(reader.take("define")) {
             reader.expect("alias");
@@ -94,7 +95,7 @@ public final class FrozenScalarImportCompiler {
             reader.expect(";");
             aliases.add(new StaticImportGraph.Alias(name,reference));
         }
-        graph.bindAliases(aliases);
+        StaticImportGraph.precheckAliases(aliases);
         reader.expect("pub"); reader.expect("fnc"); reader.expect("main");
         reader.expect("("); reader.expect(")");
         if(!reader.take("->")) reader.expect(":");
@@ -103,6 +104,20 @@ public final class FrozenScalarImportCompiler {
         reader.expect("("); reader.expect(")"); reader.expect(";"); reader.expect("}");
         reader.expectEnd();
         if(reference.indexOf('.')<0) throw fail("E_UNSUPPORTED","expected a qualified static call");
+        for(var imported:imports) {
+            if(imported.selector()==null) {
+                var pkg=available.get(imported.source());
+                if(pkg==null) throw fail("E_UNBOUND","package root not in authenticated snapshot set");
+                graph.bindPackage(pkg.functionView(),imported.binding());
+                continue;
+            }
+            String[] parts=imported.source().split("/",-1);
+            if(parts.length<3) throw fail("E_IMPORT_PATH","invalid package selector");
+            var pkg=available.get(String.join("/",Arrays.copyOf(parts,3)));
+            if(pkg==null) throw fail("E_UNBOUND","package not in authenticated snapshot set");
+            pkg.bindNamespace(graph,imported.source(),imported.selector(),imported.binding(),imported.renamed());
+        }
+        graph.bindAliases(aliases);
         StaticImportGraph.Target target=graph.resolve(reference);
         if(target.kind()!=StaticImportGraph.Kind.FNC) throw fail("E_IMPORT_KIND","expected a function");
         FrozenImportSnapshot pkg=available.get(target.view().origin().identity());
