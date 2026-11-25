@@ -19,6 +19,7 @@ final class IpcSchemaBoundDataV1 {
     private static final int MAX_BODY = 1024 * 1024;
     private static final int MAX_SCHEMA = 256;
     private static final int MAX_WRAPPED = MAX_BODY + 4 + 1 + 4 + 2 + MAX_SCHEMA + 32 + 4;
+    static final int MAX_AUTHENTICATED_FRAME = MAX_WRAPPED + 1024;
 
     enum Codec {
         MESSAGEPACK(1), PROTOBUF(2), CBOR(3), FLATBUFFERS(4);
@@ -76,7 +77,7 @@ final class IpcSchemaBoundDataV1 {
         Objects.requireNonNull(expected, "expected binding");
         // Bound the entire unauthenticated frame before the outer decoder's copy.
         // The existing v3 maximum envelope overhead is at most 1024 bytes.
-        if (frame == null || frame.length > MAX_WRAPPED + 1024) {
+        if (frame == null || frame.length > MAX_AUTHENTICATED_FRAME) {
             throw new IOException("schema DATA frame too large");
         }
         var authenticated = IpcAuthenticatedSocketTransport.decodeDataFrame(

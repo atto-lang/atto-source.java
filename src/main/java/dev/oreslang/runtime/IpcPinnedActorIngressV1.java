@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.io.IOException;
+import java.io.DataInputStream;
+import java.io.InputStream;
 import java.util.Objects;
 
 /** Trusted host adapter; never grants CONTROL or looks up a wire-selected actor. */
@@ -13,10 +15,11 @@ final class IpcPinnedActorIngressV1<M> {
             new IpcAuthenticatedSocketTransport.InboundReplayGate();
     private final IpcSchemaBoundDataV1.Binding binding;
     private final Decoder<M> decoder;
+    private final IpcIngressBudgetV1 budget;
 
     IpcPinnedActorIngressV1(ActorRuntime.ActorRef<M> recipient,
             IpcReceiptCorrelation.Envelope epoch, long physicalGeneration,
-            IpcSchemaBoundDataV1.Binding binding, Decoder<M> decoder) {
+            IpcSchemaBoundDataV1.Binding binding, IpcIngressBudgetV1 budget, Decoder<M> decoder) {
         RuntimeBlockingGuard.requireBlockingHostThread("register pinned IPC ingress");
         this.recipient = Objects.requireNonNull(recipient);
         this.epoch = Objects.requireNonNull(epoch);
@@ -28,6 +31,7 @@ final class IpcPinnedActorIngressV1<M> {
         this.physicalGeneration = physicalGeneration;
         this.binding = Objects.requireNonNull(binding);
         this.decoder = Objects.requireNonNull(decoder);
+        this.budget = Objects.requireNonNull(budget);
     }
 
     /** Caller owns the authenticated-session key and immutable frame snapshot.
@@ -36,6 +40,31 @@ final class IpcPinnedActorIngressV1<M> {
      * No receipt publication or retry authorization is provided here. */
     void admit(byte[] frame, byte[] connectionBinding, byte[] key) throws IOException {
         RuntimeBlockingGuard.requireBlockingHostThread("admit pinned IPC DATA");
+        Objects.requireNonNull(frame, "frame");
+        IpcIngressBudgetV1.Lease lease = budget.reserve(frame.length);
+        try {
+            authenticateDecodePublish(frame.clone(), connectionBinding, key);
+        } finally { lease.close(); }
+    }
+
+    /** Read the length before allocating the frame; reserve tenant staging
+     * before reading the body. A refusal requires transport close/discard;
+     * callers must not parse another frame from the partially consumed stream. */
+    void readAndAdmit(InputStream input, byte[] connectionBinding, byte[] key) throws IOException {
+        RuntimeBlockingGuard.requireBlockingHostThread("read pinned IPC DATA");
+        DataInputStream in = new DataInputStream(Objects.requireNonNull(input));
+        int length = in.readInt();
+        if (length < 32 || length > IpcSchemaBoundDataV1.MAX_AUTHENTICATED_FRAME)
+            throw new IOException("invalid bounded schema DATA length");
+        IpcIngressBudgetV1.Lease lease = budget.reserve(length);
+        try {
+            byte[] frame = new byte[length];
+            in.readFully(frame);
+            authenticateDecodePublish(frame, connectionBinding, key);
+        } finally { lease.close(); }
+    }
+
+    private void authenticateDecodePublish(byte[] frame, byte[] connectionBinding, byte[] key) throws IOException {
         byte[] body = IpcSchemaBoundDataV1.authenticateAndUnwrap(
                 frame, epoch, physicalGeneration, replay, connectionBinding, key, binding);
         M message = Objects.requireNonNull(decoder.decode(body));
