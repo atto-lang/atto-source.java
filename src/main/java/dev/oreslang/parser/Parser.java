@@ -58,6 +58,8 @@ public final class Parser {
     // root parser consumes that exact token position. No AST escapes before
     // every provisional descriptor is confirmed.
     private final java.util.Map<String, Integer> forwardKindOrigins = new java.util.HashMap<>();
+    private boolean keywordSourceSetProfile;
+    private final java.util.Set<String> publicKindNames = new java.util.LinkedHashSet<>();
     private static final java.util.Set<String> RESERVED_CUSTOM_KINDS = java.util.Set.of(
             "abstract",
             "activity",
@@ -364,6 +366,10 @@ public final class Parser {
      * which would otherwise be reparsed outside the selected source profile.
      */
     public static Ast.Program parseStrictAtto(String source) {
+        return new Parser(strictAttoTokens(source), null, true, false).parseProgram();
+    }
+
+    private static List<Token> strictAttoTokens(String source) {
         List<Token> scanned = new Lexer(source).scan();
         for (Token token : scanned) {
             // Java currently has no source-level typed Error identity or
@@ -386,7 +392,106 @@ public final class Parser {
                         + ": template interpolation requires profile-preserving typed lowering");
             }
         }
-        return new Parser(scanned, null, true, false).parseProgram();
+        return scanned;
+    }
+
+    // Restricted compiler-only linked syntax slice. Inputs are immutable
+    // caller-supplied sibling .atto units; no filesystem/host/package lookup.
+    // Binding identity includes the exact provider source digest and schema.
+    // Not yet wired into IncrementalCompiler or the executable linker.
+    public record KeywordBinding(String consumer, String name, String provider,
+            String providerSha256, String schema) {}
+    public record KeywordSourceSet(java.util.Map<String, Ast.Program> programs,
+            java.util.List<KeywordBinding> bindings,
+            java.util.Map<String, String> sourceSha256) {}
+    private record KeywordSelection(String name, String path) {}
+
+    public static KeywordSourceSet parseKeywordSourceSet(java.util.Map<String, String> input) {
+        var sources = new java.util.TreeMap<>(java.util.Map.copyOf(input));
+        if (sources.isEmpty() || sources.size() > 128)
+            throw new IllegalArgumentException("KIND_SOURCE_SET_BUDGET: expected 1..128 units");
+        var parsers = new java.util.TreeMap<String, Parser>();
+        var selections = new java.util.TreeMap<String, List<KeywordSelection>>();
+        var programs = new java.util.TreeMap<String, Ast.Program>();
+        var digests = new java.util.TreeMap<String, String>();
+        var bindings = new ArrayList<KeywordBinding>();
+        long bytes = 0;
+        for (var unit : sources.entrySet()) {
+            if (!unit.getKey().matches("[A-Za-z0-9_-]{1,128}\\.atto"))
+                throw new IllegalArgumentException("KIND_SOURCE_ID_UNSUPPORTED: sibling .atto source IDs only");
+            byte[] source = unit.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            bytes += source.length;
+            if (bytes > 4 * 1024 * 1024)
+                throw new IllegalArgumentException("KIND_SOURCE_SET_BUDGET: source byte limit");
+            try {
+                digests.put(unit.getKey(), java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(source)));
+            } catch (java.security.NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException(impossible);
+            }
+            Parser parser = new Parser(strictAttoTokens(unit.getValue()), null, true, false);
+            parser.keywordSourceSetProfile = true;
+            parsers.put(unit.getKey(), parser);
+            selections.put(unit.getKey(), parser.readKeywordSelections());
+        }
+        // Authenticate providers through the ordinary root parser first.
+        // This slice deliberately disallows transitive descriptor imports.
+        for (var entry : parsers.entrySet()) {
+            if (selections.get(entry.getKey()).isEmpty())
+                programs.put(entry.getKey(), entry.getValue().parseKeywordSourceUnit());
+        }
+        for (var entry : parsers.entrySet()) {
+            var imports = selections.get(entry.getKey());
+            if (imports.isEmpty()) continue;
+            Parser consumer = entry.getValue();
+            for (KeywordSelection selection : imports) {
+                String providerId = selection.path().substring(2);
+                Parser provider = parsers.get(providerId);
+                if (provider == null || !programs.containsKey(providerId)
+                        || !selections.get(providerId).isEmpty())
+                    throw new IllegalArgumentException("KIND_PROVIDER_UNVERIFIED: " + providerId);
+                if (!provider.publicKindNames.contains(selection.name()))
+                    throw new IllegalArgumentException("KIND_EXPORT_UNAVAILABLE: " + selection.name());
+                LocalDeclarationKind descriptor = provider.localClassKeywords.get(selection.name());
+                if (descriptor.actor() || !descriptor.requirements().isEmpty())
+                    throw new IllegalArgumentException("KIND_IMPORTED_CONTRACT_UNSUPPORTED");
+                if (consumer.localClassKeywords.putIfAbsent(selection.name(), descriptor) != null)
+                    throw new IllegalArgumentException("KIND_IMPORT_AMBIGUOUS: " + selection.name());
+                bindings.add(new KeywordBinding(entry.getKey(), selection.name(), providerId,
+                        digests.get(providerId), "atto-keyword-source-set-v1"));
+            }
+            programs.put(entry.getKey(), consumer.parseKeywordSourceUnit());
+            if (!consumer.publicKindNames.isEmpty())
+                throw new IllegalArgumentException("KIND_REEXPORT_UNSUPPORTED");
+        }
+        return new KeywordSourceSet(java.util.Map.copyOf(programs),
+                List.copyOf(bindings), java.util.Map.copyOf(digests));
+    }
+
+    private List<KeywordSelection> readKeywordSelections() {
+        List<KeywordSelection> result = new ArrayList<>();
+        while (check(IMPORT) && checkNext(IDENT) && tokens.get(current + 1).lexeme().equals("keyword")) {
+            advance(); advance();
+            String name = consume(IDENT, "expected keyword import name").lexeme();
+            consume(FROM, "expected 'from' in keyword import");
+            String path = consume(STRING, "expected quoted sibling source path").lexeme();
+            if (!path.matches("\\./[A-Za-z0-9_-]{1,128}\\.atto"))
+                throw error(previous(), "KIND_IMPORT_PATH_UNSUPPORTED: explicit sibling .atto only");
+            consume(SEMICOLON, "keyword import must end with ';'");
+            if (result.size() >= MAX_LOCAL_KEYWORDS)
+                throw error(previous(), "KIND_IMPORT_BUDGET: too many keyword imports");
+            result.add(new KeywordSelection(name, path));
+        }
+        return List.copyOf(result);
+    }
+
+    private Ast.Program parseKeywordSourceUnit() {
+        Ast.Program result = parseProgram();
+        if (result.namespace() != null || !result.imports().isEmpty()
+                || !result.exports().isEmpty()
+                || result.modules().stream().anyMatch(m -> !m.name().equals(ROOT_MODULE)))
+            throw error(peek(), "KIND_SOURCE_SET_SCOPE_UNSUPPORTED: unwrapped sibling roots only");
+        return result;
     }
 
 
@@ -760,8 +865,10 @@ public final class Parser {
         int origin = current;
         Token at = advance(); // contextual keyword
         validateOnlyVisibilityModifiers(modifiers, "keyword descriptors");
-        if (modifiers.visibilitySeen || !annotations.isEmpty()) {
-            throw error(at, "KIND_VISIBILITY_UNSUPPORTED: phase 1a descriptors are private and unannotated");
+        boolean publicDescriptor = modifiers.visibilitySeen && modifiers.visibility == Ast.Visibility.PUBLIC;
+        if ((modifiers.visibilitySeen && !(keywordSourceSetProfile && publicDescriptor))
+                || !annotations.isEmpty()) {
+            throw error(at, "KIND_VISIBILITY_UNSUPPORTED: public descriptors require linked source-set profile");
         }
         Token name = consume(IDENT, "expected contextual declaration kind name");
         if (RESERVED_CUSTOM_KINDS.contains(name.lexeme()) || COLLECTION_OF_TYPES.contains(name.lexeme())
@@ -796,6 +903,11 @@ public final class Parser {
             requirements.add(required);
         }
         consume(END, "expected 'end' after descriptor");
+        if (publicDescriptor) {
+            if (actor || !requirements.isEmpty())
+                throw error(name, "KIND_PUBLIC_CONTRACT_UNSUPPORTED: imported actor or contract needs verified symbol identity");
+            publicKindNames.add(name.lexeme());
+        }
         LocalDeclarationKind resolved = new LocalDeclarationKind(actor, List.copyOf(requirements));
         if (provisional != null && !provisional.equals(resolved))
             throw error(name, "KIND_FORWARD_MISMATCH: descriptor changed during root confirmation");
