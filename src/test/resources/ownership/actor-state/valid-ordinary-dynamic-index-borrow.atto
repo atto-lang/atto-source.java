@@ -1,0 +1,7 @@
+define class Holder as
+  pub let List<int> values;
+end
+fnc inspect(borrow Holder holder, int index): void {
+  val borrow int view = rt borrow holder.values[index];
+  return;
+}
