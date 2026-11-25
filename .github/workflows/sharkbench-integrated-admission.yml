@@ -37,7 +37,7 @@ jobs:
       - name: Run compiler and runtime regression gates excluding isolated NativeHttpTest
         run: |
           set -euo pipefail
-          bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=SharkBenchTransportGuestTest,OutboundHttpRequestGuestTest,StringTransformTest,Utf8StringAbiTest,CanonicalJsonGuestTest,AllocJsonTextTest,OresJsonValueTest,OresKeyedMapTest,OresKeyedMapLookupOptionTest,SymbolPropertyKeyCodecTest -Dsurefire.failIfNoSpecifiedTests=true test
+          bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=ActorDeclarationLexicalBoundaryTest,SharkBenchTransportGuestTest,OutboundHttpRequestGuestTest,StringTransformTest,Utf8StringAbiTest,CanonicalJsonGuestTest,AllocJsonTextTest,OresJsonValueTest,OresKeyedMapTest,OresKeyedMapLookupOptionTest,SymbolPropertyKeyCodecTest -Dsurefire.failIfNoSpecifiedTests=true test
   native-http-regressions:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -65,6 +65,20 @@ jobs:
         timeout-minutes: 12
         run: |
           set -euo pipefail
+          # Periodically capture only this runner's Surefire JVM thread state.
+          # Keep the original test command and its exit code; diagnostics are advisory.
+          (
+            for delay in 90 150 150; do
+              sleep "$delay"
+              while read -r pid rest; do
+                [[ "$pid" =~ ^[0-9]+$ && "$rest" == *surefirebooter* ]] || continue
+                echo "NATIVE_HTTP_THREAD_DUMP pid=$pid"
+                timeout 15s jcmd "$pid" Thread.print -l || true
+              done < <(jcmd -l)
+            done
+          ) &
+          watchdog=$!
+          trap 'kill "$watchdog" 2>/dev/null || true; wait "$watchdog" 2>/dev/null || true' EXIT
           bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=NativeHttpTest -Dsurefire.failIfNoSpecifiedTests=true -Dsurefire.forkedProcessTimeoutInSeconds=480 -Djunit.jupiter.execution.timeout.default=60s -Djunit.jupiter.execution.timeout.threaddump.enabled=true test
       - name: Report completed test cases on failure
         if: failure()

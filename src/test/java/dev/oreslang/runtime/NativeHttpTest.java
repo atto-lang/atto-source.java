@@ -5,6 +5,9 @@ import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.TestInfo;
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.net.http.*;
@@ -16,6 +19,23 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    // Emit only test identity (not guest data or request contents) before
+    // entering a possibly non-interruptible runtime or context shutdown.
+    @BeforeEach
+    void traceNativeHttpStart(TestInfo info) {
+        System.err.println("NATIVE_HTTP_CASE_START " + info.getTestMethod().orElseThrow().getName()
+                + " / " + info.getDisplayName());
+        System.err.flush();
+    }
+
+    @AfterEach
+    void traceNativeHttpEnd(TestInfo info) {
+        // END means teardown reached; it is not a claim that the case passed.
+        System.err.println("NATIVE_HTTP_CASE_END " + info.getTestMethod().orElseThrow().getName()
+                + " / " + info.getDisplayName());
+        System.err.flush();
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {

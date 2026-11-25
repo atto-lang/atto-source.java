@@ -3074,6 +3074,13 @@ public final class TypeChecker {
         Ast.ClassDecl localClass = findClass(name);
         if (localClass != null) {
             if (localClass == lexicalClassOrigin || isExplicitActorParent(localClass)) return;
+            // The linker has already validated the explicit import, public
+            // visibility, exact local spelling and absence of a local collision.
+            // Only the identical registered ordinary class declaration qualifies;
+            // actor protocol metadata is not an ordinary transferable type.
+            if (localClass.actorKind() == Ast.ActorKind.NONE
+                    && linkedClassNames.containsKey(localClass)
+                    && classes.get(name) == localClass) return;
             throw new IllegalArgumentException(
                     "actor '" + lexicalClassOrigin.name()
                             + "' cannot use same-file type '" + name
