@@ -11,9 +11,22 @@ final class IpcIngressBudgetV1 {
     private long usedBytes;
     private int usedFrames;
     private boolean retired;
+    private final java.util.Set<IpcPinnedActorIngressV1.Session> sessions=new java.util.HashSet<>();
 
     synchronized boolean retired(){return retired;}
-    synchronized void retire(){retired=true;}
+    synchronized void retire(){
+        retired=true;
+        for(var session:sessions)session.fence();
+        sessions.clear();
+    }
+    synchronized void registerSession(IpcPinnedActorIngressV1.Session session){
+        if(retired || sessions.size()>=4096 || !sessions.add(session))
+            throw new IllegalStateException("tenant IPC session registration refused");
+    }
+    synchronized void closeSession(IpcPinnedActorIngressV1.Session session){
+        session.fence();
+        sessions.remove(session);
+    }
 
     IpcIngressBudgetV1(long maxBytes, int maxFrames) {
         RuntimeBlockingGuard.requireBlockingHostThread("create IPC ingress budget");
