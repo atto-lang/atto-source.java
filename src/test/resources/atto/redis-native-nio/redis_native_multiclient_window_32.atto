@@ -1,0 +1,683 @@
+// Native Atto Redis multi-client prototype. All key/value state is owned by
+// exactly one Atto KV actor; Java/NIO2 performs framing and async transport only.
+// 32 fixed per-session channels, bounded USER queue, no Java-host KV or stdio.
+// One outstanding actor request per TCP session preserves RESP2 wire order.
+// This fixed-capacity variant is deliberately closed after all 32 sessions exit.
+define actor TaggedBytesKvActor implements StreamOperator<Tuple[int, int, int, Bytes, Bytes], Tuple[int, int, string, Bytes]> as
+  let Map<Bytes,Bytes> values;
+
+  on_start(): void {
+    self.values = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, int, int, Bytes, Bytes]> mail): void {
+    const tuple = mail.value;
+    const int client_id = tuple[0];
+    const int request_id = tuple[1];
+    const int kind = tuple[2];
+    const Bytes key = tuple[3];
+    const Bytes value = tuple[4];
+    if kind == 5; do
+      // The output consumer receives a final authenticated sentinel.
+      self.send((0, 0, "SHUTDOWN", value));
+      self.end();
+      return;
+    fi
+    if kind == 3; do
+      self.values.set(key, value);
+      self.send((client_id, request_id, "OK", value));
+      return;
+    fi
+    if kind == 2; do
+      val found = self.values.get_optional(key);
+      if found.is_none(); do
+        self.send((client_id, request_id, "NIL", key));
+      else
+        self.send((client_id, request_id, "VALUE", found.unwrap()));
+      fi
+      return;
+    fi
+    if kind == 4; do
+      if self.values.delete(key); do
+        self.send((client_id, request_id, "ONE", key));
+      else
+        self.send((client_id, request_id, "ZERO", key));
+      fi
+      return;
+    fi
+    self.send((client_id, request_id, "ERR", key));
+    return;
+  }
+end
+
+// Each connection admits up to 16 commands from a single buffered read,
+// then drains exactly those replies in RESP2 order before the next read.
+// The broker is still the ONLY actor output consumer; the actor owns Map.
+// Per-client reply Channel capacity == maximum admitted frame count (16),
+// avoiding deadlock when the producer has queued a complete pipeline.
+pub async fnc serve_tagged_session(
+    NioConnection socket,
+    int client_id,
+    Channel<Tuple[int, int, int, Bytes, Bytes]> requests,
+    Channel<Tuple[int, string, Bytes]> replies
+): void {
+  let int next_id = 0;
+  let int received_id = 0;
+  loop {
+    const frames = await socket.read_resp2_binary_batch_async(16);
+    // Phase 1: admit all in-order actor commands without awaiting actor reply.
+    // This is bounded by the 16-frame reader cap and finite request channel.
+    let int admitted = 0;
+    let int i = 0;
+    loop {
+      if i == frames.size then break; fi
+      const Tuple[int, string, Bytes, Bytes] frame = frames.get(i);
+      const int kind = frame[0];
+      admitted = admitted + 1;
+      if kind == 0 || kind == 5 then break; fi
+      if kind != 1; do
+        next_id = next_id + 1;
+        writech requests, (client_id, next_id, kind, frame[2], frame[3]);
+      fi
+      i = i + 1;
+    }
+
+    // Phase 2: collect ordered actor replies. Client command and response
+    // ordering is preserved even when other clients interleave in the actor.
+    let mut List[Tuple[string, Bytes]] responses = [];
+    let int j = 0;
+    loop {
+      if j == admitted then break; fi
+      const Tuple[int, string, Bytes, Bytes] frame = frames.get(j);
+      const int kind = frame[0];
+      if kind == 0 || kind == 5; do
+        if kind == 5; do
+          responses.add(("OK", frame[3]));
+        fi
+        if responses.size > 0; do
+          await socket.write_resp2_binary_batch_async(responses);
+        fi
+        await socket.close_async();
+        writech requests, (client_id, -1, -1, frame[2], frame[3]);
+        return;
+      fi
+      if kind == 1; do
+        responses.add(("PONG", frame[3]));
+      else
+        received_id = received_id + 1;
+        const Tuple[int, string, Bytes] reply = await (nb readch replies);
+        if reply[0] != received_id; do
+          // Wrong-client, replay or lost reply: fail closed. The immutable
+          // key/value state remains sealed in the Atto actor.
+          await socket.close_async();
+          writech requests, (client_id, -1, -1, frame[2], frame[3]);
+          return;
+        fi
+        responses.add((reply[1], reply[2]));
+      fi
+      j = j + 1;
+    }
+    if responses.size > 0; do
+      await socket.write_resp2_binary_batch_async(responses);
+    fi
+  }
+}
+
+pub async routine main(): void {
+  val worker = spawn TaggedBytesKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  val Channel<Tuple[int, int, int, Bytes, Bytes]> requests =
+      Channel.new<Tuple[int, int, int, Bytes, Bytes]>(32);
+  val Channel<Tuple[int, string, Bytes]> reply_1 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_2 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_3 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_4 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_5 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_6 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_7 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_8 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_9 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_10 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_11 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_12 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_13 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_14 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_15 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_16 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_17 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_18 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_19 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_20 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_21 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_22 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_23 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_24 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_25 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_26 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_27 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_28 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_29 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_30 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_31 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val Channel<Tuple[int, string, Bytes]> reply_32 =
+      Channel.new<Tuple[int, string, Bytes]>(16);
+  val NioConnection first = await listener.accept_async();
+  task scope {
+    // Admission never waits for actor replies. Already-admitted commands can
+    // accumulate in the actor's bounded USER mailbox for turn batching.
+    let Future<void> intake = task {
+      let int retired = 0;
+      loop {
+        const Tuple[int, int, int, Bytes, Bytes] req =
+            await (nb readch requests);
+        if req[2] == -1; do
+          retired = retired + 1;
+          if retired == 32; do
+            // Last client has retired; FIFO admission ensures all earlier
+            // client commands have already reached the state-owning actor.
+            worker.send((0, 0, 5, req[3], req[4]));
+            await worker.get_done();
+            return;
+          fi
+        else
+          worker.send((req[0], req[1], req[2], req[3], req[4]));
+        fi
+      }
+    };
+    // Exactly one native Atto task consumes worker.outputs.next().
+    // The actor emits responses in mailbox order; every client has at most
+    // one in-flight request. A client-specific sequence gate fails closed.
+    let Future<void> broker = task {
+      let int last_1 = 0;
+      let int last_2 = 0;
+      let int last_3 = 0;
+      let int last_4 = 0;
+      let int last_5 = 0;
+      let int last_6 = 0;
+      let int last_7 = 0;
+      let int last_8 = 0;
+      let int last_9 = 0;
+      let int last_10 = 0;
+      let int last_11 = 0;
+      let int last_12 = 0;
+      let int last_13 = 0;
+      let int last_14 = 0;
+      let int last_15 = 0;
+      let int last_16 = 0;
+      let int last_17 = 0;
+      let int last_18 = 0;
+      let int last_19 = 0;
+      let int last_20 = 0;
+      let int last_21 = 0;
+      let int last_22 = 0;
+      let int last_23 = 0;
+      let int last_24 = 0;
+      let int last_25 = 0;
+      let int last_26 = 0;
+      let int last_27 = 0;
+      let int last_28 = 0;
+      let int last_29 = 0;
+      let int last_30 = 0;
+      let int last_31 = 0;
+      let int last_32 = 0;
+      loop {
+        val output = (await worker.outputs.next()).value.unwrap();
+        const Tuple[int, int, string, Bytes] reply = output.value;
+        if reply[0] == 0 && reply[1] == 0 && reply[2] == "SHUTDOWN"; do
+          return;
+        fi
+        if reply[0] == 1; do
+          if reply[1] != last_1 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_1, (-1, "ERR", reply[3]);
+          else
+            last_1 = reply[1];
+            writech reply_1, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 2; do
+          if reply[1] != last_2 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_2, (-1, "ERR", reply[3]);
+          else
+            last_2 = reply[1];
+            writech reply_2, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 3; do
+          if reply[1] != last_3 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_3, (-1, "ERR", reply[3]);
+          else
+            last_3 = reply[1];
+            writech reply_3, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 4; do
+          if reply[1] != last_4 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_4, (-1, "ERR", reply[3]);
+          else
+            last_4 = reply[1];
+            writech reply_4, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 5; do
+          if reply[1] != last_5 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_5, (-1, "ERR", reply[3]);
+          else
+            last_5 = reply[1];
+            writech reply_5, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 6; do
+          if reply[1] != last_6 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_6, (-1, "ERR", reply[3]);
+          else
+            last_6 = reply[1];
+            writech reply_6, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 7; do
+          if reply[1] != last_7 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_7, (-1, "ERR", reply[3]);
+          else
+            last_7 = reply[1];
+            writech reply_7, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 8; do
+          if reply[1] != last_8 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_8, (-1, "ERR", reply[3]);
+          else
+            last_8 = reply[1];
+            writech reply_8, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 9; do
+          if reply[1] != last_9 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_9, (-1, "ERR", reply[3]);
+          else
+            last_9 = reply[1];
+            writech reply_9, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 10; do
+          if reply[1] != last_10 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_10, (-1, "ERR", reply[3]);
+          else
+            last_10 = reply[1];
+            writech reply_10, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 11; do
+          if reply[1] != last_11 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_11, (-1, "ERR", reply[3]);
+          else
+            last_11 = reply[1];
+            writech reply_11, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 12; do
+          if reply[1] != last_12 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_12, (-1, "ERR", reply[3]);
+          else
+            last_12 = reply[1];
+            writech reply_12, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 13; do
+          if reply[1] != last_13 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_13, (-1, "ERR", reply[3]);
+          else
+            last_13 = reply[1];
+            writech reply_13, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 14; do
+          if reply[1] != last_14 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_14, (-1, "ERR", reply[3]);
+          else
+            last_14 = reply[1];
+            writech reply_14, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 15; do
+          if reply[1] != last_15 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_15, (-1, "ERR", reply[3]);
+          else
+            last_15 = reply[1];
+            writech reply_15, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 16; do
+          if reply[1] != last_16 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_16, (-1, "ERR", reply[3]);
+          else
+            last_16 = reply[1];
+            writech reply_16, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 17; do
+          if reply[1] != last_17 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_17, (-1, "ERR", reply[3]);
+          else
+            last_17 = reply[1];
+            writech reply_17, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 18; do
+          if reply[1] != last_18 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_18, (-1, "ERR", reply[3]);
+          else
+            last_18 = reply[1];
+            writech reply_18, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 19; do
+          if reply[1] != last_19 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_19, (-1, "ERR", reply[3]);
+          else
+            last_19 = reply[1];
+            writech reply_19, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 20; do
+          if reply[1] != last_20 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_20, (-1, "ERR", reply[3]);
+          else
+            last_20 = reply[1];
+            writech reply_20, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 21; do
+          if reply[1] != last_21 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_21, (-1, "ERR", reply[3]);
+          else
+            last_21 = reply[1];
+            writech reply_21, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 22; do
+          if reply[1] != last_22 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_22, (-1, "ERR", reply[3]);
+          else
+            last_22 = reply[1];
+            writech reply_22, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 23; do
+          if reply[1] != last_23 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_23, (-1, "ERR", reply[3]);
+          else
+            last_23 = reply[1];
+            writech reply_23, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 24; do
+          if reply[1] != last_24 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_24, (-1, "ERR", reply[3]);
+          else
+            last_24 = reply[1];
+            writech reply_24, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 25; do
+          if reply[1] != last_25 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_25, (-1, "ERR", reply[3]);
+          else
+            last_25 = reply[1];
+            writech reply_25, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 26; do
+          if reply[1] != last_26 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_26, (-1, "ERR", reply[3]);
+          else
+            last_26 = reply[1];
+            writech reply_26, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 27; do
+          if reply[1] != last_27 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_27, (-1, "ERR", reply[3]);
+          else
+            last_27 = reply[1];
+            writech reply_27, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 28; do
+          if reply[1] != last_28 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_28, (-1, "ERR", reply[3]);
+          else
+            last_28 = reply[1];
+            writech reply_28, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 29; do
+          if reply[1] != last_29 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_29, (-1, "ERR", reply[3]);
+          else
+            last_29 = reply[1];
+            writech reply_29, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 30; do
+          if reply[1] != last_30 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_30, (-1, "ERR", reply[3]);
+          else
+            last_30 = reply[1];
+            writech reply_30, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 31; do
+          if reply[1] != last_31 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_31, (-1, "ERR", reply[3]);
+          else
+            last_31 = reply[1];
+            writech reply_31, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 32; do
+          if reply[1] != last_32 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_32, (-1, "ERR", reply[3]);
+          else
+            last_32 = reply[1];
+            writech reply_32, (reply[1], reply[2], reply[3]);
+          fi
+        fi
+      }
+    };
+    let Future<void> client_1 = task {
+      await serve_tagged_session(first, 1, requests, reply_1);
+      return;
+    };
+    val NioConnection socket_2 = await listener.accept_async();
+    let Future<void> client_2 = task {
+      await serve_tagged_session(socket_2, 2, requests, reply_2);
+      return;
+    };
+    val NioConnection socket_3 = await listener.accept_async();
+    let Future<void> client_3 = task {
+      await serve_tagged_session(socket_3, 3, requests, reply_3);
+      return;
+    };
+    val NioConnection socket_4 = await listener.accept_async();
+    let Future<void> client_4 = task {
+      await serve_tagged_session(socket_4, 4, requests, reply_4);
+      return;
+    };
+    val NioConnection socket_5 = await listener.accept_async();
+    let Future<void> client_5 = task {
+      await serve_tagged_session(socket_5, 5, requests, reply_5);
+      return;
+    };
+    val NioConnection socket_6 = await listener.accept_async();
+    let Future<void> client_6 = task {
+      await serve_tagged_session(socket_6, 6, requests, reply_6);
+      return;
+    };
+    val NioConnection socket_7 = await listener.accept_async();
+    let Future<void> client_7 = task {
+      await serve_tagged_session(socket_7, 7, requests, reply_7);
+      return;
+    };
+    val NioConnection socket_8 = await listener.accept_async();
+    let Future<void> client_8 = task {
+      await serve_tagged_session(socket_8, 8, requests, reply_8);
+      return;
+    };
+    val NioConnection socket_9 = await listener.accept_async();
+    let Future<void> client_9 = task {
+      await serve_tagged_session(socket_9, 9, requests, reply_9);
+      return;
+    };
+    val NioConnection socket_10 = await listener.accept_async();
+    let Future<void> client_10 = task {
+      await serve_tagged_session(socket_10, 10, requests, reply_10);
+      return;
+    };
+    val NioConnection socket_11 = await listener.accept_async();
+    let Future<void> client_11 = task {
+      await serve_tagged_session(socket_11, 11, requests, reply_11);
+      return;
+    };
+    val NioConnection socket_12 = await listener.accept_async();
+    let Future<void> client_12 = task {
+      await serve_tagged_session(socket_12, 12, requests, reply_12);
+      return;
+    };
+    val NioConnection socket_13 = await listener.accept_async();
+    let Future<void> client_13 = task {
+      await serve_tagged_session(socket_13, 13, requests, reply_13);
+      return;
+    };
+    val NioConnection socket_14 = await listener.accept_async();
+    let Future<void> client_14 = task {
+      await serve_tagged_session(socket_14, 14, requests, reply_14);
+      return;
+    };
+    val NioConnection socket_15 = await listener.accept_async();
+    let Future<void> client_15 = task {
+      await serve_tagged_session(socket_15, 15, requests, reply_15);
+      return;
+    };
+    val NioConnection socket_16 = await listener.accept_async();
+    let Future<void> client_16 = task {
+      await serve_tagged_session(socket_16, 16, requests, reply_16);
+      return;
+    };
+    val NioConnection socket_17 = await listener.accept_async();
+    let Future<void> client_17 = task {
+      await serve_tagged_session(socket_17, 17, requests, reply_17);
+      return;
+    };
+    val NioConnection socket_18 = await listener.accept_async();
+    let Future<void> client_18 = task {
+      await serve_tagged_session(socket_18, 18, requests, reply_18);
+      return;
+    };
+    val NioConnection socket_19 = await listener.accept_async();
+    let Future<void> client_19 = task {
+      await serve_tagged_session(socket_19, 19, requests, reply_19);
+      return;
+    };
+    val NioConnection socket_20 = await listener.accept_async();
+    let Future<void> client_20 = task {
+      await serve_tagged_session(socket_20, 20, requests, reply_20);
+      return;
+    };
+    val NioConnection socket_21 = await listener.accept_async();
+    let Future<void> client_21 = task {
+      await serve_tagged_session(socket_21, 21, requests, reply_21);
+      return;
+    };
+    val NioConnection socket_22 = await listener.accept_async();
+    let Future<void> client_22 = task {
+      await serve_tagged_session(socket_22, 22, requests, reply_22);
+      return;
+    };
+    val NioConnection socket_23 = await listener.accept_async();
+    let Future<void> client_23 = task {
+      await serve_tagged_session(socket_23, 23, requests, reply_23);
+      return;
+    };
+    val NioConnection socket_24 = await listener.accept_async();
+    let Future<void> client_24 = task {
+      await serve_tagged_session(socket_24, 24, requests, reply_24);
+      return;
+    };
+    val NioConnection socket_25 = await listener.accept_async();
+    let Future<void> client_25 = task {
+      await serve_tagged_session(socket_25, 25, requests, reply_25);
+      return;
+    };
+    val NioConnection socket_26 = await listener.accept_async();
+    let Future<void> client_26 = task {
+      await serve_tagged_session(socket_26, 26, requests, reply_26);
+      return;
+    };
+    val NioConnection socket_27 = await listener.accept_async();
+    let Future<void> client_27 = task {
+      await serve_tagged_session(socket_27, 27, requests, reply_27);
+      return;
+    };
+    val NioConnection socket_28 = await listener.accept_async();
+    let Future<void> client_28 = task {
+      await serve_tagged_session(socket_28, 28, requests, reply_28);
+      return;
+    };
+    val NioConnection socket_29 = await listener.accept_async();
+    let Future<void> client_29 = task {
+      await serve_tagged_session(socket_29, 29, requests, reply_29);
+      return;
+    };
+    val NioConnection socket_30 = await listener.accept_async();
+    let Future<void> client_30 = task {
+      await serve_tagged_session(socket_30, 30, requests, reply_30);
+      return;
+    };
+    val NioConnection socket_31 = await listener.accept_async();
+    let Future<void> client_31 = task {
+      await serve_tagged_session(socket_31, 31, requests, reply_31);
+      return;
+    };
+    val NioConnection socket_32 = await listener.accept_async();
+    let Future<void> client_32 = task {
+      await serve_tagged_session(socket_32, 32, requests, reply_32);
+      return;
+    };
+  }
+  await listener.close_async();
+  return;
+}

@@ -1,0 +1,289 @@
+// Native Atto Redis multi-client prototype. All key/value state is owned by
+// exactly one Atto KV actor; Java/NIO2 performs framing and async transport only.
+// 8 fixed per-session channels, bounded USER queue, no Java-host KV or stdio.
+// One outstanding actor request per TCP session preserves RESP2 wire order.
+// This fixed-capacity variant is deliberately closed after all 8 sessions exit.
+define actor TaggedBytesKvActor implements StreamOperator<Tuple[int, int, int, Bytes, Bytes], Tuple[int, int, string, Bytes]> as
+  let Map<Bytes,Bytes> values;
+
+  on_start(): void {
+    self.values = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, int, int, Bytes, Bytes]> mail): void {
+    const tuple = mail.value;
+    const int client_id = tuple[0];
+    const int request_id = tuple[1];
+    const int kind = tuple[2];
+    const Bytes key = tuple[3];
+    const Bytes value = tuple[4];
+    if kind == 5; do
+      // The output consumer receives a final authenticated sentinel.
+      self.send((0, 0, "SHUTDOWN", value));
+      self.end();
+      return;
+    fi
+    if kind == 3; do
+      self.values.set(key, value);
+      self.send((client_id, request_id, "OK", value));
+      return;
+    fi
+    if kind == 2; do
+      val found = self.values.get_optional(key);
+      if found.is_none(); do
+        self.send((client_id, request_id, "NIL", key));
+      else
+        self.send((client_id, request_id, "VALUE", found.unwrap()));
+      fi
+      return;
+    fi
+    if kind == 4; do
+      if self.values.delete(key); do
+        self.send((client_id, request_id, "ONE", key));
+      else
+        self.send((client_id, request_id, "ZERO", key));
+      fi
+      return;
+    fi
+    self.send((client_id, request_id, "ERR", key));
+    return;
+  }
+end
+
+// Each TCP connection is moved into exactly one native Atto task.
+// No task except the broker is allowed to consume worker.outputs.
+// Responses can be coalesced, but there is only one in-flight KV request
+// per client until a bounded per-client reordering ledger is implemented.
+pub async fnc serve_tagged_session(
+    NioConnection socket,
+    int client_id,
+    Channel<Tuple[int, int, int, Bytes, Bytes]> requests,
+    Channel<Tuple[int, string, Bytes]> replies
+): void {
+  let int next_id = 0;
+  loop {
+    const frames = await socket.read_resp2_binary_batch_async(16);
+    let mut List[Tuple[string, Bytes]] responses = [];
+    let int i = 0;
+    loop {
+      if i == frames.size then break; fi
+      const Tuple[int, string, Bytes, Bytes] frame = frames.get(i);
+      const int kind = frame[0];
+      if kind == 0 || kind == 5; do
+        if kind == 5; do
+          responses.add(("OK", frame[3]));
+        fi
+        if responses.size > 0; do
+          await socket.write_resp2_binary_batch_async(responses);
+        fi
+        await socket.close_async();
+        writech requests, (client_id, -1, -1, frame[2], frame[3]);
+        return;
+      fi
+      if kind == 1; do
+        responses.add(("PONG", frame[3]));
+      else
+        next_id = next_id + 1;
+        // This bounded channel provides backpressure, not an unbounded queue.
+        // The single broker forwards each tagged command to the Atto actor.
+        writech requests, (client_id, next_id, kind, frame[2], frame[3]);
+        const Tuple[int, string, Bytes] reply = await (nb readch replies);
+        if reply[0] != next_id; do
+          // Never deliver a response whose request ID belongs to another
+          // request or connection. Fail closed and retire this session.
+          await socket.close_async();
+          writech requests, (client_id, -1, -1, frame[2], frame[3]);
+          return;
+        fi
+        responses.add((reply[1], reply[2]));
+      fi
+      i = i + 1;
+    }
+    if responses.size > 0; do
+      await socket.write_resp2_binary_batch_async(responses);
+    fi
+  }
+}
+
+pub async routine main(): void {
+  val worker = spawn TaggedBytesKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  // All session task channels have finite capacity; no unbounded Futures.
+  val Channel<Tuple[int, int, int, Bytes, Bytes]> requests =
+      Channel.new<Tuple[int, int, int, Bytes, Bytes]>(32);
+  val Channel<Tuple[int, string, Bytes]> reply_1 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_2 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_3 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_4 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_5 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_6 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_7 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_8 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val NioConnection first = await listener.accept_async();
+  task scope {
+    // Admission never waits for actor replies. Already-admitted commands can
+    // accumulate in the actor's bounded USER mailbox for turn batching.
+    let Future<void> intake = task {
+      let int retired = 0;
+      loop {
+        const Tuple[int, int, int, Bytes, Bytes] req =
+            await (nb readch requests);
+        if req[2] == -1; do
+          retired = retired + 1;
+          if retired == 8; do
+            // Last client has retired; FIFO admission ensures all earlier
+            // client commands have already reached the state-owning actor.
+            worker.send((0, 0, 5, req[3], req[4]));
+            await worker.get_done();
+            return;
+          fi
+        else
+          worker.send((req[0], req[1], req[2], req[3], req[4]));
+        fi
+      }
+    };
+    // Exactly one native Atto task consumes worker.outputs.next().
+    // The actor emits responses in mailbox order; every client has at most
+    // one in-flight request. A client-specific sequence gate fails closed.
+    let Future<void> broker = task {
+      let int last_1 = 0;
+      let int last_2 = 0;
+      let int last_3 = 0;
+      let int last_4 = 0;
+      let int last_5 = 0;
+      let int last_6 = 0;
+      let int last_7 = 0;
+      let int last_8 = 0;
+      loop {
+        val output = (await worker.outputs.next()).value.unwrap();
+        const Tuple[int, int, string, Bytes] reply = output.value;
+        if reply[0] == 0 && reply[1] == 0 && reply[2] == "SHUTDOWN"; do
+          return;
+        fi
+        if reply[0] == 1; do
+          if reply[1] != last_1 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_1, (-1, "ERR", reply[3]);
+          else
+            last_1 = reply[1];
+            writech reply_1, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 2; do
+          if reply[1] != last_2 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_2, (-1, "ERR", reply[3]);
+          else
+            last_2 = reply[1];
+            writech reply_2, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 3; do
+          if reply[1] != last_3 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_3, (-1, "ERR", reply[3]);
+          else
+            last_3 = reply[1];
+            writech reply_3, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 4; do
+          if reply[1] != last_4 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_4, (-1, "ERR", reply[3]);
+          else
+            last_4 = reply[1];
+            writech reply_4, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 5; do
+          if reply[1] != last_5 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_5, (-1, "ERR", reply[3]);
+          else
+            last_5 = reply[1];
+            writech reply_5, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 6; do
+          if reply[1] != last_6 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_6, (-1, "ERR", reply[3]);
+          else
+            last_6 = reply[1];
+            writech reply_6, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 7; do
+          if reply[1] != last_7 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_7, (-1, "ERR", reply[3]);
+          else
+            last_7 = reply[1];
+            writech reply_7, (reply[1], reply[2], reply[3]);
+          fi
+        elseif reply[0] == 8; do
+          if reply[1] != last_8 + 1; do
+            // Never send a mismatched request's payload to a client.
+            writech reply_8, (-1, "ERR", reply[3]);
+          else
+            last_8 = reply[1];
+            writech reply_8, (reply[1], reply[2], reply[3]);
+          fi
+        fi
+      }
+    };
+    let Future<void> client_1 = task {
+      await serve_tagged_session(first, 1, requests, reply_1);
+      return;
+    };
+    // Client 1 remains independently scheduled while this accept suspends.
+    val NioConnection socket_2 = await listener.accept_async();
+    let Future<void> client_2 = task {
+      await serve_tagged_session(socket_2, 2, requests, reply_2);
+      return;
+    };
+    // Client 2 remains independently scheduled while this accept suspends.
+    val NioConnection socket_3 = await listener.accept_async();
+    let Future<void> client_3 = task {
+      await serve_tagged_session(socket_3, 3, requests, reply_3);
+      return;
+    };
+    // Client 3 remains independently scheduled while this accept suspends.
+    val NioConnection socket_4 = await listener.accept_async();
+    let Future<void> client_4 = task {
+      await serve_tagged_session(socket_4, 4, requests, reply_4);
+      return;
+    };
+    // Client 4 remains independently scheduled while this accept suspends.
+    val NioConnection socket_5 = await listener.accept_async();
+    let Future<void> client_5 = task {
+      await serve_tagged_session(socket_5, 5, requests, reply_5);
+      return;
+    };
+    // Client 5 remains independently scheduled while this accept suspends.
+    val NioConnection socket_6 = await listener.accept_async();
+    let Future<void> client_6 = task {
+      await serve_tagged_session(socket_6, 6, requests, reply_6);
+      return;
+    };
+    // Client 6 remains independently scheduled while this accept suspends.
+    val NioConnection socket_7 = await listener.accept_async();
+    let Future<void> client_7 = task {
+      await serve_tagged_session(socket_7, 7, requests, reply_7);
+      return;
+    };
+    // Client 7 remains independently scheduled while this accept suspends.
+    val NioConnection socket_8 = await listener.accept_async();
+    let Future<void> client_8 = task {
+      await serve_tagged_session(socket_8, 8, requests, reply_8);
+      return;
+    };
+  }
+  await listener.close_async();
+  return;
+}
