@@ -31,7 +31,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
 
     enum RestartBlocker {
         READY, CONTROL_FAILED, UNKNOWN_NODE, ALREADY_REPLACED, STILL_ALIVE, PENDING_FAILURE,
-        CHILD_STILL_RUNNING, PHYSICAL_RELEASE_UNVERIFIED, PARENT_UNAVAILABLE
+        CHILD_STILL_RUNNING, PHYSICAL_RELEASE_UNVERIFIED, PARENT_UNAVAILABLE, RESTART_ESCALATED
     }
 
     static final class RestartPermit {
@@ -45,6 +45,29 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             oldParentId = parentId;
         }
     }
+
+    /**
+     * Opt-in permanent ONE_FOR_ONE policy for one explicitly registered
+     * guardian child and its successors. The circuit owns only restart
+     * admission; escrow remains the sole terminal/physical authority.
+     */
+    private static final class RootRestartPolicy {
+        final ActorSupervisorRestartCircuit circuit;
+        final java.util.function.LongSupplier clock;
+        ActorSupervisorRestartCircuit.RestartPlan plan;
+        long decidedAt;
+        RootRestartPolicy(ActorSupervisorRestartCircuit.Config config,
+                java.util.function.LongSupplier clock, long generation) {
+            if (config.childCount() != 1)
+                throw new IllegalArgumentException("root restart policy requires exactly one child");
+            this.clock = Objects.requireNonNull(clock, "clock");
+            this.circuit = new ActorSupervisorRestartCircuit(config);
+            circuit.admitGeneration(0, generation, clock.getAsLong());
+        }
+    }
+
+    // Guarded by lock. A policy follows the successor, not the physical node.
+    private final Map<Long, RootRestartPolicy> rootPolicies = new HashMap<>();
 
     private final ActorRuntime runtime;
     private final SupervisorFailureEscrowRuntimeBridgeV1 bridge;
@@ -81,6 +104,29 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         // admission/actor lifecycle locks (faults acquire them in reverse).
         long nodeId = bridge.attach(ref, supervisor);
         synchronized (lock) { refs.put(nodeId, ref); }
+        return nodeId;
+    }
+
+    /**
+     * Host-only explicit opt-in. As with attach(), callers must not activate
+     * the actor until registration returns. This is a single-child policy,
+     * not a shared restart budget across multiple guardian children.
+     */
+    long attachRestartManagedRoot(ActorRuntime.ActorRef<?> ref,
+            ActorSupervisorRestartCircuit.Config config) {
+        return attachRestartManagedRoot(ref, config, System::nanoTime);
+    }
+
+    // Package-private trusted clock injection for deterministic host tests.
+    long attachRestartManagedRoot(ActorRuntime.ActorRef<?> ref,
+            ActorSupervisorRestartCircuit.Config config,
+            java.util.function.LongSupplier clock) {
+        runtime.requireSupervisorShutdownAuthority("attach restart-managed guardian child");
+        Objects.requireNonNull(ref, "ref");
+        var policy = new RootRestartPolicy(Objects.requireNonNull(config, "config"),
+                clock, ref.generation());
+        long nodeId = attach(ref, null);
+        synchronized (lock) { rootPolicies.put(nodeId, policy); }
         return nodeId;
     }
 
@@ -199,6 +245,9 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         if (root == null || nodeId == 1) return RestartBlocker.UNKNOWN_NODE;
         synchronized (lock) {
             if (successorIds.containsKey(nodeId)) return RestartBlocker.ALREADY_REPLACED;
+            RootRestartPolicy policy = rootPolicies.get(nodeId);
+            if (policy != null && policy.circuit.escalated())
+                return RestartBlocker.RESTART_ESCALATED;
         }
         if (root.alive()) return RestartBlocker.STILL_ALIVE;
         if (root.parentId() != 1) {
@@ -231,14 +280,57 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             throw new IllegalStateException("subtree is not safely reclaimed");
         var old = bridge.snapshot().get(nodeId);
         var permit = new RestartPermit(nodeId, old.generation(), old.parentId());
+        final RootRestartPolicy policy;
+        synchronized (lock) { policy = rootPolicies.get(nodeId); }
+        // The trusted clock is sampled outside the recovery monitor.
+        long now = policy == null ? 0L : policy.clock.getAsLong();
         synchronized (lock) {
-            if (successorIds.containsKey(nodeId) ||
+            if (controlFault.get() != null || successorIds.containsKey(nodeId) ||
                     issued.stream().anyMatch(p -> p.oldNodeId == nodeId)) {
                 throw new IllegalStateException("restart already reserved or committed");
+            }
+            if (policy != null) {
+                // We have passed terminal ACK and independent physical release.
+                // PERMANENT treats normal and abnormal exits identically.
+                // Charge exactly once per old generation, not per retry.
+                if (policy.plan == null) {
+                    policy.plan = policy.circuit.onExit(0, old.generation(),
+                            ActorSupervisorRestartCircuit.RestartPolicy.PERMANENT,
+                            ActorSupervisorRestartCircuit.ExitClass.NORMAL,
+                            ActorSupervisorRestartCircuit.Strategy.ONE_FOR_ONE, now);
+                    policy.decidedAt = now;
+                }
+                if (policy.plan.kind() != ActorSupervisorRestartCircuit.DecisionKind.RESTART)
+                    throw new IllegalStateException("restart circuit escalated; parent recovery required");
             }
             issued.add(permit);
         }
         return permit;
+    }
+
+    /**
+     * Nonblocking host scheduler input; no sleep or new timer thread. The
+     * actual attach path independently checks the circuit's elapsed-time gate.
+     */
+    long restartDelayRemainingNanos(RestartPermit permit) {
+        runtime.requireSupervisorShutdownAuthority("inspect remaining restart backoff");
+        Objects.requireNonNull(permit, "permit");
+        final RootRestartPolicy policy;
+        synchronized (lock) {
+            if (!issued.contains(permit) || permit.used || controlFault.get() != null)
+                throw new IllegalStateException("stale restart permit or CONTROL fault");
+            policy = rootPolicies.get(permit.oldNodeId);
+            if (policy == null) return 0L;
+        }
+        long now = policy.clock.getAsLong();
+        synchronized (lock) {
+            if (!issued.contains(permit) || permit.used || controlFault.get() != null
+                    || policy.circuit.escalated() || policy.plan == null)
+                throw new IllegalStateException("restart permit no longer admitted");
+            long elapsed = now - policy.decidedAt;
+            if (elapsed < 0L) throw new IllegalStateException("restart clock regressed");
+            return Math.max(0L, policy.plan.delayNanos() - elapsed);
+        }
     }
 
     long attachReplacement(RestartPermit permit, ActorRuntime.ActorRef<?> replacement,
@@ -260,6 +352,9 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             throw new IllegalStateException("replacement generation not newer");
         long actualParent = liveParent == null ? 1L : bridge.nodeId(liveParent);
         long expectedParent;
+        final RootRestartPolicy policy;
+        synchronized (lock) { policy = rootPolicies.get(permit.oldNodeId); }
+        long now = policy == null ? 0L : policy.clock.getAsLong();
         synchronized (lock) {
             expectedParent = successorIds.getOrDefault(
                     permit.oldParentId, permit.oldParentId);
@@ -271,6 +366,12 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
                     || actualParent != expectedParent) {
                 throw new IllegalStateException("stale, reused or misparented restart permit");
             }
+            if (policy != null) {
+                // Early timing denial must leave the permit intact. If actor
+                // attachment later fails, successor -1 keeps the old node
+                // permanently fenced; no second attempt spends the budget.
+                policy.circuit.admitGeneration(0, replacement.generation(), now);
+            }
             issued.remove(permit);
             // Reserve the successor slot BEFORE releasing lock. Until the new
             // registration commits, -1 means permanently fenced/incomplete.
@@ -279,7 +380,15 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             successorIds.put(permit.oldNodeId, -1L);
         }
         long newNode = attach(replacement, liveParent);
-        synchronized (lock) { successorIds.put(permit.oldNodeId, newNode); }
+        synchronized (lock) {
+            successorIds.put(permit.oldNodeId, newNode);
+            if (policy != null) {
+                rootPolicies.remove(permit.oldNodeId);
+                policy.plan = null;
+                policy.decidedAt = 0L;
+                rootPolicies.put(newNode, policy);
+            }
+        }
         return newNode;
     }
 
