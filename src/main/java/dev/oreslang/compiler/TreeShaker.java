@@ -1052,7 +1052,7 @@ public final class TreeShaker {
                                 task.body(),
                                 module,
                                 new LinkedHashMap<>(locals)),
-                        task.legacyNb());
+                        task.legacyNb(), task.payloadType());
             }
             if (expression instanceof Ast.ChannelOpExpr operation) {
                 return new Ast.ChannelOpExpr(
@@ -1491,6 +1491,7 @@ public final class TreeShaker {
             } else if (expression instanceof Ast.TaskExpr task) {
                 // Task execution is deferred but its referenced code/types are
                 // still reachable from the enclosing executable.
+                scanType(task.payloadType());
                 scanStatements(module, task.body(), new LinkedHashSet<>(locals));
             }
             else if (expression instanceof Ast.ChannelOpExpr operation) {
