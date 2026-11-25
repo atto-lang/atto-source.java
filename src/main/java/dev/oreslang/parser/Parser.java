@@ -5851,6 +5851,85 @@ public final class Parser {
      */
     // Match-arm lowering shares the enclosing callable's loop/generator
     // context. A sync task must not accidentally inherit a nonlocal target.
+    /**
+     * Bounded structured lowering, not a general task-return CFG. Each
+     * condition is evaluated once as the subject of a typed boolean match.
+     * Preserve the original task scope and never move declarations or cleanup
+     * into a synthetic fallthrough scope.
+     */
+    private Ast.Expr lowerInlineConditionalReturns(List<Ast.Stmt> prefix, Ast.Expr terminal,
+            Ast.TypeRef payload, int depth, boolean fallthrough) {
+        if (depth > 16) {
+            throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_BUDGET: conditional return nesting exceeds 16");
+        }
+        int split = 0;
+        while (split < prefix.size()
+                && !valueArmPrefixContainsReturn(List.of(prefix.get(split)))) split++;
+        List<Ast.Stmt> before = prefix.subList(0, split);
+        if (fallthrough && before.stream().anyMatch(stmt -> !(stmt instanceof Ast.ExprStmt))) {
+            throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: fallthrough must contain only expressions");
+        }
+        Ast.Expr result = terminal;
+        if (split < prefix.size()) {
+            if (!(prefix.get(split) instanceof Ast.IfStmt conditional)
+                    || !conditional.elseBody().isEmpty()) {
+                throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: inline branch returns require dedicated CFG lowering");
+            }
+            if (conditional.branches().size() > 16 - depth) {
+                throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_BUDGET: conditional return nesting exceeds 16");
+            }
+            // The false path is evaluated only after all earlier branches fail.
+            result = lowerInlineConditionalReturns(prefix.subList(split + 1, prefix.size()),
+                    terminal, payload, depth + conditional.branches().size(), true);
+            for (int i = conditional.branches().size() - 1; i >= 0; i--) {
+                Ast.IfBranch branch = conditional.branches().get(i);
+                Ast.Expr condition = branch.condition();
+                if (!inlineReturnPredicate(condition, 0)) {
+                    throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: conditional return predicate requires capture-free scalar syntax");
+                }
+                List<Ast.Stmt> yes = branch.body();
+                if (yes.isEmpty() || !(yes.getLast() instanceof Ast.ReturnStmt early)
+                        || early.value() == null
+                        || valueArmPrefixContainsReturn(yes.subList(0, yes.size() - 1))) {
+                    throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: each early branch must end in a value return");
+                }
+                // Double negation enforces bool without truthiness or a cast.
+                result = new Ast.MatchExpr(
+                        new Ast.UnaryExpr("!", new Ast.UnaryExpr("!", condition)),
+                        List.of(new Ast.MatchValueArm(new Ast.LiteralPattern(true), null,
+                                        yes.subList(0, yes.size() - 1), early.value()),
+                                new Ast.MatchValueArm(new Ast.LiteralPattern(false), null, result)),
+                        payload);
+            }
+        }
+        if (fallthrough && before.isEmpty()) return result;
+        return new Ast.MatchExpr(new Ast.LiteralExpr(true),
+                List.of(new Ast.MatchValueArm(new Ast.WildcardPattern(), null, before, result)),
+                payload);
+    }
+
+    // Do not erase pattern/type refinements, captures, ownership operations,
+    // or arbitrary expression blocks when changing the condition's AST shape.
+    private boolean inlineReturnPredicate(Ast.Expr expr, int depth) {
+        if (depth > 32) return false;
+        if (expr instanceof Ast.NameExpr || expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary) {
+            return java.util.Set.of("!", "+", "-").contains(unary.operator())
+                    && inlineReturnPredicate(unary.operand(), depth + 1);
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return java.util.Set.of("&&", "||", "^^", "eq", "neq", "==", "!=",
+                            "<", "<=", ">", ">=", "+", "-", "*", "/", "%").contains(binary.operator())
+                    && inlineReturnPredicate(binary.left(), depth + 1)
+                    && inlineReturnPredicate(binary.right(), depth + 1);
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            return call.origin() == Ast.CallOrigin.DIRECT && call.callee() instanceof Ast.NameExpr
+                    && call.arguments().stream().allMatch(arg -> inlineReturnPredicate(arg, depth + 1));
+        }
+        return false;
+    }
+
     private boolean inlineTaskHasEscapingTransfer(List<Ast.Stmt> body, int loopDepth) {
         for (Ast.Stmt stmt : body) {
             boolean escapes = switch (stmt) {
@@ -6864,50 +6943,7 @@ public final class Parser {
             if (inlineTaskHasEscapingTransfer(prefix, 0)) {
                 throw error(previous(), "E_SYNC_TASK_CONTROL_TRANSFER: inline break/continue must target a task-local loop; yield requires dedicated lowering");
             }
-            Ast.Expr result = returned.value();
-            List<Ast.Stmt> outerPrefix = prefix;
-            if (valueArmPrefixContainsReturn(prefix)) {
-                // Admit only a single top-level, one-arm conditional whose
-                // taken branch terminates in a value return. The fallthrough
-                // remains a separate typed arm, not a caller ReturnStmt.
-                int split = 0;
-                while (split < prefix.size()
-                        && !valueArmPrefixContainsReturn(List.of(prefix.get(split)))) split++;
-                if (split == prefix.size() || !(prefix.get(split) instanceof Ast.IfStmt conditional)
-                        || conditional.branches().size() != 1 || !conditional.elseBody().isEmpty()) {
-                    throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: inline branch returns require dedicated CFG lowering");
-                }
-                Ast.IfBranch branch = conditional.branches().getFirst();
-                Ast.Expr condition = branch.condition();
-                // Narrow to simple boolean names/literals: pattern captures,
-                // narrowing, and effectful predicates need their own proof.
-                if (!(condition instanceof Ast.NameExpr)
-                        && !(condition instanceof Ast.LiteralExpr literal && literal.value() instanceof Boolean)) {
-                    throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: conditional return requires a simple bool predicate");
-                }
-                List<Ast.Stmt> yes = branch.body();
-                List<Ast.Stmt> no = prefix.subList(split + 1, prefix.size());
-                if (yes.isEmpty() || !(yes.getLast() instanceof Ast.ReturnStmt early)
-                        || early.value() == null
-                        || valueArmPrefixContainsReturn(yes.subList(0, yes.size() - 1))
-                        || no.stream().anyMatch(stmt -> !(stmt instanceof Ast.ExprStmt))) {
-                    // Moving declarations into the false arm could silently
-                    // change duplicate-binding or cleanup semantics. Refuse.
-                    throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: branch must return a value and fallthrough must contain only expressions");
-                }
-                // Boolean patterns are exhaustive and disjoint; double
-                // negation preserves the ordinary boolean-condition check.
-                result = new Ast.MatchExpr(
-                        new Ast.UnaryExpr("!", new Ast.UnaryExpr("!", condition)),
-                        List.of(new Ast.MatchValueArm(new Ast.LiteralPattern(true), null,
-                                        yes.subList(0, yes.size() - 1), early.value()),
-                                new Ast.MatchValueArm(new Ast.LiteralPattern(false), null, no, result)),
-                        payload);
-                outerPrefix = prefix.subList(0, split);
-            }
-            return new Ast.MatchExpr(new Ast.LiteralExpr(true),
-                    List.of(new Ast.MatchValueArm(new Ast.WildcardPattern(), null,
-                            List.copyOf(outerPrefix), result)), payload);
+            return lowerInlineConditionalReturns(prefix, returned.value(), payload, 0, false);
         }
 
         // task is contextual: task(...) and identifiers named task remain legal.
