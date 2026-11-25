@@ -5415,6 +5415,38 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Trusted supervisor admission for the verified persistent i64 subset.
+     * The executor is compiler-bound to an immutable CodeImage, and each actor
+     * incarnation opens its own epoch-fenced state in initializeActor on the
+     * normal private-actor scheduler. Guest source cannot choose the storage
+     * capability or impersonate another tenant/address through this entry.
+     *
+     * Message admission uses ActorRef.send and the existing mailbox; the
+     * durable application-result receipt is emitted only after SQLite commit.
+     */
+    public ActorRef<Object> spawnPersistentScalarActor(PersistentScalarCodeExecutor executor) {
+        requireSupervisorContext("spawn verified persistent scalar actor");
+        Objects.requireNonNull(executor, "verified persistent executor");
+        return spawnCodeActor(ActorKind.PRIVATE, executor, executor.actor_type_name());
+    }
+
+    /**
+     * Admit an already-prepared, compiler-verified durable scalar actor.
+     * The privileged host must first complete AsyncPersistentScalarCodeExecutorV1
+     * preparation off an actor carrier. Activation and FIFO recovery are
+     * complete before this method publishes the actor's READY outcome.
+     *
+     * Subsequent SQLite turns suspend via the existing source continuation
+     * lane. Guest actor code has no authority to mint or replace the provider.
+     */
+    public ActorRef<Object> spawnPreparedPersistentScalarActor(
+            AsyncPersistentScalarCodeExecutorV1 executor) {
+        requireSupervisorContext("spawn prepared asynchronous durable scalar actor");
+        Objects.requireNonNull(executor, "verified asynchronous persistent executor");
+        return spawnCodeActor(ActorKind.PRIVATE, executor, executor.actor_type_name());
+    }
+
+    /**
      * Compiler-only source actor entry point. Unlike the trusted host factory
      * escape hatches, this does not capture arbitrary JVM state: the shared
      * executor is identity-bound to its CodeImage and the actor's mutable guest
