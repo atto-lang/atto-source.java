@@ -26,8 +26,15 @@ final class ExtensibleActorDeclarationTest {
     @Test void markerRequirementUsesOrdinaryActorInterface() {
         String marker = "define interface DurableMarker as end\n";
         String descriptor = "define keyword durable_object as actor requires DurableMarker; end\n";
-        assertEquals(Parser.parseStrictAtto(marker + "define actor Counter implements DurableMarker as end"),
-                Parser.parseStrictAtto(descriptor + marker + KIND + "end"));
+        var ordinary = Parser.parseStrictAtto(marker + "define actor Counter implements DurableMarker as end");
+        var custom = Parser.parseStrictAtto(descriptor + marker + KIND + "end");
+        assertEquals(ordinary, custom);
+        // Same-file marker interfaces are also subject to the existing actor
+        // source-unit isolation rule. Do not claim executable marker support.
+        var expected = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(ordinary));
+        var actual = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(custom));
+        assertEquals(expected.getMessage(), actual.getMessage());
+        assertTrue(actual.getMessage().contains("cannot use same-file interface"), actual::getMessage);
     }
 
     @Test void callableInterfaceCannotBypassMailboxAdmission() {
