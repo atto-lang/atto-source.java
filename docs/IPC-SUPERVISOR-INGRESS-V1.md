@@ -1,0 +1,3 @@
+# Combined supervisor and IPC admission candidate
+
+Selective integration of IPC blobs from 819d5de plus the carrier guard into supervisor tree dabe1cb. Does not merge all divergent historical branch changes. The trusted host adapter binds one actual ActorRef identity and generation, authenticates schema-bound bytes, invokes a pinned bounded decoder and uses the existing ActorRuntime DATA send path. The test pauses decoding after authentication, crashes the supervisor, then refuses publication to the old child without a committed permit. This is a Boolean-only test decoder, not the production compiler codec, actual restart or tenant allocation proof. No remote receipt emission, peer negotiation or guest ABI. Independent integration review required.

@@ -443,6 +443,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
+    private final IpcTenantIngressRegistryV1 ipcIngressRegistry = new IpcTenantIngressRegistryV1();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     /** Opt-in, trusted CONTROL bindings. No guest or actor code can register one. */
@@ -2244,6 +2245,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final long generation;
+        // Host-only immutable-per-incarnation IPC tenant authority.
+        private volatile IpcIngressBudgetV1 ipcTenantBudget;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
@@ -2277,6 +2280,24 @@ public final class ActorRuntime implements AutoCloseable {
             return new ActorAddress(runtimeInstanceId, id, generation, kind, "local-process");
         }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
+        void requireIpcIngressBudget(String domain, IpcIngressBudgetV1 budget) {
+            requireSupervisorShutdownAuthority("bind IPC ingress endpoint");
+            ipcIngressRegistry.require(domain,budget);
+            if (ipcTenantBudget != budget)
+                throw new IllegalArgumentException("actor is not authorized for IPC tenant");
+        }
+
+        void sendAuthenticatedIpc(M message, IpcIngressBudgetV1 budget,IpcPinnedActorIngressV1.Session session) {
+            requireSupervisorShutdownAuthority("publish authenticated IPC DATA");
+            RuntimeBlockingGuard.requireBlockingHostThread("publish authenticated IPC DATA");
+            if (budget == null || ipcTenantBudget != budget)
+                throw new SecurityException("IPC actor tenant authority mismatch");
+            ActorRuntime.this.send(this,message,budget,Objects.requireNonNull(session));
+        }
+        void closeIpcIngressSession(IpcIngressBudgetV1 budget,IpcPinnedActorIngressV1.Session session){
+            requireSupervisorShutdownAuthority("close IPC ingress session");
+            synchronized(runtimeLifecycleLock){budget.closeSession(session);}
+        }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
@@ -4075,6 +4096,40 @@ public final class ActorRuntime implements AutoCloseable {
 
     // Package-scoped host authority check for the dedicated supervisor tree
     // coordinator. ActorGroup creator privileges are not supervisor authority.
+    IpcIngressBudgetV1 registerIpcIngressTenant(String domain,long bytes,int frames) {
+        requireSupervisorShutdownAuthority("register IPC ingress tenant");
+        synchronized(runtimeLifecycleLock) {
+            if(closed.get())throw new IllegalStateException("runtime closed");
+            return ipcIngressRegistry.register(domain,bytes,frames);
+        }
+    }
+
+    void authorizeIpcIngressActor(ActorRef<?> ref,String domain,IpcIngressBudgetV1 budget) {
+        requireSupervisorShutdownAuthority("authorize IPC ingress actor");
+        RuntimeBlockingGuard.requireBlockingHostThread("authorize IPC ingress actor");
+        Objects.requireNonNull(ref,"ref");
+        if(!ref.ownedBy(this))throw new IllegalArgumentException("foreign actor");
+        synchronized(runtimeLifecycleLock) {
+            if(closed.get())throw new IllegalStateException("runtime closed");
+            ipcIngressRegistry.require(domain,budget);
+            ActorCell<?> cell=actors.get(ref.id());
+            if(cell==null || cell.ref!=ref || cell.stopped.get())
+                throw new IllegalStateException("actor is not live");
+            if(ref.ipcTenantBudget!=null)
+                throw new IllegalStateException("actor IPC tenant already bound");
+            ref.ipcTenantBudget=budget;
+        }
+    }
+
+    void retireIpcIngressTenant(String domain) {
+        requireSupervisorShutdownAuthority("retire IPC ingress tenant");
+        RuntimeBlockingGuard.requireBlockingHostThread("retire IPC ingress tenant");
+        // Same lock as the final mailbox publication transaction.
+        synchronized(runtimeLifecycleLock) {
+            ipcIngressRegistry.retire(domain);
+        }
+    }
+
     void requireSupervisorShutdownAuthority(String operation) {
         requireSupervisorContext(operation);
     }
@@ -5585,8 +5640,13 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
-    @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        send(ref,message,null,null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void send(ActorRef<M> ref, M message, IpcIngressBudgetV1 ipcBudget,
+            IpcPinnedActorIngressV1.Session ipcSession) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -5674,6 +5734,12 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (runtimeLifecycleLock) {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                // Retirement shares runtimeLifecycleLock; no IPC publication
+                // can commit after retirement returns. Ordinary local sends
+                // do not acquire IPC authority or change their semantics.
+                if (ipcBudget != null && (ref.ipcTenantBudget != ipcBudget || ipcBudget.retired()
+                        || ipcSession==null || ipcSession.fenced()))
+                    throw new IllegalStateException("IPC tenant publication fenced");
                 if (cell.kind == ActorKind.SHARED) {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
@@ -7119,6 +7185,7 @@ public final class ActorRuntime implements AutoCloseable {
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
             firstClose = closed.compareAndSet(false, true);
+            if(firstClose)ipcIngressRegistry.close();
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
@@ -7973,6 +8040,7 @@ public final class ActorRuntime implements AutoCloseable {
             // thread-local authority of an already executing actor.
             boolean previousCarrier = Boolean.TRUE.equals(ACTOR_CARRIER.get());
             boolean carrierEntered = false;
+            boolean ipcGuardEntered = false;
             boolean reschedule = false;
             try {
                 synchronized (lifecycleLock) {
@@ -7993,6 +8061,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // carrier identity. Stale replay is inert even if invoked from
                 // inside another legitimate actor turn on the same worker.
                 ACTOR_CARRIER.set(Boolean.TRUE);
+                RuntimeBlockingGuard.enterActorCarrier();
+                ipcGuardEntered = true;
 
                 // Only the admitted owner may have its native CPU affinity
                 // changed. An obsolete queued runnable is inert, even if the
@@ -8078,6 +8148,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 } finally {
                     if (carrierEntered) {
+                        if (ipcGuardEntered) RuntimeBlockingGuard.exitActorCarrier();
                         if (previousCarrier) ACTOR_CARRIER.set(Boolean.TRUE);
                         else ACTOR_CARRIER.remove();
                     }

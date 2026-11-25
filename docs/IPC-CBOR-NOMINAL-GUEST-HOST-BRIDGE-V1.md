@@ -1,0 +1,3 @@
+# CBOR nominal guest host bridge regression
+
+A single checked .atto source declares a scalar record and public typed consumer. The trusted host derives its descriptor from the compiler, authenticates and decodes a bounded frame, publishes through the existing ActorRuntime mailbox, waits for completion and passes decoded scalar values into the compiled guest public function. The guest constructs the nominal Order through normal language constructor semantics and calls its methods. No host reflection or source injection. This is a regression fixture and explicit host adapter, not a general guest codec, automatic actor receive lowering, compiler-generated serializer or guest-side parsing. Production descriptor/code-image binding and memory transfer remain to be designed.
