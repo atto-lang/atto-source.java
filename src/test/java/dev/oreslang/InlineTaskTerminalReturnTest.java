@@ -83,4 +83,101 @@ final class InlineTaskTerminalReturnTest {
                 }
                 """)).getMessage().contains("E_SYNC_TASK_RESULT"));
     }
+
+    @Test void outerLoopTransfersCannotEscapeInlineTask() {
+        for (String transfer : new String[] { "break;", "continue;" }) {
+            for (String prefix : new String[] { transfer, "if true { " + transfer + " } fi" }) {
+                String source = """
+                        pub fnc main(): int {
+                          loop {
+                            val int result = sync task<int> {
+                              %s
+                              return 42;
+                            };
+                            return result;
+                          }
+                          return 0;
+                        }
+                        """.formatted(prefix);
+                assertTrue(assertThrows(IllegalArgumentException.class,
+                        () -> Parser.parseStrictAtto(source)).getMessage()
+                        .contains("E_SYNC_TASK_CONTROL_TRANSFER"), prefix);
+            }
+        }
+    }
+
+    @Test void nestedTaskCannotBorrowItsParentTasksLoopTarget() {
+        String source = """
+                pub fnc main(): int {
+                  return sync task<int> {
+                    loop {
+                      val int nested = sync task<int> { break; return 42; };
+                      break;
+                    }
+                    return 42;
+                  };
+                }
+                """;
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> Parser.parseStrictAtto(source)).getMessage()
+                .contains("E_SYNC_TASK_CONTROL_TRANSFER"));
+    }
+
+    @Test void localLoopsCanBreakContinueAndWriteBack() throws Exception {
+        assertEquals(42L, run("""
+                pub fnc main(): int {
+                  let int count = 0;
+                  val int result = sync task<int> {
+                    loop {
+                      count = count + 1;
+                      if count eq 2 { continue; } fi
+                      if count eq 5 { break; } fi
+                    }
+                    return 37;
+                  };
+                  return result + count;
+                }
+                """));
+    }
+
+    @Test void assignmentDestinationIsWrittenAfterTaskCompletes() throws Exception {
+        assertEquals(42L, run("""
+                pub fnc main(): int {
+                  let int value = 1;
+                  let int count = 0;
+                  value = sync task<int> {
+                    value = 100;
+                    count = 2;
+                    return 40;
+                  };
+                  return value + count;
+                }
+                """));
+    }
+
+    @Test void lexicalLocalsCannotEscapeAndImmutableBindingsCannotBeReassigned() {
+        for (String source : new String[] {
+                """
+                pub fnc main(): int {
+                  val int result = sync task<int> {
+                    val int hidden = 42;
+                    return hidden;
+                  };
+                  return hidden;
+                }
+                """,
+                """
+                pub fnc main(): int {
+                  val int count = 1;
+                  return sync task<int> { count = 42; return count; };
+                }
+                """
+        }) {
+            // First prove syntax admission: these must fail at semantic checking,
+            // not merely because the parser rejects sync task.
+            assertDoesNotThrow(() -> Parser.parseStrictAtto(source));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheckStrictAtto(source));
+        }
+    }
 }
