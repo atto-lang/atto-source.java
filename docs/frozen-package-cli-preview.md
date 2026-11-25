@@ -60,4 +60,33 @@ Append to the lock after `[files]`:
 
 The example hash is a placeholder, not an admitted digest. Every supplied archive still requires an independent trusted pin. The manifest and lock dependency key sets must match exactly. Before any provider parsing, verify all supplied packages, reject absent dependencies, conflicting versions/lock digests, duplicates and cycles, and derive deterministic dependency-first order. A package may resolve only a directly declared edge, not a dependency merely reachable through another package. This profile permits at most 16 packages and 128 aggregate edges; unused supplied snapshots are checked too. Cycle diagnostics precede edge digest mismatch checks on structurally cyclic malformed input. These tables are an implementation preview, not yet a normative registry lock format.
 
-**Important:** metadata closure admission is integrated into check/compile/run. Provider source imports themselves remain unsupported: A can declare and authenticate B and B can declare and authenticate C, but guest calls from A into B and B into C still require transitive source linker integration. No transitive guest execution claim.
+## Direct dependency source calls (bounded candidate)
+
+A provider may use a single explicit typed import from an exported subpath of a
+directly declared and pinned dependency:
+
+```atto
+use namespace network;
+import fnc answer as next from pkg '@org/project/b/api';
+
+pub fnc answer(int x) -> int {
+    return next(x) + 1;
+}
+```
+
+Every original provider source is parsed with the strict frontend after its bytes
+have been verified. The linker processes the dependency-first order, validates
+the selected public function against its provider's source-owned export inventory,
+and lowers only the checked leading import declarations to compiler-owned relative
+unit mappings. It preserves provider bodies and rechecks the declaration AST after
+lowering. The regular strict compiler checks the complete linked source graph.
+The restricted guest loader registers all per-unit edges before link/init/main.
+Imports are not re-exports; transitive reachability does not grant direct authority.
+No ambient filesystem fallback. This conservative candidate eagerly checks all
+supplied providers (maximum 16 namespace providers and 64 methods).
+
+CI adds a three-package guest expected to return 42 under both snapshot inventory
+orders, plus five denied edges. These are test candidates, not executed receipts.
+The lane is still bounded: grouped and namespace imports inside providers,
+relative source dependencies, multi-file namespaces, and general CLI linking
+remain outside this profile.
