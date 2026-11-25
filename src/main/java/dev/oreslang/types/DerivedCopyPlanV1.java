@@ -30,6 +30,7 @@ public final class DerivedCopyPlanV1 {
 
     private static final int MAX_DEPTH = 32;
     private static final int MAX_FIELDS = 128;
+    private static final int MAX_PLAN_NODES = 16384;
     private static final Set<String> SCALARS = Set.of(
             "int", "uint", "i8", "i16", "i32", "i64",
             "u8", "u16", "u32", "u64", "f32", "f64",
@@ -42,12 +43,17 @@ public final class DerivedCopyPlanV1 {
     public static Plan derive(
             Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
         if (findClass == null) throw new IllegalArgumentException("E_COPY_UNPROVEN: missing class resolver");
-        return build(type, findClass, new LinkedHashSet<>(), 0);
+        return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0);
     }
 
     private static Plan build(
             Ast.TypeRef type, Function<String, Ast.ClassDecl> lookup,
-            Set<String> visiting, int depth) {
+            Set<String> visiting, int[] work, int depth) {
+        // Acyclic diamond layouts can expand exponentially despite a depth
+        // cap. Charge each plan occurrence before allocating its subtree.
+        if (++work[0] > MAX_PLAN_NODES) {
+            throw fail("E_COPY_PLAN_BUDGET", "expanded copy plan exceeds node budget");
+        }
         if (type == null || depth > MAX_DEPTH || type.isBorrow()
                 || type.inferArguments() || type.isUnion()
                 || type.isComplement() || type.isTupleType()
@@ -64,7 +70,7 @@ public final class DerivedCopyPlanV1 {
                 throw fail("E_COPY_UNPROVEN", "typed Array/List requires exactly one element type");
             }
             return new Sequence(type.name(), build(
-                    type.arguments().getFirst(), lookup, visiting, depth + 1));
+                    type.arguments().getFirst(), lookup, visiting, work, depth + 1));
         }
         // Every other nominal or resource type remains noncopyable until its
         // compiler/runtime shape is explicitly supported.
@@ -98,13 +104,16 @@ public final class DerivedCopyPlanV1 {
                 if (parentType.name().equals("Object") || parentType.name().equals("List")) {
                     continue; // builtin, field-free base
                 }
-                Plan parentPlan = build(parentType, lookup, visiting, depth + 1);
+                Plan parentPlan = build(parentType, lookup, visiting, work, depth + 1);
                 if (!(parentPlan instanceof Instance base)) {
                     throw fail("E_COPY_UNPROVEN", "class parent is not copyable: " + parentType.name());
                 }
                 for (Field entry : base.fields()) {
                     if (fields.putIfAbsent(entry.name(), entry) != null) {
                         throw fail("E_COPY_UNPROVEN", "ambiguous inherited field " + entry.name());
+                    }
+                    if (fields.size() > MAX_FIELDS) {
+                        throw fail("E_COPY_UNPROVEN", "too many inherited owned fields in " + klass.name());
                     }
                 }
             }
@@ -117,7 +126,7 @@ public final class DerivedCopyPlanV1 {
                 }
                 Plan fieldPlan;
                 try {
-                    fieldPlan = build(field.type(), lookup, visiting, depth + 1);
+                    fieldPlan = build(field.type(), lookup, visiting, work, depth + 1);
                 } catch (IllegalArgumentException failure) {
                     throw fail("E_COPY_TRANSITIVE", klass.name() + "." + field.name()
                             + ": " + failure.getMessage());
