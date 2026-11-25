@@ -76,6 +76,9 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     // A reader already inside readGate may finish before key destruction, but
     // a reader queued behind it must not consume another frame after close.
     private volatile boolean receiptReadsClosed;
+    private final Object encodingKeyGate = new Object();
+    // Guarded by encodingKeyGate; no MAC operation may use retired material.
+    private boolean authenticationRetired;
 
     IpcAuthenticatedSocketTransport(
             Socket socket,
@@ -181,12 +184,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                         }
                     },
                     () -> {
+                        boolean confirmed = false;
                         try {
-                            // Close first so a receipt reader blocked in kernel I/O
-                            // is interrupted without waiting on readGate.
                             socket.close();
+                            confirmed = true;
                         } finally {
-                            destroyAuthenticationMaterialAfterPhysicalClose();
+                            destroyAuthenticationMaterialAfterPhysicalClose(confirmed);
                         }
                     },
                     this.cleanupScheduler);
@@ -203,12 +206,22 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
     }
 
-    private void destroyAuthenticationMaterialAfterPhysicalClose() {
-        // A reader may already have consumed a complete frame and be
-        // authenticating/applying it under readGate. The descriptor is already
-        // closing/closed, so no new authenticated receive may start after this
-        // drain point.
-        synchronized (readGate) {
+    private void destroyAuthenticationMaterialAfterPhysicalClose(boolean confirmed) {
+        // A successful close preserves already-admitted receipt transactions.
+        // An ambiguous close may leave a kernel reader blocked indefinitely;
+        // revoke authentication directly, without waiting for that read.
+        if (confirmed) {
+            synchronized (readGate) {
+                retireAuthenticationMaterial();
+            }
+        } else {
+            retireAuthenticationMaterial();
+        }
+    }
+
+    private void retireAuthenticationMaterial() {
+        synchronized (encodingKeyGate) {
+            authenticationRetired = true;
             Arrays.fill(this.macKey, (byte) 0);
             Arrays.fill(this.connectionBinding, (byte) 0);
         }
@@ -268,8 +281,16 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         // ambiguous remote-delivery state or consume a correlation slot.
         final byte[] preparedFrame;
         try {
-            preparedFrame = encodeDataFrame(
-                    message, body, physicalGeneration, connectionBinding, macKey);
+            synchronized (encodingKeyGate) {
+                if (receiptReadsClosed || authenticationRetired) {
+                    return new SendSubmission(CompletableFuture.completedFuture(
+                            IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE)
+                            .minimalCompletionStage(),
+                            new IpcTransportSessionLease.PreDispatchRejectedException("closed IPC transport"));
+                }
+                preparedFrame = encodeDataFrame(
+                        message, body, physicalGeneration, connectionBinding, macKey);
+            }
         } catch (IOException impossibleMemoryEncodingFailure) {
             throw new IllegalStateException(
                     "in-memory authenticated IPC frame encoding failed",
@@ -314,15 +335,19 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     throw new IOException("IPC receipt read after close request");
                 }
                 byte[] frame = readReceiptWireFrame(input);
-                receipt = decodeReceiptFrame(
-                        frame, connectionBinding, macKey);
-                if (receipt.physicalGeneration() != physicalGeneration) {
-                    throw new IOException("stale IPC physical transport generation");
+                synchronized (encodingKeyGate) {
+                    if (authenticationRetired) {
+                        throw new IOException("IPC authentication material retired");
+                    }
+                    receipt = decodeReceiptFrame(frame, connectionBinding, macKey);
+                    if (receipt.physicalGeneration() != physicalGeneration) {
+                        throw new IOException("stale IPC physical transport generation");
+                    }
+                    requireTrustedEpoch(receipt.envelope());
+                    publication = receipts.applyVerified(
+                            physicalOwner, receipt.envelope(),
+                            physicalGeneration, receipt.stage());
                 }
-                requireTrustedEpoch(receipt.envelope());
-                publication = receipts.applyVerified(
-                        physicalOwner, receipt.envelope(),
-                        physicalGeneration, receipt.stage());
             }
 
             // CompletableFuture.complete() may synchronously run arbitrary
@@ -431,7 +456,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                         // traffic. Drain any reader already inside readGate and
                         // destroy the transferred key/binding before reporting
                         // close completion.
-                        destroyAuthenticationMaterialAfterPhysicalClose();
+                        destroyAuthenticationMaterialAfterPhysicalClose(abortFailure == null);
                     } finally {
                         try {
                             sessionLease.completeExternalPhysicalClose(abortFailure);
@@ -474,7 +499,14 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     void retryQuarantinedAbort() {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC transport quarantined abort retry");
+        // An executing close owns the descriptor even after its writer drains.
+        if (abortState.get() < 0) {
+            throw new IllegalStateException("IPC physical abort is already executing");
+        }
         var snapshot = sessionLease.snapshot();
+        if (abortState.get() < 0) {
+            throw new IllegalStateException("IPC physical abort is already executing");
+        }
         if (snapshot.phase() != IpcTransportSessionLease.Phase.QUARANTINED
                 || snapshot.activeWrites() <= 0) {
             throw new IllegalStateException(
@@ -524,14 +556,18 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
 
     /** Package-local audit hook: exposes no key bytes. */
     boolean keyCloneZeroized() {
-        for (byte value : macKey) if (value != 0) return false;
-        return true;
+        synchronized (encodingKeyGate) {
+            for (byte value : macKey) if (value != 0) return false;
+            return true;
+        }
     }
 
     /** Package-local audit hook: exposes no connection-binding bytes. */
     boolean connectionBindingCloneZeroized() {
-        for (byte value : connectionBinding) if (value != 0) return false;
-        return true;
+        synchronized (encodingKeyGate) {
+            for (byte value : connectionBinding) if (value != 0) return false;
+            return true;
+        }
     }
 
     @Override
