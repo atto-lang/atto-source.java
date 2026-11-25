@@ -50,31 +50,68 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
-    void copyBangAndLegacyRuntimeCopyProduceEquivalentOwnershipAst() {
+    void shallowBangHasDistinctAstFromLegacyDeepCopy() {
         String template = "fnc main(): int { val int x = 7; return %s; }";
-        assertEquals(Parser.parse(template.formatted("rt copy x")),
+        assertNotEquals(Parser.parse(template.formatted("rt copy x")),
                 Parser.parse(template.formatted("copy! x")));
-        assertEquals(Parser.parse(template.formatted("rt copy x")),
+        assertEquals(Parser.parse(template.formatted("copy! x")),
                 Parser.parse(template.formatted("copy!x")));
     }
 
     @Test
-    void copyBangExecutesRealClassAndNestedArrayDuplication() throws Exception {
-        assertEquals("10|66", run("""
+    void shallowBangCopiesScalarFieldClassAndTypedScalarArray() throws Exception {
+        assertEquals("10|66|7|99", run("""
+                define class Person as
+                  pub let int score = 10;
+                end
+                pub fnc main(): void {
+                  let mut Person original = new Person();
+                  let mut Person clone = copy!original;
+                  clone.score = 66;
+                  stdio.stdout.write(original.score);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(clone.score);
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  let mut Array<int> other = copy! values;
+                  other.set(0, 99);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(values.get(0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(other.get(0));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void shallowBangRejectsOwnedMutableChildrenEvenWhenSequenceEmpty() {
+        String source = """
                 define class Person as
                   pub val Array<int> scores = new Array<int>();
                 end
                 pub fnc main(): void {
-                  let mut Person original = new Person();
-                  original.scores.add(10);
-                  let mut Person copy = copy!original;
-                  copy.scores.set(0, 66);
-                  stdio.stdout.write(original.scores.get(0));
-                  stdio.stdout.write("|");
-                  stdio.stdout.write(copy.scores.get(0));
+                  val Person original = new Person();
+                  val Person clone = copy! original;
                   return;
                 }
-                """));
+                """;
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("E_COPY_SHALLOW_ALIAS"), failure::toString);
+        String array = """
+                define class Person as
+                  pub let int score = 10;
+                end
+                pub fnc main(): void {
+                  val Array<Person> people = new Array<Person>();
+                  val Array<Person> clone = copy! people;
+                  return;
+                }
+                """;
+        var arrayFailure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(array));
+        assertTrue(arrayFailure.getMessage().contains("E_COPY_SHALLOW_ALIAS"), arrayFailure::toString);
     }
 
     @Test
