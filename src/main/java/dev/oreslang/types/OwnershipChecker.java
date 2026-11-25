@@ -6027,6 +6027,11 @@ public final class OwnershipChecker {
      * other plans have independently verified lowering.
      */
     private boolean isExplicitValueCopyType(Ast.TypeRef type) {
+        return isExplicitValueCopyType(type, new int[]{0}, 0);
+    }
+
+    private boolean isExplicitValueCopyType(Ast.TypeRef type, int[] work, int depth) {
+        if (depth > 32 || ++work[0] > 16384) return false;
         if (type == null || type.isBorrow() || type.inferArguments()
                 || type.isComplement() || type.isUnion() || type.isTupleType()) {
             return false;
@@ -6040,10 +6045,10 @@ public final class OwnershipChecker {
                     "bool", "Bool", "string", "String", "void"
                     -> type.arguments().isEmpty();
             case "Option" -> type.arguments().size() == 1
-                    && isExplicitValueCopyType(type.arguments().getFirst());
+                    && isExplicitValueCopyType(type.arguments().getFirst(), work, depth + 1);
             case "Result" -> type.arguments().size() == 2
-                    && isExplicitValueCopyType(type.arguments().get(0))
-                    && isExplicitValueCopyType(type.arguments().get(1));
+                    && isExplicitValueCopyType(type.arguments().get(0), work, depth + 1)
+                    && isExplicitValueCopyType(type.arguments().get(1), work, depth + 1);
             default -> false;
         };
     }
