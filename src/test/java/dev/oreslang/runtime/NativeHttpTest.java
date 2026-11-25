@@ -532,6 +532,27 @@ class NativeHttpTest {
         assertTrue(output.contains("504"), output);
     }
 
+    @Test void movedHttpResponseDraftCannotBeReusedEvenInsideCatch() {
+        for (String kind : List.of("actor", "isoactor")) {
+            String program = """
+                define %s Hello as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    val response = http.response(201, "text/plain", "first");
+                    await request.respond_response(response);
+                    try {
+                      await request.respond_response(response);
+                    } catch (failure) { return; }
+                    return;
+                  }
+                end
+                """.formatted(kind);
+            Exception failure = assertThrows(Exception.class,
+                    () -> OresCompiler.parseAndTypeCheck(program));
+            assertTrue(failure.getMessage().contains("moved value 'response'"), failure.getMessage());
+        }
+    }
+
     @Test void guestResponseDraftIsTypedAndTransferredToRealHttp11Exchange() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
@@ -540,8 +561,11 @@ class NativeHttpTest {
                     val request = http.claim(mail.value);
                     val response = http.response(201, "text/plain; charset=utf-8", "hello from Oreslang");
                     await request.respond_response(response);
+                    // A fresh owned draft can legally reach the runtime;
+                    // the already-completed exchange must still reject it.
+                    val duplicate = http.response(202, "text/plain", "wrong");
                     try {
-                      await request.respond_response(response);
+                      await request.respond_response(duplicate);
                       stdio.println("DUPLICATE RESPONSE ACCEPTED");
                     } catch (failure) {
                       stdio.println("duplicate-response-rejected");
