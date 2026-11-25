@@ -23,6 +23,8 @@ final class SupervisorEscrowAdmissionLinearizationIntegrationTest {
             new AtomicReference<>();
     private static final AtomicReference<Throwable> SPAWN_DENIED =
             new AtomicReference<>();
+    private static final AtomicReference<ActorRuntime.ActorRef<String>> SPAWNED_CHILD =
+            new AtomicReference<>();
 
     @Test
     void manyConcurrentSendsAreExactlyAccountedAcrossAncestorCrash()
@@ -138,38 +140,100 @@ final class SupervisorEscrowAdmissionLinearizationIntegrationTest {
     }
 
     @Test
-    void supervisedNestedSpawnFailsClosedUntilChildCanRegisterBeforePublication()
+    void supervisedNestedSpawnRegistersBeforePublicationAndRetiresAfterCrash()
             throws Exception {
         var signal = new CountDownLatch(1);
         SPAWN_DONE.set(signal);
         SPAWN_DENIED.set(null);
-        try (ActorRuntime runtime = new ActorRuntime()) {
+        SPAWNED_CHILD.set(null);
+        try (ActorRuntime runtime = new ActorRuntime();
+             ExecutorService control = Executors.newSingleThreadExecutor()) {
             var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> false);
             ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivate(
                     ignored -> (message, turn) -> {
+                        if ("crash".equals(message)) {
+                            throw new IllegalStateException("supervisor crash");
+                        }
                         try {
-                            turn.runtime().spawnPrivate(
+                            ActorRuntime.ActorRef<String> child = turn.runtime().spawnPrivate(
                                     nested -> (item, context) -> { });
-                        } catch (IllegalStateException denied) {
-                            SPAWN_DENIED.set(denied);
+                            SPAWNED_CHILD.set(child);
+                        } catch (Throwable failure) {
+                            SPAWN_DENIED.set(failure);
                         } finally {
                             SPAWN_DONE.get().countDown();
                         }
                     });
-            bridge.attach(supervisor, null);
+            long parentNode = recovery.attach(supervisor, null);
             supervisor.send("spawn");
-            assertTrue(signal.await(5, TimeUnit.SECONDS));
-            Throwable failure = SPAWN_DENIED.get();
-            assertNotNull(failure, "unregistered nested child should be rejected");
-            assertTrue(failure.getMessage().contains("atomic CONTROL child registration"));
-            assertEquals(1, runtime.actorCount(),
-                    "nested spawn denial before ActorCell allocation must not leak actor slots");
-            assertEquals(0, bridge.pendingCount(),
-                    "denial must not falsely report supervisor panic");
-            assertTrue(supervisor.isAlive());
+            assertTrue(signal.await(5, TimeUnit.SECONDS), "supervised spawn turn stalled");
+            assertNull(SPAWN_DENIED.get(), "CONTROL child registration or publication failed");
+            ActorRuntime.ActorRef<String> child = SPAWNED_CHILD.get();
+            assertNotNull(child, "runtime must return a registered child ActorRef");
+            long childNode = bridge.snapshot().entrySet().stream()
+                    .filter(e -> e.getValue().parentId() == parentNode
+                            && e.getValue().generation() == child.generation())
+                    .mapToLong(java.util.Map.Entry::getKey)
+                    .findFirst().orElseThrow();
+            assertTrue(bridge.snapshot().get(childNode).alive());
+            assertEquals(2, runtime.actorCount(), "supervised spawn leaked actor slots");
+            child.send("pre-crash DATA");
+            child.getReady().get(5, TimeUnit.SECONDS);
+
+            supervisor.send("crash");
+            assertThrows(ExecutionException.class,
+                    () -> supervisor.done().get(5, TimeUnit.SECONDS));
+            assertTrue(child.awaitTermination(5, TimeUnit.SECONDS),
+                    "CONTROL must cancel an inherited supervised child");
+            assertNull(recovery.controlFault(),
+                    "registered nested child must not poison the CONTROL tree");
+            assertThrows(IllegalStateException.class, () -> child.send("after-crash"));
+            assertFalse(bridge.snapshot().get(childNode).alive(),
+                    "child CONTROL node must retire with physical ActorRef");
+            assertEquals(1, bridge.pendingCount(), "supervisor failure notice must survive");
         } finally {
             SPAWN_DONE.compareAndSet(signal, null);
             SPAWN_DENIED.set(null);
+            SPAWNED_CHILD.set(null);
+        }
+    }
+
+    @Test
+    void unpublishedChildCONTROLReservationRollsBackWithoutResidualAuthority()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             ExecutorService control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> false);
+            ActorRuntime.ActorRef<String> parent = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            ActorRuntime.ActorRef<String> notPublished = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            long parentId = recovery.attach(parent, null);
+            long candidateId;
+            synchronized (bridge) {
+              synchronized (bridge.ledgerPublicationMonitorFromRuntime()) {
+                candidateId = bridge.reserveInheritedChildFromRuntime(
+                        notPublished, parentId, parent.generation());
+                assertEquals(parentId, bridge.snapshot().get(candidateId).parentId());
+                bridge.rollbackInheritedChildFromRuntime(
+                        notPublished, candidateId, parentId);
+              }
+            }
+            assertFalse(bridge.snapshot().containsKey(candidateId),
+                    "rollback may not leave a dangling CONTROL child");
+            assertEquals(2, bridge.snapshot().size(),
+                    "only the guardian and original parent may remain");
+            assertEquals(0, bridge.pendingCount(),
+                    "aborted child publication must not forge terminal failure");
+            // The cancelled provisional reservation does not preclude a
+            // legitimate fresh host attach of the still-unscheduled ActorRef.
+            long rebound = recovery.attach(notPublished, parent);
+            assertNotEquals(candidateId, rebound, "CONTROL identity cannot be reused");
+            assertEquals(parentId, bridge.snapshot().get(rebound).parentId());
         }
     }
 }

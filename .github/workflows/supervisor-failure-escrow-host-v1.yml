@@ -1,4 +1,4 @@
-name: Supervisor admission/fence linearization (real ActorRuntime)
+name: Atomic supervisor child admission (real ActorRuntime)
 on:
   pull_request:
     paths:
@@ -9,6 +9,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowInheritedChildRaceIntegrationTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java'
       - 'scripts/verify-supervisor-escrow-runtime-bridge-v1.sh'
@@ -25,10 +26,33 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify exact PR source tree before executing compiler
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_HEAD" || {
+            printf 'NOT_EXACT_PR_HEAD expected=%s actual=%s\n' "$EXPECTED_HEAD" "$actual" >&2
+            exit 3
+          }
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'EXACT_SUPERVISOR_PR_HEAD=%s\n' "$actual"
       - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
         with:
           distribution: temurin
           java-version: '25'
       - name: Verify source hashes and execute real ActorRuntime JUnit
         shell: bash
-        run: bash scripts/verify-supervisor-escrow-runtime-bridge-v1.sh
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/verify-supervisor-escrow-runtime-bridge-v1.sh
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+

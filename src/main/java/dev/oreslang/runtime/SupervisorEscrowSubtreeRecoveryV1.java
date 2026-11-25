@@ -81,8 +81,41 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         // Never hold the coordinator monitor while taking ActorRuntime's
         // admission/actor lifecycle locks (faults acquire them in reverse).
         long nodeId = bridge.attach(ref, supervisor);
-        synchronized (lock) { refs.put(nodeId, ref); }
+        // The bridge MUST have registered the exact physical ActorRef
+        // before publishing the runtime's CONTROL binding. Do not publish
+        // an after-the-fact ref here: ancestor failure could observe a
+        // ledger child without a cancellable runtime object.
+        synchronized (lock) {
+            if (refs.get(nodeId) != ref) {
+                throw new IllegalStateException(
+                        "host actor CONTROL attachment was not atomically published");
+            }
+        }
         return nodeId;
+    }
+
+    /** Must be invoked before the child is visible to any runtime registry.
+     * The bridge's own publication monitor serializes this step against
+     * supervisor failure, so CONTROL cannot observe a half-published child. */
+    void registerInheritedChildFromRuntime(
+            long nodeId, ActorRuntime.ActorRef<?> child) {
+        Objects.requireNonNull(child, "child");
+        synchronized (lock) {
+            if (controlFault.get() != null || refs.containsKey(nodeId)) {
+                throw new IllegalStateException("CONTROL child registration unavailable");
+            }
+            refs.put(nodeId, child);
+        }
+    }
+
+    /** Reservation was never published; no terminal notification is allowed. */
+    void rollbackInheritedChildFromRuntime(
+            long nodeId, ActorRuntime.ActorRef<?> child) {
+        synchronized (lock) {
+            if (refs.get(nodeId) != child || refs.remove(nodeId) != child) {
+                throw new IllegalStateException("CONTROL child rollback ref mismatch");
+            }
+        }
     }
 
     /** Called only from the already-fenced runtime failure publication path. */
@@ -216,10 +249,22 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         // cannot erase a logical admission that predates the crash fence.
         if (bridge.dataInFlightInSubtree(nodeId) != 0)
             return RestartBlocker.DATA_ADMISSIONS_IN_FLIGHT;
+        // Report unacknowledged failures before inspecting release evidence,
+        // independent of the snapshot's iteration order.
         for (var entry : states.entrySet()) {
             long id = entry.getKey();
+            if (entry.getValue().pending() && (id == nodeId || isBelow(id, nodeId, states)))
+                return RestartBlocker.PENDING_FAILURE;
+        }
+        for (long id : states.keySet()) {
             if (id != nodeId && !isBelow(id, nodeId, states)) continue;
-            if (entry.getValue().pending()) return RestartBlocker.PENDING_FAILURE;
+            ActorRuntime.ActorRef<?> ref;
+            synchronized (lock) { ref = refs.get(id); }
+            if (ref == null || !ref.done().isDone()) return RestartBlocker.CHILD_STILL_RUNNING;
+        }
+        // Verify the whole subtree is DONE before invoking any external verifier.
+        for (long id : states.keySet()) {
+            if (id != nodeId && !isBelow(id, nodeId, states)) continue;
             ActorRuntime.ActorRef<?> ref;
             synchronized (lock) { ref = refs.get(id); }
             if (ref == null || !ref.done().isDone()) return RestartBlocker.CHILD_STILL_RUNNING;

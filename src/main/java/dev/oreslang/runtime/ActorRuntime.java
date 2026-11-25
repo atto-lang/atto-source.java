@@ -443,6 +443,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
+    private final IpcTenantIngressRegistryV1 ipcIngressRegistry = new IpcTenantIngressRegistryV1();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     /** Opt-in, trusted CONTROL bindings. No guest or actor code can register one. */
@@ -2244,6 +2245,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final long generation;
+        // Host-only immutable-per-incarnation IPC tenant authority.
+        private volatile IpcIngressBudgetV1 ipcTenantBudget;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
@@ -2277,6 +2280,24 @@ public final class ActorRuntime implements AutoCloseable {
             return new ActorAddress(runtimeInstanceId, id, generation, kind, "local-process");
         }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
+        void requireIpcIngressBudget(String domain, IpcIngressBudgetV1 budget) {
+            requireSupervisorShutdownAuthority("bind IPC ingress endpoint");
+            ipcIngressRegistry.require(domain,budget);
+            if (ipcTenantBudget != budget)
+                throw new IllegalArgumentException("actor is not authorized for IPC tenant");
+        }
+
+        void sendAuthenticatedIpc(M message, IpcIngressBudgetV1 budget,IpcPinnedActorIngressV1.Session session) {
+            requireSupervisorShutdownAuthority("publish authenticated IPC DATA");
+            RuntimeBlockingGuard.requireBlockingHostThread("publish authenticated IPC DATA");
+            if (budget == null || ipcTenantBudget != budget)
+                throw new SecurityException("IPC actor tenant authority mismatch");
+            ActorRuntime.this.send(this,message,budget,Objects.requireNonNull(session));
+        }
+        void closeIpcIngressSession(IpcIngressBudgetV1 budget,IpcPinnedActorIngressV1.Session session){
+            requireSupervisorShutdownAuthority("close IPC ingress session");
+            synchronized(runtimeLifecycleLock){budget.closeSession(session);}
+        }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
@@ -4075,6 +4096,40 @@ public final class ActorRuntime implements AutoCloseable {
 
     // Package-scoped host authority check for the dedicated supervisor tree
     // coordinator. ActorGroup creator privileges are not supervisor authority.
+    IpcIngressBudgetV1 registerIpcIngressTenant(String domain,long bytes,int frames) {
+        requireSupervisorShutdownAuthority("register IPC ingress tenant");
+        synchronized(runtimeLifecycleLock) {
+            if(closed.get())throw new IllegalStateException("runtime closed");
+            return ipcIngressRegistry.register(domain,bytes,frames);
+        }
+    }
+
+    void authorizeIpcIngressActor(ActorRef<?> ref,String domain,IpcIngressBudgetV1 budget) {
+        requireSupervisorShutdownAuthority("authorize IPC ingress actor");
+        RuntimeBlockingGuard.requireBlockingHostThread("authorize IPC ingress actor");
+        Objects.requireNonNull(ref,"ref");
+        if(!ref.ownedBy(this))throw new IllegalArgumentException("foreign actor");
+        synchronized(runtimeLifecycleLock) {
+            if(closed.get())throw new IllegalStateException("runtime closed");
+            ipcIngressRegistry.require(domain,budget);
+            ActorCell<?> cell=actors.get(ref.id());
+            if(cell==null || cell.ref!=ref || cell.stopped.get())
+                throw new IllegalStateException("actor is not live");
+            if(ref.ipcTenantBudget!=null)
+                throw new IllegalStateException("actor IPC tenant already bound");
+            ref.ipcTenantBudget=budget;
+        }
+    }
+
+    void retireIpcIngressTenant(String domain) {
+        requireSupervisorShutdownAuthority("retire IPC ingress tenant");
+        RuntimeBlockingGuard.requireBlockingHostThread("retire IPC ingress tenant");
+        // Same lock as the final mailbox publication transaction.
+        synchronized(runtimeLifecycleLock) {
+            ipcIngressRegistry.retire(domain);
+        }
+    }
+
     void requireSupervisorShutdownAuthority(String operation) {
         requireSupervisorContext(operation);
     }
@@ -4109,9 +4164,30 @@ public final class ActorRuntime implements AutoCloseable {
                 if (supervisorEscrowBindings.containsKey(ref.id())) {
                     throw new IllegalStateException("actor already has CONTROL authority");
                 }
-                bridge.registerFromRuntime(ref, nodeId, parentId);
-                supervisorEscrowBindings.put(
-                        ref.id(), new SupervisorEscrowBinding(bridge, nodeId, ref.generation()));
+                // Host attach follows exactly the same bridge publication
+                // boundary as an inherited child spawn. Never take the
+                // runtime/actor locks after the bridge monitor: ancestor
+                // terminal failure acquires cell.lifecycleLock -> bridge.
+                synchronized (bridge) {
+                  synchronized (bridge.ledgerPublicationMonitorFromRuntime()) {
+                    bridge.registerFromRuntime(ref, nodeId, parentId);
+                    SupervisorEscrowBinding binding =
+                            new SupervisorEscrowBinding(bridge, nodeId, ref.generation());
+                    try {
+                        if (supervisorEscrowBindings.putIfAbsent(ref.id(), binding) != null) {
+                            throw new IllegalStateException(
+                                    "actor CONTROL binding concurrently published");
+                        }
+                    } catch (RuntimeException | Error failure) {
+                        try {
+                            bridge.rollbackHostAttachFromRuntime(ref, nodeId, parentId);
+                        } catch (RuntimeException | Error cleanup) {
+                            failure.addSuppressed(cleanup);
+                        }
+                        throw failure;
+                    }
+                  }
+                }
             }
         }
     }
@@ -4704,21 +4780,16 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-            // An opt-in supervised actor cannot safely publish a new child
-            // without reserving that child's CONTROL ownership first. Deny
-            // BEFORE reserveActorSlot, ActorCell construction, memory slice
-            // allocation, or output stream registration to avoid rollback leaks.
-            // No host can bind an already-executing parent to supervision, so
-            // its escrow membership cannot appear midway through this turn.
-            if (parent != null
-                    && supervisorEscrowBindings.containsKey(parent.ref.id())) {
-                throw new IllegalStateException(
-                        "supervised actor nested spawn requires atomic CONTROL child registration");
+            SupervisorEscrowBinding inheritedControl = parent == null ? null
+                    : supervisorEscrowBindings.get(parent.ref.id());
+            if (inheritedControl != null && !inheritedControl.bridge().hasRecoveryCoordinatorFromRuntime()) {
+                throw new IllegalStateException("supervised nested spawn requires CONTROL recovery coordinator");
             }
             reserveActorSlot();
 
             ActorCell<M> cell = null;
             boolean linkedToParent = false;
+            SupervisorEscrowBinding reservedChildEscrow = null;
             try {
                 // All potentially throwing incarnation construction belongs
                 // inside the same rollback boundary as actor registration.
@@ -4750,11 +4821,38 @@ public final class ActorRuntime implements AutoCloseable {
                                             + parent.ref.id());
                         }
                         requireSupervisorEscrowAdmission(parent.ref);
-                        // A nested spawn inherits its parent's structured
-                        // lifecycle group. The spawn lineage is not a new
-                        // supervisor or a new group. Event-bus membership
-                        // remains opt-in and is never inherited here.
-                        ActorGroupId inheritedId = parent.managedByGroup.get();
+                        // The parent ledger and all descendant terminal paths
+                        // share the bridge publication monitor. Holding it
+                        // across CONTROL reservation + the physical actors.put
+                        // linearizes child visibility against ancestor fail().
+                        SupervisorEscrowBinding parentEscrow =
+                                supervisorEscrowBindings.get(parent.ref.id());
+                        Object publishLock = parentEscrow == null
+                                ? parent.lifecycleLock : parentEscrow.bridge();
+                        synchronized (publishLock) {
+                          // The ledger transaction spans reservation, publication and rollback.
+                          // Snapshot and DATA readers cannot see provisional CONTROL nodes.
+                          Object ledgerLock = parentEscrow == null ? publishLock
+                                  : parentEscrow.bridge().ledgerPublicationMonitorFromRuntime();
+                          synchronized (ledgerLock) {
+                            try {
+                                if (parentEscrow != null) {
+                                    long childNode = parentEscrow.bridge()
+                                            .reserveInheritedChildFromRuntime(
+                                                    ref, parentEscrow.nodeId(),
+                                                    parentEscrow.generation());
+                                    reservedChildEscrow = new SupervisorEscrowBinding(
+                                            parentEscrow.bridge(), childNode, ref.generation());
+                                    if (supervisorEscrowBindings.putIfAbsent(
+                                            id, reservedChildEscrow) != null) {
+                                        throw new IllegalStateException(
+                                                "new child CONTROL identity already published");
+                                    }
+                                }
+                                // A nested spawn inherits its parent's
+                                // structured lifecycle group, not guest
+                                // authority to rewrite supervisor parentage.
+                                ActorGroupId inheritedId = parent.managedByGroup.get();
                         ActorGroup inherited = inheritedId == null
                                 ? null : actorGroups.get(inheritedId);
                         if (inheritedId != null && inherited == null) {
@@ -4790,6 +4888,40 @@ public final class ActorRuntime implements AutoCloseable {
                             linkedToParent = true;
                             actors.put(id, cell);
                         }
+                            } catch (RuntimeException | Error publishFailure) {
+                                // Roll back every partially exposed physical
+                                // registry BEFORE dropping the bridge monitor.
+                                // Otherwise ancestor failure can observe a
+                                // published actor whose CONTROL entry vanished.
+                                actors.remove(id, cell);
+                                if (linkedToParent) {
+                                    parent.children.remove(cell);
+                                    linkedToParent = false;
+                                }
+                                ActorGroupId groupId = cell.managedByGroup.get();
+                                ActorGroup ownerGroup = groupId == null
+                                        ? null : actorGroups.get(groupId);
+                                if (ownerGroup != null) {
+                                    synchronized (ownerGroup.authorityLock) {
+                                        ownerGroup.managedWorkers.remove(id, ref);
+                                    }
+                                }
+                                if (reservedChildEscrow != null) {
+                                    supervisorEscrowBindings.remove(
+                                            id, reservedChildEscrow);
+                                    try {
+                                        reservedChildEscrow.bridge().rollbackInheritedChildFromRuntime(
+                                                ref, reservedChildEscrow.nodeId(), parentEscrow.nodeId());
+                                    } catch (RuntimeException | Error cleanup) {
+                                        publishFailure.addSuppressed(cleanup);
+                                    } finally {
+                                        reservedChildEscrow = null;
+                                    }
+                                }
+                                throw publishFailure;
+                            }
+                          }
+                        }
                     }
                 } else {
                     actors.put(id, cell);
@@ -4808,6 +4940,18 @@ public final class ActorRuntime implements AutoCloseable {
                         synchronized (inherited.authorityLock) {
                             inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
                         }
+                    }
+                }
+                // ActorCell already reserved output-stream, channel and
+                // possibly private arena ownership during construction. A
+                // failed child/group/CONTROL publication has no lifecycle
+                // finalizer, so release all of them here before dropping the
+                // actor slot. Keep the original admission error authoritative.
+                if (cell != null) {
+                    try {
+                        cell.abortUnpublished();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
                     }
                 }
                 actorCount.decrementAndGet();
@@ -5496,8 +5640,13 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
-    @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        send(ref,message,null,null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void send(ActorRef<M> ref, M message, IpcIngressBudgetV1 ipcBudget,
+            IpcPinnedActorIngressV1.Session ipcSession) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -5585,6 +5734,12 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (runtimeLifecycleLock) {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                // Retirement shares runtimeLifecycleLock; no IPC publication
+                // can commit after retirement returns. Ordinary local sends
+                // do not acquire IPC authority or change their semantics.
+                if (ipcBudget != null && (ref.ipcTenantBudget != ipcBudget || ipcBudget.retired()
+                        || ipcSession==null || ipcSession.fenced()))
+                    throw new IllegalStateException("IPC tenant publication fenced");
                 if (cell.kind == ActorKind.SHARED) {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
@@ -7030,6 +7185,7 @@ public final class ActorRuntime implements AutoCloseable {
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
             firstClose = closed.compareAndSet(false, true);
+            if(firstClose)ipcIngressRegistry.close();
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
@@ -7350,9 +7506,46 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
-            this.memorySlice = isPrivateKind(kind)
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
-                    : null;
+            ActorMemorySlice preparedSlice;
+            try {
+                preparedSlice = isPrivateKind(kind)
+                        ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
+                        : null;
+            } catch (RuntimeException | Error constructionFailure) {
+                // ActorCell never reached the caller: do not strand the output
+                // stream registry if the final owned-memory construction fails.
+                try {
+                    outputStream.closeAndDrainFromRuntime();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    constructionFailure.addSuppressed(cleanupFailure);
+                }
+                throw constructionFailure;
+            }
+            this.memorySlice = preparedSlice;
+        }
+
+        /** A failed spawn must release resources constructed before actors.put.
+         * No actor turn, mailbox message or output observer may have started:
+         * successful publication and the returned ActorRef are both absent. */
+        private void abortUnpublished() {
+            if (activationRequested || scheduled.get() || carrierActive
+                    || activeTurns != 0 || nextUserMessageSequence != 0) {
+                throw new IllegalStateException(
+                        "cannot rollback an already activated actor " + ref.id());
+            }
+            try {
+                mailbox.close();
+            } finally {
+                try {
+                    continuationMailbox.close();
+                } finally {
+                    try {
+                        outputStream.closeAndDrainFromRuntime();
+                    } finally {
+                        if (memorySlice != null) memorySlice.close();
+                    }
+                }
+            }
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -7847,6 +8040,7 @@ public final class ActorRuntime implements AutoCloseable {
             // thread-local authority of an already executing actor.
             boolean previousCarrier = Boolean.TRUE.equals(ACTOR_CARRIER.get());
             boolean carrierEntered = false;
+            boolean ipcGuardEntered = false;
             boolean reschedule = false;
             try {
                 synchronized (lifecycleLock) {
@@ -7867,6 +8061,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // carrier identity. Stale replay is inert even if invoked from
                 // inside another legitimate actor turn on the same worker.
                 ACTOR_CARRIER.set(Boolean.TRUE);
+                RuntimeBlockingGuard.enterActorCarrier();
+                ipcGuardEntered = true;
 
                 // Only the admitted owner may have its native CPU affinity
                 // changed. An obsolete queued runnable is inert, even if the
@@ -7952,6 +8148,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 } finally {
                     if (carrierEntered) {
+                        if (ipcGuardEntered) RuntimeBlockingGuard.exitActorCarrier();
                         if (previousCarrier) ACTOR_CARRIER.set(Boolean.TRUE);
                         else ACTOR_CARRIER.remove();
                     }
