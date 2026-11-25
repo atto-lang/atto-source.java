@@ -825,7 +825,14 @@ public final class IncrementalCompiler {
                     .append(" concurrency=").append(klass.actorConcurrency().transport())
                     .append('/').append(klass.actorConcurrency().requestConcurrency())
                     .append('/').append(klass.actorConcurrency().messageConcurrency())
-                    .append('/').append(klass.actorConcurrency().serialReceive());
+                    .append('/').append(klass.actorConcurrency().serialReceive())
+                    .append('/').append(klass.actorConcurrency().replyRole());
+            Ast.ActorMessageContract protocol = klass.actorMessageContract();
+            if (protocol.declared()) {
+                abi.append(" receives=").append(typeRef(protocol.receives()))
+                        .append(" sends=").append(typeRef(protocol.sends()))
+                        .append(" emits=").append(typeRef(protocol.emits()));
+            }
             appendAnnotations(abi, klass.annotations());
             appendGenerics(abi, klass.genericParameters());
             abi.append(" extends ");

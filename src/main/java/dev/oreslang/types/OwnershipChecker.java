@@ -6148,7 +6148,7 @@ public final class OwnershipChecker {
                     "MutexGuard",
                     "Fnc", "Function",
                     "ActorMail", "ActorOutput", "ActorOutputStream",
-                    "TcpConnection", "HttpExchange", "HttpServer",
+                    "TcpConnection", "HttpExchange", "HttpServer", "HttpMessage", "HttpRequestView",
                     "HttpHandler", "HttpResponse", "HttpResponseDraft",
                     "SelectCase", "SelectSet", "SelectResult",
                     "Iterator", "AsyncIterator" -> true;

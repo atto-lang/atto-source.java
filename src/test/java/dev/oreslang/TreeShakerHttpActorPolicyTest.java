@@ -67,6 +67,21 @@ final class TreeShakerHttpActorPolicyTest {
     }
 
     @Test
+    void aTypeMentionedOnlyInAnActorOutputContractRemainsReachable() {
+        Ast.Program source = dev.oreslang.parser.Parser.parse("""
+                define class Payload as end
+                define pub actor Producer emits Payload as end
+                """);
+        TreeShaker.Result optimized = TreeShaker.shake(source, BuildOptions.library(Map.of()));
+        String root = dev.oreslang.parser.Parser.ROOT_MODULE;
+        assertTrue(optimized.retained(root + ".Payload"));
+        Ast.ClassDecl actor = optimized.program().modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance).map(Ast.ClassDecl.class::cast)
+                .filter(klass -> klass.name().equals("Producer")).findFirst().orElseThrow();
+        assertEquals("Payload", actor.actorMessageContract().emits().name());
+    }
+
+    @Test
     void canonicalSerialAndExplicitHttpFixturesRetainDistinctReceivePolicies() {
         // Both fixtures have HTTP transport and numeric 1x1 capacity, but
         // only the serial declaration holds a live receive permit across

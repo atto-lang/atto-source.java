@@ -70,6 +70,42 @@ final class TraceParentTest {
     }
 
     @Test
+    void concurrentRootAndChildGenerationRetainsValidIndependentContexts() throws Exception {
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(8);
+        try {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<java.util.List<TraceParent>>>();
+            for (int thread = 0; thread < 8; thread++) {
+                futures.add(pool.submit(() -> {
+                    assertTrue(start.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                    var contexts = new java.util.ArrayList<TraceParent>();
+                    for (int i = 0; i < 64; i++) {
+                        TraceParent root = TraceParent.newRoot((i & 1) == 0);
+                        TraceParent child = root.newChild();
+                        assertEquals(root.traceId(), child.traceId());
+                        assertEquals(root.flags(), child.flags());
+                        assertNotEquals(root.spanId(), child.spanId());
+                        assertEquals(child, TraceParent.parse(child.toHeader()).orElseThrow());
+                        contexts.add(root);
+                        contexts.add(child);
+                    }
+                    return contexts;
+                }));
+            }
+            start.countDown();
+            var seen = new HashSet<String>();
+            for (var future : futures) {
+                for (TraceParent context : future.get(15, java.util.concurrent.TimeUnit.SECONDS)) {
+                    assertTrue(seen.add(context.spanId()));
+                }
+            }
+            assertEquals(1024, seen.size());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void immutableConstructorCannotBypassValidation() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TraceParent(TRACE, SPAN, -1));

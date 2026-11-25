@@ -282,7 +282,7 @@ public final class NativeHttp implements AutoCloseable {
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
-        return new Handler(code, type, kind);
+        return new Handler(code, type, kind, code.servesUnaryHttp(type), type, "local-default", 0);
     }
 
     /**
@@ -326,17 +326,16 @@ public final class NativeHttp implements AutoCloseable {
         private final ActorRuntime.ActorCodeExecutor code;
         private final String type;
         private final ActorRuntime.ActorKind kind;
+        private final boolean unary;
         private final String binding;
         private final String authorityClass;
         private final long scopeGeneration;
-        private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
-            this(code, type, kind, type, "local-default", 0);
-        }
         private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind,
-                        String binding, String authorityClass, long scopeGeneration) {
+                        boolean unary, String binding, String authorityClass, long scopeGeneration) {
             this.code = code;
             this.type = type;
             this.kind = kind;
+            this.unary = unary;
             this.binding = receiptLabel(binding, "binding");
             this.authorityClass = receiptLabel(authorityClass, "authority class");
             if (scopeGeneration < 0)
@@ -364,14 +363,14 @@ public final class NativeHttp implements AutoCloseable {
             if (workers != null) throw new IllegalStateException("scope must be configured before pooled");
             if (scopeGeneration <= 0)
                 throw new IllegalArgumentException("scoped HTTP dispatch requires a positive generation");
-            return new Handler(code, type, kind, binding, authorityClass, scopeGeneration);
+            return new Handler(code, type, kind, unary, binding, authorityClass, scopeGeneration);
         }
         public Handler pooled(int size) {
             supervisor();
             if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
             synchronized (NativeHttp.this) {
                 if (closed) throw new IllegalStateException("HTTP runtime closed");
-                Handler pool = new Handler(code, type, kind, binding, authorityClass, scopeGeneration);
+                Handler pool = new Handler(code, type, kind, unary, binding, authorityClass, scopeGeneration);
                 pool.workers = new Worker[size];
                 pools.add(pool);
                 return pool;
@@ -483,7 +482,7 @@ public final class NativeHttp implements AutoCloseable {
                 reused++;
                 return worker;
             }
-            worker = new Worker(actors().spawnCodeActor(kind, code, type));
+            worker = new Worker(actors().spawnHttpCodeActor(kind, code, type));
             workers[slot] = worker;
             created++;
             Worker attached = worker;
@@ -512,6 +511,7 @@ public final class NativeHttp implements AutoCloseable {
                 try {
                     Worker worker = worker();
                     synchronized (exchange.state) {
+                        exchange.checkOwner();
                         exchange.state.poolWorker = worker;
                         worker.requests.add(exchange.state);
                         // Reused workers have no per-request startup. Do not retain
@@ -521,7 +521,7 @@ public final class NativeHttp implements AutoCloseable {
                     sendWithRequestTraceContext(exchange, () -> worker.actor.send(
                             exchange.moveTo(worker.actor, type, binding,
                                     authorityClass, scopeGeneration, nextDispatchSequence(),
-                                    scopeGeneration > 0)));
+                                    scopeGeneration > 0, false, unary)));
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
@@ -532,7 +532,7 @@ public final class NativeHttp implements AutoCloseable {
             ActorRuntime.ActorRef<Object> actor = null;
             try {
                 long spawnPerf = CorePerf.start();
-                actor = actors().spawnCodeActor(kind, code, type);
+                actor = actors().spawnHttpCodeActor(kind, code, type);
                 CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
                 actor.ready().whenCompleteRuntime((ignored, failure) -> {
                     long spawn;
@@ -548,7 +548,7 @@ public final class NativeHttp implements AutoCloseable {
                 sendWithRequestTraceContext(exchange, () -> target.send(
                         exchange.moveTo(target, type, binding,
                                 authorityClass, scopeGeneration, nextDispatchSequence(),
-                                scopeGeneration > 0)));
+                                scopeGeneration > 0, true, unary)));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
@@ -559,12 +559,31 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     public Exchange claim(String token) {
+        return claimDispatch(token, null);
+    }
+
+    public UnaryExchange claimUnary(String token, String actorType) {
+        Exchange exchange = claimDispatch(token, Objects.requireNonNull(actorType));
+        return exchange == null ? null : new UnaryExchange(exchange);
+    }
+
+    private Exchange claimDispatch(String token, String unaryHandler) {
         Exchange exchange = transfers.get(token);
-        if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
+        if (exchange == null) {
+            // A unary dispatch can expire while queued behind another request.
+            // An absent receipt never admits guest work.
+            if (unaryHandler != null) return null;
+            throw new IllegalStateException("unknown or already claimed HTTP transfer");
+        }
         synchronized (exchange.state) {
+            if (unaryHandler != null && exchange.state.terminal) return null;
             exchange.checkOwner();
             DispatchReceipt receipt = exchange.state.dispatchReceipt;
-            if (receipt != null && receipt.attested()) {
+            if (receipt == null || receipt.unary() != (unaryHandler != null)
+                    || (unaryHandler != null && !receipt.handlerType().equals(unaryHandler))) {
+                throw new SecurityException("HTTP transfer does not match the handler protocol");
+            }
+            if (receipt.attested() || receipt.unary()) {
                 Optional<ActorRuntime.ActorId> currentId = ActorRuntime.currentActorId();
                 OptionalLong currentGeneration = ActorRuntime.currentActorGeneration();
                 ActorRuntime.ActorKind currentKind = ActorRuntime.currentActorKind();
@@ -583,6 +602,102 @@ public final class NativeHttp implements AutoCloseable {
             exchange.state.claimedNanos = System.nanoTime();
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
             return exchange;
+        }
+    }
+
+    private static final class ExpiredUnaryRequest extends IllegalStateException {
+        private ExpiredUnaryRequest() { super("unary HTTP request has closed"); }
+    }
+
+    /** Read-side request authority scoped to one logical SourceTask. */
+    public static final class HttpMessage {
+        private record Scope(Exchange exchange, ExecutionContext execution) { }
+        private volatile Scope scope;
+
+        private Exchange activeExchange() {
+            Scope current = scope;
+            if (current == null || current.execution() != OresScheduler.currentExecutionContext()) {
+                throw new SecurityException("HTTP request capability is outside its unary handler");
+            }
+            synchronized (current.exchange().state) {
+                current.exchange().checkOwner();
+            }
+            return current.exchange();
+        }
+
+        public HttpRequestView getRequest() {
+            activeExchange();
+            return new HttpRequestView(this);
+        }
+    }
+
+    public static final class HttpRequestView {
+        private final HttpMessage message;
+
+        private HttpRequestView(HttpMessage message) { this.message = message; }
+
+        public String method() { return message.activeExchange().method(); }
+        public String target() { return message.activeExchange().target(); }
+        public String requestId() { return message.activeExchange().requestId(); }
+        public String header(String name) { return message.activeExchange().header(name); }
+        public String query(String name) { return message.activeExchange().query(name); }
+        public OresFuture<Object> bodyText() { return message.activeExchange().bodyText(); }
+    }
+
+    /** The compiler bridge alone holds the write side of a unary HTTP request. */
+    public final class UnaryExchange {
+        private final Exchange exchange;
+        private final HttpMessage message = new HttpMessage();
+        private volatile boolean transportAborted;
+
+        private UnaryExchange(Exchange exchange) { this.exchange = exchange; }
+
+        public HttpMessage message() { return message; }
+
+        public boolean dedicatedActor() { return exchange.state.ownsActorLifetime; }
+
+        public void enter() {
+            synchronized (exchange.state) {
+                exchange.checkOwner();
+                message.scope = new HttpMessage.Scope(exchange, Objects.requireNonNull(
+                        OresScheduler.currentExecutionContext(), "unary handler scheduler context"));
+            }
+        }
+
+        public OresFuture<Object> respond(HttpResponseDraft draft) {
+            message.activeExchange();
+            message.scope = null;
+            return exchange.respond(draft);
+        }
+
+        public OresFuture<Void> mailboxCompletion(OresFuture<?> handler) {
+            var receipt = new OresFuture<Void>(() -> false, () -> { });
+            Runnable cancelHandler = () -> {
+                transportAborted = true;
+                handler.cancel(false);
+            };
+            final boolean alreadyAborted;
+            synchronized (exchange.state) {
+                alreadyAborted = exchange.state.terminal;
+                if (!alreadyAborted) exchange.state.cancelUnaryHandler = cancelHandler;
+            }
+            handler.whenCompleteRuntime((ignored, failure) -> {
+                message.scope = null;
+                synchronized (exchange.state) {
+                    if (exchange.state.cancelUnaryHandler == cancelHandler)
+                        exchange.state.cancelUnaryHandler = null;
+                }
+                Throwable cause = failure == null ? null : OresFuture.unwrap(failure);
+                if (cause == null || cause instanceof ExpiredUnaryRequest
+                        || (transportAborted && cause instanceof CancellationException)) {
+                    receipt.completeFromRuntime(null);
+                } else {
+                    exchange.state.abort(500, false);
+                    receipt.failFromRuntime(cause);
+                }
+            });
+            if (alreadyAborted) cancelHandler.run();
+            return receipt;
         }
     }
 
@@ -761,7 +876,8 @@ public final class NativeHttp implements AutoCloseable {
             long exchangeGeneration,
             long sequence,
             String requestId,
-            boolean attested) { }
+            boolean attested,
+            boolean unary) { }
 
     private static String receiptLabel(String value, String label) {
         if (value == null || !value.matches("[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")) {
@@ -788,6 +904,7 @@ public final class NativeHttp implements AutoCloseable {
         volatile boolean terminal;
         volatile InputStream activeResponseInput;
         boolean transportClosed;
+        boolean retired;
         String ticket;
         DispatchReceipt dispatchReceipt;
         final String requestId = UUID.randomUUID().toString();
@@ -799,6 +916,10 @@ public final class NativeHttp implements AutoCloseable {
         final Map<String, List<String>> params = new LinkedHashMap<>();
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
+        boolean ownsActorLifetime;
+        boolean unaryDispatch;
+        OresFuture.RuntimeWaiterRegistration<?> actorTermination;
+        Runnable cancelUnaryHandler;
         Handler.Worker poolWorker;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = hostOwner;
@@ -830,6 +951,8 @@ public final class NativeHttp implements AutoCloseable {
         void abort(int status) { abort(status, true); }
         void abort(int status, boolean cancelOwner) {
             boolean send, alreadyClosed;
+            ActorRuntime.ActorRef<?> cancel;
+            Runnable cancelHandler;
             synchronized (this) {
                 alreadyClosed = terminal;
                 // A reserved response that never reached the wire may still
@@ -838,10 +961,12 @@ public final class NativeHttp implements AutoCloseable {
                 send = wirePhase.maySendError(terminal, busy);
                 if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
+                cancel = cancelOwner && ownsActorLifetime ? actor : null;
+                cancelHandler = alreadyClosed ? null : cancelUnaryHandler;
+                cancelUnaryHandler = null;
             }
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
-            if (alreadyClosed && poolWorker != null) { release(); return; }
-            if (actor != null && cancelOwner) actor.cancel();
+            if (cancel != null) cancel.cancel();
             if (alreadyClosed) { release(); return; }
             InputStream responseInput = activeResponseInput;
             // A hostile InputStream.close() can block. Never wait for producer
@@ -860,6 +985,7 @@ public final class NativeHttp implements AutoCloseable {
                     release();
                 }
             });
+            if (cancelHandler != null) cancelHandler.run();
         }
         void finish() throws IOException {
             synchronized (this) {
@@ -872,15 +998,20 @@ public final class NativeHttp implements AutoCloseable {
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
         }
         void release() {
-            // Fresh handlers hold admission through actor finalization. Explicit
-            // pools bound worker count separately and release closed exchanges;
-            // subsequent mail still waits for the current receive to finish.
+            OresFuture.RuntimeWaiterRegistration<?> registration;
             synchronized (this) {
-                if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
+                // Only an actor created for this exchange is part of the
+                // listener's lifetime budget. Shared workers stay alive.
+                if (retired || !transportClosed
+                        || (ownsActorLifetime && actor != null && !actor.done().isDone())) return;
+                retired = true;
+                registration = actorTermination;
+                actorTermination = null;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 dispatchReceipt = null;
                 if (deadline != null) deadline.cancel(false);
             }
+            if (registration != null) registration.detach();
             if (server.active.remove(this)) {
                 // Logical SERVER completion is the physical HTTP exchange
                 // retirement, not the initial request dispatch or Future
@@ -899,6 +1030,18 @@ public final class NativeHttp implements AutoCloseable {
                 completion.completeFromRuntime((long) responseStatus);
             }
         }
+
+        void watchActorTermination(ActorRuntime.ActorRef<?> destination) {
+            var registration = destination.done().whenCompleteRuntimeCancellable(
+                    (ignored, failure) -> abort(500, false));
+            synchronized (this) {
+                if (!retired) {
+                    actorTermination = registration;
+                    return;
+                }
+            }
+            registration.detach();
+        }
     }
 
     /** A generation-bound capability; moving invalidates every alias of the sender wrapper. */
@@ -910,17 +1053,23 @@ public final class NativeHttp implements AutoCloseable {
             this.state = state; this.owner = owner; this.generation = generation;
         }
         private void checkOwner() {
-            if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
+            if (state.terminal) {
+                if (state.unaryDispatch)
+                    throw new ExpiredUnaryRequest();
+                throw new IllegalStateException("HTTP exchange is closed");
+            }
             if (generation != state.generation || !owner.equals(state.owner)) throw new IllegalStateException("HTTP exchange has moved");
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
-            return moveTo(destination, "manual", "manual", "unscoped", 0, 0, false);
+            return moveTo(destination, "manual", "manual", "unscoped", 0, 0, false, false, false);
         }
 
         private String moveTo(ActorRuntime.ActorRef<?> destination, String handlerType,
                               String binding, String authorityClass, long scopeGeneration,
-                              long sequence, boolean attested) {
+                              long sequence, boolean attested, boolean ownsActorLifetime, boolean unary) {
+            String token;
+            boolean watchTermination;
             synchronized (state) {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
@@ -933,6 +1082,8 @@ public final class NativeHttp implements AutoCloseable {
                 state.generation++;
                 state.owner = destination.id();
                 state.actor = destination;
+                state.ownsActorLifetime = ownsActorLifetime;
+                state.unaryDispatch = unary;
                 state.dispatchReceipt = new DispatchReceipt(
                         receiptLabel(handlerType, "handler"),
                         receiptLabel(binding, "binding"),
@@ -944,13 +1095,15 @@ public final class NativeHttp implements AutoCloseable {
                         state.generation,
                         sequence,
                         state.requestId,
-                        attested);
-                String token = UUID.randomUUID().toString(); state.ticket = token;
+                        attested,
+                        unary);
+                token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
-                return token;
+                watchTermination = state.poolWorker == null;
             }
+            if (watchTermination) state.watchActorTermination(destination);
+            return token;
         }
         private void supervisorMetadata() {
             checkOwner();

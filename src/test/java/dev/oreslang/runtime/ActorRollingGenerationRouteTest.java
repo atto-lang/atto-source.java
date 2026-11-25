@@ -19,7 +19,7 @@ final class ActorRollingGenerationRouteTest {
         CountDownLatch oldCompleted = new CountDownLatch(1);
         CountDownLatch newCompleted = new CountDownLatch(1);
         try (var runtime = new ActorRuntime()) {
-            var oldActor = runtime.<byte[]>spawnShared(() -> (payload, context) -> {
+            var oldActor = runtime.<Integer>spawnShared(() -> (payload, context) -> {
                 oldEntered.countDown();
                 try {
                     if (!finishOld.await(5, TimeUnit.SECONDS))
@@ -30,22 +30,22 @@ final class ActorRollingGenerationRouteTest {
                     throw interrupted;
                 }
             });
-            var newActor = runtime.<byte[]>spawnShared(() -> (payload, context) -> {
-                assertArrayEquals(new byte[] {2}, payload);
+            var newActor = runtime.<Integer>spawnShared(() -> (payload, context) -> {
+                assertEquals(2, payload);
                 newCompleted.countDown();
             });
             oldActor.getReady().get(5, TimeUnit.SECONDS);
             newActor.getReady().get(5, TimeUnit.SECONDS);
             try (var route = new ActorRollingGenerationRoute<>(11L, oldActor, 2)) {
                 var acceptedOld = route.acquire();
-                acceptedOld.target().send(new byte[] {1});
+                acceptedOld.target().send(1);
                 assertTrue(oldEntered.await(5, TimeUnit.SECONDS));
                 assertTrue(route.publishReady(1L, newActor));
                 assertFalse(route.admissionsDrained(1L), "old must remain physically pinned");
                 try (var acceptedNew = route.acquire()) {
                     assertEquals(2, acceptedNew.epoch());
                     assertSame(newActor, acceptedNew.target());
-                    acceptedNew.target().send(new byte[] {2});
+                    acceptedNew.target().send(2);
                     assertTrue(newCompleted.await(5, TimeUnit.SECONDS),
                             "new actor cannot depend on old completion");
                 }

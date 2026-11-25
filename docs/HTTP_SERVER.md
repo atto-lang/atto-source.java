@@ -1,12 +1,5 @@
 # Native HTTP server capabilities
 
-> **Current lower-level implementation.** The proposed Fetch-inspired
-> `HttpResponse` unary actor return is separately specified in
-> [HTTP_RESPONSE_FETCH_API_V1.md](HTTP_RESPONSE_FETCH_API_V1.md) and is
-> **not yet implemented or compiler-verified** on this backend. The API below
-> remains the existing `http.claim`/`HttpExchange` path; this document does
-> not claim that a `run(HttpMessage): HttpResponse` actor can already serve requests.
-
 `http.listen(host, port, capacity, body_limit_bytes, deadline_ms)` creates an
 HTTP/1.1 server under the supervisor's scoped NET permission. Port zero selects
 an ephemeral port. The native backend uses `jdk.httpserver`; Java socket,
@@ -20,7 +13,8 @@ unit. `handler.dispatch(&mut exchange)` creates a fresh actor and moves the
 exchange to it. Handler declarations must be shared or isolated, not untrusted.
 The runtime checks the kind against the code image when initializing the actor.
 
-The actor receives `ActorMail<String>` and calls `http.claim(mail.value)` once.
+An actor using the lower-level exchange API receives `ActorMail<String>` and
+calls `http.claim(mail.value)` once.
 The token is bound to that actor ID and runtime, so possessing a token is
 insufficient to claim it. Sender wrappers carry an old generation after the
 move and cannot inspect, read, write, or transfer the exchange again. The
@@ -29,11 +23,11 @@ can_respond predicate instead returns false for a stale wrapper. There is no
 copy or generic mailbox transport path for HttpExchange, HttpHandler, or
 HttpServer. Guest code cannot manufacture these opaque handles.
 
-For lower-level supervisors, `exchange.move_to(actor_ref)` exposes the same
-single-use transfer; the caller sends the returned String token. Both move
-and claim reject stale owners, and failed dispatch cancels the destination
-and closes the exchange. Actor startup failure and termination revoke any
-unclaimed token and unfinished exchange.
+For lower-level supervisors, `exchange.move_to(actor_ref)` transfers one
+exchange to an existing actor. The caller sends the returned String token.
+Both move and claim reject stale owners. If the actor exits with an unfinished
+exchange, the transport revokes the token and closes the exchange. The
+supervisor continues to own the reusable actor's lifecycle.
 
 The socket and HTTP framing state remain in the transport. An isolated actor
 exclusively owns **guest authority** over one exchange; this is not a physical
@@ -41,6 +35,37 @@ transfer of a JVM object graph, OS FD table, Graal process, or connection into
 an isolated heap. Private actor-local objects remain confined. Shared actors
 use the same synchronized native exchange state and single-writer rule; this
 API does not grant a second actor concurrent access to a request.
+
+## Unary HTTP actor replies
+
+```atto
+define serial unary http actor Echo as
+  run(HttpMessage message): HttpResponse {
+    val request = message.get_request();
+    val body = await request.body_text();
+    return http.response(201, "text/plain", body);
+  }
+end
+```
+
+The same handler can be attached with `mtd (Echo self)` to
+`declare serial unary http actor Echo;` in its source file. Register either
+form with `http.handler("Echo")` and dispatch the accepted exchange from the
+supervisor. A fresh handler retires after the response finishes. A pooled
+handler holds its receive permit across handler suspension and response I/O.
+
+`HttpMessage.get_request()` returns a read-only `HttpRequestView` scoped to
+the handler's logical task. Read its `method`, `target`, or `request_id`.
+Use `header(name)`, `query(name)`, and `body_text()` for request data. The
+runtime revokes this capability when the handler returns or the exchange
+ends. A deadline cancels the request task and runs its cleanup before the
+pooled actor takes another receive.
+
+The adapter accepts the existing buffered response constructors
+`new HttpResponse()`, `new HttpResponse(body)`, `http.response(status, content_type, body)`,
+and `http.response_empty(status)`. Rich response initializers, guest streaming
+producers, trailers, and scalar reply codecs are tracked in the Fetch-inspired
+target contract. [HTTP response target contract](HTTP_RESPONSE_FETCH_API_V1.md)
 
 ## Exchange API
 
@@ -79,17 +104,18 @@ call lowering introduces an internal continuation task.
 
 ## Lifecycle and limits
 
-A request has a deadline from admission through actor termination. Capacity
-counts both transport completion and actor finalization: forgetting self.end
-cannot accumulate unlimited actors after sending a response. Finished actors
-and exchanges release capacity exactly once. Exhausted capacity gets 503.
-Unfinished actor termination gets 500 before headers, or connection closure
-after headers. A deadline gets 504 when no I/O is in progress; otherwise it
-closes the transport and cancels the actor. Partial responses are never retried.
+A request has a deadline from admission through transport retirement. For
+fresh handlers, the deadline and capacity also cover physical actor
+finalization. Reused pool workers and manually assigned actors release the
+listener permit when their exchange closes. Their worker or supervisor
+owns actor retirement. Exhausted capacity gets 503. Unfinished actor
+termination gets 500 before headers, or connection closure after headers.
+A deadline gets 504 when no I/O is in progress. It closes the transport and
+cancels an exchange-owned fresh actor. Partial responses are never retried.
 
 `server.shutdown(grace_ms)` stops admission, gives the transport a bounded drain
-period (rounded up to seconds by the backend), cancels remaining actors, and
-settles after exchange/actor cleanup. Actor cancellation uses the existing
+period (rounded up to seconds by the backend), cancels remaining fresh handlers,
+and settles after their exchange and actor cleanup. Actor cancellation uses the existing
 cooperative runtime semantics. `accepted`, `rejected`, `completed`, and `active`
 are supervisor-only server counters. OresContext closes its HTTP servers before
 tearing down actor/async runtimes.

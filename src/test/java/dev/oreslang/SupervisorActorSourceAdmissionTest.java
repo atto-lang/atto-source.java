@@ -37,7 +37,7 @@ final class SupervisorActorSourceAdmissionTest {
                 """;
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> Parser.parse(chain));
-        assertTrue(error.getMessage().contains("actor pipe expressions require compiler-checked"),
+        assertTrue(error.getMessage().contains("E_PIPE_BACKEND_UNSUPPORTED"),
                 error::getMessage);
     }
 

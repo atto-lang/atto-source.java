@@ -294,7 +294,7 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               val worker = spawn Reused();
-              await worker.ready;
+              await worker.get_ready();
 
               // Keep both requests admitted before delivering either to
               // the shared actor. Response envelopes must not cross streams.
@@ -309,7 +309,7 @@ class NativeHttpTest {
               stdio.println(server.active);
 
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -350,7 +350,7 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               val worker = spawn Reused();
-              await worker.ready;
+              await worker.get_ready();
 
               val first = await server.accept();
               val firstDone = first.completion;
@@ -364,7 +364,7 @@ class NativeHttpTest {
               stdio.println(server.active);
 
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
@@ -406,19 +406,27 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 1, 1024, 10000);
               stdio.println(server.port);
               val worker = spawn Persistent();
-              await worker.ready;
+              await worker.get_ready();
               __STEPS__
               stdio.println("reused-20");
               stdio.println(server.active);
               worker.send("stop");
-              await worker.done;
+              await worker.get_done();
               await server.shutdown(0);
               return;
             }
             """.replace("__STEPS__", steps), port -> {
             for (int i = 0; i < 20; i++) {
                 String target = "/repeat-" + i;
-                HttpResponse<String> response = request(port, "GET", target, "");
+                // Socket delivery can precede retirement of the exchange's
+                // one listener permit. Wait for bounded admission to reopen.
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                HttpResponse<String> response;
+                do {
+                    response = request(port, "GET", target, "");
+                    if (response.statusCode() != 503) break;
+                    Thread.sleep(5);
+                } while (System.nanoTime() < deadline);
                 assertEquals(200, response.statusCode(), target);
                 assertEquals(target, response.body(), target);
             }
@@ -541,7 +549,8 @@ class NativeHttpTest {
                     val response = http.response(201, "text/plain; charset=utf-8", "hello from Oreslang");
                     await request.respond_response(response);
                     try {
-                      await request.respond_response(response);
+                      val duplicate = http.response(500, "text/plain", "unexpected response");
+                      await request.respond_response(duplicate);
                       stdio.println("DUPLICATE RESPONSE ACCEPTED");
                     } catch (failure) {
                       stdio.println("duplicate-response-rejected");
@@ -554,9 +563,9 @@ class NativeHttpTest {
                   val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
                   stdio.println(server.port);
                   val request = await server.accept();
-                  val done = request.completion;
+                  val responseDone = request.completion;
                   http.handler("Hello").dispatch(rt mut borrow request);
-                  stdio.println(await done);
+                  stdio.println(await responseDone);
                   await server.shutdown(0);
                   return;
                 }
@@ -618,6 +627,93 @@ class NativeHttpTest {
                 assertEquals("", noContent.body());
             });
         assertFalse(output.contains("exception"), output);
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void unaryHttpActorAndAttachedSerialUnaryHttpActorReturnTheirReplyOverLoopback() throws Exception {
+        String methodBody = """
+                val request = message.get_request();
+                val method = request.method;
+                val content = await request.body_text();
+                return http.response(201, "text/plain", method + "|" + request.query("tag") + "|" + content);
+                """;
+        for (String declaration : List.of(
+                """
+                define unary http actor Endpoint as
+                  run(HttpMessage message): HttpResponse {
+                    %s
+                  }
+                end
+                """.formatted(methodBody),
+                """
+                declare serial unary http actor Endpoint;
+                define state on actor Endpoint as {}
+                mtd (Endpoint self) run(HttpMessage message): HttpResponse {
+                  %s
+                }
+                """.formatted(methodBody))) {
+            String output = run(declaration + """
+                    pub async routine main(): void {
+                      val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                      stdio.println(server.port);
+                      val request = await server.accept();
+                      val settled = request.completion;
+                      http.handler("Endpoint").dispatch(rt mut borrow request);
+                      stdio.println(await settled);
+                      await server.shutdown(0);
+                    }
+                    """, port -> {
+                var response = request(port, "POST", "/echo?tag=guest", "hello");
+                assertEquals(201, response.statusCode());
+                assertEquals("POST|guest|hello", response.body());
+            });
+            assertTrue(output.endsWith("201\n"), output);
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void unaryHttpDeadlineReleasesTheReceivePermitWithoutStoppingThePooledActor() throws Exception {
+        String output = run("""
+                define serial unary http actor Endpoint as
+                  let int turns = 0;
+                  run(HttpMessage message): HttpResponse {
+                    self.turns = self.turns + 1;
+                    val request = message.get_request();
+                    if request.target == "/slow"; then
+                      defer stdio.println("slow-retired");
+                      await process.sleep_async(10000);
+                    fi
+                    if self.turns == 2; then
+                      return new HttpResponse("turn 2");
+                    fi
+                    return new HttpResponse("worker was replaced");
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 2, 1024, 1600);
+                  stdio.println(server.port);
+                  val pool = http.handler("Endpoint").pooled(1);
+                  val slow = await server.accept();
+                  val slowStatus = slow.completion;
+                  pool.dispatch(rt mut borrow slow);
+                  val next = await server.accept();
+                  val nextStatus = next.completion;
+                  pool.dispatch(rt mut borrow next);
+                  stdio.println(await slowStatus);
+                  stdio.println(await nextStatus);
+                  stdio.println(pool.created);
+                  await server.shutdown(0);
+                }
+                """, port -> {
+            assertEquals(504, request(port, "GET", "/slow", "").statusCode());
+            var response = request(port, "GET", "/next", "");
+            assertEquals(200, response.statusCode());
+            assertEquals("turn 2", response.body());
+        });
+        assertTrue(output.contains("slow-retired"), output);
+        assertTrue(output.endsWith("200\n1\n"), output);
     }
 
     @Test void guestHttpResponseConstructorRejectsUnimplementedOptionsAndWrongTypes() {

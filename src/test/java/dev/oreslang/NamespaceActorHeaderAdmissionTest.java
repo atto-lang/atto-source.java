@@ -102,6 +102,25 @@ final class NamespaceActorHeaderAdmissionTest {
     }
 
     @Test
+    void attachedStateCannotBindAcrossScopesOrReplaceAnotherSchema() {
+        for (String source : java.util.List.of(
+                "define state on actor Foo as {}",
+                "declare actor Foo; define state on actor Foo as {} define state on actor Foo as {}",
+                "declare actor Foo; define actor Foo as end",
+                "define module workers as declare actor Foo; end define state on actor Foo as {}",
+                "declare actor Foo; define state on actor Foo as { let borrow int field = 0; }")) {
+            assertThrows(IllegalArgumentException.class, () -> parse(source), source);
+        }
+        var unsupported = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parse("""
+                define module workers as
+                  declare actor Foo;
+                  define state on actor Foo as { let int field = 0; }
+                end
+                """)));
+        assertTrue(unsupported.getMessage().contains("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED"));
+    }
+
+    @Test
     void duplicateContractNamesAreNotValidActorHeaders() {
         assertThrows(IllegalArgumentException.class,
                 () -> parse("define actor Foo implements ActorXYZ, ActorXYZ;"));

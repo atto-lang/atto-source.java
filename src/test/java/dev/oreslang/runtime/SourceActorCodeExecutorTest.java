@@ -4,6 +4,8 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -157,6 +159,97 @@ final class SourceActorCodeExecutorTest {
             assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
             assertTrue(ref.failure().isEmpty(), "serial suspension must not terminate the actor");
             assertEquals(2, receives.get());
+        }
+    }
+
+    @Test
+    void unaryMailboxRetiresCanceledTurnsAndFailsUnansweredRequestsOnStop() throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        var suspended = new CountDownLatch(1);
+        var cleanup = new CountDownLatch(1);
+        var stopping = new CountDownLatch(1);
+        var unresolved = new OresFuture<Void>();
+
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            SharedCodeImageStore.CodeImage image = store.publish("app/unary.ores", program);
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override
+                public SharedCodeImageStore.CodeImage codeImage() {
+                    return image;
+                }
+
+                @Override
+                public boolean acceptsUnaryRequests(String actorTypeName) {
+                    return true;
+                }
+
+                @Override
+                public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String actorTypeName, ActorRuntime.ActorContext<Object> context) {
+                    return new State(context.self().id());
+                }
+
+                @Override
+                public void receiveActor(String actorTypeName, ActorRuntime.ActorOwnedGuestState state,
+                                         ActorRuntime.ActorInboxMail<Object> mail,
+                                         ActorRuntime.ActorContext<Object> context) {
+                    fail("unary actor entered the stream handler");
+                }
+
+                @Override
+                public OresFuture<Object> receiveUnaryActor(
+                        String actorTypeName, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail, ActorRuntime.ActorContext<Object> context) {
+                    return runtime.startActorTask((OresScheduler.CleanupAwareTask<Object>) resume -> {
+                        assertEquals(context.self().id(), state.ownerActorId());
+                        return switch ((String) mail.value()) {
+                            case "cancel running" -> {
+                                if (resume.initial()) {
+                                    suspended.countDown();
+                                    yield OresScheduler.await(unresolved);
+                                }
+                                cleanup.countDown();
+                                yield OresScheduler.done("canceled");
+                            }
+                            case "after cancellation" -> {
+                                assertEquals(0, cleanup.getCount());
+                                yield OresScheduler.done(mail.sequence());
+                            }
+                            case "stop running" -> {
+                                if (resume.initial()) {
+                                    stopping.countDown();
+                                    yield OresScheduler.await(unresolved);
+                                }
+                                yield OresScheduler.done("stopped");
+                            }
+                            default -> throw new AssertionError("unexpected executed request " + mail.value());
+                        };
+                    });
+                }
+            };
+            var ref = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executor, "UnaryWorker");
+            assertNull(ref.ready().get(3, TimeUnit.SECONDS));
+            assertThrows(IllegalArgumentException.class, () -> ref.send("ordinary mail"));
+            var running = ref.request("cancel running");
+            assertTrue(suspended.await(3, TimeUnit.SECONDS));
+            var queued = ref.request("cancel queued");
+            assertTrue(queued.cancel(false));
+            var next = ref.request("after cancellation");
+            assertFalse(next.isDone());
+            assertTrue(running.cancel(false));
+            assertEquals(2L, next.get(3, TimeUnit.SECONDS));
+            assertTrue(ref.isAlive());
+
+            var stoppedRunning = ref.request("stop running");
+            assertTrue(stopping.await(3, TimeUnit.SECONDS));
+            var stoppedQueued = ref.request("stop queued");
+            ref.stop();
+            assertInstanceOf(ActorRuntime.ActorTerminatedException.class, assertThrows(
+                    ExecutionException.class, () -> stoppedRunning.get(3, TimeUnit.SECONDS)).getCause());
+            assertInstanceOf(ActorRuntime.ActorTerminatedException.class, assertThrows(
+                    ExecutionException.class, () -> stoppedQueued.get(3, TimeUnit.SECONDS)).getCause());
+            assertNull(ref.done().get(3, TimeUnit.SECONDS));
         }
     }
 

@@ -21,6 +21,8 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
 top_level_item  = annotated_module_decl
                 | contract_decl
                 | actor_decl
+                | declared_actor
+                | actor_state_attachment
                 | actor_callable_decl
                 | external_actor_method_decl
                 | callable_decl
@@ -43,6 +45,8 @@ annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type
    aggregate/type aliases are distinct from named module members. *)
 module_member   = contract_decl
                 | actor_decl
+                | declared_actor
+                | actor_state_attachment
                 | actor_callable_decl
                 | external_actor_method_decl
                 | callable_decl
@@ -75,19 +79,32 @@ actor_callable_decl
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 
-(* External actor receiver methods are parsed and statically indexed only.
-   Until actor-context/ownership lowering exists, TypeChecker rejects their
-   execution. Canonical receiver-first and legacy name-first spellings have
-   the same AST identity. Neither grants runtime receiver authority. *)
+(* A receiver named self is assembled with an explicit declare actor in
+   the same file scope. Other external receiver bindings retain the
+   separate static admission path. *)
 external_actor_method_decl
-                = "define" visibility "mtd"
-                  ( "(" type_ref IDENT ")" callable_name
-                  | callable_name "(" type_ref IDENT ")" )
+                = [ "define" ] visibility "mtd"
+                  ( "(" type_ref receiver_name ")" callable_name
+                  | callable_name "(" type_ref receiver_name ")" )
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
+receiver_name   = "self" | IDENT ;
 
-actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
+declared_actor  = "declare" visibility actor_prefix ("actor" | "isoactor") IDENT
+                  { actor_message_clause }
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ] ";" ;
+actor_state_attachment
+                = "define" "state" "on" "actor" IDENT "as"
+                  "{" { "let" ("int" | "bool") IDENT ("=" | ":") literal ";" } "}" [ ";" ] ;
+actor_prefix    = [ "shared" | "untrusted" ] [ "serial" ] [ "stream" | "unary" ]
+                  [ "http" | "tcp" | "websocket" | "ws" ] ;
+actor_message_clause
+                = ( "receives" | "sends" | "emits" ) type_ref ;
+
+actor_decl      = visibility [ "define" ] actor_prefix ("actor" | "isoactor")
+                  IDENT [ generic_params ] { actor_message_clause }
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "as" ]
                   actor_body ;
 actor_body      = "{" { actor_member } "}"
                 | { actor_member } "end" ;

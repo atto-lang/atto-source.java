@@ -77,7 +77,7 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, SingletonDecl { }
+            ExternalActorMethodDecl, DeclaredActorHeader, ActorStateAttachment, SingletonDecl { }
 
     /**
      * Parsed singleton for the opt-in semantic check-only path. No runtime or
@@ -109,6 +109,22 @@ public final class Ast {
             java.util.Objects.requireNonNull(name, "state field name");
             java.util.Objects.requireNonNull(type, "state field type");
             java.util.Objects.requireNonNull(initializer, "state field initializer");
+        }
+    }
+
+    /** File-local header assembled with its receiver methods before semantic checking. */
+    public record DeclaredActorHeader(String name, Visibility visibility, ActorKind kind,
+                                      List<TypeRef> interfaces, ActorConcurrency concurrency,
+                                      ActorMessageContract messageContract) implements Decl {
+        public DeclaredActorHeader {
+            interfaces = List.copyOf(interfaces);
+        }
+    }
+
+    public record ActorStateAttachment(String actorName, List<ProtectedStateField> fields)
+            implements Decl {
+        public ActorStateAttachment {
+            fields = List.copyOf(fields);
         }
     }
 
@@ -604,6 +620,7 @@ public final class Ast {
 
     /** Connection-oriented actors have two distinct admission dimensions. */
     public enum ActorTransport { GENERIC, HTTP, TCP, WEBSOCKET }
+    public enum ActorReplyRole { INFER, STREAM, UNARY }
 
     /**
      * Declarative admission limits are VM policy, NOT mutable actor fields.
@@ -611,9 +628,10 @@ public final class Ast {
      */
     public record ActorConcurrency(
             ActorTransport transport, int requestConcurrency, int messageConcurrency,
-            boolean serialReceive) {
+            boolean serialReceive, ActorReplyRole replyRole) {
         public ActorConcurrency {
             java.util.Objects.requireNonNull(transport, "actor transport");
+            java.util.Objects.requireNonNull(replyRole, "actor reply role");
             if (requestConcurrency < 1 || messageConcurrency < 1) {
                 throw new IllegalArgumentException(
                         "actor concurrency limits must be positive");
@@ -622,6 +640,25 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "serial receive requires one request and message lane");
             }
+        }
+
+        public boolean explicitStream() { return replyRole == ActorReplyRole.STREAM; }
+        public boolean unaryHttp() {
+            return replyRole == ActorReplyRole.UNARY && transport == ActorTransport.HTTP;
+        }
+        public boolean unaryMailbox() {
+            return replyRole == ActorReplyRole.UNARY && transport == ActorTransport.GENERIC;
+        }
+
+        public ActorConcurrency(ActorTransport transport, int requestConcurrency,
+                                int messageConcurrency, boolean serialReceive, boolean explicitStream) {
+            this(transport, requestConcurrency, messageConcurrency, serialReceive,
+                    explicitStream ? ActorReplyRole.STREAM : ActorReplyRole.INFER);
+        }
+
+        public ActorConcurrency(ActorTransport transport, int requestConcurrency,
+                                int messageConcurrency, boolean serialReceive) {
+            this(transport, requestConcurrency, messageConcurrency, serialReceive, false);
         }
 
         /** Three-argument legacy callers now mean concurrent-by-default. */
@@ -638,13 +675,18 @@ public final class Ast {
     /**
      * Explicit actor application-message contracts. Null means the clause was
      * omitted, NOT that it permits arbitrary messages. Supervisor CONTROL
-     * messages are outside both contracts.
+     * messages are outside these contracts. Emits describes an actor's own
+     * output stream, independent of the sends effect on downstream refs.
      */
-    public record ActorMessageContract(TypeRef receives, TypeRef sends) {
-        public static ActorMessageContract unspecified() {
-            return new ActorMessageContract(null, null);
+    public record ActorMessageContract(TypeRef receives, TypeRef sends, TypeRef emits) {
+        public ActorMessageContract(TypeRef receives, TypeRef sends) {
+            this(receives, sends, null);
         }
-        public boolean declared() { return receives != null || sends != null; }
+
+        public static ActorMessageContract unspecified() {
+            return new ActorMessageContract(null, null, null);
+        }
+        public boolean declared() { return receives != null || sends != null || emits != null; }
     }
 
     public record ClassDecl(
@@ -667,9 +709,10 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             actorMessageContract = java.util.Objects.requireNonNull(actorMessageContract);
             if (actorKind == ActorKind.NONE && actorMessageContract.declared())
-                throw new IllegalArgumentException("ordinary classes cannot declare receives/sends");
-            if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
-                throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
+                throw new IllegalArgumentException("ordinary classes cannot declare receives/sends/emits");
+            if (actorKind == ActorKind.NONE && (actorConcurrency.transport() != ActorTransport.GENERIC
+                    || actorConcurrency.replyRole() != ActorReplyRole.INFER))
+                throw new IllegalArgumentException("ordinary classes cannot carry actor dispatch policy");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);

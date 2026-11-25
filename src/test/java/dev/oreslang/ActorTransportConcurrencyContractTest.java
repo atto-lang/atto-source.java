@@ -6,6 +6,8 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorTransportConcurrencyContractTest {
@@ -98,6 +100,66 @@ final class ActorTransportConcurrencyContractTest {
                 actor("define ws actor Socket as end").actorConcurrency().transport());
         assertEquals(Ast.ActorTransport.GENERIC,
                 actor("define actor Socket as end").actorConcurrency().transport());
+    }
+
+    @Test void unaryRolesRequireTheirOwnReplyRuntime() {
+        Map<String, String> cases = Map.of(
+                "define unary websocket actor Endpoint as end", "explicit framing and reply-correlation",
+                "define unary tcp actor Endpoint as end", "explicit framing and reply-correlation");
+        cases.forEach((source, diagnostic) -> {
+            var error = assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+            assertTrue(error.getMessage().contains("ACTOR_UNARY_UNSUPPORTED"), error::getMessage);
+            assertTrue(error.getMessage().contains(diagnostic), error::getMessage);
+        });
+    }
+
+    @Test void unaryMailboxChecksThePayloadReplyAndOnlyAdmitsRequestCalls() {
+        String worker = """
+                define unary actor Worker receives int as
+                  run(ActorMail<int> input): String { return "reply"; }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val Future<String> result = worker.request(7);
+                  await result;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(worker)));
+        for (String invalid : new String[] {
+                worker.replace(".request(7)", ".send(7)"),
+                worker.replace(".request(7)", ".request(\"wrong\")"),
+                worker.replace("Future<String>", "Future<int>"),
+                worker.replace("receives int", "receives String"),
+                worker.replace("return \"reply\";", "return self.run(input);"),
+                worker.replace("return \"reply\";", "self.send(\"reply\"); return \"reply\";"),
+                worker.replace("run(ActorMail<int> input): String", "run(ActorMail<int> input): void")
+                        .replace("return \"reply\";", "return;")
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(invalid)),
+                    invalid);
+        }
+    }
+
+    @Test void unaryHttpRequiresTheTransportOwnedRequestAndReplyHandler() {
+        String endpoint = """
+                define serial unary http actor Endpoint as
+                  run(HttpMessage mail): HttpResponse { return new HttpResponse("hello"); }
+                end
+                """;
+        assertEquals(Ast.ActorReplyRole.UNARY, actor(endpoint).actorConcurrency().replyRole());
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(endpoint)));
+        for (String invalid : new String[] {
+                endpoint.replace("run(HttpMessage", "pub run(HttpMessage"),
+                endpoint.replace("run(HttpMessage", "run(HttpExchange"),
+                endpoint.replace("run(HttpMessage", "receive(HttpMessage"),
+                endpoint.replace("as\n", "as\n  let HttpMessage saved;\n"),
+                endpoint.replace("return new", "self.run(mail); return new"),
+                endpoint.replace("return new", "mail.get_response(); return new"),
+                endpoint + "pub routine main(): void { val worker = spawn Endpoint(); }"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(invalid)),
+                    invalid);
+        }
     }
 
     @Test void parallelConfigurationParsesButCannotEscapeSingleWriterRuntimeGate() {
