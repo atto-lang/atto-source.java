@@ -84,6 +84,19 @@ final class OwnershipDiagnosticCodeTest {
     }
 
     @Test
+    void utf8ListWrongArityIsTaggedArity() {
+        String message = rejectOwnership("""
+                pub routine main(): void {
+                  val List<int> bytes = [65];
+                  val string result = bytes.utf8_string(1);
+                  return;
+                }
+                """);
+        assertCode(OwnershipDiagnosticCode.E_ARITY, message,
+                "built-in List<int>.utf8_string expects 0 argument(s)");
+    }
+
+    @Test
     void alreadyCodedMessagesKeepTheirCode() {
         // Pre-existing codes keep their code and message after the prefix.
         assertEquals(OwnershipDiagnosticCode.E_COPY_FORBIDDEN,
