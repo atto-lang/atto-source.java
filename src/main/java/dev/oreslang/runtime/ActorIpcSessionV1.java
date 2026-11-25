@@ -478,6 +478,8 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     synchronized boolean tryQueueWorkerData(byte[] wire) {
         requireReady("queue IPC DATA");
         if (dataQueue == null) throw new IllegalStateException("DATA queue not bound");
+        if (codecProfile != null && messagePackDecoder == null)
+            throw new SecurityException("profile-bound DATA has no registered decoder");
         Objects.requireNonNull(wire, "wire");
         if (wire.length < MIN_FRAME_BYTES ||
                 wire.length > HEADER_BYTES + MAX_PAYLOAD_BYTES + HMAC_BYTES) {
@@ -531,12 +533,14 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     static final class DecodedData implements AutoCloseable {
         private final ActorDataDecodeQuotaV1.Lease credit;
         private final long sequence;
+        private final ActorIpcSessionV1 origin;
         private Object value;
         private boolean live = true;
-        private DecodedData(ActorDataDecodeQuotaV1.Lease credit, long sequence) {
-            this.credit = credit; this.sequence = sequence;
+        private DecodedData(ActorDataDecodeQuotaV1.Lease credit, long sequence, ActorIpcSessionV1 origin) {
+            this.credit = credit; this.sequence = sequence; this.origin = origin;
         }
         long messageSequence() { return sequence; }
+        synchronized boolean liveFor(ActorIpcSessionV1 session) { return live && origin == session; }
         synchronized Object value() {
             if (!live) throw new IllegalStateException("closed decoded DATA");
             return value;
@@ -572,7 +576,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             DecodedData result = null;
             boolean ok = false;
             try (transientLease) {
-                result = new DecodedData(retained, delivery.frame.messageSequence());
+                result = new DecodedData(retained, delivery.frame.messageSequence(), this);
                 result.value = messagePackDecoder.decode(delivery.frame.payload);
                 ok = true;
                 return result;
