@@ -637,10 +637,19 @@ public final class ActorEventBus implements AutoCloseable {
         // fence before physically removing topic subscription edges.
         // Hold it until commit/fanout finishes, so a checked publisher cannot
         // lose membership between authority validation and delivery.
-        return group.withEventAdmissionMembershipFence(() ->
-                publishFrozenUnderMembershipFence(
-                        topic, frozenPayload, publisher,
-                        commitState, strictNonblocking));
+        java.util.function.Supplier<PublishReceipt> admission = () ->
+                group.withEventAdmissionMembershipFence(() ->
+                        publishFrozenUnderMembershipFence(
+                                topic, frozenPayload, publisher,
+                                commitState, strictNonblocking));
+        // Reliable fanout uses async channel writes only. A pending read
+        // may complete synchronously on the publishing carrier, so defer
+        // those notifications until ALL recipients have committed and both
+        // membership and topic locks are released. Otherwise a host callback
+        // can reenter group teardown halfway through an atomic fanout.
+        return topic.policy == DeliveryPolicy.RELIABLE
+                ? ChannelRuntime.withDeferredAsyncCompletions(admission)
+                : admission.get();
     }
 
     private PublishReceipt publishFrozenUnderMembershipFence(
