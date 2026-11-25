@@ -53,4 +53,11 @@ final class ExtensibleDeclarationSemanticTest {
             assertEquals(42, run.exitStatus());
         }
     }
+    @Test void linkedSourceProfilesPreserveLegacyIsolationAndOrdinaryAttoCompatibility() {
+        String source = CUSTOM + GOOD;
+        assertDoesNotThrow(() -> Parser.parseSourceUnit("entry.atto", source));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parseSourceUnit("entry.ores", source));
+        String ordinary = "pub fnc main(): int { if 1 == 1; then return 42; fi return 0; }";
+        assertEquals(Parser.parse(ordinary), Parser.parseSourceUnit("entry.atto", ordinary));
+    }
 }
