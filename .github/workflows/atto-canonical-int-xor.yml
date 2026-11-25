@@ -3,7 +3,7 @@ name: Atto canonical integer XOR strict JVM guest parity
 on:
   push:
     branches:
-      - fix/atto-canonical-integer-xor-20261120
+      - fix/numeric-checked-current-main-20261121
     paths:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
@@ -53,7 +53,7 @@ jobs:
           java-version: '25'
           distribution: graalvm
           cache: maven
-      - name: Verify JUnit XML gate rejects 14 adversarial synthetic reports
+      - name: Self-test JUnit XML gate (synthetic reports only)
         shell: bash
         run: |
           set -euo pipefail
@@ -65,7 +65,7 @@ jobs:
       - name: Execute strict frontend and real Truffle guest regressions
         run: >-
           mvn -B -ntp '-P!native-thread-unix'
-          -Dtest=AttoCanonicalIntegerXorParityTest,BooleanIntrinsicsTest
+          -Dtest=AttoCanonicalIntegerXorParityTest,BooleanIntrinsicsTest,LogicalPunctuationOperatorTest,ReservedOperatorTest
           -Dsurefire.failIfNoSpecifiedTests=true clean test
       - name: Require exact named JUnit cases, zero skips and safe XML
         shell: bash
