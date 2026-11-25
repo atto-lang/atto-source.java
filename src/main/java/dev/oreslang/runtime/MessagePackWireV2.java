@@ -261,6 +261,33 @@ public final class MessagePackWireV2 {
     public static Object decode(String pinnedSchemaId, Shape pinnedShape, byte[] untrustedBytes, DecodeLimits limits) {
         require(untrustedBytes != null && limits != null && untrustedBytes.length <= limits.wire(), "wire byte budget");
         schema(pinnedSchemaId); byte[] hash=digest(pinnedShape);
+        return decodePinned(pinnedSchemaId,pinnedShape,hash,untrustedBytes,limits);
+    }
+    // Host-only registered shape. Never accepts incoming descriptor or digest.
+    static final class PinnedDecoder {
+        private final String schemaId;
+        private final Shape shape;
+        private final byte[] hash;
+        private final DecodeLimits limits;
+        PinnedDecoder(ActorIpcCodecProfileV1 profile, Shape shape, DecodeLimits limits) {
+            require(profile != null && "messagepack".equals(profile.codec()) && profile.version()==2,
+                    "unsupported pinned codec profile");
+            require(shape != null && limits != null, "missing pinned shape or limits");
+            schema(profile.schema());
+            this.hash=digest(shape);
+            require(MessageDigest.isEqual(hash, java.util.HexFormat.of().parseHex(profile.shapeSha256())),
+                    "registered shape does not match attested profile");
+            this.schemaId=profile.schema(); this.shape=shape; this.limits=limits;
+        }
+        Object decode(byte[] bytes) {
+            require(bytes != null && bytes.length <= limits.wire(), "wire byte budget");
+            return decodePinned(schemaId,shape,hash,bytes,limits);
+        }
+        long expandedLimit() { return limits.expanded(); }
+        int wireLimit() { return limits.wire(); }
+    }
+    private static Object decodePinned(String pinnedSchemaId, Shape pinnedShape, byte[] hash,
+                                       byte[] untrustedBytes, DecodeLimits limits) {
         Reader r=new Reader(untrustedBytes,limits); require(r.array()==4,"wrong envelope arity");
         require(r.integer()==2,"wrong version"); require(r.string().equals(pinnedSchemaId),"wrong schema ID");
         require(r.take()==0xc4 && r.take()==32,"wrong digest encoding");
