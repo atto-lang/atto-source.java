@@ -1,10 +1,13 @@
-name: Supervisor failure escrow and real ActorRuntime integration
+name: Supervisor escrow and subtree recovery (real ActorRuntime)
 on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowV1Standalone.java'
       - 'src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java'
+      - 'src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorSupervisorRestartCircuit.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java'
       - 'scripts/verify-supervisor-escrow-runtime-bridge-v1.sh'

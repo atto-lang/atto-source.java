@@ -24,6 +24,7 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
     private final Map<ActorRuntime.ActorId, Long> ids = new ConcurrentHashMap<>();
     private final AtomicLong nextId = new AtomicLong(2L);
     private final Object decisionLock = new Object();
+    private volatile SupervisorEscrowSubtreeRecoveryV1 recovery;
     private final Set<SupervisorFailureEscrowV1.Delivery> inFlightDecisions =
             Collections.newSetFromMap(new IdentityHashMap<>());
 
@@ -62,6 +63,29 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         return nodeId;
     }
 
+    /** Install one trusted, opt-in CONTROL coordinator. No actor guest may call
+     * this method and no second coordinator may compete for this ledger. */
+    synchronized void installRecovery(SupervisorEscrowSubtreeRecoveryV1 coordinator) {
+        runtime.requireSupervisorShutdownAuthority("install supervisor recovery CONTROL");
+        Objects.requireNonNull(coordinator, "coordinator");
+        if (recovery != null) throw new IllegalStateException("CONTROL coordinator already installed");
+        recovery = coordinator;
+    }
+
+    /** An internal mapping used only for generation-fenced replacement checks. */
+    long nodeId(ActorRuntime.ActorRef<?> ref) {
+        runtime.requireSupervisorShutdownAuthority("inspect trusted supervisor node identity");
+        Objects.requireNonNull(ref, "ref");
+        Long id = ids.get(ref.id());
+        if (id == null) throw new IllegalStateException("unknown supervisor parent");
+        var node = ledger.snapshot().get(id);
+        if (node == null || node.generation() != ref.generation()
+                || !node.alive() || node.fenced()) {
+            throw new IllegalStateException("inactive or stale supervisor parent");
+        }
+        return id;
+    }
+
     /** Called only by ActorRuntime while publishing a new trusted binding. */
     void registerFromRuntime(ActorRuntime.ActorRef<?> actor, long id, long parentId) {
         ledger.registerChild(id, parentId, actor.generation());
@@ -70,12 +94,23 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
     /** Called by ActorRuntime at the first non-cancellation terminal fault. */
     void failedFromRuntime(long id) {
         ledger.fail(id);
+        // The ledger is fenced before the notification; the coordinator only
+        // queues CONTROL work and may not run guest or child callbacks inline.
+        SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
+        if (coordinator != null) coordinator.failedFromRuntime(id);
     }
 
     /** Called by ActorRuntime after real actor finalization. */
     void finalizedFromRuntime(long id, boolean failed) {
-        if (failed) ledger.fail(id);
-        else ledger.completeNormally(id);
+        if (failed) {
+            // An on_stop/final-cleanup fault may be the first failure.
+            failedFromRuntime(id);
+        } else {
+            ledger.completeNormally(id);
+            // Even a clean supervisor exit must retire its managed subtree.
+            SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
+            if (coordinator != null) coordinator.failedFromRuntime(id);
+        }
     }
 
     /** Host admission guard: must be rechecked at the mailbox commit point. */
