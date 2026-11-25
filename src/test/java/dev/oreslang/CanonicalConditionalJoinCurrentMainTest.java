@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -58,6 +59,43 @@ final class CanonicalConditionalJoinCurrentMainTest {
             context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
         }
         assertEquals("42:7", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void selectedArmAndConditionAreEvaluatedExactlyOnceBeforeAndAfterBuildOptimization() throws Exception {
+        String source = """
+                fnc condition(): bool {
+                    stdio.stdout.write("C");
+                    return true;
+                }
+                fnc selected(): int {
+                    stdio.stdout.write("S");
+                    return 42;
+                }
+                fnc other(): int {
+                    stdio.stdout.write("X");
+                    return 7;
+                }
+                pub routine main(): void {
+                    val int answer = if condition() then return selected(); else ^ other(); fi;
+                    stdio.stdout.write(answer);
+                }
+                """;
+        var checked = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        var optimized = OresCompiler.compileForBuildStrictAtto(source, BuildOptions.executable());
+        assertTrue(optimized.retained("condition"));
+        assertTrue(optimized.retained("selected"));
+        assertTrue(optimized.retained("other"));
+        for (var program : java.util.List.of(checked, optimized.program())) {
+            var output = new ByteArrayOutputStream();
+            String name = "conditional-optimization.ores";
+            try (var lease = OresLanguage.openPrecheckedProgram(name, source, program);
+                 Context context = Context.newBuilder(OresLanguage.ID)
+                         .allowAllAccess(false).out(output).build()) {
+                context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
+            }
+            assertEquals("CS42", output.toString(StandardCharsets.UTF_8));
+        }
     }
 
     @Test
