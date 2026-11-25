@@ -3,41 +3,29 @@ package dev.oreslang;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Token;
 import dev.oreslang.parser.Parser;
-import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 
 final class BangExceptionKeywordLexerTest {
     @Test
-    void canonicalTrapBangDoesNotFallThroughLegacyOptionLowering() {
-        // trap! promises Result<T,Error>, which the legacy trap Option<T>
-        // cannot implement. The parser preserves the canonical spelling and
-        // the type checker fails before native guest execution.
-        var canonical = Parser.parse("fnc main():int { return trap! 7; }");
-        var rejected = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.checkTypes(canonical));
-        assertTrue(rejected.getMessage().contains("TRAP_BANG_RESULT_LOWERING_UNVERIFIED"));
-
-        // Bare migration spelling remains a distinct legacy path. It can
-        // reject for its own type reasons but must not be misclassified as
-        // the canonical Result-returning operator.
-        var legacy = Parser.parse("fnc main():int { return trap 7; }");
-        try {
-            TypeChecker.checkTypes(legacy);
-        } catch (IllegalArgumentException error) {
-            assertFalse(error.getMessage().contains("TRAP_BANG_RESULT_LOWERING_UNVERIFIED"));
+    void bothTrapSpellingsUseResultWithoutAddingANestedResult() {
+        for (String trap : List.of("trap", "trap!")) {
+            String source = """
+                    %1$s fnc compute(): int { return 40; }
+                    pub fnc main(): int {
+                        val Result<int, Error> fresh = %1$s 2;
+                        val Result<int, Error> existing = %1$s compute();
+                        return fresh.unwrap() + existing.unwrap();
+                    }
+                    """.formatted(trap);
+            try (Context context = Context.newBuilder(OresLanguage.ID).build()) {
+                assertEquals(42L, context.eval(OresLanguage.ID, source).asLong(), trap);
+            }
         }
-    }
-
-    @Test
-    void trapBangFunctionModifierCannotSilentlyAdoptLegacyOptionAbi() {
-        var rejected = assertThrows(RuntimeException.class,
-                () -> Parser.parse("trap! fnc main():int { return 7; }"));
-        assertTrue(rejected.getMessage().contains("TRAP_BANG_RESULT_LOWERING_UNVERIFIED"));
     }
 
     @Test

@@ -3019,12 +3019,6 @@ public final class Parser {
                 nonLexicalSeen = true;
                 nonLexical = true;
             } else if (match(TRAP)) {
-                // The canonical trap! callable modifier must eventually
-                // produce Result<T,Error>, never the legacy Option<T> path.
-                if ("trap!".equals(previous().lexeme())) {
-                    throw error(previous(),
-                            "TRAP_BANG_RESULT_LOWERING_UNVERIFIED: trap! fnc requires checked Result and unwind lowering");
-                }
                 if (trapSeen) throw error(previous(), "duplicate 'trap' modifier");
                 trapSeen = true;
                 trapped = true;
@@ -3987,6 +3981,12 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        if (check(STOP) && (checkNext(IDENT) || checkNext(SELF) || checkNext(BANG))) {
+            Token operator = advance();
+            consumeActorOperatorBang(operator, "E_STOP_BANG_BOUNDARY");
+            throw error(operator, "E_STOP_BACKEND_UNSUPPORTED: actor stop/stop! require "
+                    + "checked graceful shutdown, lifecycle ownership and supervisor lowering");
+        }
         // Contextual fallible-value scope: this is not an exception catch.
         // Keep local identifiers named maybe legal outside the two admitted forms.
         if (check(DO) && checkNext(IDENT)
@@ -6266,11 +6266,7 @@ public final class Parser {
 
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parsePipeline();
-        if (isContextualIdentifier("pipe") || isContextualIdentifier("rpipe")) {
-            throw error(peek(), "E_PIPE_BACKEND_UNSUPPORTED: 'pipe' flows left-to-right and "
-                    + "'rpipe' flows right-to-left; typed continuous graph, bounded stream "
-                    + "ownership, checked error completion and supervisor lowering are not yet enabled");
-        }
+        rejectUnsupportedActorPipeline();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
@@ -6292,17 +6288,9 @@ public final class Parser {
         Ast.Expr value = parseConditional();
         int stages = 0;
         while (true) {
-            boolean functional = match(PIPE_FORWARD);
-            boolean actorPipe = !functional && matchContextualKeyword("pipe");
-            boolean reverseActorPipe = !functional && !actorPipe
-                    && matchContextualKeyword("rpipe");
-            if (!functional && !actorPipe && !reverseActorPipe) break;
+            rejectUnsupportedActorPipeline();
+            if (!match(PIPE_FORWARD)) break;
             Token operator = previous();
-            if (actorPipe || reverseActorPipe) {
-                throw error(operator, "E_PIPE_BACKEND_UNSUPPORTED: continuous 'pipe' / 'rpipe' "
-                        + "requires typed source/sink roles, supervised bounded transport, "
-                        + "checked PipeHandle errors and backend lowering; no scalar fallback");
-            }
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
             }
@@ -6335,9 +6323,7 @@ public final class Parser {
             } else {
                 stage = parsePostfix();
             }
-            if (actorPipe) {
-                value = new Ast.BinaryExpr("pipe", value, stage);
-            } else if (stage instanceof Ast.CallExpr call) {
+            if (stage instanceof Ast.CallExpr call) {
                 if (call.callee() instanceof Ast.MemberExpr member
                         && member.receiver() instanceof Ast.NameExpr namespace
                         && (namespace.name().equals("Option") || namespace.name().equals("Result"))) {
@@ -6418,6 +6404,28 @@ public final class Parser {
             }
         }
         return value;
+    }
+
+    private void rejectUnsupportedActorPipeline() {
+        if (!isContextualIdentifier("pipe") && !isContextualIdentifier("rpipe")) return;
+        Token operator = advance();
+        consumeActorOperatorBang(operator, "E_PIPE_BANG_BOUNDARY");
+        throw error(operator, "E_PIPE_BACKEND_UNSUPPORTED: continuous actor pipeline 'pipe' "
+                + "flows left-to-right and 'rpipe' flows right-to-left; typed ports, bounded "
+                + "transport, checked completion and supervisor lowering are required");
+    }
+
+    private void consumeActorOperatorBang(Token operator, String diagnostic) {
+        if (!check(BANG) || !adjacent(operator, peek())) return;
+        Token bang = advance();
+        Token suffix = peek();
+        if (!suffix.lexeme().isEmpty() && adjacent(bang, suffix)) {
+            int first = suffix.lexeme().codePointAt(0);
+            if (Character.isLetterOrDigit(first) || first == '_' || first == '!') {
+                throw error(bang, diagnostic + ": '" + operator.lexeme()
+                        + "!' requires a token boundary");
+            }
+        }
     }
 
     private static boolean isPipelineCallable(Ast.Expr stage) {
@@ -6654,7 +6662,11 @@ public final class Parser {
         boolean mutableBorrow = check(MUT);
         if (mutableBorrow) advance();
         String operation = advance().lexeme();
-        consume(BANG, "expected '!' attached to ownership operation");
+        Token marker = consume(BANG, "expected '!' attached to ownership operation");
+        if (operation.equals("copy") && check(BANG) && adjacent(marker, peek())) {
+            advance();
+            operation = "copy!!";
+        }
         // Canonical borrow! mut and compatibility mut borrow! lower to the
         // SAME checked &mut AST. 'mutfoo' remains an ordinary identifier.
         // The qualifier is consumed only after the complete attached verb!.
@@ -6803,12 +6815,7 @@ public final class Parser {
             return new Ast.TaskExpr(domain, parseBlock(), false);
         }
 
-        // Keep canonical trap! distinct from historical Option-valued trap.
-        // Only the type checker may admit its checked Result semantics.
-        if (match(TRAP)) {
-            boolean canonicalResult = "trap!".equals(previous().lexeme());
-            return new Ast.TrapExpr(parseUnary(), canonicalResult);
-        }
+        if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {

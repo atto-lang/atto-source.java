@@ -4350,13 +4350,6 @@ public final class TypeChecker {
                     : narrowed;
         }
         if (expr instanceof Ast.TrapExpr trapped) {
-            // The legacy trap expression produces Option<T>. The canonical
-            // trap! must produce Result<T,Error> with ordinary-error identity
-            // and cleanup; reusing legacy Option lowering is unsound.
-            if (trapped.canonicalBangResult()) {
-                throw new IllegalArgumentException(
-                        "TRAP_BANG_RESULT_LOWERING_UNVERIFIED: trap! requires checked Result<T,Error> and guest unwind; legacy trap Option<T> is not equivalent");
-            }
             // A trap expression cannot safely unwind a suspending or unknown
             // callback without continuation-owned cleanup.
             if (hasSuspendingSumCallbackSyntax(trapped.expression())) {
@@ -4577,6 +4570,14 @@ public final class TypeChecker {
                 case "borrow" -> operand instanceof Borrow existing
                         ? new Borrow(existing.target(), false) : new Borrow(operand, false);
                 case "take" -> operand;
+                case "copy!!" -> {
+                    if (operand != Primitive.INT && operand != Primitive.BOOL
+                            && !(operand instanceof Types.BoolLiteral)) {
+                        throw new IllegalArgumentException(
+                                "E_COPY_GRAPH_UNPROVEN: copy!! requires an int or bool value");
+                    }
+                    yield operand;
+                }
                 case "copy", "share" -> {
                     if (containsUnprovenAtomicCell(operand, 0)) {
                         throw new IllegalArgumentException(

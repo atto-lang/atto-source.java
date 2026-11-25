@@ -44,6 +44,12 @@ final class AttoStrictTrapSourceAdmissionTest {
     }
 
     @Test
+    void strictAdmissionUsesTheSameGateForTheBangAlias() {
+        strictRejects("pub fnc main(): int { return trap! 42; }");
+        strictRejects("trap! fnc read_id(): int { return 42; }");
+    }
+
+    @Test
     void strictSourceThrowRequiresRealCheckedErrorAndControlLowering() {
         strictRejects("""
                 fnc read_id(): int throws Error {
