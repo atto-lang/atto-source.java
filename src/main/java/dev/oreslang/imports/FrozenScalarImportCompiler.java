@@ -128,7 +128,27 @@ public final class FrozenScalarImportCompiler {
         Reader(List<Token> tokens) {this.tokens=tokens;}
         Token peek(){return tokens.get(i);}
         boolean take(String value) {
-            if(peek().type()==Token.Type.EOF||peek().type()==Token.Type.STRING||!peek().lexeme().equals(value)) return false;
+            Token.Type expected=switch(value) {
+                case "import" -> Token.Type.IMPORT;
+                case "namespace" -> Token.Type.NAMESPACE;
+                case "as" -> Token.Type.AS;
+                case "from" -> Token.Type.FROM;
+                case "define" -> Token.Type.DEFINE;
+                case "pub" -> Token.Type.PUB;
+                case "fnc" -> Token.Type.FNC;
+                case "return" -> Token.Type.RETURN;
+                case "(" -> Token.Type.LPAREN;
+                case ")" -> Token.Type.RPAREN;
+                case "{" -> Token.Type.LBRACE;
+                case "}" -> Token.Type.RBRACE;
+                case "." -> Token.Type.DOT;
+                case ";" -> Token.Type.SEMICOLON;
+                case ":" -> Token.Type.COLON;
+                case "->" -> Token.Type.ARROW;
+                case "=" -> Token.Type.EQUAL;
+                default -> Token.Type.IDENT;
+            };
+            if(peek().type()!=expected||!peek().lexeme().equals(value)) return false;
             i++; return true;
         }
         void expect(String value) {if(!take(value)) throw fail("E_UNSUPPORTED","expected "+value);}
