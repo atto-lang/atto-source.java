@@ -37,6 +37,19 @@ jobs:
       - name: Execute portable compiler codec descriptor harness
         shell: bash
         run: bash scripts/test-portable-codec-registry-standalone.sh
+      - name: Execute trusted scalar DATA escrow standalone harness (host only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          trap 'rm -rf "$out"' EXIT
+          javac -d "$out" \
+            src/main/java/dev/oreslang/types/PortableCodecRegistry.java \
+            src/main/java/dev/oreslang/runtime/MessagePackWireV2.java \
+            src/main/java/dev/oreslang/runtime/ActorDataDecodeEscrowV1.java \
+            src/test/standalone/dev/oreslang/types/ActorDataDescriptorFixture.java \
+            src/test/standalone/dev/oreslang/runtime/ActorDataDecodeEscrowHarness.java
+          java -ea -cp "$out" dev.oreslang.runtime.ActorDataDecodeEscrowHarness
       - name: Execute cross-backend independent wire oracle
         run: python3 scripts/check_messagepack_v2_golden.py
       - name: Compile real Java actor and portable codec JUnit regressions
