@@ -90,6 +90,6 @@ final class IpcPinnedActorIngressV1<M> {
         M message = Objects.requireNonNull(decoder.decode(immutable.asReadOnlyBuffer(), decodedBytes));
         // Do not resolve a new recipient by logical ID, even after restart.
         // Existing ActorRuntime.send owns the mailbox/ancestor DATA permit.
-        recipient.send(message);
+        recipient.sendAuthenticatedIpc(message,budget);
     }
 }

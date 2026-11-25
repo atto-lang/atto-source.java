@@ -43,6 +43,7 @@ final class IpcSupervisorIngressIntegrationTest {
             ActorRuntime.ActorRef<Boolean> child = runtime.spawnPrivate(ignored -> (m,turn)->{});
             recovery.attach(supervisor,null);
             long node = recovery.attach(child,supervisor);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
             supervisor.getReady().get(5,TimeUnit.SECONDS);
             child.getReady().get(5,TimeUnit.SECONDS);
             byte[] body = IpcSchemaBoundDataV1.wrap(binding,new byte[]{(byte)0xf5});
@@ -97,6 +98,7 @@ final class IpcSupervisorIngressIntegrationTest {
             ActorRuntime.ActorRef<Boolean> oldChild=runtime.spawnPrivate(ignored->(m,turn)->{});
             long parentNode=recovery.attach(oldParent,null);
             long childNode=recovery.attach(oldChild,oldParent);
+            runtime.authorizeIpcIngressActor(oldChild,"tenant",budget);
             oldParent.getReady().get(5,TimeUnit.SECONDS);
             oldChild.getReady().get(5,TimeUnit.SECONDS);
             byte[] body=IpcSchemaBoundDataV1.wrap(binding,new byte[]{(byte)0xf5});
@@ -122,6 +124,7 @@ final class IpcSupervisorIngressIntegrationTest {
                 recovery.attachReplacement(recovery.reserveRestart(parentNode),newParent,null);
                 ActorRuntime.ActorRef<Boolean> newChild=runtime.spawnPrivate(ignored->(m,turn)->{});
                 long newNode=recovery.attachReplacement(recovery.reserveRestart(childNode),newChild,newParent);
+                runtime.authorizeIpcIngressActor(newChild,"tenant",budget);
                 assertTrue(newChild.generation()>oldChild.generation());
                 newChild.getReady().get(5,TimeUnit.SECONDS);
                 var newEpoch=new IpcReceiptCorrelation.Envelope("tenant","sender",
@@ -160,6 +163,7 @@ final class IpcSupervisorIngressIntegrationTest {
             byte[] frame=IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,body,5,connection,key);
             long charge=IpcIngressBudgetV1.chargeFor(frame.length);
             var budget=runtime.registerIpcIngressTenant("tenant",charge+BOOL_CREDIT,1);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
             var calls=new java.util.concurrent.atomic.AtomicInteger();
             var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->{
                 calls.incrementAndGet();return Boolean.TRUE;
@@ -205,16 +209,19 @@ final class IpcSupervisorIngressIntegrationTest {
             long charge=IpcIngressBudgetV1.chargeFor(frame.length);
             var calls=new java.util.concurrent.atomic.AtomicInteger();
             var shortBudget=runtime.registerIpcIngressTenant("tenan2",charge+BOOL_CREDIT-1,1);
-            var shortEpoch=new IpcReceiptCorrelation.Envelope("tenan2","sender",child.id().value().toString(),
-                    "decoded-credit",hash,1,child.generation(),3,4,1,1);
+            ActorRuntime.ActorRef<Boolean> shortChild=runtime.spawnPrivate(ignored->(m,turn)->{});
+            runtime.authorizeIpcIngressActor(shortChild,"tenan2",shortBudget);
+            var shortEpoch=new IpcReceiptCorrelation.Envelope("tenan2","sender",shortChild.id().value().toString(),
+                    "decoded-credit",hash,1,shortChild.generation(),3,4,1,1);
             byte[] shortFrame=IpcAuthenticatedSocketTransport.encodeDataFrame(shortEpoch,body,5,connection,key);
             assertEquals(frame.length,shortFrame.length);
-            var refused=new IpcPinnedActorIngressV1<>(child,shortEpoch,5,binding,shortBudget,BOOL_CREDIT,
+            var refused=new IpcPinnedActorIngressV1<>(shortChild,shortEpoch,5,binding,shortBudget,BOOL_CREDIT,
                     boolDecoder(bytes->{calls.incrementAndGet();return Boolean.TRUE;}));
             assertThrows(IllegalStateException.class,()->refused.admit(shortFrame,connection,key));
             assertEquals(0,calls.get());
             assertEquals(new IpcIngressBudgetV1.Usage(0,0),shortBudget.usage());
             var exact=runtime.registerIpcIngressTenant("tenant",charge+BOOL_CREDIT,1);
+            runtime.authorizeIpcIngressActor(child,"tenant",exact);
             var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,exact,BOOL_CREDIT,
                     boolDecoder(bytes->{
                         assertEquals(new IpcIngressBudgetV1.Usage(charge+BOOL_CREDIT,1),exact.usage());
@@ -249,6 +256,7 @@ final class IpcSupervisorIngressIntegrationTest {
             long charge=IpcIngressBudgetV1.chargeFor(frame.length);
             var budget=runtime.registerIpcIngressTenant("tenant",charge+BOOL_CREDIT,1);
             var wrong=foreign.registerIpcIngressTenant("tenant",charge+BOOL_CREDIT,1);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
             assertThrows(IllegalStateException.class,()->runtime.registerIpcIngressTenant("tenant",charge*2,2));
             assertThrows(IllegalArgumentException.class,()->new IpcPinnedActorIngressV1<>(
                     child,epoch,5,binding,wrong,BOOL_CREDIT,boolDecoder(bytes->Boolean.TRUE)));
@@ -266,6 +274,58 @@ final class IpcSupervisorIngressIntegrationTest {
             assertThrows(IllegalStateException.class,()->runtime.registerIpcIngressTenant("tenant",charge,1));
             assertThrows(IllegalArgumentException.class,()->new IpcPinnedActorIngressV1<>(
                     child,epoch,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->Boolean.TRUE)));
+        }
+    }
+
+    @Test void tenantRetirementFencesDecodedPublicationAndCrossDomainAuthority() throws Exception {
+        byte[] key=new byte[32], connection=new byte[16], digest=new byte[32];
+        Arrays.fill(key,(byte)7); Arrays.fill(connection,(byte)8); Arrays.fill(digest,(byte)9);
+        var binding=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"bool.v1",digest);
+        try(ActorRuntime runtime=new ActorRuntime();
+            ExecutorService control=Executors.newSingleThreadExecutor();
+            ExecutorService worker=Executors.newSingleThreadExecutor()) {
+            var bridge=new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery=new SupervisorEscrowSubtreeRecoveryV1(runtime,bridge,control,ignored->false);
+            ActorRuntime.ActorRef<Boolean> child=runtime.spawnPrivate(ignored->(m,turn)->{});
+            long node=recovery.attach(child,null);
+            var budget=runtime.registerIpcIngressTenant("tenant",1024*1024,2);
+            var other=runtime.registerIpcIngressTenant("other",1024*1024,2);
+            byte[] body=IpcSchemaBoundDataV1.wrap(binding,new byte[]{(byte)0xf5});
+            String hash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body));
+            var epoch=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "retire",hash,1,child.generation(),3,4,1,1);
+            var wrongEpoch=new IpcReceiptCorrelation.Envelope("other","sender",child.id().value().toString(),
+                    "retire",hash,1,child.generation(),3,4,1,1);
+            assertThrows(IllegalArgumentException.class,()->new IpcPinnedActorIngressV1<>(
+                    child,epoch,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->Boolean.TRUE)));
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
+            assertThrows(IllegalStateException.class,()->runtime.authorizeIpcIngressActor(child,"other",other));
+            assertThrows(IllegalArgumentException.class,()->new IpcPinnedActorIngressV1<>(
+                    child,wrongEpoch,5,binding,other,BOOL_CREDIT,boolDecoder(bytes->Boolean.TRUE)));
+            CountDownLatch decoding=new CountDownLatch(1),resume=new CountDownLatch(1);
+            var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,budget,BOOL_CREDIT,
+                    boolDecoder(bytes->{
+                        decoding.countDown();
+                        try{if(!resume.await(10,TimeUnit.SECONDS))throw new IOException("fixture deadline");}
+                        catch(InterruptedException x){Thread.currentThread().interrupt();throw new IOException(x);}
+                        return Boolean.TRUE;
+                    }));
+            byte[] frame=IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,body,5,connection,key);
+            var late=worker.submit(()->{ingress.admit(frame,connection,key);return null;});
+            try{
+                assertTrue(decoding.await(5,TimeUnit.SECONDS));
+                assertEquals(new IpcIngressBudgetV1.Usage(IpcIngressBudgetV1.chargeFor(frame.length)+BOOL_CREDIT,1),budget.usage());
+                runtime.retireIpcIngressTenant("tenant");
+                assertEquals(0,bridge.dataAdmissionStatus(node).committed());
+            }finally{resume.countDown();}
+            var denied=assertThrows(ExecutionException.class,()->late.get(5,TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class,denied.getCause());
+            assertTrue(denied.getCause().getMessage().contains("publication fenced"));
+            assertEquals(0,bridge.dataAdmissionStatus(node).committed());
+            assertEquals(0,bridge.dataAdmissionStatus(node).inFlight());
+            assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            child.send(Boolean.TRUE); // local path unchanged
+            assertEquals(1,bridge.dataAdmissionStatus(node).committed());
         }
     }
 
