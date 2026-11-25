@@ -5972,6 +5972,10 @@ public final class OresEvalRootNode extends RootNode {
                         "async task argument count differs from its formal parameters");
             }
             ArrayList<Object> detached = new ArrayList<>(args.size());
+            // Affine NIO2 sockets can move once into an async callable with
+            // an explicit owned NioConnection formal; never deep-copy.
+            IdentityHashMap<dev.oreslang.runtime.AsyncNioTcp.Connection, Boolean>
+                    movedSockets = new IdentityHashMap<>();
             for (int i = 0; i < args.size(); i++) {
                 Object arg = args.get(i);
                 if (arg instanceof ChannelRuntime.Channel<?> channel) {
@@ -5992,6 +5996,20 @@ public final class OresEvalRootNode extends RootNode {
                     // Actor/mailbox boundary capabilities remain forbidden.
                     // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
+                } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow() || formal.inferArguments()
+                            || !"NioConnection".equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async socket argument " + (i + 1)
+                                        + " requires a concrete owned NioConnection parameter");
+                    }
+                    if (movedSockets.put(socket, Boolean.TRUE) != null) {
+                        throw new IllegalArgumentException(
+                                "the same NioConnection cannot be moved twice in one async call");
+                    }
+                    detached.add(socket);
                 } else {
                     detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
                 }

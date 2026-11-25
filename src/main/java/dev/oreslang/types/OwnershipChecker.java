@@ -1415,7 +1415,8 @@ public final class OwnershipChecker {
                         && forbiddenTaskCapability(capture.source.type)) {
                     throw error("independent task capture '" + capture.name
                             + "' contains a non-Send execution capability; "
-                            + "pass owned values or an explicit Channel<T> instead");
+                            + "pass owned values or an explicit Channel<T> instead"
+                            + " [captured type: " + capture.source.type + "]");
                 }
             }
             validateDeferredCaptures(captured);
@@ -4435,6 +4436,13 @@ public final class OwnershipChecker {
             return isVerifiedActorReference(type) ? scalar : none;
         }
 
+        // The exact NIO2 handle is affine and may MOVE to one task.
+        // Do not accidentally classify arbitrary imported/nominal lookalikes.
+        if (name.equals("NioConnection")) {
+            return type.arguments().isEmpty() && findClass("NioConnection") == null
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
+        }
+
         // Task-owned authority and actor-turn/foreign capabilities do not
         // become Send merely by being wrapped in an owned binding.
         if (switch (name) {
@@ -4487,6 +4495,28 @@ public final class OwnershipChecker {
                             payload, visitingClasses).send();
             return new AutoTraitRules.Capabilities(
                     payloadSend, false, false);
+        }
+
+        // A source Tuple[T1,...] uses a finite $shape$ AST argument.
+        // Channel payloads must prove each owned element Send; never accept
+        // repetition shapes, unresolved generics or nominal shadowing.
+        if (name.equals("Tuple") && declaredClass == null) {
+            if (type.arguments().size() != 1
+                    || !type.arguments().getFirst().isSequenceShape()) return none;
+            List<Ast.TypeRef> fields = type.arguments().getFirst().arguments();
+            if (fields.isEmpty()) return none;
+            boolean send = true;
+            boolean sync = true;
+            boolean share = true;
+            for (Ast.TypeRef field : fields) {
+                if (field.isRepeatExact() || field.isRepeatMany()) return none;
+                AutoTraitRules.Capabilities child =
+                        taskCaptureCapabilities(field, visitingClasses);
+                send &= child.send();
+                sync &= child.sync();
+                share &= child.share();
+            }
+            return new AutoTraitRules.Capabilities(send, sync, share);
         }
 
         if (name.equals("Channel")) {
@@ -4544,9 +4574,16 @@ public final class OwnershipChecker {
             default -> false;
         }) {
             if (type.arguments().size() != 1) return none;
+            Ast.TypeRef elementRef = type.arguments().getFirst();
+            if (elementRef.isSequenceShape()) {
+                if (elementRef.arguments().size() != 1) return none;
+                elementRef = elementRef.arguments().getFirst();
+                if (elementRef.isRepeatExact() || elementRef.isRepeatMany()) {
+                    return none;
+                }
+            }
             AutoTraitRules.Capabilities element =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(elementRef, visitingClasses);
             // Mutable sequence ownership may move when elements are Send, but
             // the sequence itself is not implicitly Sync/Share.
             return new AutoTraitRules.Capabilities(
