@@ -119,8 +119,8 @@ final class MatchExpressionTest {
                 """));
     }
 
-    @Test void blockReturnExitsTheEnclosingFunctionAndDefersRun() throws Exception {
-        assertEquals("cleanup\nexit\n", run("""
+    @Test void blockReturnSuppliesMatchValueAndDefersRunBeforeJoin() throws Exception {
+        assertEquals("cleanup\nafter\nexit\n", run("""
                 fnc name(bool flag): String {
                   val result = match flag {
                     true -> { defer stdio.println("cleanup"); return "exit"; }
@@ -228,7 +228,7 @@ final class MatchExpressionTest {
     }
 
     @Test void asyncMatchValuesAndEarlyReturnsPreserveCleanup() throws Exception {
-        assertEquals("cleanup\nAda\n", run("""
+        assertEquals("cleanup\nafter\nAda\n", run("""
                 async fnc load(): String { return "Ada"; }
                 async fnc name(bool flag): String {
                   val result = match flag {
