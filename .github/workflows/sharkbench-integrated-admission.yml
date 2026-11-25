@@ -1,0 +1,40 @@
+name: SharkBench integrated compiler and guest admission
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'library/**'
+      - 'tests/fixtures/sharkbench-admission/**'
+      - 'pom.xml'
+      - '.github/workflows/sharkbench-integrated-admission.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integrated-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact compiler head and tree
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD HEAD^{tree}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+      - name: Run compiler and runtime regression gates
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=SharkBenchTransportGuestTest,OutboundHttpRequestGuestTest,NativeHttpTest,StringTransformTest,Utf8StringAbiTest,CanonicalJsonGuestTest,AllocJsonTextTest,OresJsonValueTest,OresKeyedMapTest,OresKeyedMapLookupOptionTest,SymbolPropertyKeyCodecTest -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Compile and run actual two-route Atto application
+        run: bash tests/fixtures/sharkbench-admission/run.sh

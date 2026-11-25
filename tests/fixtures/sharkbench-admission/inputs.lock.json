@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "scope": "synthetic correctness, never performance",
+  "benchmark_repo": "atto-lang/atto-benchmarks",
+  "benchmark_commit": "a87f57a063d1ae621a91a0fcb3e1420726865ab5",
+  "benchmark_tree": "4f85bc3ad8a5be98a39974ff564ef91957c56775",
+  "blobs": {
+    "tests/fixtures/sharkbench-admission/sharkbench-web.atto": "7cb1932bd2def3906770747c7ec042313174a268",
+    "tests/fixtures/sharkbench-admission/check_contract.py": "2f5514245444e5fc9f268f18bf73a5a09a58b3e2"
+  },
+  "compiler_parents": {
+    "http": "7b2c0238d2df63c83fd5263456956db0d5dd80b0",
+    "utf8": "6b20f0d1985b2441038e281a4b4c67c9e86a96cd",
+    "json": "6172308c29d89448ca6e6876afb029b9b63e1363"
+  }
+}
