@@ -23,8 +23,6 @@ import java.util.*;
  */
 public final class FrozenScalarImportCompiler {
     private static final String ENTRY = "entry.atto";
-    private static final String PROVIDER = "pinned/provider.atto";
-    private static final String IMPORT = "./pinned/provider.atto";
     private FrozenScalarImportCompiler() {}
 
     private static IllegalArgumentException fail(String code,String detail) {
@@ -33,7 +31,10 @@ public final class FrozenScalarImportCompiler {
 
     public static final class CheckedGuest {
         private final IncrementalCompiler.BuildResult build;
-        private CheckedGuest(IncrementalCompiler.BuildResult build) { this.build=build; }
+        private final Map<String,String> resolutions;
+        private CheckedGuest(IncrementalCompiler.BuildResult build,Map<String,String> resolutions) {
+            this.build=build; this.resolutions=Map.copyOf(resolutions);
+        }
 
         public int run(ExecutionProfile profile) {
             // Use the existing restricted runtime, prechecked AST and static
@@ -47,7 +48,8 @@ public final class FrozenScalarImportCompiler {
                         units.put(unit.unitId(),ctx.parse(source));
                     }
                 }
-                units.get(ENTRY).execute(OresEvalRootNode.REGISTER_IMPORT_COMMAND,IMPORT,PROVIDER);
+                for(var edge:new TreeMap<>(resolutions).entrySet())
+                    units.get(ENTRY).execute(OresEvalRootNode.REGISTER_IMPORT_COMMAND,edge.getKey(),edge.getValue());
                 for(var unit:units.values()) unit.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
                 for(var group:build.initializationGroups())
                     for(String id:group) units.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
@@ -98,6 +100,79 @@ public final class FrozenScalarImportCompiler {
             aliases.add(new StaticImportGraph.Alias(name,reference));
         }
         StaticImportGraph.precheckAliases(aliases);
+        for(var imported:imports) {
+            if(imported.selector()==null) {
+                var pkg=available.get(imported.source());
+                if(pkg==null) throw fail("E_UNBOUND","package root not in authenticated snapshot set");
+                graph.bindPackage(pkg.functionView(),imported.binding());
+                continue;
+            }
+            String[] parts=imported.source().split("/",-1);
+            if(parts.length<3) throw fail("E_IMPORT_PATH","invalid package selector");
+            var pkg=available.get(String.join("/",Arrays.copyOf(parts,3)));
+            if(pkg==null) throw fail("E_UNBOUND","package not in authenticated snapshot set");
+            pkg.bindNamespace(graph,imported.source(),imported.selector(),imported.binding(),imported.renamed());
+        }
+        graph.bindAliases(aliases);
+
+        record ProviderKey(String packageName,String namespace) {}
+        record CallKey(ProviderKey provider,String member) {}
+        var providerIds=new LinkedHashMap<ProviderKey,String>();
+        var sources=new LinkedHashMap<String,String>();
+        var resolutions=new LinkedHashMap<String,String>();
+        var callNames=new LinkedHashMap<CallKey,String>();
+        var declarations=new StringBuilder();
+        int[] calls={0};
+        reader.resolveCall=(reference,arguments)->{
+            if(++calls[0]>32) throw fail("E_SOURCE_LIMIT","imported call budget exceeded");
+            StaticImportGraph.Target target=graph.resolve(reference);
+            if(target.kind()!=StaticImportGraph.Kind.FNC) throw fail("E_IMPORT_KIND","expected a function");
+            FrozenImportSnapshot pkg=available.get(target.view().origin().identity());
+            if(pkg==null||pkg.functionView()!=target.view())
+                throw fail("E_IMPORT_PATH","selected view not owned by authenticated snapshot");
+            int dot=target.path().lastIndexOf('.');
+            if(dot<=0) throw fail("E_IMPORT_PATH","missing provider namespace");
+            String member=target.path().substring(dot+1), ns=target.path().substring(0,dot);
+            String provider=pkg.providerSource(ns);
+            // Match the closed signed-int ABI before lowering. Do not use
+            // implicit coercions or argument types to choose a package.
+            var functions=Parser.parse(provider).modules().stream()
+                .filter(m->Parser.ROOT_MODULE.equals(m.name()))
+                .flatMap(m->m.declarations().stream())
+                .filter(d->d instanceof Ast.FunctionDecl)
+                .map(d->(Ast.FunctionDecl)d)
+                .filter(f->f.name().equals(member))
+                .toList();
+            if(functions.size()!=1) throw fail("E_IMPORT_KIND","selected function lacks unique declaration");
+            var function=functions.getFirst();
+            if(function.visibility()!=Ast.Visibility.PUBLIC||function.kind()!=Ast.CallableKind.FNC||
+                function.actorKind()!=Ast.ActorKind.NONE||function.async()||function.suspends()||
+                function.generator()||function.structural()||function.nonLexical()||function.trapped()||
+                !function.genericParameters().isEmpty()||!function.annotations().isEmpty()||
+                function.parameters().size()!=arguments.size()||
+                function.parameters().stream().anyMatch(p->!p.type().equals(Ast.TypeRef.simple("int"))||p.structural()||p.mutable())||
+                !Ast.TypeRef.simple("int").equals(function.returnType()))
+                throw fail("E_IMPORT_KIND","selected function must accept exact signed-int arguments and return int");
+
+            ProviderKey key=new ProviderKey(pkg.name(),ns);
+            String unit=providerIds.get(key);
+            if(unit==null) {
+                if(providerIds.size()>=16) throw fail("E_SOURCE_LIMIT","provider budget exceeded");
+                unit="pinned/provider_"+providerIds.size()+".atto";
+                providerIds.put(key,unit);
+                sources.put(unit,provider);
+                resolutions.put("./"+unit,unit);
+            }
+            CallKey callKey=new CallKey(key,member);
+            String selected=callNames.get(callKey);
+            if(selected==null) {
+                selected="frozen_call_"+callNames.size();
+                callNames.put(callKey,selected);
+                declarations.append("import fnc ").append(member).append(" as ").append(selected)
+                    .append(" from \"./").append(unit).append("\";\n");
+            }
+            return selected+"("+String.join(", ",arguments)+")";
+        };
         reader.expect("pub"); reader.expect("fnc"); reader.expect("main");
         reader.expect("("); reader.expect(")");
         if(!reader.take("->")) reader.expect(":");
@@ -116,76 +191,19 @@ public final class FrozenScalarImportCompiler {
             prelude.append("val int ").append(generated).append(" = ").append(initial).append("; ");
         }
         reader.expect("return");
-        String reference=reader.path();
-        reader.expect("(");
-        var arguments=new ArrayList<String>();
-        if(!reader.take(")")) {
-            do {
-                if(arguments.size()>=16) throw fail("E_SOURCE_LIMIT","call argument budget exceeded");
-                arguments.add(reader.expression(0));
-            } while(reader.take(","));
-            reader.expect(")");
-        }
+        String result=reader.expression(0);
         reader.expect(";"); reader.expect("}");
         reader.expectEnd();
-        if(reference.indexOf('.')<0) throw fail("E_UNSUPPORTED","expected a qualified static call");
-        if(reader.locals.containsKey(reference.substring(0,reference.indexOf('.'))))
-            throw fail("E_IMPORT_KIND","scalar local shadows qualified call root");
-        for(var imported:imports) {
-            if(imported.selector()==null) {
-                var pkg=available.get(imported.source());
-                if(pkg==null) throw fail("E_UNBOUND","package root not in authenticated snapshot set");
-                graph.bindPackage(pkg.functionView(),imported.binding());
-                continue;
-            }
-            String[] parts=imported.source().split("/",-1);
-            if(parts.length<3) throw fail("E_IMPORT_PATH","invalid package selector");
-            var pkg=available.get(String.join("/",Arrays.copyOf(parts,3)));
-            if(pkg==null) throw fail("E_UNBOUND","package not in authenticated snapshot set");
-            pkg.bindNamespace(graph,imported.source(),imported.selector(),imported.binding(),imported.renamed());
-        }
-        graph.bindAliases(aliases);
-        StaticImportGraph.Target target=graph.resolve(reference);
-        if(target.kind()!=StaticImportGraph.Kind.FNC) throw fail("E_IMPORT_KIND","expected a function");
-        FrozenImportSnapshot pkg=available.get(target.view().origin().identity());
-        if(pkg==null||pkg.functionView()!=target.view())
-            throw fail("E_IMPORT_PATH","selected view not owned by authenticated snapshot");
-        int dot=target.path().lastIndexOf('.');
-        if(dot<=0) throw fail("E_IMPORT_PATH","missing provider namespace");
-        String member=target.path().substring(dot+1);
-        String provider=pkg.providerSource(target.path().substring(0,dot));
-        // Match the closed signed-int ABI before lowering. Do not use
-        // implicit coercions or argument types to choose a package.
-        var functions=Parser.parse(provider).modules().stream()
-            .filter(m->Parser.ROOT_MODULE.equals(m.name()))
-            .flatMap(m->m.declarations().stream())
-            .filter(d->d instanceof Ast.FunctionDecl)
-            .map(d->(Ast.FunctionDecl)d)
-            .filter(f->f.name().equals(member))
-            .toList();
-        if(functions.size()!=1) throw fail("E_IMPORT_KIND","selected function lacks unique declaration");
-        var function=functions.getFirst();
-        if(function.visibility()!=Ast.Visibility.PUBLIC||function.kind()!=Ast.CallableKind.FNC||
-            function.actorKind()!=Ast.ActorKind.NONE||function.async()||function.suspends()||
-            function.generator()||function.structural()||function.nonLexical()||function.trapped()||
-            !function.genericParameters().isEmpty()||!function.annotations().isEmpty()||
-            function.parameters().size()!=arguments.size()||
-            function.parameters().stream().anyMatch(p->!p.type().equals(Ast.TypeRef.simple("int"))||p.structural()||p.mutable())||
-            !Ast.TypeRef.simple("int").equals(function.returnType()))
-            throw fail("E_IMPORT_KIND","selected function must accept exact signed-int arguments and return int");
-        // Only validated identifiers enter the generated static import. The
-        // provider is the unchanged original verified source, not a transformed
-        // copy. The normal compiler rechecks member signatures and call types.
-        String lowered="import fnc "+member+" as selected_call from \""+IMPORT+"\";\n"
-            +"pub fnc main(): int { "+prelude+"return selected_call("+String.join(", ",arguments)+"); }";
-        var resolutions=Map.of(ENTRY,Map.of(IMPORT,PROVIDER));
-        var build=new IncrementalCompiler().compileStrictAtto(Map.of(ENTRY,lowered,PROVIDER,provider),resolutions);
-        return new CheckedGuest(build);
+        if(calls[0]==0) throw fail("E_UNSUPPORTED","frozen guest requires imported call");
+        sources.put(ENTRY,declarations+"pub fnc main(): int { "+prelude+"return "+result+"; }");
+        var build=new IncrementalCompiler().compileStrictAtto(sources,Map.of(ENTRY,resolutions));
+        return new CheckedGuest(build,resolutions);
     }
 
     private static final class Reader {
         private final List<Token> tokens;
         private int i, expressionNodes;
+        private java.util.function.BiFunction<String,List<String>,String> resolveCall;
         private final Map<String,String> locals=new LinkedHashMap<>();
         Reader(List<Token> tokens) {this.tokens=tokens;}
         Token peek(){return tokens.get(i);}
@@ -264,7 +282,28 @@ public final class FrozenScalarImportCompiler {
                 return "("+value+")";
             }
             if(peek().type()==Token.Type.IDENT) {
-                String name=component(), generated=locals.get(name);
+                String name=component();
+                if(peek().type()==Token.Type.DOT) {
+                    if(locals.containsKey(name)) throw fail("E_IMPORT_KIND","scalar local shadows qualified call root");
+                    StringBuilder reference=new StringBuilder(name);
+                    int count=1;
+                    while(take(".")) {
+                        if(++count>8) throw fail("E_IMPORT_PATH","path too deep");
+                        reference.append('.').append(component());
+                    }
+                    expect("(");
+                    var args=new ArrayList<String>();
+                    if(!take(")")) {
+                        do {
+                            if(args.size()>=16) throw fail("E_SOURCE_LIMIT","call argument budget exceeded");
+                            args.add(expression(depth+1));
+                        } while(take(","));
+                        expect(")");
+                    }
+                    if(resolveCall==null) throw fail("E_UNSUPPORTED","import call unavailable");
+                    return resolveCall.apply(reference.toString(),List.copyOf(args));
+                }
+                String generated=locals.get(name);
                 if(generated==null) throw fail("E_UNBOUND","unbound scalar local");
                 return generated;
             }
