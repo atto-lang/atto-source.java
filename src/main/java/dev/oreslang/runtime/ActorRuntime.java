@@ -94,7 +94,8 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId,
             ActorKind kind,
             IsolatePolicy policy,
-            Object executionDomain) { }
+            Object executionDomain,
+            ActorGuestStack guestStack) { }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -209,6 +210,12 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object currentActorExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.executionDomain();
+    }
+
+    /** Runtime-issued actor-incarnation stack: never a guest bearer capability. */
+    static ActorGuestStack currentActorGuestStack() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.guestStack();
     }
 
     /**
@@ -8383,6 +8390,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /** One logical frame budget per actor incarnation, not per carrier. */
+        private final ActorGuestStack guestStack = new ActorGuestStack();
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
@@ -9486,7 +9495,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+                    ActorRuntime.this, ref.id(), kind, policy, executionDomain,
+                    guestStack));
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
@@ -9571,6 +9581,13 @@ public final class ActorRuntime implements AutoCloseable {
                     } else {
                         ref.readyFuture.completeFromRuntime(null);
                     }
+                }
+
+                // Never resume a poisoned actor even if its host callback
+                // caught a controlled guest-frame budget exhaustion.
+                if (guestStack.isPoisoned()) {
+                    throw new GuestCallDepthExceededException(
+                            GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
                 }
 
                 int processed = 0;
@@ -9664,6 +9681,12 @@ public final class ActorRuntime implements AutoCloseable {
                             // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
+                    }
+                    // A host behavior must not swallow an exhausted guest
+                    // frame budget and proceed with another mailbox delivery.
+                    if (guestStack.isPoisoned()) {
+                        throw new GuestCallDepthExceededException(
+                                GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
                     }
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.
