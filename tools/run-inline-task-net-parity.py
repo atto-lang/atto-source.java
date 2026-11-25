@@ -52,7 +52,15 @@ def main():
         raise SystemExit("Missing actual compiler entrypoint")
     digest = hashlib.sha256(entry.read_bytes()).hexdigest()
     failures = 0
-    for case in manifest["cases"]:
+    extension_failures = 0
+    # New shared-source candidate, not covered by the historical .NET receipt.
+    extension = {
+        "name": "inline-local-loops-do",
+        "path": "tests/fixtures/inline-task-net-parity/inline-local-loops-do.atto",
+        "blob": "c502b65bd859fdfc2fb8b9221b9af997447c22e1",
+        "expected": "42",
+    }
+    for case in [*manifest["cases"], extension]:
         src = ROOT / case["path"]
         if not src.is_file() or src.is_symlink():
             raise SystemExit("Missing regular source fixture")
@@ -65,14 +73,20 @@ def main():
             run = invoke(command, ["--no-prompt", str(src)])
         passed = (run is not None and run["exit"] == 0 and
                   run["stdout"] == case["expected"] and src.read_bytes() == before)
-        failures += not passed
+        if case is extension:
+            extension_failures += not passed
+        else:
+            failures += not passed
         print(json.dumps({"case": case["name"], "head": head, "tree": tree,
                           "source_blob": case["blob"], "mode": mode,
                           "platform": platform.platform(), "entry_sha256": digest,
                           "check": check, "run": run, "passed": passed}), flush=True)
-    if failures:
-        raise SystemExit(f"PARITY_NOT_PROVEN: {failures} of 4 cases failed")
-    print("EXACT_INLINE_TASK_JAVA_PASS 4/4", flush=True)
+    if not failures:
+        print("EXACT_INLINE_TASK_JAVA_PASS 4/4", flush=True)
+    if not extension_failures:
+        print("INLINE_TASK_DO_JAVA_PASS 1/1", flush=True)
+    if failures or extension_failures:
+        raise SystemExit(f"PARITY_NOT_PROVEN: historical={failures}/4 new_do={extension_failures}/1 failed")
 
 if __name__ == "__main__":
     main()
