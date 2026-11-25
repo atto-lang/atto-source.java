@@ -26,6 +26,44 @@ final class AllocJsonTextTest {
     }
 
     @Test
+    void plainStringAndEscapedSuffixPathsPreserveExactUnicode() {
+        for (String expected : new String[]{"", "ascii", "Hélium 😀", "🚀 tail", "prefix\nsuffix", "é😀\t\"\\/"}) {
+            String encoded = OresJsonValue.stringify(OresJsonValue.of(expected));
+            assertEquals(encoded, OresJsonValue.stringify(AllocJsonText.parse(encoded)));
+            assertEquals(encoded, OresJsonValue.stringify(OresJsonValue.parseImmutable(encoded)));
+        }
+        assertEquals("\"prefix😀\\nend\"",
+                OresJsonValue.stringify(AllocJsonText.parse("\"prefix😀\\nend\"")));
+        for (String malformed : new String[]{"\"prefix" + (char) 0xD800 + "\"",
+                "\"prefix" + (char) 0xDC00 + "\"", "\"prefix\\n" + (char) 0xD800 + "\"",
+                "\"prefix", "\"prefix\\", "\"prefix\u0001\""}) {
+            assertThrows(IllegalArgumentException.class, () -> AllocJsonText.parse(malformed));
+            assertThrows(IllegalArgumentException.class, () -> OresJsonValue.parseImmutable(malformed));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> AllocJsonText.parse("{\"é😀\":1,\"\\u00e9\\uD83D\\uDE00\":2}"));
+    }
+
+    @Test
+    void shortIntegralPathPreservesExactDecimalCarrierAndScale() {
+        for (String token : new String[]{"0", "-0", "1", "-1", "999999999999999999",
+                "-99999999999999999", "1000000000000000000", "9223372036854775807",
+                "-9223372036854775808", "9223372036854775808", "1.00", "-0.0", "1e2", "1e-2"}) {
+            var expected = new java.math.BigDecimal(token);
+            var actual = (OresJsonValue.NumberValue) AllocJsonText.parse(token);
+            assertEquals(expected, actual.value(), token);
+            var immutable = (OresJsonValue.NumberValue) OresJsonValue.parseImmutable(token);
+            assertEquals(expected, immutable.value(), token);
+        }
+        var random = new java.util.Random(19);
+        for (int i = 0; i < 1000; i++) {
+            String token = Long.toString(random.nextLong() % 100000000000000000L);
+            assertEquals(new java.math.BigDecimal(token),
+                    ((OresJsonValue.NumberValue) AllocJsonText.parse(token)).value(), token);
+        }
+    }
+
+    @Test
     void rejectsDuplicateKeysInsteadOfChoosingFirstOrLast() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
