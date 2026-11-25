@@ -55,7 +55,12 @@ separate from actor creation, timers and guest callback execution.
 14. **Escalation beats thrash.** Restart-intensity exhaustion or an overlapping
     restart episode escalates to the parent supervisor/root CONTROL plane. The
     runtime must not silently reset counters, evict old budget entries early,
-    or continue restarting.
+    or continue restarting. Escalation is sticky for this circuit instance:
+    reject every later generation admission, including previously pending
+    replacements, even if the intensity window expires. Physical quiescence
+    acknowledgements remain accepted for cleanup. Recovery requires a fresh
+    circuit under authenticated parent/root lifecycle authority; there is no
+    local reset method.
 15. **Bounded allocation-free history.** Child tables are bounded by the
     declared child count (maximum 4096). Restart timestamps live in a fixed
     primitive ring sized to the configured maximum restart count; a failure
