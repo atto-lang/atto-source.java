@@ -1,0 +1,7 @@
+schema_version = "1"
+[project]
+name = "counter"
+version = "1"
+root = "."
+[source]
+roots = ["src"]
