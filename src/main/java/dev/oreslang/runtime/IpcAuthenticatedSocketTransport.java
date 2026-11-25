@@ -76,6 +76,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     // A reader already inside readGate may finish before key destruction, but
     // a reader queued behind it must not consume another frame after close.
     private volatile boolean receiptReadsClosed;
+    private final Object encodingKeyGate = new Object();
 
     IpcAuthenticatedSocketTransport(
             Socket socket,
@@ -209,8 +210,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         // closing/closed, so no new authenticated receive may start after this
         // drain point.
         synchronized (readGate) {
-            Arrays.fill(this.macKey, (byte) 0);
-            Arrays.fill(this.connectionBinding, (byte) 0);
+            synchronized (encodingKeyGate) {
+                Arrays.fill(this.macKey, (byte) 0);
+                Arrays.fill(this.connectionBinding, (byte) 0);
+            }
         }
     }
 
@@ -268,8 +271,16 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         // ambiguous remote-delivery state or consume a correlation slot.
         final byte[] preparedFrame;
         try {
-            preparedFrame = encodeDataFrame(
-                    message, body, physicalGeneration, connectionBinding, macKey);
+            synchronized (encodingKeyGate) {
+                if (receiptReadsClosed) {
+                    return new SendSubmission(CompletableFuture.completedFuture(
+                            IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE)
+                            .minimalCompletionStage(),
+                            new IpcTransportSessionLease.PreDispatchRejectedException("closed IPC transport"));
+                }
+                preparedFrame = encodeDataFrame(
+                        message, body, physicalGeneration, connectionBinding, macKey);
+            }
         } catch (IOException impossibleMemoryEncodingFailure) {
             throw new IllegalStateException(
                     "in-memory authenticated IPC frame encoding failed",
@@ -524,14 +535,18 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
 
     /** Package-local audit hook: exposes no key bytes. */
     boolean keyCloneZeroized() {
-        for (byte value : macKey) if (value != 0) return false;
-        return true;
+        synchronized (encodingKeyGate) {
+            for (byte value : macKey) if (value != 0) return false;
+            return true;
+        }
     }
 
     /** Package-local audit hook: exposes no connection-binding bytes. */
     boolean connectionBindingCloneZeroized() {
-        for (byte value : connectionBinding) if (value != 0) return false;
-        return true;
+        synchronized (encodingKeyGate) {
+            for (byte value : connectionBinding) if (value != 0) return false;
+            return true;
+        }
     }
 
     @Override
