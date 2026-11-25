@@ -9,7 +9,7 @@ import java.util.IdentityHashMap;
 import java.util.Objects;
 
 /**
- * Trusted runtime-owned decode escrow for one pinned MessagePack i64 endpoint.
+ * Trusted runtime-owned decode escrow for one pinned MessagePack endpoint.
  * ActorRuntime uses its ordinary mailbox; the standalone queue is a host test seam.
  * Transport authentication is not implemented here.
  * Only runtime code can create tickets. Input must be exclusively owned and
@@ -53,9 +53,17 @@ final class ActorDataDecodeEscrowV1 {
         }
 
         synchronized Lease reserve(int length) {
-            if (length <= 0 || length > MAX_WIRE || inFlight >= 4096) return null;
-            long b = 256L + 16L * length;
-            long w = 3L * length + 1L;
+            if (length <= 0 || length > MAX_WIRE) return null;
+            return reserveCost(256L + 16L * length, 3L * length + 1L);
+        }
+
+        synchronized Lease reserveTicket(Ticket ticket) {
+            Objects.requireNonNull(ticket);
+            return reserveCost(ticket.bytes, ticket.work);
+        }
+
+        private Lease reserveCost(long b, long w) {
+            if (inFlight >= 4096 || b <= 0 || w <= 0) return null;
             if (b > byteLimit - bytes || w > workLimit - work) return null;
             Lease lease = new Lease(this, b, w);
             bytes += b;
@@ -85,11 +93,11 @@ final class ActorDataDecodeEscrowV1 {
         private boolean decoding;
         private boolean cancelled;
 
-        private Ticket(long generation, int length) {
+        private Ticket(long generation, int length, long bytes, long work) {
             this.generation = generation;
             wireLength = length;
-            bytes = 256L + 16L * length;
-            work = 3L * length + 1L;
+            this.bytes = bytes;
+            this.work = work;
         }
     }
 
@@ -98,6 +106,7 @@ final class ActorDataDecodeEscrowV1 {
                     int reservations, int queued, long publications) { }
 
     private final Descriptor descriptor;
+    private final ActorDataMessagePackPlanV1 typedPlan;
     private final long byteLimit;
     private final long workLimit;
     private final int slots;
@@ -110,14 +119,20 @@ final class ActorDataDecodeEscrowV1 {
     private boolean closed;
 
     ActorDataDecodeEscrowV1(Descriptor pinned, long generation, long bytes, long work, int slots) {
+        this(pinned, generation, bytes, work, slots, false);
+    }
+
+    ActorDataDecodeEscrowV1(Descriptor pinned, long generation, long bytes, long work,
+                            int slots, boolean typed) {
         descriptor = Objects.requireNonNull(pinned);
         if (pinned.purpose() != Purpose.ACTOR_DATA || pinned.format() != Format.MESSAGEPACK_V2
-                || pinned.version() != 1 || !pinned.canonicalShape().equals("S(I64)")
+                || pinned.version() != 1 || (!typed && !pinned.canonicalShape().equals("S(I64)"))
                 || pinned.schemaId().length() > 256
                 || generation < 1 || bytes < 1 || bytes > MAX_LOGICAL
                 || work < 1 || work > MAX_WORK || slots < 1 || slots > 4096) {
             throw new IllegalArgumentException("unsupported actor DATA endpoint or quota");
         }
+        this.typedPlan = typed ? new ActorDataMessagePackPlanV1(pinned) : null;
         this.generation = generation;
         this.byteLimit = this.availableBytes = bytes;
         this.workLimit = this.availableWork = work;
@@ -134,10 +149,12 @@ final class ActorDataDecodeEscrowV1 {
                 || !descriptor.fingerprintHex().equals(fingerprint)
                 || length <= 0 || length > MAX_WIRE
                 || pending.size() + queue.size() >= slots) return null;
-        long bytes = 256L + 16L * length;
-        long work = 3L * length + 1L;
+        long bytes = typedPlan == null ? 256L + 16L * length
+                : ActorDataMessagePackPlanV1.logicalBytes(length);
+        long work = typedPlan == null ? 3L * length + 1L
+                : ActorDataMessagePackPlanV1.logicalWork(length);
         if (bytes > availableBytes || work > availableWork) return null;
-        Ticket ticket = new Ticket(epoch, length);
+        Ticket ticket = new Ticket(epoch, length, bytes, work);
         pending.put(ticket, Boolean.TRUE);
         availableBytes -= bytes;
         availableWork -= work;
@@ -147,6 +164,7 @@ final class ActorDataDecodeEscrowV1 {
     // Single-use decode admission. Cancellation cannot refund active decode
     // credits until this method's finally block runs. No callbacks under lock.
     boolean decodeAndCommit(Ticket ticket, byte[] ownedWire) {
+        if (typedPlan != null) throw new IllegalStateException("typed endpoint requires actual mailbox");
         synchronized (this) {
             if (ticket == null || !pending.containsKey(ticket) || ticket.decoding
                     || ticket.cancelled) return false;
@@ -180,16 +198,28 @@ final class ActorDataDecodeEscrowV1 {
     // Keep the temporary decode credits charged until ordinary mailbox
     // admission has either committed or rolled back. No monitor held across
     // runtime lifecycle locks; the caller owns this ticket exclusively.
+    boolean isTyped() { return typedPlan != null; }
+
     Long decodeForMailbox(Ticket ticket, byte[] ownedWire) {
+        if (isTyped()) throw new IllegalStateException("typed endpoint requires typed ingress");
+        Object value = decodeValueForMailbox(ticket, ownedWire);
+        return value instanceof Long number ? number : null;
+    }
+
+    Object decodeValueForMailbox(Ticket ticket, byte[] ownedWire) {
         synchronized (this) {
             if (ticket == null || !pending.containsKey(ticket) || ticket.decoding
                     || ticket.cancelled || ownedWire == null
                     || ownedWire.length != ticket.wireLength) return null;
             ticket.decoding = true;
         }
-        Object decoded = MessagePackWireV2.decode(descriptor.schemaId(),
+        if (typedPlan != null) {
+            return typedPlan.decodeOwned(descriptor.format(), descriptor.schemaId(),
+                    descriptor.version(), descriptor.fingerprintHex(), ownedWire,
+                    ticket.bytes, ticket.work);
+        }
+        return MessagePackWireV2.decode(descriptor.schemaId(),
                 MessagePackWireV2.Shape.i64(), ownedWire);
-        return decoded instanceof Long value ? value : null;
     }
 
     synchronized void finishMailboxDecode(Ticket ticket) {

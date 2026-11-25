@@ -147,4 +147,42 @@ final class SupervisorSerializedDataIntegrationTest {
                     recovery.restartBlocker(parentId), "logical restart only; oracle is synthetic");
         }
     }
+
+    @Test
+    void nestedDescriptorUsesActualMailboxAndExactQuota() throws Exception {
+        Descriptor pin = ActorDataDescriptorFixture.shape(Purpose.ACTOR_DATA, Format.MESSAGEPACK_V2,
+                new Sequence(SequenceKind.LIST,
+                        new Sequence(SequenceKind.LIST, new Scalar(ScalarKind.I64), -1), -1));
+        var shape = MessagePackWireV2.Shape.list(MessagePackWireV2.Shape.list(MessagePackWireV2.Shape.i64()));
+        var expected = java.util.List.of(java.util.List.of(1L, 2L), java.util.List.of(3L));
+        byte[] wire = MessagePackWireV2.encode(pin.schemaId(), shape, expected);
+        long bytes = ActorDataMessagePackPlanV1.logicalBytes(wire.length);
+        long work = ActorDataMessagePackPlanV1.logicalWork(wire.length);
+        var received = new java.util.concurrent.atomic.AtomicReference<Object>();
+        var count = new AtomicLong();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Object>spawnShared(() -> (value, turn) -> {
+                received.set(value); count.incrementAndGet();
+            });
+            runtime.bindSerializedData(actor, pin, bytes, work, 1);
+            var under = runtime.<Object>spawnShared(() -> (value, turn) -> count.incrementAndGet());
+            runtime.bindSerializedData(under, pin, bytes - 1, work, 1);
+            assertThrows(IllegalArgumentException.class, () -> runtime.sendSerializedData(under,
+                    under.generation(), pin.format(), pin.schemaId(), 1, pin.fingerprintHex(), wire));
+            byte[] invalid = wire.clone(); invalid[0] = 0;
+            assertThrows(IllegalArgumentException.class, () -> runtime.sendSerializedData(actor,
+                    actor.generation(), pin.format(), pin.schemaId(), 1, pin.fingerprintHex(), invalid));
+            runtime.sendSerializedData(actor, actor.generation(), pin.format(), pin.schemaId(),
+                    1, pin.fingerprintHex(), wire);
+            java.util.Arrays.fill(wire, (byte) 0);
+            actor.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(expected, received.get());
+            assertEquals(1, count.get());
+            byte[] retry = MessagePackWireV2.encode(pin.schemaId(), shape, expected);
+            runtime.sendSerializedData(actor, actor.generation(), pin.format(), pin.schemaId(),
+                    1, pin.fingerprintHex(), retry);
+            actor.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(2, count.get());
+        }
+    }
 }

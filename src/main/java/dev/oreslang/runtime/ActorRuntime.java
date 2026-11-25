@@ -5506,6 +5506,19 @@ public final class ActorRuntime implements AutoCloseable {
     void bindSerializedI64(ActorRef<Long> ref,
             dev.oreslang.types.PortableCodecRegistry.Descriptor descriptor,
             long bytes, long work, int slots) {
+        bindSerializedEndpoint(ref, descriptor, bytes, work, slots, false);
+    }
+
+    // Trusted host representation only; no compiler guest ABI is inferred.
+    void bindSerializedData(ActorRef<Object> ref,
+            dev.oreslang.types.PortableCodecRegistry.Descriptor descriptor,
+            long bytes, long work, int slots) {
+        bindSerializedEndpoint(ref, descriptor, bytes, work, slots, true);
+    }
+
+    private void bindSerializedEndpoint(ActorRef<?> ref,
+            dev.oreslang.types.PortableCodecRegistry.Descriptor descriptor,
+            long bytes, long work, int slots, boolean typed) {
         requireSupervisorShutdownAuthority("bind serialized DATA");
         if (currentActorId().isPresent()) throw new SecurityException("host-only DATA registration");
         Objects.requireNonNull(ref);
@@ -5524,7 +5537,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalArgumentException("DATA decode quota exceeds endpoint policy");
                 }
                 cell.serializedI64 = new ActorDataDecodeEscrowV1(
-                        descriptor, ref.generation(), bytes, work, slots);
+                        descriptor, ref.generation(), bytes, work, slots, typed);
             }
         }
     }
@@ -5538,7 +5551,15 @@ public final class ActorRuntime implements AutoCloseable {
     void sendSerializedI64(ActorRef<Long> ref, long epoch,
             dev.oreslang.types.PortableCodecRegistry.Format format,
             String schemaId, int version, String fingerprint, byte[] ownedWire) {
-        sendSerializedI64(ref, epoch, format, schemaId, version, fingerprint, ownedWire, null);
+        sendSerializedEndpoint(ref, epoch, format, schemaId, version, fingerprint,
+                ownedWire, false, Long.class::cast, null);
+    }
+
+    void sendSerializedData(ActorRef<Object> ref, long epoch,
+            dev.oreslang.types.PortableCodecRegistry.Format format,
+            String schemaId, int version, String fingerprint, byte[] ownedWire) {
+        sendSerializedEndpoint(ref, epoch, format, schemaId, version, fingerprint,
+                ownedWire, true, Function.identity(), null);
     }
 
     // Host test seam: the real decoder has returned but the final DATA
@@ -5548,14 +5569,14 @@ public final class ActorRuntime implements AutoCloseable {
             dev.oreslang.types.PortableCodecRegistry.Format format,
             String schemaId, int version, String fingerprint, byte[] ownedWire,
             Runnable afterDecode) {
-        sendSerializedI64(ref, epoch, format, schemaId, version, fingerprint,
-                ownedWire, Objects.requireNonNull(afterDecode));
+        sendSerializedEndpoint(ref, epoch, format, schemaId, version, fingerprint,
+                ownedWire, false, Long.class::cast, Objects.requireNonNull(afterDecode));
     }
 
-    private void sendSerializedI64(ActorRef<Long> ref, long epoch,
+    private <M> void sendSerializedEndpoint(ActorRef<M> ref, long epoch,
             dev.oreslang.types.PortableCodecRegistry.Format format,
             String schemaId, int version, String fingerprint, byte[] ownedWire,
-            Runnable afterDecode) {
+            boolean typed, Function<Object, M> hostRepresentation, Runnable afterDecode) {
         requireSupervisorShutdownAuthority("send serialized DATA");
         if (currentActorId().isPresent()) throw new SecurityException("host-only DATA ingress");
         Objects.requireNonNull(ref);
@@ -5570,7 +5591,8 @@ public final class ActorRuntime implements AutoCloseable {
                 throw terminated(ref);
             requireSupervisorEscrowAdmission(ref);
             ingress = cell.serializedI64;
-            if (ingress == null) throw new IllegalStateException("no pinned DATA endpoint");
+            if (ingress == null || ingress.isTyped() != typed)
+                throw new IllegalStateException("no matching pinned DATA endpoint");
             ticket = ingress.reserve(epoch, format, schemaId, version, fingerprint, ownedWire.length);
             if (ticket == null) throw new IllegalArgumentException("serialized DATA admission denied");
             // The old incarnation may not finalize while this ingress still
@@ -5580,14 +5602,14 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             // Per-endpoint authorization has succeeded. Reserve shared runtime
             // credits before any decoding and retain them through publication.
-            var lease = serializedDecodeBudget.reserve(ownedWire.length);
+            var lease = serializedDecodeBudget.reserveTicket(ticket);
             if (lease == null) throw new IllegalStateException("runtime DATA decode budget exhausted");
             try (lease) {
                 sendPrepared(ref, () -> {
-                    Long value = ingress.decodeForMailbox(ticket, ownedWire);
-                    if (value == null) throw new IllegalArgumentException("invalid serialized scalar DATA");
+                    Object value = ingress.decodeValueForMailbox(ticket, ownedWire);
+                    if (value == null) throw new IllegalArgumentException("invalid serialized DATA");
                     if (afterDecode != null) afterDecode.run();
-                    return value;
+                    return hostRepresentation.apply(value);
                 });
             }
         } finally {
