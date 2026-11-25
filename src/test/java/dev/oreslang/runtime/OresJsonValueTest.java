@@ -442,6 +442,19 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void noncanonicalHostNumericSubclassesAreRejectedBeforeCallbacks() {
+        var decimal = new BigDecimal("1") {
+            @Override public int precision() { throw new AssertionError("host callback"); }
+            @Override public String toString() { throw new AssertionError("host callback"); }
+        };
+        var integer = new BigInteger("1") {
+            @Override public String toString() { throw new AssertionError("host callback"); }
+        };
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.of(decimal));
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.of(integer));
+    }
+
+    @Test
     void directOwnedSnapshotMatchesPriorWireRoundTrip() {
         var document = AllocJsonText.parse("{\"x\":{\"decimal\":1.2300,\"exact\":9007199254740993,\"unicode\":\"🚀\\n\",\"items\":[true,null,{}]}}");
         var selected = ((OresJsonValue.ObjectValue) document).fields().lookup("x").value();

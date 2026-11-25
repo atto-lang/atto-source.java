@@ -55,8 +55,11 @@ public sealed interface OresJsonValue
     }
 
     public static OresJsonValue of(BigInteger value) {
-        return new NumberValue(new BigDecimal(
-                Objects.requireNonNull(value, "JSON integer")));
+        Objects.requireNonNull(value, "JSON integer");
+        if (value.getClass() != BigInteger.class) {
+            throw new IllegalArgumentException("JSON integer must use the canonical BigInteger carrier");
+        }
+        return new NumberValue(new BigDecimal(value));
     }
 
     public static OresJsonValue of(BigDecimal value) {
@@ -223,6 +226,9 @@ public sealed interface OresJsonValue
 
         private NumberValue(BigDecimal value) {
             value = Objects.requireNonNull(value, "JSON number");
+            if (value.getClass() != BigDecimal.class) {
+                throw new IllegalArgumentException("JSON number must use the canonical BigDecimal carrier");
+            }
             if (value.precision() > MAX_NUMBER_PRECISION
                     || Math.abs((long) value.scale()) > MAX_ABS_NUMBER_SCALE) {
                 throw new IllegalArgumentException(
