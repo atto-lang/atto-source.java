@@ -267,6 +267,16 @@ public final class RealtimePrimitiveCompiler {
             }
             return added(1, expression(unary.operand(), locals));
         }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            // Both alternatives must independently satisfy closed-world
+            // admission, including an unselected branch. Only one executes.
+            Cost predicate = expression(conditional.condition(), locals);
+            Cost whenTrue = expression(conditional.whenTrue(), locals);
+            Cost whenFalse = expression(conditional.whenFalse(), locals);
+            return new Cost(
+                    plus(plus(1, predicate.steps()), Math.max(whenTrue.steps(), whenFalse.steps())),
+                    Math.max(predicate.depth(), Math.max(whenTrue.depth(), whenFalse.depth())));
+        }
         if (expr instanceof Ast.CallExpr call) {
             if (!(call.callee() instanceof Ast.NameExpr name)
                     || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()) {
@@ -389,6 +399,13 @@ public final class RealtimePrimitiveCompiler {
             return "(" + emitExpr(b.left()) + " " + operator + " " + emitExpr(b.right()) + ")";
         }
         if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            // Primitive Java conditional bytecode uses forward branches and
+            // evaluates only the selected arm. No boxing or fallback evaluator.
+            return "(" + emitExpr(conditional.condition()) + " ? "
+                    + emitExpr(conditional.whenTrue()) + " : "
+                    + emitExpr(conditional.whenFalse()) + ")";
+        }
         if (expr instanceof Ast.CallExpr c && c.callee() instanceof Ast.NameExpr name) {
             List<String> args = new ArrayList<>();
             for (Ast.Expr arg : c.arguments()) args.add(emitExpr(arg));
