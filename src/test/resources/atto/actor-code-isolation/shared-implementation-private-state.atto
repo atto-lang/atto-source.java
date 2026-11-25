@@ -1,9 +1,7 @@
 // Canonical AttoLang executable regression: the same routine is called by
 // two instances of Counter, an isolated actor, and root bookkeeping.
 // Each actor owns independent mutable fields; code reuse shares no objects.
-fnc advance(int current, int delta): int {
-  return current + delta;
-}
+import fnc advance from "./advance.atto";
 
 define actor Counter as
   let int total;

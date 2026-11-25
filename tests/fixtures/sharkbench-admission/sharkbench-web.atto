@@ -95,17 +95,26 @@ define actor SharkBenchWorker as
           else
             val JsonValue selected = found.unwrap();
             if route == "/api/v1/periodic-table/element"; then
-              val JsonValue name = selected.get("name").unwrap();
-              val JsonValue number = selected.get("number").unwrap();
-              val JsonValue group = selected.get("group").unwrap();
-              if name.as_string().is_none() || number.as_int().is_none()
-                || group.as_int().is_none(); then
-                await exchange.respond(502, "text/plain", "invalid upstream shape");
+              // Missing fields are ordinary validation failures, never
+              // a panic-producing Option.unwrap() on untrusted data.
+              val name_field = selected.get("name");
+              val number_field = selected.get("number");
+              val group_field = selected.get("group");
+              if name_field.is_none() || number_field.is_none() || group_field.is_none(); then
+                await exchange.respond(502, "text/plain", "missing upstream field");
               else
-                val string encoded = "{\"name\":" + Json.stringify(rt borrow name)
-                  + ",\"number\":" + Json.stringify(rt borrow number)
-                  + ",\"group\":" + Json.stringify(rt borrow group) + "}";
-                await exchange.respond(200, "application/json", encoded);
+                val JsonValue name = name_field.unwrap();
+                val JsonValue number = number_field.unwrap();
+                val JsonValue group = group_field.unwrap();
+                if name.as_string().is_none() || number.as_int().is_none()
+                  || group.as_int().is_none(); then
+                  await exchange.respond(502, "text/plain", "invalid upstream shape");
+                else
+                  val string encoded = "{\"name\":" + Json.stringify(rt borrow name)
+                    + ",\"number\":" + Json.stringify(rt borrow number)
+                    + ",\"group\":" + Json.stringify(rt borrow group) + "}";
+                  await exchange.respond(200, "application/json", encoded);
+                fi
               fi
             else
               // Verify the selected array consists of bounded integral
