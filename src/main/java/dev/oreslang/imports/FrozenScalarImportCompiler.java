@@ -15,7 +15,7 @@ import java.util.*;
 /**
  * Frozen, in-memory compiler entry point for one deliberately bounded guest
  * shape: imports, namespace aliases, and a public scalar main returning a
- * no-argument imported function call. Every provider byte was verified before
+ * bounded signed-int literal argument call. Every provider byte was verified before
  * lowering. The consumer is parsed by an explicit closed token grammar, not
  * rewritten by textual substitution. Other shapes must fail closed.
  */
@@ -101,7 +101,16 @@ public final class FrozenScalarImportCompiler {
         if(!reader.take("->")) reader.expect(":");
         reader.expect("int"); reader.expect("{"); reader.expect("return");
         String reference=reader.path();
-        reader.expect("("); reader.expect(")"); reader.expect(";"); reader.expect("}");
+        reader.expect("(");
+        var arguments=new ArrayList<Long>();
+        if(!reader.take(")")) {
+            do {
+                if(arguments.size()>=16) throw fail("E_SOURCE_LIMIT","call argument budget exceeded");
+                arguments.add(reader.integer());
+            } while(reader.take(","));
+            reader.expect(")");
+        }
+        reader.expect(";"); reader.expect("}");
         reader.expectEnd();
         if(reference.indexOf('.')<0) throw fail("E_UNSUPPORTED","expected a qualified static call");
         for(var imported:imports) {
@@ -131,7 +140,7 @@ public final class FrozenScalarImportCompiler {
         // provider is the unchanged original verified source, not a transformed
         // copy. The normal compiler rechecks member signatures and call types.
         String lowered="import fnc "+member+" as selected_call from \""+IMPORT+"\";\n"
-            +"pub fnc main(): int { return selected_call(); }";
+            +"pub fnc main(): int { return selected_call("+String.join(", ",arguments.stream().map(v->Long.toString(v)).toList())+"); }";
         var resolutions=Map.of(ENTRY,Map.of(IMPORT,PROVIDER));
         var build=new IncrementalCompiler().compileStrictAtto(Map.of(ENTRY,lowered,PROVIDER,provider),resolutions);
         return new CheckedGuest(build);
@@ -161,6 +170,8 @@ public final class FrozenScalarImportCompiler {
                 case ":" -> Token.Type.COLON;
                 case "->" -> Token.Type.ARROW;
                 case "=" -> Token.Type.EQUAL;
+                case "," -> Token.Type.COMMA;
+                case "-" -> Token.Type.MINUS;
                 default -> Token.Type.IDENT;
             };
             if(peek().type()!=expected||!peek().lexeme().equals(value)) return false;
@@ -182,6 +193,15 @@ public final class FrozenScalarImportCompiler {
                 s.append('.').append(component());
             }
             return s.toString();
+        }
+        long integer(){
+            boolean negative=take("-");
+            Token t=peek();
+            if(t.type()!=Token.Type.INT||!t.lexeme().matches("[0-9](?:_?[0-9]){0,18}"))
+                throw fail("E_IMPORT_KIND","expected bounded decimal int argument");
+            i++;
+            try {return Long.parseLong((negative?"-":"")+t.lexeme().replace("_",""));}
+            catch(NumberFormatException e){throw fail("E_IMPORT_KIND","int argument outside signed i64 range");}
         }
         String string(){
             if(peek().type()!=Token.Type.STRING) throw fail("E_IMPORT_PATH","expected static package string");
