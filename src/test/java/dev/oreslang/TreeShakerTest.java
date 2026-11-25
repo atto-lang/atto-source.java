@@ -223,6 +223,40 @@ final class TreeShakerTest {
     }
 
     @Test
+    void treeShakingPreservesStaticGeneratorAndSuspensionMetadata() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define class Sequences as
+                  pub static suspend gen* values(): AsyncIterator<int> {
+                    rt cooperate;
+                    yield 42;
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  for await const value of Sequences.values() {
+                    stdio.stdout.write(value);
+                  }
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        Ast.MethodDecl values = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .filter(klass -> klass.name().equals("Sequences"))
+                .flatMap(klass -> klass.methods().stream())
+                .filter(method -> method.name().equals("values"))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(values.isStatic());
+        assertTrue(values.generator(), "generator metadata must survive tree rewriting");
+        assertTrue(values.suspends(), "suspension metadata must survive tree rewriting");
+    }
+
+    @Test
     void treeShakingPreservesExplicitReferentMutability() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 define class Child as

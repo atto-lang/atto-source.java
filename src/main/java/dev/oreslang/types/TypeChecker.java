@@ -810,7 +810,7 @@ public final class TypeChecker {
             }
             if (param.structural() && (fn.async() || fn.suspends() || fn.generator())) {
                 throw new IllegalArgumentException(
-                        "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/yield/suspension; "
+                        "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                 + "pass an owned nominal value or copy the required fields");
             }
             if (fn.actorKind() != Ast.ActorKind.NONE) {
@@ -1492,6 +1492,13 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (method.generator() && !method.isStatic()) {
+                throw new IllegalArgumentException(
+                        "instance generator method '" + klass.name() + "." + method.name()
+                                + "' requires continuation-owned receiver lifetime checking");
+            }
+            boolean methodAsyncGeneratorProtocol =
+                    method.generator() && (method.async() || method.suspends());
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
@@ -1522,7 +1529,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must have an implementation");
                 }
-                if (method.async() || method.suspends()) {
+                if (method.async() || method.suspends() || method.generator()) {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must be synchronous; "
                                     + "readiness settles only after startup completes on the actor execution domain");
@@ -1550,9 +1557,9 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor mailbox handler '" + klass.name() + ".receive' must have an implementation");
                 }
-                if (method.async()) {
+                if (method.async() || method.generator()) {
                     throw new IllegalArgumentException(
-                            "actor mailbox handler '" + klass.name() + ".receive' uses actor-turn suspension; "
+                            "actor mailbox handler '" + klass.name() + ".receive' uses actor-turn suspension/generation; "
                                     + "declare it synchronously and use explicit await/rt cooperate safepoints");
                 }
                 if (!method.genericParameters().isEmpty()) {
@@ -1574,9 +1581,9 @@ public final class TypeChecker {
                         "async instance method '" + klass.name() + "." + method.name()
                                 + "' requires moving/borrowing the receiver into the task; use an async static fnc for now");
             }
-            if (method.async() && !method.genericParameters().isEmpty()) {
+            if ((method.async() || methodAsyncGeneratorProtocol) && !method.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
-                        "generic async static functions require an explicit task-safe/sendable generic bound");
+                        "generic continuation-backed static functions require an explicit task-safe/sendable generic bound");
             }
             Set<String> generics = new HashSet<>();
             if (!method.isStatic()) generics.addAll(classGenerics);
@@ -1633,16 +1640,16 @@ public final class TypeChecker {
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
                                     + "actor APIs require owned/sendable nominal message values");
                 }
-                if (param.structural() && (method.async() || method.suspends())) {
+                if (param.structural() && (method.async() || method.suspends() || methodAsyncGeneratorProtocol)) {
                     throw new IllegalArgumentException(
-                            "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
+                            "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/yield/suspension; "
                                     + "pass an owned nominal value or copy the required fields");
                 }
-                if (method.async()) {
+                if (method.async() || methodAsyncGeneratorProtocol) {
                     validateAsyncBoundaryType(
                             parameterType,
                             false,
-                            "parameter '" + param.name() + "' of async static function '" + klass.name() + "." + method.name() + "'");
+                            "parameter '" + param.name() + "' of continuation-backed static function '" + klass.name() + "." + method.name() + "'");
                 }
                 if (actorReceiveHook) {
                     if (!(parameterType instanceof Named mail)
@@ -1661,7 +1668,15 @@ public final class TypeChecker {
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             defineImplicitArguments(env, methodArgumentTypes);
-            Type returns = resolve(method.returnType(), generics, callableSelf);
+            Type declaredReturn = resolve(method.returnType(), generics, callableSelf);
+            Type returns = method.generator()
+                    ? generatorYieldType(method.async() || method.suspends(), declaredReturn)
+                    : declaredReturn;
+            if (returns == Primitive.VOID && method.generator()) {
+                throw new IllegalArgumentException(
+                        "generator static function '" + klass.name() + "." + method.name()
+                                + "' must declare a non-void yielded element type");
+            }
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
                         "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
@@ -1670,11 +1685,12 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "actor mailbox handler '" + klass.name() + ".receive' must return void");
             }
-            if (method.async()) {
+            if (method.async() || methodAsyncGeneratorProtocol) {
                 validateAsyncBoundaryType(
                         returns,
                         true,
-                        "return type of async static function '" + klass.name() + "." + method.name() + "'");
+                        (method.generator() ? "yield type of async/suspend static generator '" : "return type of async static function '")
+                                + klass.name() + "." + method.name() + "'");
             }
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
@@ -1682,7 +1698,11 @@ public final class TypeChecker {
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
+            boolean previousGenerator = currentGenerator;
+            boolean previousAsync = currentAsyncCallable;
             boolean previousMaySuspend = currentMaySuspend;
+            currentGenerator = method.generator();
+            currentAsyncCallable = method.async() || methodAsyncGeneratorProtocol;
             currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
@@ -1690,9 +1710,11 @@ public final class TypeChecker {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
+                currentGenerator = previousGenerator;
+                currentAsyncCallable = previousAsync;
                 currentMaySuspend = previousMaySuspend;
             }
-            if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
+            if (!method.generator() && !method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
             }
@@ -3585,8 +3607,8 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
-                    requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
-                    return callableResult(fn.async(), false, result);
+                    requireSuspendableCall(fn.suspends() && !fn.generator(), "static function '" + fn.name() + "'");
+                    return callableResult(fn.async(), fn.suspends(), fn.generator(), result);
                 }
                 if (receiver instanceof Named named) {
                     if (named.name().equals("SharedMutex")
@@ -4043,8 +4065,16 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    // Generator declarations are deliberately restricted to top-level/module
-                    // callables, so class static functions cannot produce generator activations.
+                    if (fn.generator()) {
+                        throw new IllegalArgumentException(
+                                "static generator function '" + klass.name() + "." + fn.name()
+                                        + "' is direct-call-only until function values encode lazy generator activation and suspension");
+                    }
+                    if (fn.suspends()) {
+                        throw new IllegalArgumentException(
+                                "suspends static function '" + klass.name() + "." + fn.name()
+                                        + "' cannot be used as a first-class callable until Fnc types encode suspension");
+                    }
                     return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
@@ -4985,6 +5015,16 @@ public final class TypeChecker {
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
+            if (fn.generator()) {
+                throw new IllegalArgumentException(
+                        "static generator function '" + klass.name() + "." + fn.name()
+                                + "' is direct-call-only and cannot be reified as a callback");
+            }
+            if (fn.suspends()) {
+                throw new IllegalArgumentException(
+                        "suspends static function '" + klass.name() + "." + fn.name()
+                                + "' cannot be reified as a callback until Fnc types encode suspension");
+            }
             return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
 
