@@ -6,6 +6,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowV1Standalone.java'
       - 'src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java'
       - 'src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorSupervisorRestartCircuit.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java'
