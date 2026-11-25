@@ -576,6 +576,14 @@ final class ActorArtifactAdmissionTest {
             assertThrows(SecurityException.class, () -> other.retireBoundIpcSession(first));
             runtime.retireBoundIpcSession(first);
             assertThrows(IllegalStateException.class, first::claimBootstrapForTrustedLauncher);
+            assertThrows(SecurityException.class, () ->
+                    runtime.openBoundIpcSession(artifact, route, 1, 1, 2, 4096));
+            assertThrows(SecurityException.class, () ->
+                    runtime.openBoundIpcSession(artifact, route, 1, 3, 2, 4096));
+            assertThrows(SecurityException.class, () ->
+                    runtime.openBoundIpcSession(artifact, route, 3, 2, 2, 4096));
+            assertThrows(SecurityException.class, () ->
+                    runtime.openBoundIpcSession(artifact, UUID.randomUUID(), 2, 1, 2, 4096));
             var replacement = runtime.openBoundIpcSession(artifact, route, 1, 2, 2, 4096);
             assertThrows(SecurityException.class, () -> runtime.retireBoundIpcSession(first));
             try (var bootstrap = replacement.claimBootstrapForTrustedLauncher()) {
