@@ -63,6 +63,10 @@ public final class TypeChecker {
     private record AliasFrame(int guardDepth, List<Ast.TypeRef> arguments) { }
     private final IdentityHashMap<Ast.TypeAliasDecl, AliasFrame> resolvingAliases = new IdentityHashMap<>();
     private int recursiveAliasGuardDepth;
+    private int typeResolutionDepth;
+    private int typeResolutionWork;
+    private static final int MAX_TYPE_RESOLUTION_DEPTH = 128;
+    private static final int MAX_TYPE_RESOLUTION_WORK = 32768;
     private int assignabilityDepth;
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -7096,6 +7100,20 @@ public final class TypeChecker {
     }
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
+        if (typeResolutionDepth == 0) typeResolutionWork = 0;
+        if (typeResolutionDepth >= MAX_TYPE_RESOLUTION_DEPTH
+                || ++typeResolutionWork > MAX_TYPE_RESOLUTION_WORK) {
+            throw new IllegalArgumentException("E_TYPE_EXPANSION_LIMIT: type resolution exceeds bounded depth/work");
+        }
+        typeResolutionDepth++;
+        try {
+            return resolveTypeBody(ref, generics, self, allowNullMarker);
+        } finally {
+            typeResolutionDepth--;
+        }
+    }
+
+    private Type resolveTypeBody(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
         if (ref.isBorrow()) return new Borrow(resolveGuarded(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
