@@ -31,8 +31,8 @@ public final class FrozenScalarImportCompiler {
 
     public static final class CheckedGuest {
         private final IncrementalCompiler.BuildResult build;
-        private final Map<String,String> resolutions;
-        private CheckedGuest(IncrementalCompiler.BuildResult build,Map<String,String> resolutions) {
+        private final Map<String,Map<String,String>> resolutions;
+        private CheckedGuest(IncrementalCompiler.BuildResult build,Map<String,Map<String,String>> resolutions) {
             this.build=build; this.resolutions=Map.copyOf(resolutions);
         }
 
@@ -48,8 +48,9 @@ public final class FrozenScalarImportCompiler {
                         units.put(unit.unitId(),ctx.parse(source));
                     }
                 }
-                for(var edge:new TreeMap<>(resolutions).entrySet())
-                    units.get(ENTRY).execute(OresEvalRootNode.REGISTER_IMPORT_COMMAND,edge.getKey(),edge.getValue());
+                for(var importer:new TreeMap<>(resolutions).entrySet())
+                    for(var edge:new TreeMap<>(importer.getValue()).entrySet())
+                        units.get(importer.getKey()).execute(OresEvalRootNode.REGISTER_IMPORT_COMMAND,edge.getKey(),edge.getValue());
                 for(var unit:units.values()) unit.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
                 for(var group:build.initializationGroups())
                     for(String id:group) units.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
@@ -100,26 +101,30 @@ public final class FrozenScalarImportCompiler {
             aliases.add(new StaticImportGraph.Alias(name,reference));
         }
         StaticImportGraph.precheckAliases(aliases);
-        FrozenDependencyGraph.verify(packages);
+        var closure=FrozenDependencyGraph.verify(packages);
+        var linked=FrozenProviderLinker.link(closure,available);
         for(var imported:imports) {
             if(imported.selector()==null) {
                 var pkg=available.get(imported.source());
                 if(pkg==null) throw fail("E_UNBOUND","package root not in authenticated snapshot set");
-                graph.bindPackage(pkg.functionView(),imported.binding());
+                graph.bindPackage(linked.views().get(pkg.name()),imported.binding());
                 continue;
             }
             String[] parts=imported.source().split("/",-1);
             if(parts.length<3) throw fail("E_IMPORT_PATH","invalid package selector");
             var pkg=available.get(String.join("/",Arrays.copyOf(parts,3)));
             if(pkg==null) throw fail("E_UNBOUND","package not in authenticated snapshot set");
-            pkg.bindNamespace(graph,imported.source(),imported.selector(),imported.binding(),imported.renamed());
+            if(!imported.renamed()&&!imported.selector().equals(imported.binding()))
+                throw fail("E_IMPORT_PATH","rename requires explicit alias");
+            String selected=pkg.selectNamespace(imported.source(),imported.selector());
+            var view=linked.views().get(pkg.name());
+            graph.bindGroup(view.origin(),view,List.of(new StaticImportGraph.Selection(selected,
+                imported.binding(),StaticImportGraph.Kind.NAMESPACE,imported.renamed())));
         }
         graph.bindAliases(aliases);
 
-        record ProviderKey(String packageName,String namespace) {}
-        record CallKey(ProviderKey provider,String member) {}
-        var providerIds=new LinkedHashMap<ProviderKey,String>();
-        var sources=new LinkedHashMap<String,String>();
+        record CallKey(String provider,String member) {}
+        var sources=new LinkedHashMap<String,String>(linked.sources());
         var resolutions=new LinkedHashMap<String,String>();
         var callNames=new LinkedHashMap<CallKey,String>();
         var declarations=new StringBuilder();
@@ -129,7 +134,7 @@ public final class FrozenScalarImportCompiler {
             StaticImportGraph.Target target=graph.resolve(reference);
             if(target.kind()!=StaticImportGraph.Kind.FNC) throw fail("E_IMPORT_KIND","expected a function");
             FrozenImportSnapshot pkg=available.get(target.view().origin().identity());
-            if(pkg==null||pkg.functionView()!=target.view())
+            if(pkg==null||linked.views().get(pkg.name())!=target.view())
                 throw fail("E_IMPORT_PATH","selected view not owned by authenticated snapshot");
             int dot=target.path().lastIndexOf('.');
             if(dot<=0) throw fail("E_IMPORT_PATH","missing provider namespace");
@@ -137,7 +142,7 @@ public final class FrozenScalarImportCompiler {
             String provider=pkg.providerSource(ns);
             // Match the closed signed-int ABI before lowering. Do not use
             // implicit coercions or argument types to choose a package.
-            var functions=Parser.parse(provider).modules().stream()
+            var functions=Parser.parseStrictAtto(provider).modules().stream()
                 .filter(m->Parser.ROOT_MODULE.equals(m.name()))
                 .flatMap(m->m.declarations().stream())
                 .filter(d->d instanceof Ast.FunctionDecl)
@@ -155,16 +160,10 @@ public final class FrozenScalarImportCompiler {
                 !Ast.TypeRef.simple("int").equals(function.returnType()))
                 throw fail("E_IMPORT_KIND","selected function must accept exact signed-int arguments and return int");
 
-            ProviderKey key=new ProviderKey(pkg.name(),ns);
-            String unit=providerIds.get(key);
-            if(unit==null) {
-                if(providerIds.size()>=16) throw fail("E_SOURCE_LIMIT","provider budget exceeded");
-                unit="pinned/provider_"+providerIds.size()+".atto";
-                providerIds.put(key,unit);
-                sources.put(unit,provider);
-                resolutions.put("./"+unit,unit);
-            }
-            CallKey callKey=new CallKey(key,member);
+            String unit=linked.units().get(new FrozenProviderLinker.Key(pkg.name(),ns));
+            if(unit==null) throw fail("E_IMPORT_PATH","provider not linked");
+            resolutions.put("./"+unit,unit);
+            CallKey callKey=new CallKey(unit,member);
             String selected=callNames.get(callKey);
             if(selected==null) {
                 selected="frozen_call_"+callNames.size();
@@ -197,8 +196,10 @@ public final class FrozenScalarImportCompiler {
         reader.expectEnd();
         if(calls[0]==0) throw fail("E_UNSUPPORTED","frozen guest requires imported call");
         sources.put(ENTRY,declarations+"pub fnc main(): int { "+prelude+"return "+result+"; }");
-        var build=new IncrementalCompiler().compileStrictAtto(sources,Map.of(ENTRY,resolutions));
-        return new CheckedGuest(build,resolutions);
+        var allResolutions=new LinkedHashMap<String,Map<String,String>>(linked.resolutions());
+        allResolutions.put(ENTRY,Map.copyOf(resolutions));
+        var build=new IncrementalCompiler().compileStrictAtto(sources,allResolutions);
+        return new CheckedGuest(build,allResolutions);
     }
 
     private static final class Reader {
