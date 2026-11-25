@@ -200,6 +200,9 @@ public final class RealtimePrimitiveCompiler {
     private Cost statement(Ast.Stmt stmt, Set<String> locals) {
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() == null) throw invalid("only non-void returns are admitted");
+            if (ret.value() instanceof Ast.MatchExpr matched && matched.arms().size() > 2) {
+                return added(1, multiArmMatchCost(matched, locals));
+            }
             return added(1, expression(ret.value(), locals));
         }
         if (stmt instanceof Ast.BindingStmt bind) {
@@ -337,6 +340,61 @@ public final class RealtimePrimitiveCompiler {
         return new Ast.ConditionalExpr(condition, first.value(), last.value());
     }
 
+    /**
+     * Return-position multi-arm i32 matching uses a single primitive local
+     * and forward comparisons. No new dispatch object or helper call exists
+     * at runtime. Guard/prefix/binding patterns remain outside this profile.
+     */
+    private static void validateMultiArmMatch(Ast.MatchExpr matched) {
+        int count = matched.arms().size();
+        if (count < 3 || count > 64) {
+            throw invalid("multi-arm primitive match requires 3..64 arms");
+        }
+        if (matched.resultType() != null && !primitive(matched.resultType())) {
+            throw invalid("primitive value match requires a primitive result type");
+        }
+        Set<Long> seen = new HashSet<>();
+        for (int i = 0; i < count; i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            if (arm.guard() != null || !arm.prefixStatements().isEmpty()) {
+                throw invalid("primitive value match does not admit guards or block prefixes");
+            }
+            if (i == count - 1) {
+                if (!(arm.pattern() instanceof Ast.WildcardPattern)) {
+                    throw invalid("multi-arm primitive match requires a final wildcard");
+                }
+                continue;
+            }
+            if (!(arm.pattern() instanceof Ast.LiteralPattern literal)) {
+                throw invalid("multi-arm primitive match requires i32 literals");
+            }
+            Object value = literal.value();
+            if (!(value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long)) {
+                throw invalid("multi-arm primitive match requires i32 literals");
+            }
+            long n = ((Number) value).longValue();
+            if (n < Integer.MIN_VALUE || n > Integer.MAX_VALUE || !seen.add(n)) {
+                throw invalid("out-of-range or duplicate multi-arm i32 pattern");
+            }
+        }
+    }
+
+    private Cost multiArmMatchCost(Ast.MatchExpr matched, Set<String> locals) {
+        validateMultiArmMatch(matched);
+        Cost subject = expression(matched.subject(), locals);
+        long tests = plus(2, subject.steps()); // dispatch + single scalar store
+        long worstArm = 0;
+        int depth = subject.depth();
+        for (int i = 0; i < matched.arms().size(); i++) {
+            if (i + 1 < matched.arms().size()) tests = plus(tests, 3); // read + literal + compare
+            Cost arm = expression(matched.arms().get(i).value(), locals);
+            worstArm = Math.max(worstArm, arm.steps());
+            depth = Math.max(depth, arm.depth());
+        }
+        return new Cost(plus(tests, worstArm), depth);
+    }
+
     private static Cost combined(long own, Cost first, Cost second) {
         return new Cost(plus(plus(own, first.steps()), second.steps()),
                 Math.max(first.depth(), second.depth()));
@@ -401,7 +459,11 @@ public final class RealtimePrimitiveCompiler {
     private static void emitStatements(StringBuilder out, List<Ast.Stmt> body, String indent) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt ret) {
-                out.append(indent).append("return ").append(emitExpr(ret.value())).append(";\n");
+                if (ret.value() instanceof Ast.MatchExpr matched && matched.arms().size() > 2) {
+                    emitMultiArmMatchReturn(out, matched, indent);
+                } else {
+                    out.append(indent).append("return ").append(emitExpr(ret.value())).append(";\n");
+                }
             } else if (stmt instanceof Ast.BindingStmt bind) {
                 out.append(indent).append(javaType(bind.declaredType())).append(" ")
                         .append(bind.name()).append(" = ").append(emitExpr(bind.initializer()))
@@ -424,6 +486,70 @@ public final class RealtimePrimitiveCompiler {
                 throw invalid("internal error: admitted statement was not lowered");
             }
         }
+    }
+
+    private static void emitMultiArmMatchReturn(StringBuilder out, Ast.MatchExpr matched, String indent) {
+        validateMultiArmMatch(matched);
+        // '
+        if (expr instanceof Ast.LiteralExpr lit) return String.valueOf(lit.value());
+        if (expr instanceof Ast.NameExpr name) return name.name();
+        if (expr instanceof Ast.BinaryExpr b) {
+            // Checked source equality is normalized by Parser to eq/neq.
+            // Java source is only an intermediate build artifact; translate
+            // at emission, never accept an interpreter or dynamic dispatch.
+            String operator = switch (b.operator()) {
+                case "eq", "==" -> "==";
+                case "neq", "!=" -> "!=";
+                default -> b.operator();
+            };
+            return "(" + emitExpr(b.left()) + " " + operator + " " + emitExpr(b.right()) + ")";
+        }
+        if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
+        if (expr instanceof Ast.MatchExpr matched) {
+            return emitExpr(lowerPrimitiveMatch(matched));
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            // Primitive Java conditional bytecode uses forward branches and
+            // evaluates only the selected arm. No boxing or fallback evaluator.
+            return "(" + emitExpr(conditional.condition()) + " ? "
+                    + emitExpr(conditional.whenTrue()) + " : "
+                    + emitExpr(conditional.whenFalse()) + ")";
+        }
+        if (expr instanceof Ast.CallExpr c && c.callee() instanceof Ast.NameExpr name) {
+            List<String> args = new ArrayList<>();
+            for (Ast.Expr arg : c.arguments()) args.add(emitExpr(arg));
+            return name.name() + "(" + String.join(", ", args) + ")";
+        }
+        throw invalid("internal error: admitted expression was not lowered");
+    }
+    private static String sha256(byte[] bytes) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
+        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+    private static IllegalArgumentException invalid(String text) {
+        return new IllegalArgumentException("RT-PRIMITIVE: " + text);
+    }
+}
+ is disallowed by validateIdentifier for every admitted guest
+        // identifier. The explicit block limits the temporary's lexical scope.
+        String subject = "$matchSubject";
+        out.append(indent).append("{\n");
+        String inner = indent + "  ";
+        out.append(inner).append("final int ").append(subject).append(" = ")
+                .append(emitExpr(matched.subject())).append(";\n");
+        for (int i = 0; i < matched.arms().size(); i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            if (i + 1 == matched.arms().size()) {
+                out.append(inner).append("else {\n");
+            } else {
+                Ast.LiteralPattern literal = (Ast.LiteralPattern) arm.pattern();
+                out.append(inner).append(i == 0 ? "if (" : "else if (")
+                        .append(subject).append(" == ").append(literal.value()).append(") {\n");
+            }
+            out.append(inner).append("  return ").append(emitExpr(arm.value())).append(";\n");
+            out.append(inner).append("}\n");
+        }
+        out.append(indent).append("}\n");
     }
 
     private static String emitExpr(Ast.Expr expr) {
