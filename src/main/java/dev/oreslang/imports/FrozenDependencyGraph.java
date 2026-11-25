@@ -73,4 +73,38 @@ public final class FrozenDependencyGraph {
             throw fail("E_UNBOUND","undeclared direct dependency "+owner+" -> "+dependency);
         return packages.get(dependency);
     }
+    /**
+     * Source-level invalidation only. Reusable entries are candidates, not
+     * validated cache artifacts; compiler/target/options and artifact integrity
+     * must be checked separately. A null previous graph means a cold build.
+     */
+    public record InvalidationPlan(List<String> rebuild,List<String> reusable,List<String> removed) {
+        public InvalidationPlan {
+            rebuild=List.copyOf(rebuild);
+            reusable=List.copyOf(reusable);
+            removed=List.copyOf(removed);
+        }
+    }
+    public InvalidationPlan planAgainst(FrozenDependencyGraph previous) {
+        var dirty=new HashSet<String>();
+        var rebuild=new ArrayList<String>();
+        var reusable=new ArrayList<String>();
+        var removed=new ArrayList<String>();
+        for(String name:dependencyOrder) {
+            var current=packages.get(name);
+            var old=previous==null?null:previous.packages.get(name);
+            boolean changed=old==null||!current.version().equals(old.version())||
+                !current.lockDigest().equals(old.lockDigest())||
+                current.dependencies().keySet().stream().anyMatch(dirty::contains);
+            if(changed) {dirty.add(name);rebuild.add(name);}
+            else reusable.add(name);
+        }
+        if(previous!=null)
+            for(int i=previous.dependencyOrder.size()-1;i>=0;i--) {
+                String name=previous.dependencyOrder.get(i);
+                if(!packages.containsKey(name)) removed.add(name);
+            }
+        return new InvalidationPlan(rebuild,reusable,removed);
+    }
+
 }

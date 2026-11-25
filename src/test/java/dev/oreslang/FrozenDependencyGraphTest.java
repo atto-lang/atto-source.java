@@ -103,4 +103,33 @@ final class FrozenDependencyGraphTest {
             "use namespace network; import fnc answer from pkg '"+C+"/src/network'; pub fnc other(int x):int{return answer(x);}");
         deny("E_UNBOUND",()->FrozenScalarImportCompiler.compile(fromB,List.of(physical,c)));
     }
+    @Test void sourceInvalidationIsDeterministicAndSelective()throws Exception {
+        var c=withDeps(C);var b=withDeps(B,c);var a=withDeps(A,b);var d=withDeps(D);
+        var old=FrozenDependencyGraph.verify(List.of(a,b,c,d));
+        var same=FrozenDependencyGraph.verify(List.of(d,c,b,a));
+        assertEquals(List.of(),same.planAgainst(old).rebuild());
+        assertEquals(old.dependencyOrder(),same.planAgainst(old).reusable());
+        assertEquals(old.dependencyOrder(),old.planAgainst(null).rebuild());
+        var changed=snapshot(C,"1.0.0",Map.of(),Map.of(),SOURCE.replace("42","43"));
+        var b2=withDeps(B,changed);var a2=withDeps(A,b2);
+        for(var inventory:List.of(List.of(a2,b2,changed,d),List.of(d,changed,b2,a2))) {
+            var plan=FrozenDependencyGraph.verify(inventory).planAgainst(old);
+            assertEquals(List.of(C,B,A),plan.rebuild());
+            assertEquals(List.of(D),plan.reusable());
+            assertEquals(List.of(),plan.removed());
+            assertThrows(UnsupportedOperationException.class,()->plan.rebuild().clear());
+            assertThrows(UnsupportedOperationException.class,()->plan.reusable().clear());
+        }
+        var without=FrozenDependencyGraph.verify(List.of(d));
+        assertEquals(List.of(A,B,C),without.planAgainst(old).removed());
+        assertEquals(List.of(D),without.planAgainst(old).reusable());
+        assertEquals(List.of(C,B,A),old.planAgainst(without).rebuild());
+        deny("E_LOCK_HASH",()->FrozenDependencyGraph.verify(List.of(a,b,changed,d)));
+        var rewired=withDeps(A,c);
+        var plan=FrozenDependencyGraph.verify(List.of(rewired,c,d)).planAgainst(old);
+        assertEquals(List.of(A),plan.rebuild());
+        assertEquals(List.of(C,D),plan.reusable());
+        assertEquals(List.of(B),plan.removed());
+    }
+
 }
