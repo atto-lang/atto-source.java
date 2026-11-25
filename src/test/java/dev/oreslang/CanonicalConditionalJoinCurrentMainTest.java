@@ -83,9 +83,9 @@ final class CanonicalConditionalJoinCurrentMainTest {
                 """;
         var checked = OresCompiler.parseAndTypeCheckStrictAtto(source);
         var optimized = OresCompiler.compileForBuildStrictAtto(source, BuildOptions.executable());
-        assertTrue(optimized.retained("condition"));
-        assertTrue(optimized.retained("selected"));
-        assertTrue(optimized.retained("other"));
+        assertTrue(optimized.retained(Parser.ROOT_MODULE + ".condition"));
+        assertTrue(optimized.retained(Parser.ROOT_MODULE + ".selected"));
+        assertTrue(optimized.retained(Parser.ROOT_MODULE + ".other"));
         for (var program : java.util.List.of(checked, optimized.program())) {
             var output = new ByteArrayOutputStream();
             String name = "conditional-optimization.ores";
