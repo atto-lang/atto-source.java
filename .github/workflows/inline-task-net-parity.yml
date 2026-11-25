@@ -1,0 +1,74 @@
+name: Exact .NET-proven inline task Java parity
+on:
+  pull_request:
+    paths:
+      - 'src/main/**'
+      - 'pom.xml'
+      - 'tests/fixtures/inline-task-net-parity/**'
+      - 'tools/run-inline-task-net-parity.py'
+      - '.github/workflows/inline-task-net-parity.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guest:
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            mode: jvm
+          - runner: macos-15
+            mode: jvm
+          - runner: macos-15
+            mode: native
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git log -1 --format='%H %T'
+          git diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ github.token }}
+          cache: maven
+      - name: Build real compiler
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          if [[ "$MODE" == native ]]; then
+            native-image --version
+            mvn -B -ntp -Pnative-aot -Dmaven.test.skip=true package
+            test -x target/ores-aot
+          else
+            mvn -B -ntp -Dmaven.test.skip=true package
+            mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+          fi
+      - name: Check and execute every identical source fixture
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          python3 tools/run-inline-task-net-parity.py "$MODE" | tee target/inline-task-net-parity.log
+          grep -Fx 'EXACT_INLINE_TASK_JAVA_PASS 4/4' target/inline-task-net-parity.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: inline-task-net-parity-${{ matrix.runner }}-${{ matrix.mode }}
+          path: target/inline-task-net-parity.log
+          if-no-files-found: warn
