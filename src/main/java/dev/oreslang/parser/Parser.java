@@ -54,6 +54,10 @@ public final class Parser {
     // No runtime descriptor, textual rewrite, new AST kind, or imported authority.
     private record LocalDeclarationKind(boolean actor, List<Ast.TypeRef> requirements) {}
     private final java.util.Map<String, LocalDeclarationKind> localClassKeywords = new java.util.LinkedHashMap<>();
+    // A speculative forward header is not authoritative until the ordinary
+    // root parser consumes that exact token position. No AST escapes before
+    // every provisional descriptor is confirmed.
+    private final java.util.Map<String, Integer> forwardKindOrigins = new java.util.HashMap<>();
     private static final java.util.Set<String> RESERVED_CUSTOM_KINDS = java.util.Set.of(
             "abstract",
             "activity",
@@ -589,9 +593,6 @@ public final class Parser {
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 if (extensibleDeclarationSource && isContextualIdentifier("keyword") && checkNext(IDENT)) {
-                    if (!rootDeclarations.isEmpty() || !modules.isEmpty() || !rootForwards.isEmpty()) {
-                        throw error(peek(), "KIND_HEADER_REQUIRED: phase 1a descriptors precede all ordinary declarations");
-                    }
                     parseLocalClassKeyword(modifiers, annotations);
                     continue;
                 }
@@ -663,7 +664,8 @@ public final class Parser {
                 // Only the contextual declaration head is changed. Ordinary class
                 // parsing/semantic validation/codegen still owns every member.
                 if (extensibleDeclarationSource && check(IDENT) && checkNext(IDENT)
-                        && localClassKeywords.containsKey(peek().lexeme())) {
+                        && (localClassKeywords.containsKey(peek().lexeme())
+                            || discoverForwardLocalKind())) {
                     Token kind = advance();
                     // The existing whole-file intrinsic-shadow scanner does not
                     // yet recognize custom generic headers. Keep this slice
@@ -711,6 +713,9 @@ public final class Parser {
             rootDeclarations.add(declaration);
         }
 
+        if (!forwardKindOrigins.isEmpty()) {
+            throw error(peek(), "KIND_FORWARD_NOT_ROOT: provisional declaration kind was not confirmed by the file-root parser");
+        }
         validateLocalKeywordRequirements(imports, modules, rootDeclarations);
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         validateExports(exports, rootDeclarations);
@@ -723,7 +728,36 @@ public final class Parser {
                 staticProxyTargets, staticProxyInterceptors);
     }
 
+    // Only attempt forward discovery for an otherwise unknown plain custom
+    // head, never for a normal expression or callable. Reuse the existing
+    // descriptor parser; candidate text is never rewritten or executed.
+    private boolean discoverForwardLocalKind() {
+        if (current + 2 >= tokens.size() || tokens.get(current + 2).type() != AS)
+            return false;
+        String name = peek().lexeme();
+        int saved = current;
+        for (int i = current + 3; i + 3 < tokens.size(); i++) {
+            if (tokens.get(i).type() != DEFINE
+                    || tokens.get(i + 1).type() != IDENT
+                    || !tokens.get(i + 1).lexeme().equals("keyword")
+                    || tokens.get(i + 2).type() != IDENT
+                    || !tokens.get(i + 2).lexeme().equals(name)
+                    || tokens.get(i + 3).type() != AS)
+                continue;
+            try {
+                current = i + 1;
+                parseLocalClassKeyword(parseModifiers(), List.of());
+                forwardKindOrigins.put(name, i + 1);
+                return true;
+            } finally {
+                current = saved;
+            }
+        }
+        return false;
+    }
+
     private void parseLocalClassKeyword(Modifiers modifiers, List<Ast.Annotation> annotations) {
+        int origin = current;
         Token at = advance(); // contextual keyword
         validateOnlyVisibilityModifiers(modifiers, "keyword descriptors");
         if (modifiers.visibilitySeen || !annotations.isEmpty()) {
@@ -734,8 +768,13 @@ public final class Parser {
                 || java.util.Set.of("serial", "http", "tcp", "websocket", "ws", "_").contains(name.lexeme())) {
             throw error(name, "KIND_RESERVED: built-in or contextual declaration name");
         }
+        LocalDeclarationKind provisional = null;
         if (localClassKeywords.containsKey(name.lexeme())) {
-            throw error(name, "KIND_DUPLICATE: duplicate declaration kind");
+            Integer expectedOrigin = forwardKindOrigins.get(name.lexeme());
+            if (expectedOrigin == null || expectedOrigin != origin)
+                throw error(name, "KIND_DUPLICATE: duplicate declaration kind");
+            provisional = localClassKeywords.remove(name.lexeme());
+            forwardKindOrigins.remove(name.lexeme());
         }
         if (localClassKeywords.size() >= MAX_LOCAL_KEYWORDS) {
             throw error(name, "KIND_BUDGET: too many file-local descriptors");
@@ -757,7 +796,10 @@ public final class Parser {
             requirements.add(required);
         }
         consume(END, "expected 'end' after descriptor");
-        localClassKeywords.put(name.lexeme(), new LocalDeclarationKind(actor, List.copyOf(requirements)));
+        LocalDeclarationKind resolved = new LocalDeclarationKind(actor, List.copyOf(requirements));
+        if (provisional != null && !provisional.equals(resolved))
+            throw error(name, "KIND_FORWARD_MISMATCH: descriptor changed during root confirmation");
+        localClassKeywords.put(name.lexeme(), resolved);
     }
 
     // v1b deliberately binds only unambiguous, non-generic interfaces in the
