@@ -12,7 +12,7 @@ for path, expected in lock["blobs"].items():
     print(f"FIXTURE_BLOB={actual} {path}")
 PY
 java -XshowSettings:properties -version 2>&1 | grep -Eq '^[[:space:]]*java.specification.version = 25$'
-mvn -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/sharkbench-classpath.txt
+bash "$here/maven-retry.sh" -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/sharkbench-classpath.txt
 test -s target/sharkbench-classpath.txt
 cp="$(cat target/sharkbench-classpath.txt)"
 python3 - "$here" "$root/target/classes:$cp" <<'PY'
@@ -41,6 +41,7 @@ with tempfile.TemporaryDirectory(prefix="sharkbench-admission-") as tmp:
                     time.sleep(.1)
             subprocess.run([sys.executable,str(pathlib.Path(here)/"check_contract.py")],check=True,timeout=120)
             subprocess.run([sys.executable,"-B",str(pathlib.Path(here)/"check_faults.py")],check=True,timeout=120)
+            subprocess.run([sys.executable,"-B",str(pathlib.Path(here)/"check_lifecycle.py")],check=True,timeout=120)
             if guest.poll() is not None: raise RuntimeError("guest exited during admission")
         finally:
             try: os.killpg(guest.pid,signal.SIGTERM)
@@ -49,6 +50,9 @@ with tempfile.TemporaryDirectory(prefix="sharkbench-admission-") as tmp:
             except subprocess.TimeoutExpired:
                 os.killpg(guest.pid,signal.SIGKILL)
                 guest.wait(timeout=5)
-            print(log.read_bytes()[-16000:].decode("utf-8",errors="replace"))
+            with log.open("rb") as output:
+                output.seek(0, os.SEEK_END)
+                output.seek(max(0, output.tell() - 16000))
+                print(output.read(16000).decode("utf-8",errors="replace"))
 PY
 test -z "$(git status --porcelain --untracked-files=all)"

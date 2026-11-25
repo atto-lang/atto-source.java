@@ -6,11 +6,17 @@
   "benchmark_tree": "4f85bc3ad8a5be98a39974ff564ef91957c56775",
   "blobs": {
     "tests/fixtures/sharkbench-admission/sharkbench-web.atto": "7cb1932bd2def3906770747c7ec042313174a268",
-    "tests/fixtures/sharkbench-admission/check_contract.py": "2f5514245444e5fc9f268f18bf73a5a09a58b3e2"
+    "tests/fixtures/sharkbench-admission/check_contract.py": "2f5514245444e5fc9f268f18bf73a5a09a58b3e2",
+    "tests/fixtures/sharkbench-admission/check_faults.py": "7dd3671428f87aff533444b0e5a76e99b729c74c",
+    "tests/fixtures/sharkbench-admission/check_lifecycle.py": "805b1318ce56495535f80699553abd09223118be"
   },
   "compiler_parents": {
     "http": "7b2c0238d2df63c83fd5263456956db0d5dd80b0",
     "utf8": "6b20f0d1985b2441038e281a4b4c67c9e86a96cd",
     "json": "6172308c29d89448ca6e6876afb029b9b63e1363"
+  },
+  "additional_probe_source": {
+    "repo": "atto-lang/atto-benchmarks",
+    "commit": "df8e5dc33a9ecb28d8d43713335f2db71032a84c"
   }
 }
