@@ -102,4 +102,22 @@ final class FrozenImportSnapshotTest {
             "import namespace network from pkg '"+NAME+"/src/network'; pub fnc main() -> int { return network.answer(); }"))
             assertThrows(RuntimeException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(bad,List.of(snapshot)),bad);
     }
+    @Test void frozenCallsCheckExactLiteralArgumentAbi() throws Exception {
+        var snapshot=verify(MANIFEST,"use namespace network; pub fnc answer(int x, int y): int { return x - y; }");
+        String header="import namespace network from pkg '"+NAME+"'; define alias web = network; ";
+        for(String args:List.of("40, -2","4_0, -2")) {
+            String source=header+"pub fnc main() -> int { return web.answer("+args+"); }";
+            var guest=dev.oreslang.imports.FrozenScalarImportCompiler.compile(source,List.of(snapshot));
+            assertEquals(42,guest.run(dev.oreslang.runtime.ExecutionProfile.parse("aot","server")));
+        }
+        for(String args:List.of("40","40, -2, 1","40, true","40, 2.0","40, 1+1",
+                "9223372036854775808, 0","-9223372036854775809, 0","40, -2,",String.join(",",Collections.nCopies(17,"1")))) {
+            String source=header+"pub fnc main() -> int { return web.answer("+args+"); }";
+            assertThrows(RuntimeException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(source,List.of(snapshot)),args);
+        }
+        var boolProvider=verify(MANIFEST,"use namespace network; pub fnc answer(bool x, int y): int { return y; }");
+        var e=assertThrows(IllegalArgumentException.class,()->dev.oreslang.imports.FrozenScalarImportCompiler.compile(
+            header+"pub fnc main() -> int { return web.answer(40, -2); }",List.of(boolProvider)));
+        assertTrue(e.getMessage().contains("E_IMPORT_KIND"),e.getMessage());
+    }
 }
