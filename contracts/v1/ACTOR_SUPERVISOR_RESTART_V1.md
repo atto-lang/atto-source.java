@@ -23,7 +23,10 @@ separate from actor creation, timers and guest callback execution.
    count. Entries expire only after they are strictly older than the cutoff.
 6. **Exponential bounded delay.** Repeated unstable generations increase the
    delay exponentially up to the configured cap. Arithmetic must saturate
-   instead of overflowing.
+   instead of overflowing. The circuit itself rejects replacement admission
+   until the full admitted delay has elapsed since the restart decision.
+   The comparison uses modulo monotonic elapsed time, not a signed absolute
+   deadline. All selected children share the episode's minimum delay.
 7. **Deterministic dephasing.** A reproducible generation/child/attempt hash may
    add at most 12.5% spread without exceeding the cap. No RNG or ambient entropy
    is required, so traces are replayable while simultaneous supervisors are
@@ -85,7 +88,9 @@ code, or own a timer thread. A supervisor implementation must:
 3. if RESTART, stop selected old siblings in reverse declaration order;
 4. as each sibling physically finalizes, acknowledge its exact old generation
    to the circuit; never block an actor carrier while waiting;
-5. await the deterministic delay on the runtime scheduler;
+5. await any remaining deterministic delay on the runtime scheduler; the
+   minimum elapsed time is measured from the restart decision and enforced
+   by the circuit even when the caller attempts early admission;
 6. start replacements in declaration order; circuit admission rejects a start
    whose old generation lacks quiescence proof or whose earlier sibling in the
    same episode has not yet been replaced;
