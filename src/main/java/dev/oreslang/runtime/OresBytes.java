@@ -341,24 +341,40 @@ public final class OresBytes implements AutoCloseable {
     /** Concatenate many values in one pass (no quadratic re-copying). */
     public static OresBytes join(java.util.List<?> parts) {
         Objects.requireNonNull(parts, "parts");
-        long total = 0;
-        java.util.ArrayList<byte[]> arrays = new java.util.ArrayList<>(parts.size());
-        for (Object part : parts) {
-            if (!(part instanceof OresBytes bytes)) {
-                throw new IllegalArgumentException("Bytes.join requires List<Bytes>");
+        try (var buffer = new BoundedByteAccumulator(MAX_LENGTH)) {
+            for (Object part : parts) {
+                if (!(part instanceof OresBytes bytes)) {
+                    throw new IllegalArgumentException("Bytes.join requires List<Bytes>");
+                }
+                // Snapshot this chunk under its own storage monitor; never hold
+                // two storage locks, expose an array or consume an input handle.
+                synchronized (bytes.storage) {
+                    bytes.checkLive();
+                    buffer.append(bytes.storage.value);
+                }
             }
-            byte[] copy = bytes.toArrayCopy();
-            total += copy.length;
-            if (total > MAX_LENGTH) throw new IllegalArgumentException("OresBytes exceeds bounded payload budget");
-            arrays.add(copy);
+            return fromDetached(buffer.detach());
         }
-        byte[] out = new byte[(int) total];
-        int at = 0;
-        for (byte[] a : arrays) {
-            System.arraycopy(a, 0, out, at, a.length);
-            at += a.length;
+    }
+
+    /**
+     * Compiler-owned guest lowering for Bytes.join: the ownership checker
+     * consumes the List<Bytes>. Retire each transferred handle on success
+     * or failure, without changing the non-consuming host join helper.
+     * Only call with a compiler-checked, exclusively owned list.
+     */
+    public static OresBytes joinConsumed(java.util.List<?> ownedParts) {
+        Objects.requireNonNull(ownedParts, "ownedParts");
+        // Snapshot references before cleanup; no guest callbacks while a
+        // storage monitor is held and no mutable payload aliases escape.
+        var parts = new java.util.ArrayList<>(ownedParts);
+        try {
+            return join(parts);
+        } finally {
+            for (Object part : parts) {
+                if (part instanceof OresBytes bytes) bytes.close();
+            }
         }
-        return fromDetached(out);
     }
 
     /** New value holding this followed by other. Neither input is consumed. */

@@ -11013,7 +11013,7 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(args.getFirst() instanceof List<?> parts)) {
                             throw new IllegalArgumentException("Bytes.join requires List<Bytes>");
                         }
-                        return dev.oreslang.runtime.OresBytes.join(parts);
+                        return dev.oreslang.runtime.OresBytes.joinConsumed(parts);
                     };
                     default -> throw new IllegalArgumentException("unknown Bytes constructor " + name);
                 };

@@ -92,6 +92,21 @@ final class AttoBytesCodecGuestTest {
     }
 
     @Test
+    void joinConsumesGuestList() {
+        RuntimeException moved = assertThrows(RuntimeException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          let mut List<Bytes> parts = [];
+                          parts.add(Bytes.from_string("ab"));
+                          val joined = Bytes.join(parts);
+                          stdio.println(parts.size);
+                          return;
+                        }
+                        """));
+        assertTrue(moved.getMessage().contains("moved"), moved.getMessage());
+    }
+
+    @Test
     void codecsFailClosed() {
         String[][] cases = {
                 {"pub fnc main(): void { val b = Bytes.from_u16_be(70000); return; }", "outside 0..65535"},
