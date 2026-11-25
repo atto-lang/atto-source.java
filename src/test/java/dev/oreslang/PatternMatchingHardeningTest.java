@@ -149,7 +149,7 @@ final class PatternMatchingHardeningTest {
                 end
 
                 fnc classify(Animal animal): int {
-                  match animal over
+                  match first animal over
                     on Dog dog -> { return 1; }
                     on Animal any -> { return 2; }
                   end
@@ -164,7 +164,7 @@ final class PatternMatchingHardeningTest {
                 end
 
                 fnc classify(Animal animal): int {
-                  match animal over
+                  match first animal over
                     on Animal any -> { return 2; }
                     on Dog dog -> { return 1; }
                   end
@@ -177,7 +177,7 @@ final class PatternMatchingHardeningTest {
     void orderedGuardsMayOverlapAndWildcardIsTheFallback() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int n): int {
-                  match n over
+                  match first n over
                     on int x when x >= 0 -> { return 1; }
                     on int x when x <= 10 -> { return 2; }
                     on _ -> { return 3; }
@@ -187,13 +187,14 @@ final class PatternMatchingHardeningTest {
 
         IllegalArgumentException dead = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(int n): int {
-                  match n over
+                  match first n over
                     on _ -> { return 1; }
                     on int x -> { return x; }
                   end
                 }
                 """)));
-        assertTrue(dead.getMessage().contains("unreachable match arm"));
+        assertTrue(dead.getMessage().contains("unguarded wildcard")
+                        || dead.getMessage().contains("unreachable match arm"), dead.getMessage());
     }
 
     @Test
@@ -467,7 +468,7 @@ final class PatternMatchingHardeningTest {
     void numericWideningDoesNotMakeLaterTypeArmDead() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int | float value): int {
-                  match value over
+                  match first value over
                     on float n -> { return 1; }
                     on int n -> { return 2; }
                   end
@@ -476,7 +477,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int | float value): int {
-                  match value over
+                  match first value over
                     on float n -> { return 1; }
                     on 7 -> { return 2; }
                     on int n -> { return 3; }
@@ -489,7 +490,7 @@ final class PatternMatchingHardeningTest {
     void structuralPatternWideningCannotShadowNarrowerRecord() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify({ value: int } | { value: float } arg): int {
-                  match arg over
+                  match first arg over
                     on structural { value: float } x -> { return 1; }
                     on structural { value: int } x -> { return 2; }
                   end
@@ -701,7 +702,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(hierarchy + """
                         fnc classify(Error failure): int {
-                          match failure over
+                          match first failure over
                             on FileNotFoundError missing -> { return 1; }
                             on IOError io -> { return 2; }
                             on ArgumentError bad -> { return 3; }
@@ -712,7 +713,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
                 fnc classify(Error failure): int {
-                  match failure over
+                  match first failure over
                     on FileNotFoundError missing -> { return 1; }
                     on IOError io -> { return 2; }
                     on Error other -> { return 3; }
@@ -734,7 +735,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException shadowed = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(hierarchy + """
                         fnc classify(Error failure): int {
-                          match failure over
+                          match first failure over
                             on Error any -> { return 1; }
                             on IOError io -> { return 2; }
                           end
@@ -744,7 +745,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
                 fnc classify(Error failure): int {
-                  match failure over
+                  match first failure over
                     on Error guarded when false -> { return 9; }
                     on IOError io -> { return 2; }
                     on Error rest -> { return 3; }
@@ -766,7 +767,7 @@ final class PatternMatchingHardeningTest {
                 end
 
                 fnc classify(Error failure): int {
-                  match failure over
+                  match first failure over
                     on Error guarded when false -> { return 99; }
                     on FileNotFoundError missing -> { return 1; }
                     on IOError io -> { return 2; }
@@ -810,7 +811,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(hierarchy + """
                         fnc classify(Result<int, Error> outcome): int {
-                          match outcome over
+                          match first outcome over
                             on Ok(value) -> { return value; }
                             on Err(FileNotFoundError missing) -> { return -1; }
                             on Err(IOError io) -> { return -2; }
@@ -821,7 +822,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
                 fnc classify(Result<int, Error> outcome): int {
-                  match outcome over
+                  match first outcome over
                     on Ok(value) -> { return value; }
                     on Err(FileNotFoundError missing) -> { return -1; }
                     on Err(IOError io) -> { return -2; }
@@ -850,7 +851,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(hierarchy + """
                         fnc classify(Error | ShapeImpostor failure): int {
-                          match failure over
+                          match first failure over
                             on CodedError coded -> { return coded.code(); }
                           end
                         }
@@ -859,7 +860,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
                 fnc classify(Error | ShapeImpostor failure): int {
-                  match failure over
+                  match first failure over
                     on CodedError coded -> { return coded.code(); }
                     on ShapeImpostor fake -> { return -1; }
                   end

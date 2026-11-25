@@ -101,7 +101,7 @@ final class ReadonlyRecordFieldPatternGuestTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(failure.getMessage().contains("overlapping/unproved record field patterns"),
+        assertTrue(failure.getMessage().contains("overlapping/unproved explicit patterns"),
                 failure.getMessage());
     }
 
