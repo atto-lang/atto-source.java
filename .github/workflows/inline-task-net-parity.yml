@@ -67,6 +67,8 @@ jobs:
           set -euo pipefail
           python3 tools/run-inline-task-net-parity.py "$MODE" | tee target/inline-task-net-parity.log
           grep -Fx 'EXACT_INLINE_TASK_JAVA_PASS 4/4' target/inline-task-net-parity.log
+          grep -Fx 'INLINE_TASK_DO_JAVA_PASS 1/1' target/inline-task-net-parity.log
+          grep -Fx 'INLINE_TASK_EARLY_CONDITIONAL_JAVA_PASS 1/1' target/inline-task-net-parity.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -186,9 +188,9 @@ jobs:
           from pathlib import Path
           report = Path("target/surefire-reports/TEST-dev.oreslang.InlineTaskTerminalReturnTest.xml")
           result = ET.parse(report).getroot()
-          assert int(result.attrib["tests"]) == 9, result.attrib
+          assert int(result.attrib["tests"]) == 12, result.attrib
           assert all(int(result.attrib.get(key, "0")) == 0 for key in ("failures", "errors", "skipped")), result.attrib
-          print("INLINE_TASK_FOCUSED_JUNIT_PASS tests=9")
+          print("INLINE_TASK_FOCUSED_JUNIT_PASS tests=12")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
