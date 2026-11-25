@@ -112,6 +112,47 @@ final class OutboundHttpRequestGuestTest {
     }
 
     @Test
+    void nativeChunksPreserveOctetsAndShareCursorWithLegacyReads() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        server.createContext("/", exchange -> {
+            try {
+                byte[] bytes = {0, (byte) 255, (byte) 128, 42};
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+            } finally { exchange.close(); }
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        try {
+            String output = run("""
+                pub async routine main(): void {
+                  val response = await http.request("GET", "http://127.0.0.1:%d/", []);
+                  val body = response.take_body();
+                  val Bytes first = await body.read_owned_bytes(1);
+                  stdio.println(first.byte_at(0));
+                  val legacy = await body.read_chunk(1);
+                  stdio.println(legacy[0]);
+                  val Bytes third = await body.read_owned_bytes(1);
+                  stdio.println(third.byte_at(0));
+                  val Bytes fourth = await body.read_owned_bytes(1);
+                  stdio.println(fourth.byte_at(0));
+                  val Bytes eof = await body.read_owned_bytes(1);
+                  stdio.println(eof.size());
+                  first.close();
+                  third.close();
+                  fourth.close();
+                  eof.close();
+                  await body.close();
+                  return;
+                }
+                """.formatted(port), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + port));
+            assertEquals("0\\n255\\n128\\n42\\n0\\n", output);
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void explicitBodyCloseRetiresAResponseBlockedWaitingForPeerBytes()
             throws Exception {
         CountDownLatch headersSent = new CountDownLatch(1);

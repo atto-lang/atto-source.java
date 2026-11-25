@@ -10722,7 +10722,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OutboundHttpRequest.Body body) {
                 return switch (name) {
                     case "closed" -> body.closed();
-                    case "read_chunk" -> (Invokable) args -> {
+                    case "read_chunk", "read_owned_bytes" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof Number limit)
                                 || !isIntegral(limit)) {
                             throw new IllegalArgumentException(
@@ -10733,7 +10733,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "HTTP body read limit is outside int range");
                         }
-                        return body.readChunk((int) value);
+                        return name.equals("read_owned_bytes") ? body.readOwnedBytes((int) value) : body.readChunk((int) value);
                     };
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "HttpClientBody.close");

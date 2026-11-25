@@ -147,7 +147,16 @@ public final class OutboundHttpRequest {
         }
     }
 
-    private record PendingRead(int maxBytes, OresFuture<List<Integer>> future) { }
+    private record PendingRead<T>(int maxBytes, OresFuture<T> future,
+            java.util.function.Function<byte[], T> decode) {
+        void complete(byte[] raw) {
+            T value = decode.apply(raw);
+            if (!future.completeFromRuntime(value) && value instanceof OresBytes owned) {
+                // Cancellation won the completion race: no guest owns this value.
+                owned.close();
+            }
+        }
+    }
 
     /**
      * One-producer / one-logical-reader bounded pipe. The native I/O worker may
@@ -164,23 +173,24 @@ public final class OutboundHttpRequest {
         private int bufferedBytes;
         private boolean eof;
         private Throwable failure;
-        private PendingRead pending;
+        private PendingRead<?> pending;
 
-        OresFuture<List<Integer>> read(Owner owner, int maxBytes) {
+        <T> OresFuture<T> read(Owner owner, int maxBytes,
+                java.util.function.Function<byte[], T> decode) {
             owner.requireOwner();
             if (maxBytes < 1 || maxBytes > MAX_READ_BYTES) {
                 throw new IllegalArgumentException(
                         "HttpClientBody.read_chunk max_bytes must be 1..65536");
             }
 
-            OresFuture<List<Integer>> ready;
+            OresFuture<T> ready;
             synchronized (this) {
                 if (pending != null) {
                     throw new IllegalStateException(
                             "only one pending HttpClientBody.read_chunk is permitted");
                 }
                 if (bufferedBytes != 0) {
-                    ready = OresFuture.completed(drainLocked(maxBytes));
+                    ready = OresFuture.completed(decode.apply(drainLocked(maxBytes)));
                     return owner.own(ready);
                 }
                 if (failure != null) {
@@ -188,20 +198,20 @@ public final class OutboundHttpRequest {
                     return owner.own(ready);
                 }
                 if (eof) {
-                    ready = OresFuture.completed(List.of());
+                    ready = OresFuture.completed(decode.apply(new byte[0]));
                     return owner.own(ready);
                 }
 
-                AtomicReference<OresFuture<List<Integer>>> self =
+                AtomicReference<OresFuture<T>> self =
                         new AtomicReference<>();
                 ready = new OresFuture<>(() -> cancelPending(self.get()));
                 self.set(ready);
-                pending = new PendingRead(maxBytes, ready);
+                pending = new PendingRead<>(maxBytes, ready, decode);
             }
             return owner.own(ready);
         }
 
-        private void cancelPending(OresFuture<List<Integer>> future) {
+        private void cancelPending(OresFuture<?> future) {
             if (future == null) return;
             synchronized (this) {
                 if (pending != null && pending.future() == future) {
@@ -216,8 +226,8 @@ public final class OutboundHttpRequest {
             int cursor = offset;
             int remaining = length;
             while (remaining != 0) {
-                PendingRead reader = null;
-                List<Integer> direct = null;
+                PendingRead<?> reader = null;
+                byte[] direct = null;
                 synchronized (this) {
                     requireWritableLocked();
 
@@ -225,7 +235,7 @@ public final class OutboundHttpRequest {
                         reader = pending;
                         pending = null;
                         int count = Math.min(remaining, reader.maxBytes());
-                        direct = bytes(source, cursor, count);
+                        direct = java.util.Arrays.copyOfRange(source, cursor, cursor + count);
                         cursor += count;
                         remaining -= count;
                     } else {
@@ -261,13 +271,13 @@ public final class OutboundHttpRequest {
                     }
                 }
                 if (reader != null) {
-                    reader.future().completeFromRuntime(direct);
+                    reader.complete(direct);
                 }
             }
         }
 
         void finish() {
-            PendingRead reader = null;
+            PendingRead<?> reader = null;
             synchronized (this) {
                 if (failure != null || eof) return;
                 eof = true;
@@ -277,12 +287,12 @@ public final class OutboundHttpRequest {
                 }
                 notifyAll();
             }
-            if (reader != null) reader.future().completeFromRuntime(List.of());
+            if (reader != null) reader.complete(new byte[0]);
         }
 
         void fail(Throwable cause) {
             Objects.requireNonNull(cause, "cause");
-            PendingRead reader = null;
+            PendingRead<?> reader = null;
             synchronized (this) {
                 if (failure != null || eof) return;
                 failure = cause;
@@ -312,16 +322,14 @@ public final class OutboundHttpRequest {
             if (eof) throw new IOException("HTTP response body already finished");
         }
 
-        private List<Integer> drainLocked(int maxBytes) {
+        private byte[] drainLocked(int maxBytes) {
             int target = Math.min(maxBytes, bufferedBytes);
-            ArrayList<Integer> result = new ArrayList<>(target);
+            byte[] result = new byte[target];
             int remaining = target;
             while (remaining != 0) {
                 byte[] head = queued.getFirst();
                 int count = Math.min(remaining, head.length - firstOffset);
-                for (int i = 0; i < count; i++) {
-                    result.add(head[firstOffset + i] & 0xff);
-                }
+                System.arraycopy(head, firstOffset, result, target - remaining, count);
                 firstOffset += count;
                 bufferedBytes -= count;
                 remaining -= count;
@@ -331,14 +339,12 @@ public final class OutboundHttpRequest {
                 }
             }
             notifyAll();
-            return List.copyOf(result);
+            return result;
         }
 
-        private static List<Integer> bytes(byte[] source, int offset, int length) {
-            ArrayList<Integer> result = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) {
-                result.add(source[offset + i] & 0xff);
-            }
+        private static List<Integer> boxedBytes(byte[] source) {
+            ArrayList<Integer> result = new ArrayList<>(source.length);
+            for (byte value : source) result.add(value & 0xff);
             return List.copyOf(result);
         }
     }
@@ -380,7 +386,12 @@ public final class OutboundHttpRequest {
         }
 
         public OresFuture<List<Integer>> readChunk(int maxBytes) {
-            return pipe.read(owner, maxBytes);
+            return pipe.read(owner, maxBytes, BodyPipe::boxedBytes);
+        }
+
+        /** Alternative owned native chunk; same stream, cap and EOF semantics. */
+        public OresFuture<OresBytes> readOwnedBytes(int maxBytes) {
+            return pipe.read(owner, maxBytes, OresBytes::fromDetached);
         }
 
         public OresFuture<Void> closeAsync() {

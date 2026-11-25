@@ -8904,6 +8904,8 @@ public final class TypeChecker {
             };
             case "HttpClientBody" -> switch (name) {
                 case "closed" -> Primitive.BOOL;
+                case "read_owned_bytes" -> new Function(List.of(Primitive.INT),
+                        new Named("Future", List.of(new Named("Bytes", List.of()))));
                 case "read_chunk" ->
                         new Function(
                                 List.of(Primitive.INT),
