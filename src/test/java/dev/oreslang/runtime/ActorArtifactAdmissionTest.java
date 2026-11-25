@@ -602,7 +602,7 @@ final class ActorArtifactAdmissionTest {
         KeyPair keys = keyPair();
         var manifest = sign(manifest(executable, List.of()), keys);
         var profile = new ActorIpcCodecProfileV1("messagepack", 2, "order.v1",
-                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cda", MESSAGE_ABI);
+                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cd", MESSAGE_ABI);
         var shape = MessagePackWireV2.Shape.string();
         var limits = MessagePackWireV2.DecodeLimits.defaults();
         UUID route = UUID.randomUUID();
