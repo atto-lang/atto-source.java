@@ -6,6 +6,8 @@ on:
       - 'src/test/java/dev/oreslang/ContextualImportPathTest.java'
       - '.github/workflows/contextual-import-path.yml'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/imports/StaticImportGraph.java'
+      - 'src/test/java/dev/oreslang/StaticImportGraphTest.java'
       - 'pom.xml'
 permissions:
   contents: read
@@ -34,4 +36,4 @@ jobs:
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
-          mvn -B -Dtest=ContextualImportPathTest -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -Dtest=ContextualImportPathTest,StaticImportGraphTest -Dsurefire.failIfNoSpecifiedTests=true test
