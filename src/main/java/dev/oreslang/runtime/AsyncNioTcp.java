@@ -182,6 +182,103 @@ public final class AsyncNioTcp {
             });
         }
 
+        /**
+         * Immutable owned-byte read: no per-byte Integer boxing or List copy.
+         * The callback transfers the completed byte[] into the frozen Bytes
+         * object, never exposing its writable backing to an Atto guest.
+         */
+        public OresFuture<OresBytes> readOwnedBytesAsync(int maxBytes) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.read_owned_bytes_async");
+            if (maxBytes < 1 || maxBytes > MAX_BYTES) {
+                throw new IllegalArgumentException("read bytes must be 1..1048576");
+            }
+            if (closed.get() || !reading.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "closed socket or concurrent read"));
+            }
+            ByteBuffer buffer = ByteBuffer.allocate(maxBytes);
+            return OresFuture.fromCallback(callback -> {
+                try {
+                    channel.read(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null,
+                            new CompletionHandler<Integer, Void>() {
+                        @Override public void completed(Integer count, Void ignored) {
+                            reading.set(false);
+                            if (closed.get()) {
+                                callback.reject(new IOException("socket retired during read"));
+                                return;
+                            }
+                            if (count == null || count < 0 || count == 0) {
+                                callback.resolve(OresBytes.empty());
+                                return;
+                            }
+                            // Read only initialized bytes; drop spare capacity.
+                            byte[] frozen = count == maxBytes
+                                    ? buffer.array()
+                                    : java.util.Arrays.copyOf(buffer.array(), count);
+                            callback.resolve(OresBytes.fromCompletedNioRead(frozen));
+                        }
+                        @Override public void failed(Throwable failure, Void ignored) {
+                            reading.set(false);
+                            callback.reject(failure);
+                        }
+                    });
+                } catch (RuntimeException failure) {
+                    reading.set(false);
+                    callback.reject(failure);
+                }
+            });
+        }
+
+        /** Writes a frozen immutable Bytes value without converting to List<int>. */
+        public OresFuture<Void> writeOwnedBytesAsync(OresBytes bytes) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.write_owned_bytes_async");
+            Objects.requireNonNull(bytes, "owned bytes");
+            if (closed.get() || !writing.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "closed socket or concurrent write"));
+            }
+            // Frozen backing is held strongly by this read-only view until
+            // the asynchronous completion settles. No per-byte boxing,
+            // byte-vector conversion or second outgoing data copy occurs.
+            ByteBuffer buffer = bytes.nioReadOnlyView().asReadOnlyBuffer();
+            return OresFuture.fromCallback(callback -> {
+                CompletionHandler<Integer, Void> handler = new CompletionHandler<>() {
+                    @Override public void completed(Integer count, Void ignored) {
+                        if (closed.get() || count == null || count < 0) {
+                            writing.set(false);
+                            callback.reject(new IOException("socket closed during write"));
+                            return;
+                        }
+                        if (buffer.hasRemaining()) {
+                            channel.write(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS,
+                                    null, this);
+                        } else {
+                            writing.set(false);
+                            callback.resolve(null);
+                        }
+                    }
+                    @Override public void failed(Throwable failure, Void ignored) {
+                        writing.set(false);
+                        callback.reject(failure);
+                    }
+                };
+                try {
+                    if (!buffer.hasRemaining()) {
+                        writing.set(false);
+                        callback.resolve(null);
+                    } else {
+                        channel.write(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS,
+                                null, handler);
+                    }
+                } catch (RuntimeException failure) {
+                    writing.set(false);
+                    callback.reject(failure);
+                }
+            });
+        }
+
         public OresFuture<Void> writeBytesAsync(List<?> input) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "socket.write_bytes_async");

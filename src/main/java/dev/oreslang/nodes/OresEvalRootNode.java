@@ -8235,6 +8235,20 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
                 return switch (name) {
+                    case "read_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_owned_bytes_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("read byte limit must be integer");
+                        }
+                        return socket.readOwnedBytesAsync(n.intValue());
+                    };
+                    case "write_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_owned_bytes_async");
+                        if (!(args.getFirst() instanceof OresBytes bytes)) {
+                            throw new IllegalArgumentException("write requires a frozen Bytes value");
+                        }
+                        return socket.writeOwnedBytesAsync(bytes);
+                    };
                     case "read_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "socket.read_bytes_async");
                         if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
