@@ -10,6 +10,7 @@ on:
       - 'src/test/java/dev/oreslang/StaticImportGraphTest.java'
       - 'src/main/java/dev/oreslang/imports/FrozenImportSnapshot.java'
       - 'src/test/java/dev/oreslang/FrozenImportSnapshotTest.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenScalarImportCompiler.java'
       - 'pom.xml'
 permissions:
   contents: read
