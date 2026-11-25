@@ -19,7 +19,7 @@ final class KeywordTailExecutionTest {
                   return;
                 }
                 """;
-        TypeChecker.check(Parser.parse(sourceCode));
+        TypeChecker.check(Parser.parseStrictAtto(sourceCode));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, sourceCode,
                 "keyword-tail-value-contract.atto")
@@ -38,7 +38,7 @@ final class KeywordTailExecutionTest {
     void explicitConditionalValueAndImperativeReturnAgree() throws Exception {
         String explicit = """
                 fnc answer(): int {
-                  if true then
+                  do if true then
                     return 42;
                   else
                     return 1;
@@ -58,7 +58,7 @@ final class KeywordTailExecutionTest {
     void commaBindingIsEvaluatedBeforeFinalTailExpression() throws Exception {
         assertEquals("47", run("""
                 fnc answer(): int {
-                  if true then
+                  do if true then
                     let int val = 5,
                     return val + 42;
                   else
@@ -72,7 +72,7 @@ final class KeywordTailExecutionTest {
     void nonTailIfContinuesWithoutImplicitFunctionReturn() throws Exception {
         assertEquals("99", run("""
                 fnc answer(): int {
-                  return if true then 42 else 1 fi;
+                  val discarded = if true then 42 else 1 fi;
                   return 99;
                 }
                 """));
