@@ -28,7 +28,8 @@ final class FrozenProviderLinker {
             var view=owner.linkedFunctionView();
             for(String ns:owner.namespaceNames()) {
                 if(units.size()>=16) throw fail("E_SOURCE_LIMIT","provider namespace budget exceeded");
-                String unit="pinned/provider_"+units.size()+".atto";
+                String unit="pinned/provider_"+closure.providerIdentity(identity,ns)+".atto";
+                if(sources.containsKey(unit)) throw fail("E_DUPLICATE","canonical provider identity");
                 String original=owner.providerSource(ns);
                 var parsed=Parser.parseStrictAtto(original);
                 for(var module:parsed.modules()) {

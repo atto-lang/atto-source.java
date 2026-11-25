@@ -132,4 +132,19 @@ final class FrozenDependencyGraphTest {
         assertEquals(List.of(B),plan.removed());
     }
 
+    @Test void providerIdsDoNotDependOnInventoryOrContent()throws Exception {
+        var a=withDeps(A);var d=withDeps(D);
+        var old=FrozenDependencyGraph.verify(List.of(a));
+        var more=FrozenDependencyGraph.verify(List.of(d,a));
+        String id=old.providerIdentity(A,"network");
+        assertEquals("680d736917e8f15f615de63abf42fdd332543f48c88065637ffb62ae7f82e636",id);
+        assertEquals(id,more.providerIdentity(A,"network"));
+        assertNotEquals(id,more.providerIdentity(D,"network"));
+        var changed=snapshot(A,"1.0.0",Map.of(),Map.of(),SOURCE.replace("42","43"));
+        assertEquals(id,FrozenDependencyGraph.verify(List.of(changed)).providerIdentity(A,"network"));
+        deny("E_UNBOUND",()->old.providerIdentity(D,"network"));
+        deny("E_UNBOUND",()->old.providerIdentity(A,"missing"));
+        String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer();}";
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(FrozenScalarImportCompiler.compile(guest,List.of(a,d))));
+    }
 }

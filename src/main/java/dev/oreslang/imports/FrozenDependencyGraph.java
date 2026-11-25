@@ -107,4 +107,14 @@ public final class FrozenDependencyGraph {
         return new InvalidationPlan(rebuild,reusable,removed);
     }
 
+    /** Stable logical ID, not a cache key. Input must belong to this verified graph. */
+    public String providerIdentity(String owner,String namespace) {
+        var snapshot=packages.get(owner);
+        if(snapshot==null||!snapshot.namespaceNames().contains(namespace))
+            throw fail("E_UNBOUND","unknown provider identity");
+        try {
+            return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest((owner+"\n"+namespace).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch(java.security.NoSuchAlgorithmException e) {throw new IllegalStateException(e);}
+    }
 }
