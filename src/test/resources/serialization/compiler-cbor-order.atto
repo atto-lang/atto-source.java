@@ -9,6 +9,6 @@ pub fnc consume(bool paid, i64 total): i64 {
   val Order order = new Order(paid, total);
   if (order.paidFlag()) {
     return order.amount();
-  }
+  } fi
   return 0;
 }
