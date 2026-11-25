@@ -1633,8 +1633,12 @@ public final class ChannelRuntime {
     static <T> OresFuture<T> mapSelection(
             OresFuture<SelectResult> source,
             Function<SelectResult, T> mapper) {
+        // Cancellation of this mapped Future must win the underlying
+        // channel/select admission first. In particular, a committed
+        // operation may still be awaiting deferred completion publication.
         OresFuture<T> result = new OresFuture<>(
                 () -> source.cancel(false),
+                () -> { },
                 () -> { });
 
         source.whenCompleteRuntime((selected, failure) -> {
