@@ -190,9 +190,36 @@ jobs:
           from pathlib import Path
           report = Path("target/surefire-reports/TEST-dev.oreslang.InlineTaskTerminalReturnTest.xml")
           result = ET.parse(report).getroot()
-          assert int(result.attrib["tests"]) == 15, result.attrib
-          assert all(int(result.attrib.get(key, "0")) == 0 for key in ("failures", "errors", "skipped")), result.attrib
-          print("INLINE_TASK_FOCUSED_JUNIT_PASS tests=15")
+          expected = {
+              "terminalReturnIsScalarAndNestedBlocksStayLocal",
+              "cooperationUsesCallerAndPreservesOuterAssignment",
+              "resultCannotBeMistypedAsFutureOrDifferentPayload",
+              "unimplementedControlFlowIsExplicitlyRejected",
+              "outerLoopTransfersCannotEscapeInlineTask",
+              "nestedTaskCannotBorrowItsParentTasksLoopTarget",
+              "localLoopsCanBreakContinueAndWriteBack",
+              "assignmentDestinationIsWrittenAfterTaskCompletes",
+              "lexicalLocalsCannotEscapeAndImmutableBindingsCannotBeReassigned",
+              "boundedConditionalReturnsStayInsideTaskAndPreserveWriteback",
+              "earlyReturnPayloadAndConditionAreCheckedOnBothPaths",
+              "boundedConditionalReturnCannotChangeFallthroughDeclarationScope",
+              "orderedEarlyReturnChainEvaluatesOnlySelectedBranch",
+              "conditionalReturnBudgetIsBounded",
+              "skippedShortCircuitTasksCannotMutateOuterState",
+              "voidTaskUsesCallerScopeAndDoesNotReturnFromCaller",
+              "voidTaskLocalLoopAndNestedScopeRemainIndependent",
+              "voidTaskRejectsNonlocalTransfersAndValueReturns",
+              "inlineTaskDefersExecuteOnceInLexicalOrderBeforeCallerContinues",
+          }
+          cases = result.findall("testcase")
+          assert result.tag == "testsuite", result.tag
+          assert int(result.attrib["tests"]) == len(expected) == len(cases), result.attrib
+          assert all(int(result.attrib[key]) == 0 for key in ("failures", "errors", "skipped")), result.attrib
+          assert {case.attrib["name"] for case in cases} == expected
+          assert all(case.attrib["classname"] == "dev.oreslang.InlineTaskTerminalReturnTest"
+                     and not any(case.find(tag) is not None for tag in ("failure", "error", "skipped"))
+                     for case in cases)
+          print(f"INLINE_TASK_FOCUSED_JUNIT_PASS tests={len(expected)}")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
