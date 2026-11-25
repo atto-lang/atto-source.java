@@ -136,6 +136,29 @@ final class GraphCopyTransactionTest {
     }
 
     @Test
+    void tenThousandNodeCycleIsCopiedWithoutRecursiveIdentityTraversal() {
+        var d = new GraphCopyTransaction.Domain();
+        var source = node(d, 0);
+        var cursor = source;
+        for (int i = 1; i < 10000; i++) {
+            var next = node(d, i);
+            cursor.set(1, some(next));
+            cursor = next;
+        }
+        cursor.set(1, some(source));
+        var cloned = (GraphCopyTransaction.Cell) GraphCopyTransaction.copy(
+                NODE, source, d, new GraphCopyTransaction.Limits(60000, 10000, 30000, 0),
+                new AtomicBoolean());
+        assertNotSame(source, cloned);
+        cursor = cloned;
+        for (int i = 0; i < 10000; i++) {
+            assertEquals((long) i, cursor.get(0));
+            cursor = edge(cursor, 1);
+        }
+        assertSame(cloned, cursor);
+    }
+
+    @Test
     void sameSourceUnderConflictingDescriptorsFailsClosed() {
         var plan = new Graph(0, List.of(
                 new Instance("Pair", List.of(new Field("a", 1), new Field("b", 2))),
