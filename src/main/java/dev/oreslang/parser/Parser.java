@@ -4518,7 +4518,7 @@ public final class Parser {
                     consume(COLON, "writech select arm requires ':'");
                     // Typed write arms have no value binding. Arrow is optional
                     // compatibility syntax and cannot alter send admission.
-                    match(ARROW);
+                    // The common arm boundary consumes the arrow exactly once.
                 } else {
                     // Legacy binding-first: when const msg = readch(input) -> { ... }
                     if (match(MUT)) {
@@ -4537,7 +4537,9 @@ public final class Parser {
                     consume(LPAREN, "binding-first select readch requires '('");
                     channel = parseExpression();
                     consume(RPAREN, "binding-first select readch requires ')'");
-                    consume(ARROW, "binding-first select case requires '->'");
+                    if (!check(ARROW)) {
+                        throw error(peek(), "binding-first select case requires '->'");
+                    }
                     operation = Ast.ChannelOperation.READ;
                 }
 
@@ -4549,6 +4551,9 @@ public final class Parser {
                             "select executable arms use the slim arrow '->'; '=>' is not an arm delimiter");
                 }
                 match(ARROW);
+                if (check(ARROW) || check(FAT_ARROW)) {
+                    throw error(peek(), "select arm permits exactly one slim arrow '->'");
+                }
                 if (!check(LBRACE)) {
                     throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'");
                 }
@@ -4613,7 +4618,7 @@ public final class Parser {
      * This parser never speculatively consumes an event while checking types.
      */
     private SelectReadBinding parseSelectReadBinding() {
-        if (check(LBRACE) || match(ARROW)) {
+        if (check(LBRACE) || check(ARROW)) {
             // A typed operation can return void; it has no value to bind.
             return new SelectReadBinding(null, null, null, false);
         }
@@ -4629,7 +4634,7 @@ public final class Parser {
         }
         Ast.TypeRef type = parseTypeRef();
         String name = consume(IDENT, "typed select arm requires a binding name").lexeme();
-        if (!match(ARROW)) {
+        if (!check(ARROW)) {
             if (!check(LBRACE)) {
                 throw error(peek(), "select arm requires a braced body '{ ... }'");
             }
