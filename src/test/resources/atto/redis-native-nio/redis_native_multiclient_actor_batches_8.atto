@@ -1,0 +1,297 @@
+// Up to 8 concurrently owned NIO2 TCP sessions. One Atto actor is
+// the sole mutable KV owner; a single broker consumes its output stream.
+// Exactly one finite actor-mail batch per client can be in flight.
+// This fixture is bounded to 8 total accepts for deterministic CI cleanup.
+// Bounded request Channel capacity 32; reply Channel capacity 1/client.
+// It does not implement a shared-memory arena or transfer raw pointers.
+// Native Atto: one mailbox message executes one finite 1..16-command batch.
+// Every Redis key/value stays inside this actor's Map<Bytes,Bytes>.
+// Guest TCP sockets remain affine to the owning session Task.
+define actor TaggedBatchKvActor implements StreamOperator<Tuple[int, int, List<Tuple[int, Bytes, Bytes]>], Tuple[int, int, List<Tuple[string, Bytes]>]> as
+  let Map<Bytes,Bytes> values;
+
+  on_start(): void {
+    self.values = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, int, List<Tuple[int, Bytes, Bytes]>]> mail): void {
+    const Tuple[int, int, List<Tuple[int, Bytes, Bytes]>] request = mail.value;
+    const int client_id = request[0];
+    const int batch_id = request[1];
+    const List<Tuple[int, Bytes, Bytes]> commands = request[2];
+    let mut List<Tuple[string, Bytes]> results = [];
+    if client_id == 0 && batch_id == 0 && commands.size == 0; do
+      self.send((0, 0, results));
+      self.end();
+      return;
+    fi
+    let int i = 0;
+    loop {
+      if i == commands.size then break; fi
+      const Tuple[int, Bytes, Bytes] command = commands.get(i);
+      const int kind = command[0];
+      const Bytes key = command[1];
+      const Bytes value = command[2];
+      if kind == 1; do
+        results.add(("PONG", value));
+      elseif kind == 3; do
+        self.values.set(key, value);
+        results.add(("OK", value));
+      elseif kind == 2; do
+        val found = self.values.get_optional(key);
+        if found.is_none(); do
+          results.add(("NIL", value));
+        else
+          results.add(("VALUE", found.unwrap()));
+        fi
+      elseif kind == 4; do
+        if self.values.delete(key); do
+          results.add(("ONE", value));
+        else
+          results.add(("ZERO", value));
+        fi
+      else
+        results.add(("ERR", value));
+      fi
+      i = i + 1;
+    }
+    // A complete command batch is one serialized actor turn.
+    self.send((client_id, batch_id, results));
+    return;
+  }
+end
+
+// Only this task owns socket. It forwards a finite OWNED List through the
+// bounded Channel, then checks the matching per-client batch reply sequence.
+// No mutable borrow, socket pointer or raw address crosses any mailbox.
+pub async fnc serve_tagged_batch_session(
+    NioConnection socket,
+    int client_id,
+    Channel<Tuple[int, int, List<Tuple[int, Bytes, Bytes]>]> requests,
+    Channel<Tuple[int, List<Tuple[string, Bytes]>]> replies
+): void {
+  let int next_batch_id = 0;
+  try {
+    loop {
+      let mut List<Tuple[int, string, Bytes, Bytes]> frames = [];
+      // Treat only failed NIO read completion as a normal disconnected peer.
+      try {
+        frames = await socket.read_resp2_binary_batch_async(16);
+      } catch (read_error) {
+        return;
+      }
+      if frames.size == 0 then return; fi
+      let mut List<Tuple[int, Bytes, Bytes]> commands = [];
+      let int terminate = 0;
+      let int i = 0;
+      loop {
+        if i == frames.size then break; fi
+        const Tuple[int, string, Bytes, Bytes] frame = frames.get(i);
+        const int kind = frame[0];
+        if kind == 0; do
+          terminate = 1;
+          break;
+        fi
+        if kind == 5; do
+          terminate = 2;
+          break;
+        fi
+        commands.add((kind, frame[2], frame[3]));
+        i = i + 1;
+      }
+
+      if commands.size > 0; do
+        // Move-only data is never inspected after channel admission.
+        const int expected_replies = commands.size;
+        next_batch_id = next_batch_id + 1;
+        writech requests, (client_id, next_batch_id, commands);
+        const Tuple[int, List<Tuple[string, Bytes]>] answer = await (nb readch replies);
+        if answer[0] != next_batch_id || answer[1].size != expected_replies; do
+          // Mismatched generation/sequence/cardinality cannot reach the wire.
+          return;
+        fi
+        await socket.write_resp2_binary_batch_async(answer[1]);
+      fi
+
+      if terminate != 0; do
+        if terminate == 2; do
+          const Tuple[int, string, Bytes, Bytes] quit_frame = frames.get(i);
+          await socket.write_resp2_binary_async("OK", quit_frame[3]);
+        fi
+        return;
+      fi
+    }
+  } finally {
+    // One retirement notice on QUIT, EOF or failure. Socket never shared.
+    await socket.close_async();
+    let mut List<Tuple[int, Bytes, Bytes]> retirement = [];
+    writech requests, (client_id, -1, retirement);
+  }
+}
+
+pub async routine main(): void {
+  val worker = spawn TaggedBatchKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  val Channel<Tuple[int, int, List<Tuple[int, Bytes, Bytes]>]> requests =
+      Channel.new<Tuple[int, int, List<Tuple[int, Bytes, Bytes]>]>(32);
+  val Channel<Tuple[int, List<Tuple[string, Bytes]>]> reply_1 =
+      Channel.new<Tuple[int, List<Tuple[string, Bytes]>]>(1);
+  val Channel<Tuple[int, List<Tuple[string, Bytes]>]> reply_2 =
+      Channel.new<Tuple[int, List<Tuple[string, Bytes]>]>(1);
+  val Channel<Tuple[int, List<Tuple[string, Bytes]>]> reply_3 =
+      Channel.new<Tuple[int, List<Tuple[string, Bytes]>]>(1);
+  val Channel<Tuple[int, List<Tuple[string, Bytes]>]> reply_4 =
+      Channel.new<Tuple[int, List<Tuple[string, Bytes]>]>(1);
+  val Channel<Tuple[int, List<Tuple[string, Bytes]>]> reply_5 =
+      Channel.new<Tuple[int, List<Tuple[string, Bytes]>]>(1);
+  val Channel<Tuple[int, List<Tuple[string, Bytes]>]> reply_6 =
+      Channel.new<Tuple[int, List<Tuple[string, Bytes]>]>(1);
+  val Channel<Tuple[int, List<Tuple[string, Bytes]>]> reply_7 =
+      Channel.new<Tuple[int, List<Tuple[string, Bytes]>]>(1);
+  val Channel<Tuple[int, List<Tuple[string, Bytes]>]> reply_8 =
+      Channel.new<Tuple[int, List<Tuple[string, Bytes]>]>(1);
+  val NioConnection first = await listener.accept_async();
+  task scope {
+    // Independent admission means slow client writes cannot hold the actor
+    // output broker's sole consumer or stop other clients from making progress.
+    let Future<void> intake = task {
+      let int retired = 0;
+      loop {
+        const Tuple[int, int, List<Tuple[int, Bytes, Bytes]>] request =
+            await (nb readch requests);
+        if request[1] == -1; do
+          retired = retired + 1;
+          if retired == 8; do
+            let mut List<Tuple[int, Bytes, Bytes]> stop_batch = [];
+            worker.send((0, 0, stop_batch));
+            await worker.get_done();
+            return;
+          fi
+        else
+          worker.send((request[0], request[1], request[2]));
+        fi
+      }
+    };
+
+    // Exactly one native Atto broker task consumes worker.outputs.next().
+    // Every reply batch is tagged and every session expects a contiguous
+    // per-client batch ID; a mismatched result is refused by the session.
+    let Future<void> broker = task {
+      let int last_1 = 0;
+      let int last_2 = 0;
+      let int last_3 = 0;
+      let int last_4 = 0;
+      let int last_5 = 0;
+      let int last_6 = 0;
+      let int last_7 = 0;
+      let int last_8 = 0;
+      loop {
+        val output = (await worker.outputs.next()).value.unwrap();
+        const Tuple[int, int, List<Tuple[string, Bytes]>] reply = output.value;
+        if reply[0] == 0 && reply[1] == 0; do
+          return;
+        fi
+        if reply[0] == 1; do
+          if reply[1] != last_1 + 1; do
+            writech reply_1, (-1, reply[2]);
+          else
+            last_1 = reply[1];
+            writech reply_1, (reply[1], reply[2]);
+          fi
+        elseif reply[0] == 2; do
+          if reply[1] != last_2 + 1; do
+            writech reply_2, (-1, reply[2]);
+          else
+            last_2 = reply[1];
+            writech reply_2, (reply[1], reply[2]);
+          fi
+        elseif reply[0] == 3; do
+          if reply[1] != last_3 + 1; do
+            writech reply_3, (-1, reply[2]);
+          else
+            last_3 = reply[1];
+            writech reply_3, (reply[1], reply[2]);
+          fi
+        elseif reply[0] == 4; do
+          if reply[1] != last_4 + 1; do
+            writech reply_4, (-1, reply[2]);
+          else
+            last_4 = reply[1];
+            writech reply_4, (reply[1], reply[2]);
+          fi
+        elseif reply[0] == 5; do
+          if reply[1] != last_5 + 1; do
+            writech reply_5, (-1, reply[2]);
+          else
+            last_5 = reply[1];
+            writech reply_5, (reply[1], reply[2]);
+          fi
+        elseif reply[0] == 6; do
+          if reply[1] != last_6 + 1; do
+            writech reply_6, (-1, reply[2]);
+          else
+            last_6 = reply[1];
+            writech reply_6, (reply[1], reply[2]);
+          fi
+        elseif reply[0] == 7; do
+          if reply[1] != last_7 + 1; do
+            writech reply_7, (-1, reply[2]);
+          else
+            last_7 = reply[1];
+            writech reply_7, (reply[1], reply[2]);
+          fi
+        elseif reply[0] == 8; do
+          if reply[1] != last_8 + 1; do
+            writech reply_8, (-1, reply[2]);
+          else
+            last_8 = reply[1];
+            writech reply_8, (reply[1], reply[2]);
+          fi
+        fi
+      }
+    };
+    let Future<void> client_1 = task {
+      await serve_tagged_batch_session(first, 1, requests, reply_1);
+      return;
+    };
+    val NioConnection socket_2 = await listener.accept_async();
+    let Future<void> client_2 = task {
+      await serve_tagged_batch_session(socket_2, 2, requests, reply_2);
+      return;
+    };
+    val NioConnection socket_3 = await listener.accept_async();
+    let Future<void> client_3 = task {
+      await serve_tagged_batch_session(socket_3, 3, requests, reply_3);
+      return;
+    };
+    val NioConnection socket_4 = await listener.accept_async();
+    let Future<void> client_4 = task {
+      await serve_tagged_batch_session(socket_4, 4, requests, reply_4);
+      return;
+    };
+    val NioConnection socket_5 = await listener.accept_async();
+    let Future<void> client_5 = task {
+      await serve_tagged_batch_session(socket_5, 5, requests, reply_5);
+      return;
+    };
+    val NioConnection socket_6 = await listener.accept_async();
+    let Future<void> client_6 = task {
+      await serve_tagged_batch_session(socket_6, 6, requests, reply_6);
+      return;
+    };
+    val NioConnection socket_7 = await listener.accept_async();
+    let Future<void> client_7 = task {
+      await serve_tagged_batch_session(socket_7, 7, requests, reply_7);
+      return;
+    };
+    val NioConnection socket_8 = await listener.accept_async();
+    let Future<void> client_8 = task {
+      await serve_tagged_batch_session(socket_8, 8, requests, reply_8);
+      return;
+    };
+  }
+  await listener.close_async();
+  return;
+}
