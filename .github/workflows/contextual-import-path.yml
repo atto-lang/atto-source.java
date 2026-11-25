@@ -1,0 +1,64 @@
+name: Java contextual imports — trusted JVM and strict isolate gates
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/imports/ContextualImportPath.java'
+      - 'src/test/java/dev/oreslang/ContextualImportPathTest.java'
+      - '.github/workflows/contextual-import-path.yml'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/imports/StaticImportGraph.java'
+      - 'src/test/java/dev/oreslang/StaticImportGraphTest.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenImportSnapshot.java'
+      - 'src/test/java/dev/oreslang/FrozenImportSnapshotTest.java'
+      - 'src/test/java/dev/oreslang/imports/FrozenTrustedFixture.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenScalarImportCompiler.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenPackageArchive.java'
+      - 'src/main/java/dev/oreslang/launcher/FrozenPackageCommand.java'
+      - 'src/main/java/dev/oreslang/launcher/OresMain.java'
+      - 'src/test/java/dev/oreslang/launcher/FrozenPackageCommandTest.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenDependencyGraph.java'
+      - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
+      - 'src/test/java/dev/oreslang/FrozenDependencyGraphTest.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenProviderLinker.java'
+      - 'src/main/java/dev/oreslang/imports/FrozenZipDirectory.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/runtime/TraceParent.java'
+      - 'src/test/java/dev/oreslang/runtime/TraceParentTest.java'
+      - 'src/main/resources/META-INF/native-image/dev.oreslang/oreslang/native-image.properties'
+      - 'src/main/java/dev/oreslang/runtime/IsolatePolicy.java'
+      - 'pom.xml'
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact head and tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD HEAD^{tree}
+          git diff --quiet
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          test -z "$(git ls-files --others --exclude-standard)"
+      - name: Execute compiler and trusted JVM fixture tests
+        run: |
+          set -eu
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          mvn -B -Dtest=ContextualImportPathTest,StaticImportGraphTest,FrozenImportSnapshotTest,FrozenPackageCommandTest#actualLauncherChecksFrozenArchiveAndRejectsTampering+archiveTransportRejectsCentralDirectoryTruncationAndInconsistency,FrozenDependencyGraphTest,TraceParentTest -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Strict production isolate CLI gate (no fallback)
+        run: |
+          set -eu
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          mvn -B -Dtest=FrozenPackageCommandTest#strictLauncherRunsFrozenArchive -Dsurefire.failIfNoSpecifiedTests=true test

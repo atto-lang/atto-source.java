@@ -94,10 +94,30 @@ public final class IncrementalCompiler {
         return compileWithProfile(sources, importResolutions, true);
     }
 
+
+    /**
+     * Strict front-end recheck for explicitly invalidated authenticated units.
+     * A caller may force more checking, never bypass checking. Cache publication
+     * remains transactional and uses the ordinary source and binding checks.
+     */
+    public synchronized BuildResult compileStrictAtto(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            Set<String> forceRecheck) {
+        return compileWithProfile(sources, importResolutions, true, Set.copyOf(forceRecheck));
+    }
+
     private BuildResult compileWithProfile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions,
             boolean strictAtto) {
+        return compileWithProfile(sources, importResolutions, strictAtto, Set.of());
+    }
+
+    private BuildResult compileWithProfile(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            boolean strictAtto, Set<String> forceRecheck) {
         if (sources == null) throw new IllegalArgumentException("sources cannot be null");
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
         Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
@@ -106,6 +126,7 @@ public final class IncrementalCompiler {
         Map<String, List<ImportBinding>> selectedBindingCache =
                 strictAtto ? strictAttoImportBindingCache : importBindingCache;
         if (sources.isEmpty()) {
+            if (!forceRecheck.isEmpty()) throw new IllegalArgumentException("forced recheck of missing source");
             // The input map is a complete source snapshot, including removals.
             // A later re-add must not reuse a checked result for deleted files.
             selectedCache.clear();
@@ -122,6 +143,8 @@ public final class IncrementalCompiler {
             }
         }
 
+        if (!normalized.keySet().containsAll(forceRecheck))
+            throw new IllegalArgumentException("forced recheck of missing source");
         Map<String, String> hashes = new LinkedHashMap<>();
         Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
@@ -209,7 +232,7 @@ public final class IncrementalCompiler {
             resolvedBindings.put(id, List.copyOf(targets));
         }
 
-        LinkedHashSet<String> dirty = new LinkedHashSet<>();
+        LinkedHashSet<String> dirty = new LinkedHashSet<>(forceRecheck);
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
             CompiledUnit previous = selectedCache.get(id);

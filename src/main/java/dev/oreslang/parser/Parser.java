@@ -395,9 +395,44 @@ public final class Parser {
         List<Ast.ExportDecl> exports = new ArrayList<>();
         // File exports can appear before imports as well as after them.
         while (true) {
-            if (match(IMPORT)) imports.add(parseImport());
+            if (match(IMPORT)) imports.add(parseImport(namespace));
             else if (match(EXPORT)) exports.add(parseExport());
             else break;
+        }
+
+        // Static aliases are compile-time declarations, not runtime values.
+        // Validate the complete leading declaration batch before linking.
+        // Acyclic bindings still require the authenticated graph integration.
+        if (check(DEFINE) && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("alias")) {
+            Token start = peek();
+            var aliases = new ArrayList<dev.oreslang.imports.StaticImportGraph.Alias>();
+            while (check(DEFINE) && current + 1 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 1).lexeme().equals("alias")) {
+                advance(); advance();
+                if (aliases.size() >= 256)
+                    throw error(start, "E_SOURCE_LIMIT: namespace alias budget exceeded");
+                String left = parseStaticAliasPath();
+                String name, reference;
+                if (match(EQUAL)) {
+                    name = left;
+                    reference = parseStaticAliasPath();
+                } else {
+                    consume(AS, "expected '=' or 'as' in static alias");
+                    reference = left;
+                    name = consume(IDENT, "expected namespace alias name").lexeme();
+                }
+                consume(SEMICOLON, "expected ';' after namespace alias");
+                aliases.add(new dev.oreslang.imports.StaticImportGraph.Alias(name, reference));
+            }
+            try {
+                dev.oreslang.imports.StaticImportGraph.precheckAliases(aliases);
+            } catch (IllegalArgumentException invalid) {
+                throw error(start, invalid.getMessage());
+            }
+            throw error(start, "E_UNSUPPORTED: namespace aliases require authenticated static binding integration");
         }
 
         // Once a package namespace participates, require unique local import
@@ -670,7 +705,71 @@ public final class Parser {
         return name;
     }
 
-    private Ast.ImportDecl parseImport() {
+    private String parseStaticAliasPath() {
+        String first = consume(IDENT, "expected static alias path").lexeme();
+        if (first.length() > 64) throw error(previous(), "E_IMPORT_PATH: alias component too long");
+        StringBuilder path = new StringBuilder(first);
+        int components = 1;
+        while (match(DOT)) {
+            if (++components > 8) throw error(peek(), "E_IMPORT_PATH: alias path too deep");
+            String part = consume(IDENT, "expected alias path component").lexeme();
+            if (part.length() > 64) throw error(previous(), "E_IMPORT_PATH: alias component too long");
+            path.append('.').append(part);
+        }
+        return path.toString();
+    }
+
+    private Ast.ImportDecl parseImport(String currentNamespace) {
+        // Contextual paths are not file paths. Run the shared bounded
+        // normalizer before any package/file lookup; never lower an unverified
+        // namespace to a legacy filesystem import.
+        if (check(SELF) || check(SUPER) ||
+                (check(IDENT) && "pkg".equals(peek().lexeme())
+                        && current + 1 < tokens.size()
+                        && tokens.get(current + 1).type() != STRING)) {
+            Token start = advance();
+            StringBuilder path = new StringBuilder(start.lexeme());
+            int components = 1;
+            while (match(DOT)) {
+                if (++components > 8) throw error(peek(), "E_IMPORT_PATH: excessive contextual import depth");
+                Token part = peek();
+                if (!(check(IDENT) || check(SUPER) || check(SELF)))
+                    throw error(part, "E_IMPORT_PATH: expected contextual namespace component");
+                if (part.lexeme().length() > 64)
+                    throw error(part, "E_IMPORT_PATH: contextual component too long");
+                path.append('.').append(advance().lexeme());
+            }
+            if (match(AS)) consumeImportAlias("expected contextual import alias");
+            consume(SEMICOLON, "expected ';' after contextual import");
+            try {
+                dev.oreslang.imports.ContextualImportPath.normalize(path.toString(), currentNamespace);
+            } catch (IllegalArgumentException invalid) {
+                throw error(start, invalid.getMessage());
+            }
+            throw error(start, "E_UNSUPPORTED: contextual import requires authenticated package-export graph");
+        }
+        // Namespace-first spelling for a closed builtin subset. Lower to
+        // exactly the same AST as the already-supported wildcard namespace
+        // selector, retaining all existing compiler-owned identity checks.
+        if (match(NAMESPACE)) {
+            String alias = consumeImportAlias("expected namespace binding");
+            consume(FROM, "expected 'from' in namespace import");
+            String source;
+            if (match(STRING)) source = previous().lexeme();
+            else {
+                String root = consume(IDENT, "expected builtin namespace source").lexeme();
+                consume(DOT, "expected dotted builtin namespace");
+                source = root + "." + consume(IDENT, "expected builtin namespace member").lexeme();
+            }
+            String builtin = switch (source) {
+                case "core.num" -> "core/num";
+                case "core.cmp" -> "core/cmp";
+                case "core.mem" -> "core/mem";
+                default -> throw error(previous(), "E_UNSUPPORTED: namespace import requires authenticated package-export graph");
+            };
+            consume(SEMICOLON, "expected ';' after namespace import");
+            return new Ast.ImportDecl(Ast.ImportKind.ALL, List.of(), true, alias, builtin);
+        }
         // Backend-qualified sugar for the existing capability-gated class import.
         // Produce the identical AST as: import class Math as M from "java:java.lang.Math".
         // No host class is resolved or initialized by this parser.

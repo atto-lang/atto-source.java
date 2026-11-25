@@ -757,8 +757,13 @@ public final class TypeChecker {
         for (Map.Entry<String, Ast.FunctionDecl> entry : linkedImportFunctions.entrySet()) {
             String local = entry.getKey();
             Ast.FunctionDecl fn = entry.getValue();
-            if (fn == null || !local.equals(fn.name())
-                    || !checker.importedFunctions.containsKey(local)
+            Ast.ImportDecl imported = checker.importedFunctions.get(local);
+            // The key is the lexical alias, not necessarily the source
+            // declaration's name. Recheck the original explicit selection
+            // before admitting its authenticated signature.
+            if (fn == null || imported == null
+                    || !imported.names().contains(fn.name())
+                    || !ImportRules.localName(imported, fn.name()).equals(local)
                     || fn.visibility() != Ast.Visibility.PUBLIC
                     || !linkableSignature(fn, linkedClasses.keySet())) continue;
             checker.putFunctionSlot(Parser.IMPORTS_NAMESPACE + "." + local, fn);
@@ -4823,7 +4828,8 @@ public final class TypeChecker {
                     // This target is a checked local function declaration in the
                     // immutable, macro-expanded program. A runtime lexical value
                     // still wins if the identifier is shadowed.
-                    if (target.genericParameters().isEmpty()
+                    if (!selectsLinkedImport(functionName.name())
+                            && target.genericParameters().isEmpty()
                             && CheckedDispatchPlansV1.fixedSourceArity(call)) {
                         recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
                                 target.name(), arity, target, null, null);
@@ -14476,12 +14482,19 @@ public final class TypeChecker {
         return functions.containsKey(name);
     }
 
+    private boolean selectsLinkedImport(String name) {
+        return linkedImportCallables.contains(name) && !functions.containsKey(name)
+                && !ambiguousFunctions.contains(name);
+    }
+
     private Ast.FunctionDecl findFunction(String name, int arity) {
         if (ambiguousFunctions.contains(name)) {
             throw new IllegalArgumentException(
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
         }
         LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
+        if (family == null && selectsLinkedImport(name))
+            return findQualifiedFunction(Parser.IMPORTS_NAMESPACE + "." + name, arity);
         return family == null ? null : family.get(arity);
     }
 
@@ -14490,6 +14503,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
         }
+        if (selectsLinkedImport(name))
+            return findSingleQualifiedFunction(Parser.IMPORTS_NAMESPACE + "." + name);
         return singleFunction(functions.get(name), name);
     }
 

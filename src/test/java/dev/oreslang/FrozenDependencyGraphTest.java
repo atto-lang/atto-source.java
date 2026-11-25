@@ -1,0 +1,198 @@
+package dev.oreslang;
+
+import dev.oreslang.imports.*;
+import org.junit.jupiter.api.Test;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.*;
+import static org.junit.jupiter.api.Assertions.*;
+
+final class FrozenDependencyGraphTest {
+    private static final String A="@org/project/a",B="@org/project/b",C="@org/project/c",D="@org/project/d";
+    private static final String PATH="src/network.atto", SOURCE="use namespace network; pub fnc answer():int{return 42;}";
+    private static byte[] bytes(String s){return s.getBytes(StandardCharsets.UTF_8);}
+    private static String sha(byte[] b)throws Exception{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(b));}
+    private static FrozenImportSnapshot snapshot(String name,String version,Map<String,String> declared,Map<String,String> pins)throws Exception{
+        return snapshot(name,version,declared,pins,SOURCE);
+    }
+    private static FrozenImportSnapshot snapshot(String name,String version,Map<String,String> declared,Map<String,String> pins,String source)throws Exception{
+        var m=new StringBuilder("[package]\nname = \""+name+"\"\nversion = \""+version+"\"\n[namespaces]\nnetwork = \""+PATH+"\"\n[exports]\n\"api\" = \"network\"\n");
+        if(!declared.isEmpty()){
+            m.append("[dependencies]\n");
+            new TreeMap<>(declared).forEach((k,v)->m.append("\"").append(k).append("\" = \"").append(v).append("\"\n"));
+        }
+        var l=new StringBuilder("[lock]\nmanifest_sha256 = \""+sha(bytes(m.toString()))+"\"\n[files]\n\""+PATH+"\" = \""+sha(bytes(source))+"\"\n");
+        if(!pins.isEmpty()){
+            l.append("[dependencies]\n");
+            new TreeMap<>(pins).forEach((k,v)->l.append("\"").append(k).append("\" = \"").append(v).append("\"\n"));
+        }
+        byte[] lock=bytes(l.toString());
+        return FrozenImportSnapshot.verify(name,version,sha(lock),bytes(m.toString()),lock,Map.of(PATH,bytes(source)));
+    }
+    private static FrozenImportSnapshot withDeps(String name,FrozenImportSnapshot... dependencies)throws Exception{
+        var versions=new TreeMap<String,String>();var pins=new TreeMap<String,String>();
+        for(var p:dependencies){versions.put(p.name(),p.version());pins.put(p.name(),p.lockDigest());}
+        return snapshot(name,"1.0.0",versions,pins);
+    }
+    private static void deny(String code,org.junit.jupiter.api.function.Executable operation){
+        var e=assertThrows(IllegalArgumentException.class,operation);
+        assertTrue(e.getMessage().startsWith(code+":"),e.getMessage());
+    }
+    @Test void diamondClosureIsDeterministicAndDoesNotGrantTransitiveAuthority()throws Exception{
+        var c=withDeps(C);var b=withDeps(B,c);var d=withDeps(D,c);var a=withDeps(A,b,d);
+        for(var list:List.of(List.of(a,b,c,d),List.of(d,c,b,a))){
+            var graph=FrozenDependencyGraph.verify(list);
+            assertEquals(List.of(C,B,D,A),graph.dependencyOrder());
+            assertSame(b,graph.requireDependency(A,B));
+            assertSame(c,graph.requireDependency(B,C));
+            deny("E_UNBOUND",()->graph.requireDependency(A,C));
+        }
+        assertThrows(UnsupportedOperationException.class,()->a.dependencies().clear());
+        deny("E_UNBOUND",()->FrozenDependencyGraph.verify(List.of(a,b,d)));
+        deny("E_AMBIGUOUS",()->FrozenDependencyGraph.verify(List.of(a,b,c,d,c)));
+        var changed=snapshot(C,"2.0.0",Map.of(),Map.of());
+        deny("E_LOCK_HASH",()->FrozenDependencyGraph.verify(List.of(a,b,changed,d)));
+        var wrongPin=snapshot(B,"1.0.0",Map.of(C,"1.0.0"),Map.of(C,"0".repeat(64)));
+        deny("E_LOCK_HASH",()->FrozenDependencyGraph.verify(List.of(wrongPin,c)));
+        deny("E_LOCK",()->snapshot(B,"1.0.0",Map.of(C,"1.0.0"),Map.of()));
+        deny("E_LOCK",()->snapshot(B,"1.0.0",Map.of(),Map.of(C,c.lockDigest())));
+        deny("E_LOCK",()->snapshot(B,"1.0.0",Map.of("../escape","1.0.0"),Map.of("../escape",c.lockDigest())));
+    }
+    @Test void cycleDiagnosticsPrecedeInconsistentEdgeHashes()throws Exception{
+        // A cycle cannot honestly pin its own complete lock digest. These
+        // independently verified malformed snapshots intentionally use dummy
+        // edge pins; structural cycles must be diagnosed before pin mismatch.
+        var a=snapshot(A,"1.0.0",Map.of(B,"1.0.0"),Map.of(B,"0".repeat(64)));
+        var b=snapshot(B,"1.0.0",Map.of(A,"1.0.0"),Map.of(A,"0".repeat(64)));
+        for(var list:List.of(List.of(a,b),List.of(b,a))){
+            var e=assertThrows(IllegalArgumentException.class,()->FrozenDependencyGraph.verify(list));
+            assertEquals("E_IMPORT_CYCLE: "+A+" -> "+B+" -> "+A,e.getMessage());
+        }
+        var self=snapshot(A,"1.0.0",Map.of(A,"1.0.0"),Map.of(A,"0".repeat(64)));
+        deny("E_IMPORT_CYCLE",()->FrozenDependencyGraph.verify(List.of(self)));
+    }
+    @Test void compilerRejectsIncompleteClosureBeforeProviderLinking()throws Exception{
+        var c=withDeps(C);var b=withDeps(B,c);var a=withDeps(A,b);
+        String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer();}";
+        deny("E_UNBOUND",()->FrozenScalarImportCompiler.compile(guest,List.of(a,b)));
+        var checked=FrozenScalarImportCompiler.compile(guest,List.of(a,b,c));
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(checked));
+    }
+    @Test void actualGuestCallsAcrossThreePinnedProviders()throws Exception {
+        var c=snapshot(C,"1.0.0",Map.of(),Map.of(),
+            "use namespace network; fnc secret():int{return 99;} pub fnc answer(int x):int{return x*2;}");
+        var b=snapshot(B,"1.0.0",Map.of(C,c.version()),Map.of(C,c.lockDigest()),
+            "use namespace network; import fnc answer as twice from pkg '"+C+"/api'; pub fnc answer(int x):int{return twice(x)+1;}");
+        var a=snapshot(A,"1.0.0",Map.of(B,b.version()),Map.of(B,b.lockDigest()),
+            "use namespace network; import fnc answer as next from pkg '"+B+"/api'; pub fnc answer(int x):int{return next(x)+1;}");
+        String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer(20);}";
+        for(var list:List.of(List.of(a,b,c),List.of(c,b,a))) {
+            var program=FrozenScalarImportCompiler.compile(guest,list);
+            assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(program));
+        }
+        deny("E_UNBOUND",()->FrozenScalarImportCompiler.compile(guest,List.of(a,b)));
+        var jump=snapshot(A,"1.0.0",Map.of(B,b.version()),Map.of(B,b.lockDigest()),
+            "use namespace network; import fnc answer as next from pkg '"+C+"/api'; pub fnc answer(int x):int{return next(x);}");
+        deny("E_UNBOUND",()->FrozenScalarImportCompiler.compile(guest,List.of(jump,b,c)));
+        var hidden=snapshot(B,"1.0.0",Map.of(C,c.version()),Map.of(C,c.lockDigest()),
+            "use namespace network; import fnc secret from pkg '"+C+"/api'; pub fnc answer(int x):int{return secret();}");
+        String fromB="import pkg '"+B+"' as p; pub fnc main()->int{return p.network.answer(20);}";
+        deny("E_PRIVATE",()->FrozenScalarImportCompiler.compile(fromB,List.of(hidden,c)));
+        deny("E_UNBOUND",()->FrozenScalarImportCompiler.compile(fromB.replace("answer","twice"),List.of(b,c)));
+        var physical=snapshot(B,"1.0.0",Map.of(C,c.version()),Map.of(C,c.lockDigest()),
+            "use namespace network; import fnc answer from pkg '"+C+"/src/network'; pub fnc other(int x):int{return answer(x);}");
+        deny("E_UNBOUND",()->FrozenScalarImportCompiler.compile(fromB,List.of(physical,c)));
+    }
+    @Test void sourceInvalidationIsDeterministicAndSelective()throws Exception {
+        var c=withDeps(C);var b=withDeps(B,c);var a=withDeps(A,b);var d=withDeps(D);
+        var old=FrozenDependencyGraph.verify(List.of(a,b,c,d));
+        var same=FrozenDependencyGraph.verify(List.of(d,c,b,a));
+        assertEquals(List.of(),same.planAgainst(old).rebuild());
+        assertEquals(old.dependencyOrder(),same.planAgainst(old).reusable());
+        assertEquals(old.dependencyOrder(),old.planAgainst(null).rebuild());
+        var changed=snapshot(C,"1.0.0",Map.of(),Map.of(),SOURCE.replace("42","43"));
+        var b2=withDeps(B,changed);var a2=withDeps(A,b2);
+        for(var inventory:List.of(List.of(a2,b2,changed,d),List.of(d,changed,b2,a2))) {
+            var plan=FrozenDependencyGraph.verify(inventory).planAgainst(old);
+            assertEquals(List.of(C,B,A),plan.rebuild());
+            assertEquals(List.of(D),plan.reusable());
+            assertEquals(List.of(),plan.removed());
+            assertThrows(UnsupportedOperationException.class,()->plan.rebuild().clear());
+            assertThrows(UnsupportedOperationException.class,()->plan.reusable().clear());
+        }
+        var without=FrozenDependencyGraph.verify(List.of(d));
+        assertEquals(List.of(A,B,C),without.planAgainst(old).removed());
+        assertEquals(List.of(D),without.planAgainst(old).reusable());
+        assertEquals(List.of(C,B,A),old.planAgainst(without).rebuild());
+        deny("E_LOCK_HASH",()->FrozenDependencyGraph.verify(List.of(a,b,changed,d)));
+        var rewired=withDeps(A,c);
+        var plan=FrozenDependencyGraph.verify(List.of(rewired,c,d)).planAgainst(old);
+        assertEquals(List.of(A),plan.rebuild());
+        assertEquals(List.of(C,D),plan.reusable());
+        assertEquals(List.of(B),plan.removed());
+    }
+
+    @Test void providerIdsDoNotDependOnInventoryOrContent()throws Exception {
+        var a=withDeps(A);var d=withDeps(D);
+        var old=FrozenDependencyGraph.verify(List.of(a));
+        var more=FrozenDependencyGraph.verify(List.of(d,a));
+        String id=old.providerIdentity(A,"network");
+        assertEquals("680d736917e8f15f615de63abf42fdd332543f48c88065637ffb62ae7f82e636",id);
+        assertEquals(id,more.providerIdentity(A,"network"));
+        assertNotEquals(id,more.providerIdentity(D,"network"));
+        var changed=snapshot(A,"1.0.0",Map.of(),Map.of(),SOURCE.replace("42","43"));
+        assertEquals(id,FrozenDependencyGraph.verify(List.of(changed)).providerIdentity(A,"network"));
+        deny("E_UNBOUND",()->old.providerIdentity(D,"network"));
+        deny("E_UNBOUND",()->old.providerIdentity(A,"missing"));
+        String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer();}";
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(FrozenScalarImportCompiler.compile(guest,List.of(a,d))));
+    }
+    @Test void actualStrictSessionReusesAndRechecksWithAtomicFailure()throws Exception {
+        var c=snapshot(C,"1.0.0",Map.of(),Map.of(),"use namespace network; pub fnc answer(int x):int{return x*2;}");
+        var b=snapshot(B,"1.0.0",Map.of(C,c.version()),Map.of(C,c.lockDigest()),
+            "use namespace network; import fnc answer as twice from pkg '"+C+"/api'; pub fnc answer(int x):int{return twice(x)+1;}");
+        var a=snapshot(A,"1.0.0",Map.of(B,b.version()),Map.of(B,b.lockDigest()),
+            "use namespace network; import fnc answer as next from pkg '"+B+"/api'; pub fnc answer(int x):int{return next(x)+1;}");
+        var d=withDeps(D);
+        var inventory=List.of(a,b,c,d);
+        var graph=FrozenDependencyGraph.verify(inventory);
+        String unitD="pinned/provider_"+graph.providerIdentity(D,"network")+".atto";
+        var session=new FrozenScalarImportCompiler.Session();
+        String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer(20);}";
+        var cold=session.compile(guest,inventory);
+        assertEquals(5,cold.rebuiltUnits().size());
+        assertEquals(5,cold.reparsedUnits().size());
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(cold));
+        var warm=session.compile(guest,List.of(d,c,b,a));
+        assertEquals(Set.of(),warm.rebuiltUnits());
+        assertEquals(Set.of(),warm.reparsedUnits());
+        assertEquals(5,warm.reusedUnits().size());
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(warm));
+        var c2=snapshot(C,"1.0.0",Map.of(),Map.of(),"use namespace network; pub fnc answer(int x):int{return x*2+1;}");
+        var b2=snapshot(B,"1.0.0",Map.of(C,c2.version()),Map.of(C,c2.lockDigest()),b.providerSource("network"));
+        var a2=snapshot(A,"1.0.0",Map.of(B,b2.version()),Map.of(B,b2.lockDigest()),a.providerSource("network"));
+        var updated=List.of(a2,b2,c2,d);
+        var changed=session.compile(guest,updated);
+        assertEquals(Set.of(unitD),changed.reusedUnits());
+        assertEquals(4,changed.rebuiltUnits().size());
+        assertEquals(1,changed.reparsedUnits().size());
+        assertEquals(43,dev.oreslang.imports.FrozenTrustedFixture.run(changed));
+        // A package sorting ahead of all existing providers must not shift IDs.
+        var extra=withDeps("@org/project/0extra");
+        var expanded=session.compile(guest,List.of(extra,d,c2,b2,a2));
+        assertEquals(1,expanded.rebuiltUnits().size());
+        assertEquals(5,expanded.reusedUnits().size());
+        assertEquals(43,dev.oreslang.imports.FrozenTrustedFixture.run(expanded));
+        // Failed authenticated compilation must not publish any cache changes.
+        var bad=snapshot(D,"1.0.0",Map.of(),Map.of(),"use namespace network; pub fnc answer():int{return unknown();}");
+        assertThrows(IllegalArgumentException.class,()->session.compile(guest,List.of(a2,b2,c2,bad,extra)));
+        var recovered=session.compile(guest,updated);
+        assertEquals(Set.of(),recovered.rebuiltUnits());
+        assertEquals(5,recovered.reusedUnits().size());
+        assertEquals(43,dev.oreslang.imports.FrozenTrustedFixture.run(recovered));
+        deny("E_LOCK_HASH",()->session.compile(guest,List.of(a,b,c2,d)));
+        assertEquals(Set.of(),session.compile(guest,updated).rebuiltUnits());
+        session.clear();
+        assertEquals(5,session.compile(guest,updated).rebuiltUnits().size());
+    }
+}
