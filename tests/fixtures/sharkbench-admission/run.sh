@@ -3,6 +3,13 @@ set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 here="$root/tests/fixtures/sharkbench-admission"
+variant="${1:-boxed}"
+case "$variant" in
+  boxed) entry=sharkbench-web.atto ;;
+  native) entry=sharkbench-web-native.atto ;;
+  *) echo "unknown workload variant" >&2; exit 2 ;;
+esac
+printf 'WORKLOAD_VARIANT=%s\n' "$variant"
 python3 - "$here/inputs.lock.json" <<'PY'
 import json, subprocess, sys
 lock=json.load(open(sys.argv[1]))
@@ -15,9 +22,9 @@ java -XshowSettings:properties -version 2>&1 | grep -Eq '^[[:space:]]*java.speci
 bash "$here/maven-retry.sh" -B -ntp compile dependency:build-classpath -Dmdep.outputFile=target/sharkbench-classpath.txt
 test -s target/sharkbench-classpath.txt
 cp="$(cat target/sharkbench-classpath.txt)"
-python3 - "$here" "$root/target/classes:$cp" <<'PY'
+python3 - "$here" "$root/target/classes:$cp" "$entry" <<'PY'
 import os, pathlib, signal, socket, subprocess, sys, tempfile, time
-here, cp=sys.argv[1:]
+here, cp, entry=sys.argv[1:]
 for port in (5001,5002):
     with socket.socket() as s:
         s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
@@ -28,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix="sharkbench-admission-") as tmp:
         guest=subprocess.Popen(["java","-cp",cp,"dev.oreslang.launcher.OresMain",
             "--no-core-log","--permission-check=runtime",
             "--allow-net=127.0.0.1:5001,127.0.0.1:5002",
-            str(pathlib.Path(here)/"sharkbench-web.atto")],
+            str(pathlib.Path(here)/entry)],
             stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
         try:
             deadline=time.monotonic()+60
