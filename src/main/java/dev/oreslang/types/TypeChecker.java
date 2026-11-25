@@ -6379,6 +6379,7 @@ public final class TypeChecker {
                     case "to_string" -> new Function(List.of(), Primitive.STRING);
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
                     case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+                    case "utf8_bytes" -> new Function(List.of(), new ListType(Primitive.INT));
                     case "trim" -> new Function(List.of(), Primitive.STRING);
                     case "is_identifier", "is_route_segment" -> new Function(List.of(), Primitive.BOOL);
                     case "codepoints" -> new Function(List.of(), new ListType(Primitive.INT));
@@ -11127,6 +11128,12 @@ public final class TypeChecker {
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
                         Primitive.VOID);
+                case "utf8_string" -> {
+                    if (list.element() != Primitive.INT) {
+                        throw new IllegalArgumentException("utf8_string requires List<int>");
+                    }
+                    yield new Function(List.of(), Primitive.STRING);
+                }
                 default -> null;
             };
         }
