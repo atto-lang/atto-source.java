@@ -94,4 +94,30 @@ final class ActorReceiveInvocationTest {
         assertEquals(ActorReceiveInvocation.ROOT_BYTES, restarted.usedBytes());
         fresh.finish();
     }
+
+    @Test
+    void quotaFailureUsesPreReservedActorLocalErrors() throws Exception {
+        ActorFrameArena frames = arena(16, 1, 2, ActorReceiveInvocation.ROOT_BYTES);
+        var quotaField = ActorFrameArena.class.getDeclaredField("quotaExhausted");
+        var poisonedField = ActorFrameArena.class.getDeclaredField("poisonedFailure");
+        quotaField.setAccessible(true);
+        poisonedField.setAccessible(true);
+        Object reservedQuota = quotaField.get(frames);
+        Object reservedPoisoned = poisonedField.get(frames);
+        ActorReceiveInvocation first = ActorReceiveInvocation.begin(frames);
+        assertSame(reservedQuota, assertThrows(ActorFrameArena.BudgetExceeded.class,
+                () -> ActorReceiveInvocation.begin(frames)));
+        assertSame(reservedPoisoned, assertThrows(ActorFrameArena.BudgetExceeded.class,
+                () -> ActorReceiveInvocation.begin(frames)));
+        assertTrue(frames.isPoisoned());
+        first.cancelAfterFailure();
+        assertEquals(0, frames.usedBytes());
+        assertSame(reservedPoisoned, assertThrows(ActorFrameArena.BudgetExceeded.class,
+                () -> ActorReceiveInvocation.begin(frames)));
+        ActorFrameArena sibling = arena(17, 1, 2, ActorReceiveInvocation.ROOT_BYTES);
+        assertNotSame(reservedQuota, quotaField.get(sibling));
+        assertNotSame(reservedPoisoned, poisonedField.get(sibling));
+        ActorReceiveInvocation.begin(sibling).finish();
+        assertFalse(sibling.isPoisoned());
+    }
 }
