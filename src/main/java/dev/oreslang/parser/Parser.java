@@ -1518,7 +1518,7 @@ public final class Parser {
             // Legacy 'fnc name' and explicit 'method name' both describe instance
             // methods. The AST's isStatic flag, not the spelling, controls binding.
             Ast.MethodDecl member = parseMethod(annotations, mods, isAbstract);
-            // Newable's explicitly declared `fnc new` is a type-level
+            // Newable's explicitly declared `new` (legacy `fnc new`) is a type-level
             // factory even when the author omits the optional `static`
             // modifier. Do not alter other methods or synthesize a factory.
             if (member.name().equals("new") && !member.isStatic()

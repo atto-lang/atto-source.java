@@ -1,0 +1,37 @@
+name: Canonical bare class factory guest execution
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/CanonicalBareFactoryGuestTest.java'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/types/**'
+      - '.github/workflows/canonical-bare-factory.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute canonical and legacy factory guests and rejection checks
+        run: mvn -B -Dtest=CanonicalBareFactoryGuestTest,CanonicalDefineScopeTest test
