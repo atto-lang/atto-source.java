@@ -3583,6 +3583,41 @@ public final class TypeChecker {
                                     "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
                             yield Primitive.VOID;
                         }
+                        case "serve_resp2_async" -> {
+                            // One shared Atto actor owns the KV map. Only a
+                            // concrete StreamOperator with the exact tagged
+                            // binary request/response ABI can serve NIO2.
+                            if (call.arguments().size() != 3) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.serve_resp2_async requires listener, max_clients, accept_count");
+                            }
+                            Type bytes = new Named("$builtin$Bytes", List.of());
+                            Type expectedInput = new Tuple(List.of(
+                                    Primitive.INT, Primitive.INT, Primitive.INT, bytes, bytes),
+                                    TupleKind.TUPLE);
+                            Type expectedOutput = new Tuple(List.of(
+                                    Primitive.INT, Primitive.INT, Primitive.STRING, bytes),
+                                    TupleKind.TUPLE);
+                            StreamPorts ports = streamPortsForClass(
+                                    actorClass, actorRef.arguments().getFirst());
+                            if (ports == null || !ports.input().equals(expectedInput)
+                                    || !ports.output().equals(expectedOutput)) {
+                                throw new IllegalArgumentException(
+                                        "serve_resp2_async requires StreamOperator<"
+                                        + "Tuple<int,int,int,Bytes,Bytes>,Tuple<int,int,string,Bytes>>");
+                            }
+                            requireAssignable(
+                                    typeOf(call.arguments().get(0), env, generics, self),
+                                    new Named("NioListener", List.of()),
+                                    "serve_resp2_async listener");
+                            requireAssignable(
+                                    typeOf(call.arguments().get(1), env, generics, self),
+                                    Primitive.INT, "serve_resp2_async max_clients");
+                            requireAssignable(
+                                    typeOf(call.arguments().get(2), env, generics, self),
+                                    Primitive.INT, "serve_resp2_async accept_count");
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
                         case "stop" -> {
                             if (!call.arguments().isEmpty()) {
                                 throw new IllegalArgumentException(
