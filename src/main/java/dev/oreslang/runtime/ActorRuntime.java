@@ -99,7 +99,8 @@ public final class ActorRuntime implements AutoCloseable {
     /** Captured BEFORE actor registration and first physical turn. */
     private record ActorStorageBinding(
             SupervisorStorageEpochAuthority gate,
-            SupervisorStorageEpochAuthority.Activation activation) { }
+            SupervisorStorageEpochAuthority.Activation activation,
+            SupervisorStorageEpochAuthority.ActorBindingLease lifetime) { }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -2222,6 +2223,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "deferred actor continuation requires an executing actor turn");
         }
+        cell.requireCurrentStorageAdmission();
         return new ContinuationTarget(this, cell);
     }
 
@@ -2687,6 +2689,14 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
         ActorId actorId = cell.ref.id();
         if (actors.get(actorId) != cell || cell.stopped.get() || closed.get()) return false;
+        // An old producer may still complete a Future after supervisor
+        // takeover. Reject before charging the CONTROL continuation queue.
+        // Do not call this guard while holding cell.lifecycleLock.
+        try {
+            cell.requireCurrentStorageAdmission();
+        } catch (SecurityException stale) {
+            return false;
+        }
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -3256,10 +3266,22 @@ public final class ActorRuntime implements AutoCloseable {
             requireStorageEpochHostContext(this);
             Objects.requireNonNull(gate, "storage generation gate");
             Objects.requireNonNull(activation, "supervisor incarnation");
-            gate.requireBinding(activation, this);
-            return spawnInternal(ActorKind.PRIVATE, policy,
-                    behaviorFactory, true, null, null, null,
-                    new ActorStorageBinding(gate, activation));
+            // Claim the ENTIRE ActorCell lifetime, not merely a physical
+            // carrier turn. A second actor with the same activation would
+            // violate exactly-one-owner partition semantics.
+            var lease = gate.claimActorBinding(activation, this);
+            boolean registered = false;
+            try {
+                ActorRef<M> actor = spawnInternal(ActorKind.PRIVATE, policy,
+                        behaviorFactory, true, null, null, null,
+                        new ActorStorageBinding(gate, activation, lease));
+                registered = true;
+                return actor;
+            } finally {
+                // Never discard the claim after successful registration:
+                // finalization, NOT caller cancel, releases it.
+                if (!registered) lease.close();
+            }
         }
 
         /**
@@ -6463,6 +6485,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        // Fail before charging mailbox capacity or copying an expensive
+        // object graph for an already-revoked actor activation. The final
+        // dispatch-time check remains authoritative for racing revocations.
+        cell.requireCurrentStorageAdmission();
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
@@ -8476,6 +8502,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorRef<M> ref;
         /** Runtime-owned incarnation, never a guest string or mutable field. */
         private final ActorStorageBinding storageBinding;
+        /** Bound storage authority applies to every mail/continuation admission. */
+        private void requireCurrentStorageAdmission() {
+            if (storageBinding != null)
+                storageBinding.gate().requireCurrentActorTurn(storageBinding.activation());
+        }
+
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
@@ -9189,43 +9221,87 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             finalized = true;
+            // A failed physical cleanup or registry retirement must quarantine
+            // partition authority. Neither STOP nor logical finalization alone
+            // proves it is safe to admit a replacement incarnation.
+            boolean physicalRetirementComplete = true;
             sourceScheduler = null;
             sourceTaskMailbox.close();
             try { drainMailboxReservations(); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             staticSelectCursors.clear();
             codeActorState = null;
             try { outputStream.close(ref.terminationCause.get()); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             for (ActorShardLease lease : List.copyOf(shardLeases)) {
                 try { lease.revokeFromActorStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             shardLeases.clear();
             for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
                 try { snapshot.revokeFromActorStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             shardSnapshotLeases.clear();
             if (memorySlice != null) {
                 try { memorySlice.close(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             try { actorExitHook.accept(executionDomain); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             try { unregisterActor(this); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
+            // Parent registry retirement is part of physical cleanup. A
+            // failure here must retain the unique storage-actor lifetime
+            // claim; otherwise a replacement can overlap incomplete cleanup.
             if (parent != null) {
                 try { parent.childFinalized(this); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                    physicalRetirementComplete = false;
+                    recordFinalizationFailure(failure);
+                }
+            }
+            // Release the unforgeable binding ONLY after every relevant
+            // physical cleanup and parent-registry operation has succeeded.
+            // If any step failed, preserve the old generation's claim so
+            // activate() refuses an unsafe successor indefinitely.
+            if (storageBinding != null) {
+                if (physicalRetirementComplete) {
+                    storageBinding.lifetime().close();
+                } else {
+                    sourceStopCleanupAborted = true;
+                    recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                            "supervised actor physical retirement incomplete; partition quarantined"));
+                }
             }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {

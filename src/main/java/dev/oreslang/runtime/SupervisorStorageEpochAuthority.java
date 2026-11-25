@@ -78,10 +78,37 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         }
     }
 
+    /**
+     * Exclusive logical partition-actor owner. Unlike a carrier turn lease,
+     * this remains claimed across suspensions, idle mailboxes and STOP until
+     * ActorCell's actual physical finalization has completed. A replacement
+     * cannot claim the partition while an old, idle actor remains registered.
+     */
+    static final class ActorBindingLease implements AutoCloseable {
+        private final SupervisorStorageEpochAuthority gate;
+        private boolean released;
+        private ActorBindingLease(SupervisorStorageEpochAuthority gate) {
+            this.gate = gate;
+        }
+        @Override public void close() {
+            synchronized (gate.lock) {
+                if (released) return;
+                released = true;
+                if (gate.boundActor != this)
+                    throw new IllegalStateException("supervisor actor binding identity changed");
+                gate.boundActor = null;
+                gate.lock.notifyAll();
+            }
+        }
+    }
+
     public static final class QuiescencePendingException extends IllegalStateException {
-        public QuiescencePendingException(int physicalIo, int executingCommits) {
+        public QuiescencePendingException(int physicalIo, int executingCommits,
+                int actorTurns, int liveActorBindings) {
             super("supervisor takeover waiting for physical I/O=" + physicalIo
-                    + ", executing commits=" + executingCommits);
+                    + ", executing commits=" + executingCommits
+                    + ", physical actor turns=" + actorTurns
+                    + ", live actor bindings=" + liveActorBindings);
         }
     }
 
@@ -99,6 +126,9 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
     private int physicalIoInFlight;
     private int executingCommits;
     private int actorTurnsInFlight;
+    // Exactly one live ActorCell may own this partition across its lifetime.
+    // Does NOT silently fall to zero when a turn suspends or the actor is idle.
+    private ActorBindingLease boundActor;
 
     SupervisorStorageEpochAuthority(ActorRuntime runtime,
             ActorRuntime.ActorSupervisor supervisor, String partition,
@@ -136,9 +166,10 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
             // all physical loans drain may safely reserve the next epoch.
             active = null;
             if (physicalIoInFlight != 0 || executingCommits != 0
-                    || actorTurnsInFlight != 0)
+                    || actorTurnsInFlight != 0 || boundActor != null)
                 throw new QuiescencePendingException(
-                        physicalIoInFlight, executingCommits + actorTurnsInFlight);
+                        physicalIoInFlight, executingCommits, actorTurnsInFlight,
+                        boundActor == null ? 0 : 1);
             long expected = generation;
             if (expected == Long.MAX_VALUE - 1) {
                 poisoned = true;
@@ -285,6 +316,26 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         }
     }
 
+    /**
+     * Claim exactly one ActorCell over the WHOLE incarnation, including idle
+     * and suspended periods. Roll back this lease only if spawn itself fails;
+     * otherwise ActorCell finalization (not a caller's cancel request) retires
+     * it. The physical-turn counter alone does NOT represent actor lifetime.
+     */
+    ActorBindingLease claimActorBinding(Activation ticket,
+            ActorRuntime.ActorSupervisor owner) {
+        if (owner != supervisor)
+            throw new SecurityException("foreign supervisor actor binding");
+        synchronized (lock) {
+            if (!currentLocked(ticket))
+                throw new SecurityException("stale/foreign actor activation binding");
+            if (boundActor != null)
+                throw new SecurityException("partition activation already has a live actor owner");
+            boundActor = new ActorBindingLease(this);
+            return boundActor;
+        }
+    }
+
     /** Opaque activation must belong to this exact gate and still be current. */
     void requireBinding(Activation ticket, ActorRuntime.ActorSupervisor owner) {
         if (owner != supervisor) throw new SecurityException("foreign supervisor actor binding");
@@ -294,11 +345,11 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         }
     }
 
-    /** Covers registered fsyncs, executing commits AND bound physical actor turns. */
+    /** Includes idle/suspended bound actors, not merely running carrier turns. */
     public boolean physicallyQuiescent() {
         synchronized (lock) {
             return physicalIoInFlight == 0 && executingCommits == 0
-                    && actorTurnsInFlight == 0;
+                    && actorTurnsInFlight == 0 && boundActor == null;
         }
     }
 
