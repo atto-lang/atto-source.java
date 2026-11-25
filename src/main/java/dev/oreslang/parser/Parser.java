@@ -2,9 +2,14 @@ package dev.oreslang.parser;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.StaticProxySynthesis;
+import dev.oreslang.types.RefinementProofs.Interval;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static dev.oreslang.parser.Token.Type.*;
 
@@ -27,6 +32,14 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    private final Map<String, VerifiedQuantityUnit> dimensions = new HashMap<>();
+    private final Map<String, VerifiedQuantityUnit> units = new HashMap<>();
+    private final Set<String> canonicalUnitDimensions = new HashSet<>();
+    private final Map<String, RefinedQuantity> refinementAliases = new HashMap<>();
+    private final Map<String, VerifiedFunction> verifiedFunctions = new HashMap<>();
+    private final Map<String, RefinedQuantity> verifiedLocals = new HashMap<>();
+    private final Map<String, Set<String>> verifiedUpperBounds = new HashMap<>();
+    private boolean verifiedCallable;
     private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
     private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
@@ -182,6 +195,11 @@ public final class Parser {
         return new Parser(new Lexer(source).scan()).parseProgram();
     }
 
+    /** Closed-file protocol actor compilation may omit the enclosing scalar entry point. */
+    public static Ast.Program parseProtocolActors(String source) {
+        return new Parser(new Lexer(source).scan()).parseProgram(true);
+    }
+
     /** Explicit draft v1/v2 source grammar. This is a real parser entrypoint,
      * not a completed package-edition/Truffle guest integration. Unsupported
      * compound/effectful comma body shapes fail before AST emission. */
@@ -308,6 +326,10 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        return parseProgram(false);
+    }
+
+    private Ast.Program parseProgram(boolean protocolActorsRequired) {
         // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
         // execution regions and quantum fail-closed, but allow canonical task
         // forms (plus legacy nb aliases) to reach typed lowering. GPU task is
@@ -431,6 +453,17 @@ public final class Parser {
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
+        parseQuantityDeclarations();
+        if (atRefinedQuantityAlias() || atProtocolDeclaration()) {
+            if (namespace != null || !imports.isEmpty() || !exports.isEmpty()) {
+                throw error(peek(), "E_REFINEMENT_SCOPE: Verified Core requires a standalone source file");
+            }
+            var declarations = parseVerifiedFunctions(protocolActorsRequired);
+            return new Ast.Program(null, List.of(),
+                    List.of(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), declarations)), List.of());
+        }
+        if (protocolActorsRequired)
+            throw error(peek(), "E_PROTOCOL_ACTOR: expected a file-local verified protocol actor");
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
@@ -4179,7 +4212,8 @@ public final class Parser {
                 advance();
                 return parseMaybe(true);
             }
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
+            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null
+                    : hasQuantitySuffixInReturn() ? parseQuantityReturn() : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
@@ -7271,6 +7305,766 @@ public final class Parser {
         } catch (NumberFormatException invalid) {
             throw error(token, "integer literal overflows signed 64-bit: " + literal);
         }
+    }
+
+    private void parseQuantityDeclarations() {
+        while (check(DEFINE) && checkNext(IDENT)
+                && (tokens.get(current + 1).lexeme().equals("dimension")
+                    || tokens.get(current + 1).lexeme().equals("unit"))) {
+            advance();
+            boolean dimension = advance().lexeme().equals("dimension");
+            Token declaration = consume(IDENT, "E_UNIT_NAME: expected a quantity name");
+            String name = declaration.lexeme();
+            if (dimensions.size() + units.size() >= 128) {
+                throw error(declaration, "E_UNIT_LIMIT: more than 128 quantity declarations");
+            }
+            if (dimensions.containsKey(name) || units.containsKey(name)) {
+                throw error(declaration, "E_UNIT_DUPLICATE: quantity name is already declared");
+            }
+            if (dimension) {
+                consume(SEMICOLON, "expected ';' after dimension declaration");
+                dimensions.put(name, VerifiedQuantityUnit.base(name));
+                continue;
+            }
+            consume(COLON, "expected ':' before a unit's dimension");
+            Token dimensionName = consume(IDENT, "E_UNIT_NAME: expected the declared dimension");
+            var base = dimensions.get(dimensionName.lexeme());
+            if (base == null) throw error(dimensionName, "E_UNIT_NAME: unknown dimension");
+            var unit = base;
+            if (match(EQUAL)) {
+                if (check(INT)) {
+                    long factor = readQuantityFactor();
+                    consume(STAR, "expected '*' after a unit scale factor");
+                    unit = readQuantityUnit().scale(factor, false);
+                } else {
+                    unit = readQuantityUnit();
+                    if (match(SLASH, STAR)) {
+                        boolean divide = previous().type() == SLASH;
+                        unit = unit.scale(readQuantityFactor(), divide);
+                    }
+                }
+                if (!unit.sameDimension(base)) {
+                    throw error(dimensionName, "E_UNIT_DIMENSION: derived unit has the wrong dimension");
+                }
+            } else if (!canonicalUnitDimensions.add(dimensionName.lexeme())) {
+                throw error(dimensionName, "E_UNIT_DUPLICATE: dimension already has a canonical unit");
+            }
+            consume(SEMICOLON, "expected ';' after unit declaration");
+            units.put(name, unit);
+        }
+    }
+
+    private VerifiedQuantityUnit readQuantityUnit() {
+        Token name = consume(IDENT, "E_UNIT_NAME: expected a unit name");
+        var unit = units.get(name.lexeme());
+        if (unit == null) throw error(name, "E_UNIT_NAME: unknown unit '" + name.lexeme() + "'");
+        return unit;
+    }
+
+    private long readQuantityFactor() {
+        Token factor = consume(INT, "E_UNIT_SCALE: expected a positive signed i64 factor");
+        long value;
+        try {
+            value = parseSignedI64(factor);
+        } catch (IllegalArgumentException malformed) {
+            throw error(factor, "E_UNIT_SCALE: expected a positive signed i64 factor");
+        }
+        if (value <= 0) throw error(factor, "E_UNIT_SCALE: expected a positive signed i64 factor");
+        return value;
+    }
+
+    private boolean hasQuantitySuffixInReturn() {
+        if (dimensions.isEmpty()) return false;
+        for (int i = current; i + 3 < tokens.size(); i++) {
+            Token token = tokens.get(i);
+            if (token.type() == SEMICOLON || token.type() == LBRACE || token.type() == RBRACE
+                    || token.type() == END || token.type() == RETURN) break;
+            if (token.type() == INT && tokens.get(i + 1).type() == LT
+                    && adjacent(token, tokens.get(i + 1))
+                    && tokens.get(i + 2).type() == IDENT && tokens.get(i + 3).type() == GT) return true;
+        }
+        return false;
+    }
+
+    private static final Ast.TypeRef VERIFIED_CARRIER = Ast.TypeRef.simple("int");
+
+    private static final Interval SIGNED_I32 = new Interval(Integer.MIN_VALUE, Integer.MAX_VALUE);
+
+    private record RefinedQuantity(VerifiedQuantityUnit unit, Interval range, boolean i32) {
+        private static final RefinedQuantity SCALAR =
+                new RefinedQuantity(VerifiedQuantityUnit.SCALAR, Interval.anyI64(), false);
+        private static final RefinedQuantity SCALAR_I32 =
+                new RefinedQuantity(VerifiedQuantityUnit.SCALAR, SIGNED_I32, true);
+
+        RefinedQuantity(VerifiedQuantityUnit unit, Interval range) {
+            this(unit, range, false);
+        }
+
+        RefinedQuantity constrain(String operator, long bound) {
+            return new RefinedQuantity(unit, range.constrain(operator, bound), i32);
+        }
+
+        void require(RefinedQuantity actual, String category, String operation) {
+            if (unit.equals(VerifiedQuantityUnit.SCALAR) && !actual.unit.equals(unit)) {
+                throw new IllegalArgumentException("E_UNIT_ERASURE: " + operation + " requires dimensionless scale one");
+            }
+            unit.requireCompatible(actual.unit);
+            if (!actual.range.entails(range)) {
+                throw new IllegalArgumentException(category + ": " + operation
+                        + " requires " + range + " but only " + actual.range + " is proven");
+            }
+        }
+    }
+
+    private record VerifiedFunction(String loweredName, List<RefinedQuantity> parameters,
+                                    RefinedQuantity result, List<Integer> upperParameters) { }
+
+    private record QuantityTerm(Ast.Expr expression, RefinedQuantity type, int depth,
+                                Set<String> upperBounds) {
+        QuantityTerm(Ast.Expr expression, RefinedQuantity type, int depth) {
+            this(expression, type, depth, Set.of());
+        }
+        VerifiedQuantityUnit unit() { return type.unit(); }
+    }
+
+    private boolean atRefinedQuantityAlias() {
+        return check(TYPE) && current + 4 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == EQUAL
+                && isVerifiedCarrier(tokens.get(current + 3).lexeme())
+                && tokens.get(current + 4).lexeme().equals("where");
+    }
+
+    private static boolean isVerifiedCarrier(String spelling) {
+        return spelling.equals("int") || spelling.equals("i32");
+    }
+
+    private void parseRefinedQuantityAlias() {
+        consume(TYPE, "expected 'type'");
+        Token name = consume(IDENT, "expected refinement name");
+        consume(EQUAL, "expected '=' before refinement carrier");
+        Token carrier = consume(IDENT, "expected int or i32 refinement carrier");
+        boolean i32 = carrier.lexeme().equals("i32");
+        consumeContextualIdentifier("where", "expected 'where' before refinement");
+        VerifiedQuantityUnit unit = null;
+        var range = i32 ? SIGNED_I32 : Interval.anyI64();
+        do {
+            if (isContextualIdentifier("units")) {
+                if (unit != null) throw error(peek(), "E_UNIT_DUPLICATE: repeated unit clause");
+                advance();
+                consumeContextualIdentifier("in", "expected 'in' after units");
+                unit = readQuantityUnit();
+            } else {
+                consume(SELF, "E_REFINEMENT_PREDICATE: expected self");
+                String operator = readQuantityComparison();
+                range = range.constrain(operator, readSignedQuantityInteger());
+            }
+            if (!isContextualIdentifier("and")) break;
+            advance();
+        } while (true);
+        consume(SEMICOLON, "expected ';' after refinement");
+        if (refinementAliases.size() >= 128) throw error(name, "E_REFINEMENT_LIMIT: too many aliases");
+        if (isVerifiedCarrier(name.lexeme()) || refinementAliases.putIfAbsent(name.lexeme(),
+                new RefinedQuantity(unit == null ? VerifiedQuantityUnit.SCALAR : unit, range, i32)) != null) {
+            throw error(name, "E_REFINEMENT_DUPLICATE: duplicate refinement name");
+        }
+    }
+
+    private String readQuantityComparison() {
+        if (match(GT, GTE, LT, LTE, EQ)) return previous().lexeme();
+        throw error(peek(), "E_REFINEMENT_PREDICATE: expected a signed interval comparison");
+    }
+
+    private long readSignedQuantityInteger() {
+        boolean negative = match(MINUS);
+        Token number = consume(INT, "expected an integer constant");
+        return negative ? parseSignedI64(new Token(INT, "-" + number.lexeme(), number.line(), number.column()))
+                : parseSignedI64(number);
+    }
+
+    private RefinedQuantity readRefinedType(Token name) {
+        if (name.lexeme().equals("int")) return RefinedQuantity.SCALAR;
+        if (name.lexeme().equals("i32")) return RefinedQuantity.SCALAR_I32;
+        var type = refinementAliases.get(name.lexeme());
+        if (type == null) throw error(name, "E_REFINEMENT_NAME: unknown verified scalar type");
+        return type;
+    }
+
+    private RefinedQuantity readVerifiedBound(RefinedQuantity type, String operator) {
+        long value = readSignedQuantityInteger();
+        Token number = previous();
+        var unit = VerifiedQuantityUnit.SCALAR;
+        if (check(LT) && adjacent(number, peek())) {
+            advance();
+            unit = readQuantityUnit();
+            consume(GT, "expected '>' after contract unit");
+        }
+        type.unit().requireCompatible(unit);
+        return type.constrain(operator, value);
+    }
+
+    private Token verifiedName(String description) {
+        Token name = consume(IDENT, description);
+        if (name.type() != IDENT)
+            throw error(name, description);
+        return name;
+    }
+
+    private boolean atProtocolDeclaration() {
+        return check(DEFINE) && checkNext(IDENT) && tokens.get(current + 1).lexeme().equals("protocol");
+    }
+
+    private Token readProtocolName(String description) {
+        Token name = consume(IDENT, description);
+        if (isVerifiedCarrier(name.lexeme())) throw error(name, description);
+        return name;
+    }
+
+    private Ast.ProtocolDecl parseProtocolDeclaration(Set<String> protocolNames) {
+        consume(DEFINE, "expected 'define'");
+        consumeContextualIdentifier("protocol", "expected 'protocol'");
+        Token name = consume(IDENT, "E_PROTOCOL_SYNTAX: expected a protocol name");
+        if (protocolNames.size() >= 64) throw error(name, "E_PROTOCOL_LIMIT: too many protocols");
+        if (isVerifiedCarrier(name.lexeme()) || refinementAliases.containsKey(name.lexeme())
+                || !protocolNames.add(name.lexeme())) {
+            throw error(name, "E_PROTOCOL_DUPLICATE: duplicate protocol name");
+        }
+        consume(AS, "E_PROTOCOL_SYNTAX: expected 'as' after protocol name");
+
+        String initial = null;
+        Set<String> states = new HashSet<>();
+        Set<String> terminals = new HashSet<>();
+        List<Ast.ProtocolEdge> edges = new ArrayList<>();
+        Map<String, Set<String>> outgoing = new HashMap<>();
+        Map<String, List<Ast.ProtocolScalar>> signatures = new HashMap<>();
+        while (!check(END)) {
+            Token first = consume(IDENT, "E_PROTOCOL_SYNTAX: expected a protocol clause or 'end'");
+            if (!check(ARROW) && first.lexeme().equals("initial")) {
+                if (initial != null) throw error(first, "E_PROTOCOL_INITIAL: duplicate initial state");
+                initial = readProtocolName("E_PROTOCOL_SYNTAX: expected an initial state").lexeme();
+                states.add(initial);
+            } else if (!check(ARROW) && first.lexeme().equals("terminal")) {
+                String terminal = readProtocolName("E_PROTOCOL_SYNTAX: expected a terminal state").lexeme();
+                if (!terminals.add(terminal))
+                    throw error(first, "E_PROTOCOL_TERMINAL: duplicate terminal state");
+                if (terminals.size() > 128) throw error(first, "E_PROTOCOL_LIMIT: too many terminal states");
+            } else {
+                if (edges.size() >= 256) throw error(first, "E_PROTOCOL_LIMIT: too many protocol edges");
+                consume(ARROW, "E_PROTOCOL_SYNTAX: expected '->' after source state");
+                if (isVerifiedCarrier(first.lexeme()))
+                    throw error(first, "E_PROTOCOL_SYNTAX: expected a source state");
+                String target = readProtocolName("E_PROTOCOL_SYNTAX: expected a destination state").lexeme();
+                consumeContextualIdentifier("on", "E_PROTOCOL_SYNTAX: expected 'on' after destination state");
+                Token message = readProtocolName("E_PROTOCOL_SYNTAX: expected a message name");
+                var source = first.lexeme();
+                states.add(source);
+                states.add(target);
+                if (!outgoing.computeIfAbsent(source, ignored -> new HashSet<>()).add(message.lexeme()))
+                    throw error(message, "E_PROTOCOL_DUPLICATE: duplicate source state and message edge");
+                var payload = parseProtocolPayload();
+                var signature = payload.stream().map(Ast.ProtocolField::type).toList();
+                var existing = signatures.putIfAbsent(message.lexeme(), signature);
+                if (existing != null && !existing.equals(signature))
+                    throw error(message, "E_PROTOCOL_PAYLOAD: inconsistent message payload type");
+                edges.add(new Ast.ProtocolEdge(source, target, message.lexeme(), payload));
+            }
+            if (states.size() > 128) throw error(first, "E_PROTOCOL_LIMIT: too many protocol states");
+            consume(SEMICOLON, "E_PROTOCOL_SYNTAX: expected ';' after protocol clause");
+        }
+        advance(); // end
+        if (initial == null) throw error(name, "E_PROTOCOL_INITIAL: missing initial state");
+        if (!states.containsAll(terminals)) throw error(name, "E_PROTOCOL_TERMINAL: unknown terminal state");
+        if (terminals.stream().anyMatch(outgoing::containsKey))
+            throw error(name, "E_PROTOCOL_TERMINAL: terminal state has outgoing edges");
+        return new Ast.ProtocolDecl(name.lexeme(), initial, terminals, edges);
+    }
+
+    private List<Ast.ProtocolField> parseProtocolPayload() {
+        var payload = new ArrayList<Ast.ProtocolField>();
+        if (!match(LPAREN)) return payload;
+        var names = new HashSet<String>();
+        if (!check(RPAREN)) {
+            do {
+                Token typeName = consume(IDENT, "E_PROTOCOL_PAYLOAD: expected a scalar payload type");
+                if (payload.size() >= 16) throw error(typeName, "E_PROTOCOL_LIMIT: too many payload fields");
+                if (!isVerifiedCarrier(typeName.lexeme()) && !refinementAliases.containsKey(typeName.lexeme()))
+                    throw error(typeName, "E_PROTOCOL_PAYLOAD: unknown scalar payload type");
+                var type = readRefinedType(typeName);
+                Token field = readProtocolName("E_PROTOCOL_PAYLOAD: expected a payload field name");
+                if (!names.add(field.lexeme())) throw error(field, "E_PROTOCOL_PAYLOAD: duplicate payload field name");
+                payload.add(new Ast.ProtocolField(field.lexeme(), new Ast.ProtocolScalar(
+                        type.i32(), type.range().minimum(), type.range().maximum(),
+                        type.unit().powers(), type.unit().numerator(), type.unit().denominator())));
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "E_PROTOCOL_PAYLOAD: expected ')' after protocol payload");
+        return payload;
+    }
+
+    private boolean atProtocolActor() {
+        return check(DEFINE) && checkNext(ACTOR) && current + 3 < tokens.size()
+                && tokens.get(current + 3).type() == IMPLEMENTS;
+    }
+
+    private Ast.ProtocolActorDecl parseProtocolActor(
+            Map<String, Ast.ProtocolDecl> protocols, Set<String> actorNames) {
+        consume(DEFINE, "expected 'define'");
+        consume(ACTOR, "expected 'actor'");
+        Token name = readProtocolName("E_PROTOCOL_ACTOR: expected an actor name");
+        if (actorNames.size() >= 64) throw error(name, "E_PROTOCOL_LIMIT: too many protocol actors");
+        if (protocols.containsKey(name.lexeme()) || refinementAliases.containsKey(name.lexeme())
+                || !actorNames.add(name.lexeme())) {
+            throw error(name, "E_PROTOCOL_ACTOR: duplicate actor name");
+        }
+        consume(IMPLEMENTS, "E_PROTOCOL_ACTOR: expected 'implements'");
+        Token target = readProtocolName("E_PROTOCOL_ACTOR: expected a protocol name");
+        var protocol = protocols.get(target.lexeme());
+        if (protocol == null) throw error(target, "E_PROTOCOL_ACTOR: unknown local protocol");
+        consume(AS, "E_PROTOCOL_ACTOR: expected 'as' after protocol name");
+        Ast.ProtocolStateField field = null;
+        RefinedQuantity fieldType = null;
+        if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+            advance();
+            consume(LBRACE, "E_PROTOCOL_STATE: expected a state block");
+            fieldType = readRefinedType(consume(IDENT, "E_PROTOCOL_STATE: expected a state field type"));
+            Token fieldName = readProtocolName("E_PROTOCOL_STATE: expected a state field name");
+            consume(EQUAL, "E_PROTOCOL_STATE: expected an initial value");
+            long literal = readSignedQuantityInteger();
+            var initial = readQuantityLiteral(previous(), literal);
+            fieldType.require(initial.type(), "E_PROTOCOL_INVARIANT", "the initial actor field value");
+            field = new Ast.ProtocolStateField(fieldName.lexeme(), initial.type().range().minimum(),
+                    fieldType.range().minimum(), fieldType.range().maximum());
+            consume(SEMICOLON, "E_PROTOCOL_STATE: expected ';' after the actor field");
+            consume(RBRACE, "E_PROTOCOL_STATE: this profile admits one actor field");
+        }
+
+        Map<String, Ast.ProtocolEdge> messages = new HashMap<>();
+        Set<String> stateDependentDestinations = new HashSet<>();
+        for (var edge : protocol.edges()) {
+            var existing = messages.putIfAbsent(edge.message(), edge);
+            if (existing != null && !existing.target().equals(edge.target()))
+                stateDependentDestinations.add(edge.message());
+        }
+        List<Ast.ProtocolHandler> handlers = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        while (!match(END)) {
+            Token message = readProtocolName("E_PROTOCOL_HANDLER: expected a protocol handler or 'end'");
+            var edge = messages.get(message.lexeme());
+            if (edge == null) throw error(message, "E_PROTOCOL_HANDLER: actor handles an undeclared message");
+            if (!seen.add(message.lexeme())) throw error(message, "E_PROTOCOL_HANDLER: duplicate protocol handler");
+            if (!check(LPAREN)) throw error(peek(), "E_PROTOCOL_HANDLER: expected a parameter list");
+            var parameters = parseProtocolPayload();
+            if (!parameters.stream().map(Ast.ProtocolField::type).toList()
+                    .equals(edge.payload().stream().map(Ast.ProtocolField::type).toList()))
+                throw error(message, "E_PROTOCOL_PAYLOAD: handler parameter types differ from the message");
+            consume(ARROW, "E_PROTOCOL_HANDLER: expected '-> void' after handler parameters");
+            consume(VOID, "E_PROTOCOL_HANDLER: expected void handler result");
+            consume(LBRACE, "E_PROTOCOL_HANDLER: expected a handler body");
+            int incrementParameter = -1;
+            if (field != null) {
+                for (var parameter : parameters) {
+                    if (parameter.name().equals(field.name()))
+                        throw error(message, "E_PROTOCOL_STATE: handler parameter shadows the actor field");
+                }
+                if (isContextualIdentifier(field.name())) {
+                    advance();
+                    consume(EQUAL, "E_PROTOCOL_STATE: expected a staged assignment");
+                    consumeContextualIdentifier(field.name(), "E_PROTOCOL_STATE: expected the current field");
+                    consume(PLUS, "E_PROTOCOL_STATE: expected a state increment");
+                    Token operand = readProtocolName("E_PROTOCOL_STATE: expected an increment parameter");
+                    for (int i = 0; i < parameters.size(); i++) {
+                        if (parameters.get(i).name().equals(operand.lexeme())) {
+                            incrementParameter = i;
+                            break;
+                        }
+                    }
+                    if (incrementParameter < 0)
+                        throw error(operand, "E_PROTOCOL_STATE: increment must name a handler parameter");
+                    var type = parameters.get(incrementParameter).type();
+                    if (type.i32() != fieldType.i32())
+                        throw error(operand, "E_PROTOCOL_STATE: increment carrier differs from the actor field");
+                    fieldType.unit().requireCompatible(new VerifiedQuantityUnit(type.dimension(),
+                            type.scaleNumerator(), type.scaleDenominator()));
+                    consume(SEMICOLON, "E_PROTOCOL_STATE: expected ';' after the staged assignment");
+                }
+            }
+            consumeContextualIdentifier("transition", "E_PROTOCOL_TRANSITION: expected a terminal transition");
+            Token destination = readProtocolName("E_PROTOCOL_TRANSITION: expected a destination state");
+            if (stateDependentDestinations.contains(message.lexeme()) || !edge.target().equals(destination.lexeme()))
+                throw error(destination, "E_PROTOCOL_TRANSITION: handler destination must match every edge for its message");
+            consume(SEMICOLON, "E_PROTOCOL_TRANSITION: expected ';' after transition");
+            consume(RBRACE, "E_PROTOCOL_TRANSITION: transition must be the only statement in this handler");
+            handlers.add(new Ast.ProtocolHandler(message.lexeme(), parameters, destination.lexeme(), incrementParameter));
+        }
+        if (seen.size() != messages.size()) throw error(name, "E_PROTOCOL_HANDLER: missing protocol handler");
+        return new Ast.ProtocolActorDecl(name.lexeme(), protocol, handlers, field);
+    }
+
+    private Ast.ProtocolGuestDecl parseProtocolGuest(List<Ast.Decl> declarations) {
+        consume(VAL, "E_PROTOCOL_GUEST: expected a local actor binding");
+        String local = verifiedName("E_PROTOCOL_GUEST: expected an actor binding").lexeme();
+        consume(EQUAL, "E_PROTOCOL_GUEST: expected a spawn initializer");
+        consume(SPAWN, "E_PROTOCOL_GUEST: expected spawn");
+        Token actorName = readProtocolName("E_PROTOCOL_GUEST: expected a verified actor type");
+        var actor = declarations.stream().filter(Ast.ProtocolActorDecl.class::isInstance)
+                .map(Ast.ProtocolActorDecl.class::cast).filter(value -> value.name().equals(actorName.lexeme()))
+                .findFirst().orElseThrow(() -> error(actorName, "E_PROTOCOL_GUEST: unknown actor type"));
+        consume(LPAREN, "E_PROTOCOL_GUEST: expected an empty constructor");
+        consume(RPAREN, "E_PROTOCOL_GUEST: expected an empty constructor");
+        consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after spawn");
+
+        List<Ast.ProtocolGuestTurn> turns = new ArrayList<>();
+        Map<String, Integer> receipts = new HashMap<>();
+        while (true) {
+            consumeContextualIdentifier(local, "E_PROTOCOL_GUEST: operation requires the live actor binding");
+            consume(DOT, "E_PROTOCOL_GUEST: expected an actor operation");
+            if (match(STOP)) {
+                consume(LPAREN, "E_PROTOCOL_GUEST: expected stop()");
+                consume(RPAREN, "E_PROTOCOL_GUEST: expected stop()");
+                consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after stop");
+                break;
+            }
+            if (turns.size() >= 64) throw error(peek(), "E_PROTOCOL_LIMIT: too many guest protocol turns");
+            consumeContextualIdentifier("send", "E_PROTOCOL_GUEST: expected send or stop");
+            consume(LPAREN, "E_PROTOCOL_GUEST: expected a typed message");
+            Token tag = readProtocolName("E_PROTOCOL_GUEST: expected a message tag");
+            var handler = actor.handlers().stream().filter(value -> value.message().equals(tag.lexeme()))
+                    .findFirst().orElseThrow(() -> error(tag, "E_PROTOCOL_GUEST: unknown message tag"));
+            consume(LPAREN, "E_PROTOCOL_GUEST: expected message arguments");
+            List<Long> payload = new ArrayList<>();
+            for (var parameter : handler.parameters()) {
+                if (!payload.isEmpty()) consume(COMMA, "E_PROTOCOL_PAYLOAD: expected another argument");
+                long literal = readSignedQuantityInteger();
+                var actual = readQuantityLiteral(previous(), literal);
+                var type = parameter.type();
+                var expected = new RefinedQuantity(new VerifiedQuantityUnit(type.dimension(),
+                        type.scaleNumerator(), type.scaleDenominator()), new Interval(type.minimum(), type.maximum()),
+                        type.i32());
+                expected.require(actual.type(), "E_PROTOCOL_PAYLOAD", "the typed send argument");
+                payload.add(actual.type().range().minimum());
+            }
+            consume(RPAREN, "E_PROTOCOL_PAYLOAD: unexpected message arguments");
+            consume(RPAREN, "E_PROTOCOL_GUEST: expected ')' after the message");
+            consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after send");
+            consume(VAL, "E_PROTOCOL_GUEST: read the receipt before the next operation");
+            Token receipt = verifiedName("E_PROTOCOL_GUEST: expected a receipt binding");
+            if (receipt.lexeme().equals(local) || receipts.putIfAbsent(receipt.lexeme(), turns.size()) != null)
+                throw error(receipt, "E_PROTOCOL_GUEST: duplicate local binding");
+            consume(EQUAL, "E_PROTOCOL_GUEST: expected a receipt initializer");
+            consumeContextualIdentifier(local, "E_PROTOCOL_GUEST: receipt requires the same actor binding");
+            consume(DOT, "E_PROTOCOL_GUEST: expected get_receipt()");
+            consumeContextualIdentifier("get_receipt", "E_PROTOCOL_GUEST: expected get_receipt()");
+            consume(LPAREN, "E_PROTOCOL_GUEST: expected get_receipt()");
+            consume(RPAREN, "E_PROTOCOL_GUEST: expected get_receipt()");
+            consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after get_receipt()");
+            turns.add(new Ast.ProtocolGuestTurn(tag.lexeme(), payload));
+        }
+        consume(RETURN, "E_PROTOCOL_GUEST: expected the returned receipt status");
+        Token result = verifiedName("E_PROTOCOL_GUEST: expected a receipt binding");
+        Integer index = receipts.get(result.lexeme());
+        if (index == null) throw error(result, "E_PROTOCOL_GUEST: return requires a known receipt status");
+        consume(SEMICOLON, "E_PROTOCOL_GUEST: expected ';' after return");
+        consume(RBRACE, "E_PROTOCOL_GUEST: expected the end of main");
+        consume(EOF, "E_PROTOCOL_GUEST: main must be the last declaration");
+        return new Ast.ProtocolGuestDecl(actor.name(), turns, index);
+    }
+
+    private List<Ast.Decl> parseVerifiedFunctions(boolean protocolActorsRequired) {
+        while (atRefinedQuantityAlias()) parseRefinedQuantityAlias();
+        List<Ast.Decl> declarations = new ArrayList<>();
+        Map<String, Ast.ProtocolDecl> protocols = new HashMap<>();
+        Set<String> names = new HashSet<>();
+        while (atProtocolDeclaration()) {
+            var protocol = parseProtocolDeclaration(names);
+            protocols.put(protocol.name(), protocol);
+            declarations.add(protocol);
+        }
+        Set<String> actorNames = new HashSet<>();
+        while (atProtocolActor()) declarations.add(parseProtocolActor(protocols, actorNames));
+        if (protocolActorsRequired && actorNames.isEmpty())
+            throw error(peek(), "E_PROTOCOL_ACTOR: expected a file-local verified protocol actor");
+        if (protocolActorsRequired && check(EOF)) return declarations;
+        verifiedCallable = true;
+        boolean mainSeen = false;
+        while (!check(EOF)) {
+            if (verifiedFunctions.size() >= 64) throw error(peek(), "E_REFINEMENT_LIMIT: too many verified functions");
+            if (mainSeen) throw error(peek(), "E_REFINEMENT_SCOPE: main must be the final verified function");
+            boolean isPublic = match(PUB);
+            if (!isPublic) match(PRIVATE);
+            consume(FNC, "E_REFINEMENT_SCOPE: expected a verified function declaration");
+            Token name = verifiedName("expected a function name");
+            boolean isMain = name.lexeme().equals("main");
+            if (isPublic != isMain) {
+                throw error(name, "E_REFINEMENT_EXPORT: only the scalar main may be public");
+            }
+            if (verifiedFunctions.containsKey(name.lexeme())) {
+                throw error(name, "E_REFINEMENT_DUPLICATE: duplicate verified function");
+            }
+            verifiedLocals.clear();
+            verifiedUpperBounds.clear();
+            consume(LPAREN, "expected '('");
+            List<Ast.Param> parameters = new ArrayList<>();
+            if (!check(RPAREN)) {
+                do {
+                    if (parameters.size() >= 16) throw error(peek(), "E_REFINEMENT_LIMIT: too many parameters");
+                    var type = readRefinedType(consume(IDENT, "expected a parameter type"));
+                    Token param = verifiedName("expected a parameter name");
+                    if (verifiedLocals.putIfAbsent(param.lexeme(), type) != null)
+                        throw error(param, "E_REFINEMENT_DUPLICATE: duplicate parameter");
+                    verifiedUpperBounds.put(param.lexeme(), Set.of(param.lexeme()));
+                    parameters.add(new Ast.Param(VERIFIED_CARRIER, param.lexeme()));
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')'");
+            consume(ARROW, "expected '->' before verified result");
+            var result = readRefinedType(consume(IDENT, "expected a result type"));
+            if (isMain && (!parameters.isEmpty() || !result.equals(RefinedQuantity.SCALAR))) {
+                throw error(name, "E_REFINEMENT_EXPORT: main must have signature () -> int");
+            }
+            while (isContextualIdentifier("requires")) {
+                if (isMain) throw error(peek(), "E_REFINEMENT_EXPORT: main cannot require caller facts");
+                advance();
+                Token param = verifiedName("expected a parameter name in requires");
+                var type = verifiedLocals.get(param.lexeme());
+                if (type == null) throw error(param, "E_REFINEMENT_NAME: requires must name a parameter");
+                verifiedLocals.put(param.lexeme(), readVerifiedBound(type, readQuantityComparison()));
+            }
+            List<RefinedQuantity> required = parameters.stream()
+                    .map(param -> verifiedLocals.get(param.name())).toList();
+            final RefinedQuantity returnType = result;
+            List<Integer> upperParameters = new ArrayList<>();
+            while (isContextualIdentifier("ensures")) {
+                advance();
+                consumeContextualIdentifier("result", "E_REFINEMENT_PREDICATE: ensures must constrain result");
+                String comparison = readQuantityComparison();
+                if (comparison.equals("<=") && check(IDENT)) {
+                    Token param = verifiedName("expected a parameter name in ensures");
+                    int index = parameters.stream().map(Ast.Param::name).toList().indexOf(param.lexeme());
+                    if (index < 0) throw error(param, "E_REFINEMENT_NAME: ensures must name a parameter");
+                    result.unit().requireCompatible(required.get(index).unit());
+                    upperParameters.add(index);
+                } else {
+                    result = readVerifiedBound(result, comparison);
+                }
+            }
+
+            consume(LBRACE, "expected '{' after verified signature");
+            if (isMain && !actorNames.isEmpty() && check(VAL) && current + 3 < tokens.size()
+                    && tokens.get(current + 2).type() == EQUAL && tokens.get(current + 3).type() == SPAWN) {
+                if (!verifiedFunctions.isEmpty() || !result.equals(returnType) || !upperParameters.isEmpty())
+                    throw error(name, "E_PROTOCOL_GUEST: actor main requires a standalone uncontracted entrypoint");
+                declarations.add(parseProtocolGuest(declarations));
+                return declarations;
+            }
+            List<Ast.Stmt> body = new ArrayList<>();
+            while (match(VAL)) {
+                if (body.size() >= 128) throw error(peek(), "E_REFINEMENT_LIMIT: too many immutable bindings");
+                Token first = consume(IDENT, "expected a binding type or name");
+                String localName;
+                RefinedQuantity type;
+                if (match(COLON)) {
+                    localName = first.lexeme();
+                    type = readRefinedType(consume(IDENT, "expected a binding type"));
+                } else {
+                    type = readRefinedType(first);
+                    localName = verifiedName("expected a binding name").lexeme();
+                }
+                consume(EQUAL, "expected '=' before immutable initializer");
+                var term = parseVerifiedExpression(0);
+                type.require(term.type(), "E_REFINEMENT_BINDING", "binding " + localName);
+                consume(SEMICOLON, "expected ';' after immutable binding");
+                var localType = new RefinedQuantity(type.unit(), term.type().range(), type.i32());
+                if (verifiedLocals.putIfAbsent(localName, localType) != null)
+                    throw error(first, "E_REFINEMENT_DUPLICATE: duplicate verified binding");
+                verifiedUpperBounds.put(localName, term.upperBounds());
+                body.add(new Ast.BindingStmt(Ast.BindingKind.VAL, VERIFIED_CARRIER, localName, term.expression(), false));
+            }
+            consume(RETURN, "E_REFINEMENT_BODY: expected an explicit return after immutable bindings");
+            var term = parseVerifiedExpression(0);
+            returnType.require(term.type(), "E_REFINEMENT_RETURN", "return from " + name.lexeme());
+            result.require(term.type(), "E_REFINEMENT_POSTCONDITION", "ensures of " + name.lexeme());
+            for (int upper : upperParameters) {
+                String parameter = parameters.get(upper).name();
+                if (!term.upperBounds().contains(parameter) && !term.type().range().atMost(required.get(upper).range())) {
+                    throw error(name, "E_REFINEMENT_POSTCONDITION: cannot prove result <= " + parameter);
+                }
+            }
+            consume(SEMICOLON, "expected ';' after return");
+            consume(RBRACE, "expected '}' after verified return");
+            body.add(new Ast.ReturnStmt(term.expression()));
+
+            String lowered = isMain ? "main" : "$verified$" + name.lexeme();
+            declarations.add(new Ast.FunctionDecl(lowered, Ast.CallableKind.FNC,
+                    isPublic ? Ast.Visibility.PUBLIC : Ast.Visibility.PRIVATE, false,
+                    Ast.ActorKind.NONE, List.of(), parameters, VERIFIED_CARRIER, List.of(), body));
+            verifiedFunctions.put(name.lexeme(), new VerifiedFunction(lowered, required, result, List.copyOf(upperParameters)));
+            mainSeen = isMain;
+        }
+        if (!mainSeen) throw error(peek(), "E_REFINEMENT_EXPORT: verified source requires a public main");
+        return declarations;
+    }
+
+    private QuantityTerm verifiedReference(int depth) {
+        Token name = verifiedName("expected an immutable value or a verified function name");
+        if (!match(LPAREN)) {
+            var type = verifiedLocals.get(name.lexeme());
+            if (type == null) throw error(name, "E_REFINEMENT_NAME: unknown immutable value");
+            return new QuantityTerm(new Ast.NameExpr(name.lexeme()), type, 0, verifiedUpperBounds.get(name.lexeme()));
+        }
+        var function = verifiedFunctions.get(name.lexeme());
+        if (function == null) throw error(name, "E_REFINEMENT_CALL: expected an earlier verified function");
+        List<Ast.Expr> arguments = new ArrayList<>();
+        Set<String> upperBounds = new HashSet<>();
+        int height = 1;
+        if (!check(RPAREN)) {
+            do {
+                int index = arguments.size();
+                if (index >= function.parameters().size()) throw error(name, "E_REFINEMENT_CALL: incorrect arity");
+                var argument = parseVerifiedExpression(depth + 1);
+                function.parameters().get(index).require(argument.type(),
+                        "E_REFINEMENT_PRECONDITION", "argument " + (index + 1) + " of " + name.lexeme());
+                arguments.add(argument.expression());
+                if (function.upperParameters().contains(index)) upperBounds.addAll(argument.upperBounds());
+                height = Math.max(height, argument.depth() + 1);
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after verified arguments");
+        if (arguments.size() != function.parameters().size()) throw error(name, "E_REFINEMENT_CALL: incorrect arity");
+        if (height > MAX_UNARY_NESTING) throw error(name, "E_UNIT_LIMIT: quantity expression is too deep");
+        return new QuantityTerm(new Ast.CallExpr(new Ast.NameExpr(function.loweredName()), arguments),
+                function.result(), height, Set.copyOf(upperBounds));
+    }
+
+    private Ast.Expr parseQuantityReturn() {
+        var term = parseQuantitySum(0);
+        if (!term.unit().equals(VerifiedQuantityUnit.SCALAR)) {
+            throw error(peek(), "E_UNIT_ERASURE: an unannotated int requires dimensionless scale one");
+        }
+        return term.expression();
+    }
+
+    private QuantityTerm parseVerifiedExpression(int depth) {
+        var term = parseQuantitySum(depth);
+        while (match(AS)) {
+            Token cast = previous();
+            if (check(QUESTION)) throw error(peek(), "E_REFINEMENT_CAST: optional refinement casts are unsupported");
+            var target = readRefinedType(consume(IDENT, "expected verified scalar type after 'as'"));
+            target.unit().requireCompatible(term.unit());
+            if (term.depth() >= MAX_UNARY_NESTING)
+                throw error(cast, "E_UNIT_LIMIT: quantity expression is too deep");
+            var range = term.type().range().onNormalResultWithin(target.range());
+            var checked = new Ast.RuntimeCallExpr(Ast.VerifiedI64.CHECK_REFINEMENT, List.of(
+                    term.expression(), new Ast.LiteralExpr(target.range().minimum()),
+                    new Ast.LiteralExpr(target.range().maximum())));
+            term = new QuantityTerm(checked, new RefinedQuantity(target.unit(), range, target.i32()),
+                    term.depth() + 1, term.upperBounds());
+        }
+        return term;
+    }
+
+    private QuantityTerm parseQuantitySum(int depth) {
+        var left = parseQuantityProduct(depth);
+        while (match(PLUS, MINUS)) {
+            Token op = previous();
+            var right = parseQuantityProduct(depth);
+            left.unit().requireCompatible(right.unit());
+            left = quantityBinary(op.type() == PLUS ? Ast.VerifiedI64.ADD : Ast.VerifiedI64.SUBTRACT,
+                    left, right, left.unit());
+        }
+        return left;
+    }
+
+    private QuantityTerm parseQuantityProduct(int depth) {
+        var left = parseQuantityAtom(depth);
+        while (match(STAR, SLASH)) {
+            Token op = previous();
+            var right = parseQuantityAtom(depth);
+            boolean divide = op.type() == SLASH;
+            if (divide && !left.type().i32() && !right.type().i32()
+                    && left.unit().equals(VerifiedQuantityUnit.SCALAR)
+                    && right.unit().equals(VerifiedQuantityUnit.SCALAR)) {
+                throw error(op, "E_UNIT_SCALAR_DIVISION: two plain int operands use ordinary division");
+            }
+            left = quantityBinary(divide ? Ast.VerifiedI64.DIVIDE : Ast.VerifiedI64.MULTIPLY,
+                    left, right, left.unit().combine(right.unit(), divide));
+        }
+        return left;
+    }
+
+    private QuantityTerm quantityBinary(String operator, QuantityTerm left,
+                                        QuantityTerm right, VerifiedQuantityUnit unit) {
+        int depth = Math.max(left.depth(), right.depth()) + 1;
+        if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
+        var leftRange = left.type().range();
+        var rightRange = right.type().range();
+        boolean i32 = left.type().i32() || right.type().i32();
+        if (i32 && (!leftRange.entails(SIGNED_I32) || !rightRange.entails(SIGNED_I32))) {
+            throw error(peek(), "E_I32_RANGE: checked i32 arithmetic requires both operands to fit i32");
+        }
+        var range = switch (operator) {
+            case Ast.VerifiedI64.ADD -> leftRange.plusOnNormalResult(rightRange);
+            case Ast.VerifiedI64.SUBTRACT -> leftRange.minusOnNormalResult(rightRange);
+            case Ast.VerifiedI64.MULTIPLY -> leftRange.timesOnNormalResult(rightRange);
+            case Ast.VerifiedI64.DIVIDE -> leftRange.divideOnNormalResult(rightRange);
+            default -> throw new AssertionError("unexpected verified operator");
+        };
+        boolean boundedByLeft = switch (operator) {
+            case Ast.VerifiedI64.ADD -> rightRange.nonpositive();
+            case Ast.VerifiedI64.SUBTRACT -> rightRange.nonnegative();
+            case Ast.VerifiedI64.DIVIDE -> leftRange.nonnegative() && rightRange.positive()
+                    && right.unit().equals(VerifiedQuantityUnit.SCALAR);
+            default -> false;
+        };
+        Ast.Expr value = new Ast.BinaryExpr(operator, left.expression(), right.expression());
+        if (i32) {
+            if (++depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
+            value = new Ast.UnaryExpr(Ast.VerifiedI64.CHECK_I32, value);
+            range = range.onNormalResultWithin(SIGNED_I32);
+        }
+        return new QuantityTerm(value, new RefinedQuantity(unit, range, i32),
+                depth, boundedByLeft ? left.upperBounds() : Set.of());
+    }
+
+    private QuantityTerm parseQuantityAtom(int depth) {
+        if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
+        if (match(LPAREN)) {
+            var term = verifiedCallable ? parseVerifiedExpression(depth + 1) : parseQuantitySum(depth + 1);
+            consume(RPAREN, "expected ')' after quantity expression");
+            return term;
+        }
+        if (match(PLUS)) return parseQuantityAtom(depth + 1);
+        if (match(MINUS)) {
+            if (check(INT) && !peek().lexeme().endsWith("_") && !peek().lexeme().contains("__")
+                    && peek().lexeme().replace("_", "").matches("0*9223372036854775808")) {
+                return readQuantityLiteral(advance(), Long.MIN_VALUE);
+            }
+            var term = parseQuantityAtom(depth + 1);
+            return quantityBinary(Ast.VerifiedI64.SUBTRACT,
+                    new QuantityTerm(new Ast.LiteralExpr(0L), new RefinedQuantity(term.unit(), Interval.exactly(0)), 0), term, term.unit());
+        }
+        if (verifiedCallable && check(IDENT)) return verifiedReference(depth);
+        Token number = consume(INT, "E_UNIT_EXPRESSION: expected an integer quantity expression");
+        return readQuantityLiteral(number, parseSignedI64(number));
+    }
+
+    private QuantityTerm readQuantityLiteral(Token number, long value) {
+        var unit = VerifiedQuantityUnit.SCALAR;
+        if (check(LT) && adjacent(number, peek())) {
+            advance();
+            unit = readQuantityUnit();
+            consume(GT, "expected '>' after unit");
+            if (match(DOT)) {
+                consumeContextualIdentifier("to_unit", "expected '.to_unit' after quantity literal");
+                consume(LT, "expected '<' before conversion target");
+                var target = readQuantityUnit();
+                consume(GT, "expected '>' after conversion target");
+                consume(LPAREN, "expected '(' after conversion type");
+                consume(RPAREN, "expected ')' after conversion call");
+                value = unit.convertExact(value, target);
+                unit = target;
+            }
+        }
+        return new QuantityTerm(new Ast.LiteralExpr(value), new RefinedQuantity(unit, Interval.exactly(value)), 0);
     }
 
     private Ast.Expr parsePrimary() {

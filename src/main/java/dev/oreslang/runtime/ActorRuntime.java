@@ -3236,6 +3236,20 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** The publication and STOP fences share one actor lifecycle monitor. */
+    boolean tryPublishProtocolState(ProtocolActorMir.State state, int destination, long stagedValue) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.codeActorState != state)
+            throw new SecurityException("protocol state requires its owning actor turn");
+        synchronized (cell.lifecycleLock) {
+            if (!currentThreadOwnsActorExecutionLease())
+                throw new SecurityException("protocol state requires the current actor execution lease");
+            if (cell.stopped.get() || cell.forceKillFenced || cell.finalized || closed.get()) return false;
+            state.publish(destination, stagedValue);
+            return true;
+        }
+    }
+
     public ContinuationTarget captureCurrentContinuationTarget() {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
@@ -7778,27 +7792,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public void stop(ActorRef<?> ref) {
-        requireCallerRuntimeAffinity("stop actors");
-        Objects.requireNonNull(ref);
-        if (!ref.ownedBy(this)) {
-            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
-        }
-        requireActorLifecycleAuthority(ref, "stop");
-        ActorCell<?> caller = currentActor.get();
-        if (caller != null
-                && caller.kind == ActorKind.UNTRUSTED
-                && !caller.ref.id().equals(ref.id())) {
-            throw new SecurityException("untrusted actors cannot stop other actors");
-        }
-        ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return;
-
-        cell.stop();
-
-        // Only a host/supervisor stop is a synchronization point. Actor turns
-        // may stop self/descendants but must never park a bounded carrier while
-        // waiting for another actor to finalize.
-        if (currentActor.get() != null) return;
+        ActorCell<?> cell = requestStop(ref);
+        // Host stop waits for physical exit. Root tasks await the same
+        // lifecycle through getDone() instead of parking a scheduler carrier.
+        if (cell == null || currentActor.get() != null) return;
 
         try {
             cell.awaitFinalized(CLOSE_WAIT_NANOS);
@@ -7813,6 +7810,28 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor " + ref.id()
                             + " or one of its child actors did not finalize within the stop deadline");
         }
+    }
+
+    void requestProtocolGuestStop(ActorRef<?> ref) {
+        requestStop(ref);
+    }
+
+    private ActorCell<?> requestStop(ActorRef<?> ref) {
+        requireCallerRuntimeAffinity("stop actors");
+        Objects.requireNonNull(ref);
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+        }
+        requireActorLifecycleAuthority(ref, "stop");
+        ActorCell<?> caller = currentActor.get();
+        if (caller != null
+                && caller.kind == ActorKind.UNTRUSTED
+                && !caller.ref.id().equals(ref.id())) {
+            throw new SecurityException("untrusted actors cannot stop other actors");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell != null) cell.stop();
+        return cell;
     }
 
     public boolean cancel(ActorRef<?> ref) {
@@ -8096,6 +8115,7 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, actorRemaining);
             } catch (IllegalStateException tooLarge) {
+                if (cell.stopped.get()) throw terminated(ref);
                 throw new IllegalStateException(
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
                         tooLarge);
@@ -8130,6 +8150,9 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 reservation = cell.memorySlice.reserveMailbox(prepared);
             } catch (IllegalStateException exceeded) {
+                // STOP can retire the slice while the detached snapshot is
+                // being prepared. Surface the lifecycle failure to the sender.
+                if (cell.stopped.get()) throw terminated(ref);
                 throw new IllegalStateException(
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
                         exceeded);

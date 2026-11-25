@@ -137,10 +137,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return context.runRootMain(() -> {
-                try { return current.executeMain(new Object[0], true); }
-                catch (ProcessExitSignal exit) { return exit.exitStatus(); }
-            });
+            return current.runMain(new Object[0], true);
         }
         if (arguments.length >= 2
                 && INVOKE_ROOT_PUBLIC_COMMAND.equals(arguments[0])
@@ -160,7 +157,7 @@ public final class OresEvalRootNode extends RootNode {
         // link/init/main commands to install a full import graph before init.
         current.link();
         current.initialize();
-        return context.runRootMain(() -> current.executeMain(arguments, false));
+        return current.runMain(arguments, false);
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -1035,12 +1032,29 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private Object executeMain(Object[] arguments, boolean requireMain) {
+        private Object runMain(Object[] arguments, boolean requireMain) {
             if (startupPhase != StartupPhase.READY) {
                 throw new IllegalStateException(
                         "main cannot run before successful initialization of code unit "
                                 + codeUnitId + "; current phase=" + startupPhase);
             }
+            for (var module : program.modules()) {
+                for (var declaration : module.declarations()) {
+                    if (declaration instanceof Ast.ProtocolGuestDecl guest) {
+                        if (arguments.length != 0)
+                            throw new IllegalArgumentException("Protocol guest main takes no arguments");
+                        return context.runProtocolGuest(guest, codeImage());
+                    }
+                }
+            }
+            if (!requireMain) return context.runRootMain(() -> executeMain(arguments, false));
+            return context.runRootMain(() -> {
+                try { return executeMain(arguments, true); }
+                catch (ProcessExitSignal exit) { return exit.exitStatus(); }
+            });
+        }
+
+        private Object executeMain(Object[] arguments, boolean requireMain) {
             Ast.FunctionDecl main = findQualifiedFunction(Parser.ROOT_MODULE + ".main", 0);
             if (main == null) main = findFunction("main", 0);
             if (main == null) {
@@ -5966,12 +5980,14 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
-            if (runtime.arguments().size() != 1) {
+            boolean refinement = runtime.operation().equals(Ast.VerifiedI64.CHECK_REFINEMENT);
+            if (runtime.arguments().size() != (refinement ? 3 : 1)) {
                 continuation.accept(
                         task,
                         null,
                         new IllegalArgumentException(
-                                "rt " + runtime.operation() + " expects exactly one argument"));
+                                "rt " + runtime.operation() + " expects exactly "
+                                        + (refinement ? "three arguments" : "one argument")));
                 return;
             }
             evalSuspendableExpr(
@@ -5986,9 +6002,11 @@ public final class OresEvalRootNode extends RootNode {
                         try {
                             continuation.accept(
                                     t,
-                                    runtime.operation().equals("workflow_request")
-                                            ? submitWorkflowGuestIntrinsic(value, env)
-                                            : applyScopedMapOwnership(runtime, value, env),
+                                    switch (runtime.operation()) {
+                                        case Ast.VerifiedI64.CHECK_REFINEMENT -> checkedRefinement(runtime, value);
+                                        case "workflow_request" -> submitWorkflowGuestIntrinsic(value, env);
+                                        default -> applyScopedMapOwnership(runtime, value, env);
+                                    },
                                     null);
                         } catch (RuntimeException | Error ownershipFailure) {
                             continuation.accept(t, null, ownershipFailure);
@@ -6872,6 +6890,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "!" -> !truth(value);
                 case "~" -> ~integralLong(value);
                 case "-" -> negate(value);
+                case Ast.VerifiedI64.CHECK_I32 -> checkedI32(integralLong(value));
                 default -> throw new IllegalArgumentException(
                         "unsupported unary operator " + operator);
             };
@@ -9418,15 +9437,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             if (expr instanceof Ast.UnaryExpr unary) {
-                Object value = eval(unary.operand(), env);
-                return switch (unary.operator()) {
-                    case "&", "&mut" -> value;
-                    case "!" -> !truth(value);
-                    case "~" -> ~integralLong(value);
-                    case "+" -> value;
-                    case "-" -> negate(value);
-                    default -> throw new IllegalArgumentException("unsupported unary operator " + unary.operator());
-                };
+                return unaryValue(unary.operator(), eval(unary.operand(), env));
             }
             if (expr instanceof Ast.BinaryExpr binary) {
                 if (binary.operator().equals("pipe")) {
@@ -9480,6 +9491,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
+                if (runtime.operation().equals(Ast.VerifiedI64.CHECK_REFINEMENT)) {
+                    return checkedRefinement(runtime, eval(runtime.arguments().getFirst(), env));
+                }
                 if (runtime.operation().equals("spawn")) {
                     if (runtime.arguments().size() != 1
                             || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
@@ -12974,6 +12988,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object binary(String op, Object left, Object right) {
             return switch (op) {
+                case Ast.VerifiedI64.ADD, Ast.VerifiedI64.SUBTRACT, Ast.VerifiedI64.MULTIPLY,
+                        Ast.VerifiedI64.DIVIDE -> verifiedI64(op, integralLong(left), integralLong(right));
                 case "+" -> add(left, right); case "-" -> numeric(left, right, '-'); case "*" -> numeric(left, right, '*');
                 case "/" -> numeric(left, right, '/'); case "%" -> numeric(left, right, '%');
                 case "eq", "==" -> valueEquals(left, right);
@@ -12991,6 +13007,39 @@ public final class OresEvalRootNode extends RootNode {
                 // and rejected anywhere else by the checker: never a shift.
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
+        }
+
+        private long checkedRefinement(Ast.RuntimeCallExpr cast, Object operand) {
+            long value = integralLong(operand);
+            long minimum = (Long) ((Ast.LiteralExpr) cast.arguments().get(1)).value();
+            long maximum = (Long) ((Ast.LiteralExpr) cast.arguments().get(2)).value();
+            if (value < minimum || value > maximum) {
+                throw new OresCastError("E_REFINEMENT_CHECK_FAILED: value " + value
+                        + " is outside [" + minimum + ", " + maximum + "]");
+            }
+            return value;
+        }
+
+        private long checkedI32(long value) {
+            if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+                throw new ArithmeticException("E_I32_OVERFLOW: checked signed i32 arithmetic");
+            return value;
+        }
+
+        private long verifiedI64(String op, long left, long right) {
+            if (op.equals(Ast.VerifiedI64.DIVIDE) && right == 0)
+                throw new ArithmeticException("E_I64_DIV_ZERO: signed division by zero");
+            try {
+                return switch (op) {
+                    case Ast.VerifiedI64.ADD -> Math.addExact(left, right);
+                    case Ast.VerifiedI64.SUBTRACT -> Math.subtractExact(left, right);
+                    case Ast.VerifiedI64.MULTIPLY -> Math.multiplyExact(left, right);
+                    case Ast.VerifiedI64.DIVIDE -> Math.divideExact(left, right);
+                    default -> throw new AssertionError("unexpected verified i64 operator");
+                };
+            } catch (ArithmeticException overflow) {
+                throw new ArithmeticException("E_I64_OVERFLOW: checked signed i64 arithmetic");
+            }
         }
 
         private boolean identityEquals(Object left, Object right) {

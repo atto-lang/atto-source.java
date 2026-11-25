@@ -1,7 +1,10 @@
 package dev.oreslang.ast;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 public final class Ast {
     private Ast() { }
@@ -77,7 +80,43 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, SingletonDecl { }
+            ExternalActorMethodDecl, SingletonDecl, ProtocolDecl, ProtocolActorDecl, ProtocolGuestDecl { }
+
+    /** Verified file-local state machine. Declaring it creates no actor or mailbox. */
+    public record ProtocolDecl(String name, String initialState, Set<String> terminalStates,
+                               List<ProtocolEdge> edges) implements Decl {
+        public ProtocolDecl {
+            terminalStates = Set.copyOf(terminalStates);
+            edges = List.copyOf(edges);
+        }
+    }
+
+    public record ProtocolEdge(String source, String target, String message, List<ProtocolField> payload) {
+        public ProtocolEdge { payload = List.copyOf(payload); }
+    }
+    public record ProtocolField(String name, ProtocolScalar type) { }
+    public record ProtocolScalar(boolean i32, long minimum, long maximum, Map<String, Integer> dimension,
+                                 BigInteger scaleNumerator, BigInteger scaleDenominator) {
+        public ProtocolScalar { dimension = Map.copyOf(dimension); }
+    }
+
+    /** Source-checked handler bindings awaiting mailbox lowering. */
+    public record ProtocolGuestDecl(String actor, List<ProtocolGuestTurn> turns, int result) implements Decl {
+        public ProtocolGuestDecl { turns = List.copyOf(turns); }
+    }
+    public record ProtocolGuestTurn(String message, List<Long> payload) {
+        public ProtocolGuestTurn { payload = List.copyOf(payload); }
+    }
+    public record ProtocolStateField(String name, long initial, long minimum, long maximum) { }
+    public record ProtocolActorDecl(String name, ProtocolDecl protocol, List<ProtocolHandler> handlers,
+                                    ProtocolStateField field)
+            implements Decl {
+        public ProtocolActorDecl { handlers = List.copyOf(handlers); }
+    }
+    public record ProtocolHandler(String message, List<ProtocolField> parameters, String destination,
+                                  int incrementParameter) {
+        public ProtocolHandler { parameters = List.copyOf(parameters); }
+    }
 
     /**
      * Parsed singleton for the opt-in semantic check-only path. No runtime or
@@ -1626,6 +1665,18 @@ public final class Ast {
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
+
+    /** Internal scalar operations produced after quantity checking and unit erasure. */
+    public static final class VerifiedI64 {
+        public static final String ADD = "$verified_i64_add";
+        public static final String SUBTRACT = "$verified_i64_subtract";
+        public static final String MULTIPLY = "$verified_i64_multiply";
+        public static final String DIVIDE = "$verified_i64_divide";
+        public static final String CHECK_I32 = "$verified_check_i32";
+        public static final String CHECK_REFINEMENT = "$verified_check_refinement";
+
+        private VerifiedI64() { }
+    }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }

@@ -174,7 +174,9 @@ public final class CapabilityChecker {
 
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn) {
+                if (declaration instanceof Ast.ProtocolGuestDecl) {
+                    require(policy, IsolatePolicy.Capability.ACTOR_SPAWN, "protocol guest actor spawn");
+                } else if (declaration instanceof Ast.FunctionDecl fn) {
                     IsolatePolicy actorPolicy = actorPolicy(fn.actorKind(), policy);
                     if (fn.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
@@ -442,7 +444,8 @@ public final class CapabilityChecker {
                 for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
                 return;
             }
-            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
+            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail",
+                    Ast.VerifiedI64.CHECK_REFINEMENT).contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
             }

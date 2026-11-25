@@ -477,6 +477,17 @@ public final class OresContext implements AutoCloseable {
                         "root main scheduler task resumed after terminal state");
             }
         });
+        return awaitRootTask(task);
+    }
+
+    public Object runProtocolGuest(Ast.ProtocolGuestDecl guest, SharedCodeImageStore.CodeImage image) {
+        if (vm.isRootSchedulerCurrent())
+            throw new IllegalStateException("A protocol guest main requires an independent root task");
+        requireCapability(IsolatePolicy.Capability.ACTOR_SPAWN, "protocol guest actor spawn");
+        return awaitRootTask(ProtocolActorMir.startGuest(guest, actors, image, vm.rootScheduler()));
+    }
+
+    private Object awaitRootTask(OresFuture<?> task) {
         if (isolatedRootTurns != null) {
             while (!task.isDone()) {
                 Runnable turn = isolatedRootTurns.poll();
