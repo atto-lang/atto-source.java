@@ -104,6 +104,40 @@ final class AllocJsonTextTest {
     }
 
     @Test
+    void immutableGuestParseSealsNestedMapsIncludingThroughArrays() {
+        var root = (OresJsonValue.ObjectValue) OresJsonValue.parseImmutable("{\"a\":[{\"n\":1}],\"nullish\":null}");
+        assertTrue(OresJsonValue.provenImmutable(root));
+        var array = (OresJsonValue.ArrayValue) root.fields().getRequired("a");
+        var child = (OresJsonValue.ObjectValue) array.values().getFirst();
+        assertTrue(OresJsonValue.provenImmutable(array));
+        assertTrue(OresJsonValue.provenImmutable(child));
+        assertThrows(IllegalStateException.class, () -> root.fields().put("new", OresJsonValue.of(2L)));
+        assertThrows(IllegalStateException.class, () -> child.fields().putAll(java.util.Map.of("n", OresJsonValue.of(2L))));
+        assertThrows(IllegalStateException.class, () -> child.fields().take("n"));
+        assertThrows(IllegalStateException.class, () -> child.fields().remove("n"));
+        assertThrows(IllegalStateException.class, () -> child.fields().clear());
+        assertTrue(OresJsonValue.getOwned(root, "missing").isEmpty());
+        assertInstanceOf(OresJsonValue.NullValue.class, OresJsonValue.getOwned(root, "nullish").orElseThrow());
+        var detached = (OresJsonValue.ObjectValue) OresJsonValue.atOwned(array, 0).orElseThrow();
+        detached.fields().put("n", OresJsonValue.of(9L));
+        assertEquals("{\"n\":1}", OresJsonValue.stringify(child));
+        assertEquals("{\"n\":9}", OresJsonValue.stringify(detached));
+    }
+
+    @Test
+    void immutablePathDoesNotWeakenQuotaOrMutableHostCompatibility() {
+        var mutable = (OresJsonValue.ObjectValue) AllocJsonText.parse("{\"n\":1}");
+        assertFalse(OresJsonValue.provenImmutable(mutable));
+        mutable.fields().put("n", OresJsonValue.of(2L));
+        assertEquals("{\"n\":2}", OresJsonValue.stringify(mutable));
+        String huge = "x".repeat(OresJsonValue.DEFAULT_STRINGIFY_UTF8_BYTES);
+        var root = OresJsonValue.parseImmutable("{\"huge\":\"" + huge + "\"}");
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.getOwned(root, "huge"));
+        assertTrue(OresJsonValue.getOwned(root, "missing").isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.parseImmutable("{\"a\":1,\"a\":2}"));
+    }
+
+    @Test
     void parseReturnsCanonicalJsonObjectRuntimeNotHostMap() {
         OresJsonValue parsed = AllocJsonText.parse("{\"x\":1}");
         assertInstanceOf(OresJsonValue.ObjectValue.class, parsed);
