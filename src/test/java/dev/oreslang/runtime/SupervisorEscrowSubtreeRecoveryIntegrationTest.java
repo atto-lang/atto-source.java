@@ -156,8 +156,19 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
             assertNotEquals(oldSId, newSId);
             ActorRuntime.ActorRef<String> newT = runtime.spawnPrivate(
                     ignored -> (message, turn) -> { });
-            long newTId = recovery.attachReplacement(
-                    recovery.reserveRestart(oldTId), newT, newS);
+            var childPermit = recovery.reserveRestart(oldTId);
+            // A wrong-parent attempt must neither create a successor nor
+            // consume the exact permit owned by the legitimate parent.
+            assertThrows(IllegalStateException.class,
+                    () -> recovery.attachReplacement(childPermit, newT, null));
+            assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.READY,
+                    recovery.restartBlocker(oldTId));
+            assertThrows(IllegalStateException.class,
+                    () -> recovery.reserveRestart(oldTId),
+                    "denied misparented attempt must leave the existing reservation intact");
+            long newTId = recovery.attachReplacement(childPermit, newT, newS);
+            assertThrows(IllegalStateException.class,
+                    () -> recovery.attachReplacement(childPermit, newT, newS));
             assertNotEquals(oldTId, newTId);
             ActorRuntime.ActorRef<String> newA = runtime.spawnPrivate(
                     ignored -> (message, turn) -> { });
