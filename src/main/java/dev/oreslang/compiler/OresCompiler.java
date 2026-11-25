@@ -33,6 +33,17 @@ public final class OresCompiler {
             String packageIdentity, String actorName) {
         return NamespaceActorIngressV2.compile(image, packageIdentity, actorName);
     }
+    /**
+     * Opt-in V3 exhaustive nominal enum/ActorMail dispatch. General
+     * TypeChecker and arbitrary userland enum execution remain fail-closed.
+     * No primitive variant grants privileged actor activation.
+     */
+    public static NamespaceActorIngressV3.Plan compileNamespaceActorIngressV3(
+            dev.oreslang.runtime.SharedCodeImageStore.CodeImage image,
+            String packageIdentity, String actorName) {
+        return NamespaceActorIngressV3.compile(image, packageIdentity, actorName);
+    }
+
 
 
     /**
