@@ -366,6 +366,34 @@ public sealed interface OresJsonValue
         }
     }
 
+    /**
+     * Guest reads return an independent owned tree, never the live Map entry.
+     * Reuse the canonical bounded codec as a conservative first copy path.
+     * The one graph lock covers selection and snapshot, including nested aliases.
+     */
+    static java.util.Optional<OresJsonValue> getOwned(OresJsonValue root, String key) {
+        if (!(root instanceof ObjectValue object)) {
+            throw new IllegalArgumentException("JSON get requires an object");
+        }
+        return OresKeyedMap.withJsonGraphLock(() -> {
+            validateTree(root, null);
+            var selected = object.fields.lookup(key);
+            if (!selected.present()) return java.util.Optional.empty();
+            return java.util.Optional.of(AllocJsonText.parse(stringify(selected.value())));
+        });
+    }
+
+    static java.util.Optional<OresJsonValue> atOwned(OresJsonValue root, long index) {
+        if (!(root instanceof ArrayValue array)) {
+            throw new IllegalArgumentException("JSON at requires an array");
+        }
+        return OresKeyedMap.withJsonGraphLock(() -> {
+            validateTree(root, null);
+            if (index < 0 || index >= array.values.size()) return java.util.Optional.empty();
+            return java.util.Optional.of(AllocJsonText.parse(stringify(array.values.get((int) index))));
+        });
+    }
+
     private static int requireStringifyQuota(int maxUtf8Bytes) {
         if (maxUtf8Bytes < 0) {
             throw new IllegalArgumentException(
