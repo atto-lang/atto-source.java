@@ -147,7 +147,10 @@ final class AsyncNioResp2 {
 
     /** Encode an owned binary value directly into a RESP frame, without hex. */
     static byte[] encodeBinary(String status, OresBytes payload) throws IOException {
-        if (!"VALUE".equals(status)) return encode(status, "");
+        if (!"VALUE".equals(status)) {
+            if (payload != null) throw new IOException("non-VALUE RESP reply cannot carry binary payload");
+            return encode(status, "");
+        }
         if (payload == null) throw new IOException("VALUE needs owned byte payload");
         try (OresBytes.ReadLease lease = payload.readLease()) {
             ByteBuffer value = lease.buffer();
