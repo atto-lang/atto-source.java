@@ -435,6 +435,15 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                 bytes > 16L * MAX_PAYLOAD_BYTES || transientBudget == null ||
                 retainedBudget == null || transientBudget == retainedBudget)
             throw new IllegalArgumentException("invalid DATA queue binding");
+        if (messagePackDecoder != null) {
+            long expanded = messagePackDecoder.expandedLimit() + 4096L;
+            long maxWire = Math.min(bytes, (long)messagePackDecoder.wireLimit()
+                    + HEADER_BYTES + HMAC_BYTES);
+            if (maxWire < MIN_FRAME_BYTES || !retainedBudget.canFit(maxWire + expanded, 2)
+                    || !transientBudget.canFit(expanded, 1)
+                    || !transientBudget.canFit(8L * maxWire + 4096L, 1))
+                throw new IllegalArgumentException("typed DATA budget cannot admit a full configured frame");
+        }
         dataQueue = new DataDelivery[slots];
         maxQueuedBytes = bytes;
         transientQuota = transientBudget;
@@ -448,10 +457,12 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         private final int charge;
         private final ActorIpcCodecProfileV1 codecProfile;
         private final ActorIpcSessionV1 origin;
+        private ActorDataDecodeQuotaV1.Lease decodeCredit;
         private Frame frame;
         private DataDelivery(ActorDataDecodeQuotaV1.Lease credit, int charge, ActorIpcCodecProfileV1 codecProfile,
-                ActorIpcSessionV1 origin) {
+                ActorIpcSessionV1 origin, ActorDataDecodeQuotaV1.Lease decodeCredit) {
             this.credit = credit; this.charge = charge; this.codecProfile = codecProfile; this.origin = origin;
+            this.decodeCredit = decodeCredit;
         }
         ActorIpcCodecProfileV1 codecProfile() { return codecProfile; }
         synchronized long messageSequence() {
@@ -466,6 +477,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         @Override public synchronized void close() {
             if (frame != null) Arrays.fill(frame.payload, (byte)0);
             frame = null;
+            if (decodeCredit != null) { decodeCredit.close(); decodeCredit = null; }
             credit.close();
         }
     }
@@ -486,16 +498,27 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             poison();
             throw new ProtocolException(Reason.MALFORMED, "IPC DATA frame size outside bounds");
         }
+        if (messagePackDecoder != null &&
+                wire.length > messagePackDecoder.wireLimit() + HEADER_BYTES + HMAC_BYTES) {
+            poison();
+            throw new ProtocolException(Reason.MALFORMED, "typed DATA exceeds registered wire limit");
+        }
         // Charge the whole wire length, a conservative retained frame bound.
         int charge = wire.length;
         if (dataCount == dataQueue.length || charge > maxQueuedBytes - queuedBytes) return false;
         var credit = retainedQuota.tryReserve(charge);
         if (credit == null) return false;
+        ActorDataDecodeQuotaV1.Lease decodedCredit = null;
         DataDelivery delivery = null;
         boolean published = false;
         try {
-            // Allocate the delivery before sequence consumption.
-            delivery = new DataDelivery(credit, charge, codecProfile, this);
+            // Reserve the worst-case decoded result before consuming the
+            // sequence. A saturated wire queue cannot strand all decoders.
+            if (messagePackDecoder != null) {
+                decodedCredit = retainedQuota.tryReserve(messagePackDecoder.expandedLimit() + 4096L);
+                if (decodedCredit == null) return false;
+            }
+            delivery = new DataDelivery(credit, charge, codecProfile, this, decodedCredit);
             Frame frame = tryAcceptWorkerDataFrameInternal(wire, transientQuota);
             if (frame == null) return false;
             delivery.frame = frame;
@@ -507,7 +530,8 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             return true;
         } finally {
             if (!published) {
-                if (delivery != null) delivery.close(); else credit.close();
+                if (delivery != null) delivery.close();
+                else { if (decodedCredit != null) decodedCredit.close(); credit.close(); }
             }
         }
     }
@@ -569,15 +593,16 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             }
             // Conservative logical reservations, not exact physical heap.
             long expanded = messagePackDecoder.expandedLimit() + 4096L;
-            var retained = retainedQuota.tryReserve(expanded);
-            if (retained == null) return null;
+            var retained = delivery.decodeCredit;
+            if (retained == null) throw new IllegalStateException("missing reserved decoded credit");
             var transientLease = transientQuota.tryReserve(expanded);
-            if (transientLease == null) { retained.close(); return null; }
+            if (transientLease == null) return null;
             DecodedData result = null;
             boolean ok = false;
             try (transientLease) {
                 result = new DecodedData(retained, delivery.frame.messageSequence(), this);
                 result.value = messagePackDecoder.decode(delivery.frame.payload);
+                delivery.decodeCredit = null; // lease now belongs only to result
                 ok = true;
                 return result;
             } catch (IllegalArgumentException malformed) {
