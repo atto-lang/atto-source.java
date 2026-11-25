@@ -6,6 +6,8 @@ on:
       - 'src/test/java/dev/oreslang/compiler/CompilerCacheKeyTest.java'
       - 'src/main/java/dev/oreslang/compiler/CompilerArtifactReceipt.java'
       - 'src/test/java/dev/oreslang/compiler/CompilerArtifactReceiptTest.java'
+      - 'src/main/java/dev/oreslang/compiler/CompilerCacheLedger.java'
+      - 'src/test/java/dev/oreslang/compiler/CompilerCacheLedgerTest.java'
       - '.github/workflows/compiler-cache-key.yml'
 permissions:
   contents: read
@@ -32,4 +34,4 @@ jobs:
           set -eu
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export PATH="$JAVA_HOME/bin:$PATH"
-          mvn -B -Dtest=CompilerCacheKeyTest,CompilerArtifactReceiptTest -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -Dtest=CompilerCacheKeyTest,CompilerArtifactReceiptTest,CompilerCacheLedgerTest -Dsurefire.failIfNoSpecifiedTests=true test
