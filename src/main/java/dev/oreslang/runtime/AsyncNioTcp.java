@@ -40,7 +40,7 @@ public final class AsyncNioTcp {
             AsynchronousServerSocketChannel channel = AsynchronousServerSocketChannel.open();
             try {
                 channel.bind(new InetSocketAddress(
-                        InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), port), 32);
+                        InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), port), 128);
                 Listener listener = new Listener(context, channel);
                 context.nativeIo().register(listener);
                 return OresFuture.completed(listener);
