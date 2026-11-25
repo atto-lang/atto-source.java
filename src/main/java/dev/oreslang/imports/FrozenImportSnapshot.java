@@ -15,11 +15,13 @@ public final class FrozenImportSnapshot {
     private static final int MAX_MANIFEST = 8192, MAX_LOCK = 32768, MAX_FILES = 64, MAX_SOURCE = 1048576;
     private final String name, version, lockDigest;
     private final Map<String,String> namespaces, exports, sources;
+    public record Dependency(String version,String lockDigest) {}
+    private final Map<String,Dependency> dependencies;
     private StaticImportGraph.View checkedView;
     private FrozenImportSnapshot(String name,String version,String lockDigest,Map<String,String> namespaces,
-            Map<String,String> exports,Map<String,String> sources) {
+            Map<String,String> exports,Map<String,String> sources,Map<String,Dependency> dependencies) {
         this.name=name; this.version=version; this.lockDigest=lockDigest;
-        this.namespaces=Map.copyOf(namespaces); this.exports=Map.copyOf(exports); this.sources=Map.copyOf(sources);
+        this.namespaces=Map.copyOf(namespaces); this.exports=Map.copyOf(exports); this.sources=Map.copyOf(sources); this.dependencies=Map.copyOf(dependencies);
     }
     private static IllegalArgumentException fail(String code,String message) {
         return new IllegalArgumentException(code+": "+message);
@@ -82,9 +84,10 @@ public final class FrozenImportSnapshot {
         if(!digest(expectedLock)) throw fail("E_LOCK","invalid trusted lock digest");
         byte[] manifest=bounded(manifestInput,MAX_MANIFEST,"E_MANIFEST"), lock=bounded(lockInput,MAX_LOCK,"E_LOCK");
         if(!sha(lock).equals(expectedLock)) throw fail("E_LOCK_HASH","lock digest mismatch");
-        var tables=parse(text(lock,"E_LOCK"),Set.of("[lock]","[files]"),"E_LOCK");
+        var tables=parse(text(lock,"E_LOCK"),Set.of("[lock]","[files]","[dependencies]"),"E_LOCK");
         var header=tables.getOrDefault("[lock]",Map.of()); var pins=tables.getOrDefault("[files]",Map.of());
-        if(!new ArrayList<>(tables.keySet()).equals(List.of("[lock]","[files]")) || header.size()!=1 ||
+        if(!(new ArrayList<>(tables.keySet()).equals(List.of("[lock]","[files]")) ||
+            new ArrayList<>(tables.keySet()).equals(List.of("[lock]","[files]","[dependencies]"))) || header.size()!=1 ||
             !digest(header.get("manifest_sha256")) || pins.isEmpty()) throw fail("E_LOCK","invalid lock inventory");
         if(!sha(manifest).equals(header.get("manifest_sha256"))) throw fail("E_LOCK_HASH","manifest digest mismatch");
         if(inputs.size()!=pins.size()||inputs.size()>MAX_FILES) throw fail("E_LOCK_HASH","source inventory mismatch");
@@ -101,7 +104,7 @@ public final class FrozenImportSnapshot {
             if(!sha(data).equals(e.getValue())) throw fail("E_LOCK_HASH","source digest mismatch");
             sources.put(e.getKey(),text(data,"E_LOCK"));
         }
-        var m=parse(text(manifest,"E_MANIFEST"),Set.of("[package]","[namespaces]","[exports]"),"E_MANIFEST");
+        var m=parse(text(manifest,"E_MANIFEST"),Set.of("[package]","[namespaces]","[exports]","[dependencies]"),"E_MANIFEST");
         var pkg=m.getOrDefault("[package]",Map.of()); var ns=m.getOrDefault("[namespaces]",Map.of());
         var ex=m.getOrDefault("[exports]",Map.of());
         String name=pkg.get("name"), version=pkg.get("version");
@@ -119,9 +122,20 @@ public final class FrozenImportSnapshot {
         }
         for(var e:ex.entrySet())
             if(!subpath(e.getKey())||!providers.containsKey(e.getValue())) throw fail("E_MANIFEST","dangling subpath");
-        // No dependency closure claims: restrict this profile to manifest-owned providers.
+        // All provider bytes remain owned by this manifest; other packages have separate snapshots.
         if(!used.equals(sources.keySet())) throw fail("E_UNSUPPORTED","additional dependency sources not admitted");
-        return new FrozenImportSnapshot(name,version,expectedLock,providers,ex,sources);
+        var declared=m.getOrDefault("[dependencies]",Map.of());
+        var locked=tables.getOrDefault("[dependencies]",Map.of());
+        if(!declared.keySet().equals(locked.keySet())||declared.size()>16)
+            throw fail("E_LOCK","dependency inventory mismatch");
+        var deps=new TreeMap<String,Dependency>();
+        for(var e:declared.entrySet()) {
+            if(!e.getKey().matches("@[A-Za-z0-9][A-Za-z0-9_-]{0,63}/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/[A-Za-z0-9][A-Za-z0-9_-]{0,63}")||
+                !e.getValue().matches("[A-Za-z0-9.+-]{1,64}")||!digest(locked.get(e.getKey())))
+                throw fail("E_LOCK","invalid dependency identity, version or pin");
+            deps.put(e.getKey(),new Dependency(e.getValue(),locked.get(e.getKey())));
+        }
+        return new FrozenImportSnapshot(name,version,expectedLock,providers,ex,sources,deps);
     }
     public String namespaceForSubpath(String subpath) {
         if(!subpath(subpath)||!exports.containsKey(subpath)) throw fail("E_UNBOUND","undeclared subpath");
@@ -178,6 +192,7 @@ public final class FrozenImportSnapshot {
         var view=functionView();
         scope.bindGroup(view.origin(),view,List.of(new StaticImportGraph.Selection(selected,binding,StaticImportGraph.Kind.NAMESPACE,explicitAlias)));
     }
+    public Map<String,Dependency> dependencies() {return dependencies;}
     public String name() {return name;}
     public String version() {return version;}
     public String lockDigest() {return lockDigest;}
