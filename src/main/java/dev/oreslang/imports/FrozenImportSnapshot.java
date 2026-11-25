@@ -147,12 +147,18 @@ public final class FrozenImportSnapshot {
     }
     /** Only the actual parser determines source visibility. No caller-supplied export inventory. */
     public synchronized StaticImportGraph.View functionView() {
-        if(checkedView!=null) return checkedView;
+        return functionView(false);
+    }
+    // Linked inventory remains per compilation; never cache a more permissive
+    // view in the import-free public API.
+    StaticImportGraph.View linkedFunctionView() {return functionView(true);}
+    private synchronized StaticImportGraph.View functionView(boolean linked) {
+        if(!linked&&checkedView!=null) return checkedView;
         var inventory=new ArrayList<StaticImportGraph.Export>();
         for(String namespace:new TreeSet<>(namespaces.keySet())) {
-            var p=Parser.parse(providerSource(namespace));
+            var p=Parser.parseStrictAtto(providerSource(namespace));
             if(!namespace.equals(p.namespace())) throw fail("E_MANIFEST","provider namespace mismatch");
-            if(!p.imports().isEmpty()||!p.exports().isEmpty())
+            if((!linked&&!p.imports().isEmpty())||!p.exports().isEmpty())
                 throw fail("E_UNSUPPORTED","provider imports or explicit export clauses require full linker");
             inventory.add(new StaticImportGraph.Export(namespace,StaticImportGraph.Kind.NAMESPACE,true));
             for(var module:p.modules()) {
@@ -165,8 +171,9 @@ public final class FrozenImportSnapshot {
                 }
             }
         }
-        checkedView = new StaticImportGraph.View(new StaticImportGraph.Origin(StaticImportGraph.Domain.PACKAGE,name,lockDigest),inventory);
-        return checkedView;
+        var view = new StaticImportGraph.View(new StaticImportGraph.Origin(StaticImportGraph.Domain.PACKAGE,name,lockDigest),inventory);
+        if(!linked) checkedView=view;
+        return view;
     }
     /** Explicit root selector or pinned public subpath; no physical-path fallback. */
     public String selectNamespace(String source,String selector) {
@@ -192,6 +199,7 @@ public final class FrozenImportSnapshot {
         var view=functionView();
         scope.bindGroup(view.origin(),view,List.of(new StaticImportGraph.Selection(selected,binding,StaticImportGraph.Kind.NAMESPACE,explicitAlias)));
     }
+    List<String> namespaceNames() {return namespaces.keySet().stream().sorted().toList();}
     public Map<String,Dependency> dependencies() {return dependencies;}
     public String name() {return name;}
     public String version() {return version;}
