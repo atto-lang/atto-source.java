@@ -252,6 +252,29 @@ final class ActorPubSubConcurrencyTest {
     }
 
     @Test
+    void deferredChannelCommitCannotBeCancelledThroughMappedFuture() {
+        var channel = new ChannelRuntime.Channel<String>(1);
+        var read = channel.readAsync();
+        var write = ChannelRuntime.withDeferredAsyncCompletions(() -> {
+            var committed = channel.writeAsync("committed");
+            assertFalse(read.isDone());
+            assertFalse(committed.isDone());
+            assertFalse(read.cancel(false), "read already owns the committed value");
+            assertFalse(committed.cancel(false), "write already committed");
+            return committed;
+        });
+        assertEquals("committed", read.join());
+        assertTrue(write.isDone());
+        assertFalse(write.isCompletedExceptionally());
+        assertTrue(channel.tryRead().isEmpty());
+
+        var pending = channel.readAsync();
+        assertTrue(pending.cancel(false), "uncommitted mapped read remains cancellable");
+        assertTrue(channel.tryWrite("next"));
+        assertEquals("next", channel.tryRead().orElseThrow());
+    }
+
+    @Test
     void reliableFanoutNotifiesPendingReadersOutsideMembershipFence() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
