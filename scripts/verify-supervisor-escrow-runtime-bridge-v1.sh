@@ -12,20 +12,42 @@ verify_blob() {
 }
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 09d58a348fd5a2de4ab025f1f1ede458a5a0041d
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java 472b6b3baaa8feeb31be46b69b7574be7d544bd1
-verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java 815e1ab2a11c356bdb1f0a39c17b2d8b52813f84
+verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java fe445414e64c3c85ff6c2996d6acfaca6564cd96
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java d8522a059af3b4afefd69f8ea10f1d7a6d77c389
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java ee0c4d9b48fc7664e6985e84e07e2f77a6cec818
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java 79c8bf1ec6245ff1f45de04accfc6d8832a7a1e5
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java 4f44466d69b4440400d1d5de533917d1b7257521
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java b1198abedece2d0783617749208024a8cab9adbd
 
+verify_blob src/main/java/dev/oreslang/runtime/ActorDataDecodeEscrowV1.java 899bd2d7bbf60cc88463c7474fc9bc4a11fc61b7
+verify_blob src/main/java/dev/oreslang/types/PortableCodecRegistry.java 6f0746880e089512362d3f39a5e7dcecb8986fdb
+verify_blob src/main/java/dev/oreslang/runtime/MessagePackWireV2.java 4f0ac0236d97af104eb166ecaa9a8a9c9bfb1673
+verify_blob src/test/java/dev/oreslang/types/ActorDataDescriptorFixture.java f3ec6dfd06fcdd3f083edf7b2367fc68848439a5
+verify_blob src/test/java/dev/oreslang/runtime/ActorSerializedI64AdmissionTest.java 4700d07709968e939bf3ecfb2d85febcfee08f62
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorSerializedDataIntegrationTest.java 53cbab42afa00f4dc1088c5f4293080fa8be56a7
+verify_blob src/test/standalone/dev/oreslang/runtime/ActorDataDecodeEscrowHarness.java ffc560b3f2c47f1455f5aaa4d6e7deebb42eda7e
+
+verify_blob src/main/java/dev/oreslang/runtime/ActorDataMessagePackPlanV1.java 63094fa8c5444fd44b3dfc1a13c630c7f77e0182
+
 # The existing dependency-free 557-assertion host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
 
-# Compile the actual full ActorRuntime source tree and run real JUnit tests.
-mvn -B -q -Dtest=SupervisorFailureEscrowRuntimeIntegrationTest,SupervisorEscrowSubtreeRecoveryIntegrationTest,SupervisorEscrowAdmissionLinearizationIntegrationTest -DfailIfNoTests=true test
+# Run the real MessagePack decoder/descriptor/escrow host harness first.
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+javac -d "$out" \
+  src/main/java/dev/oreslang/runtime/ActorDataMessagePackPlanV1.java \
+  src/main/java/dev/oreslang/runtime/ActorDataDecodeEscrowV1.java \
+  src/main/java/dev/oreslang/types/PortableCodecRegistry.java \
+  src/main/java/dev/oreslang/runtime/MessagePackWireV2.java \
+  src/test/java/dev/oreslang/types/ActorDataDescriptorFixture.java \
+  src/test/standalone/dev/oreslang/runtime/ActorDataDecodeEscrowHarness.java
+java -ea -cp "$out" dev.oreslang.runtime.ActorDataDecodeEscrowHarness
 
-for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:4' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:3'; do
+# Compile the actual full ActorRuntime source tree and run real JUnit tests.
+mvn -B -q -Dtest=SupervisorFailureEscrowRuntimeIntegrationTest,SupervisorEscrowSubtreeRecoveryIntegrationTest,SupervisorEscrowAdmissionLinearizationIntegrationTest,ActorSerializedI64AdmissionTest,SupervisorSerializedDataIntegrationTest -DfailIfNoTests=true test
+
+for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:4' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:3' 'ActorSerializedI64AdmissionTest:1' 'SupervisorSerializedDataIntegrationTest:4'; do
   suite="${spec%%:*}"
   count="${spec##*:}"
   report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
@@ -34,4 +56,4 @@ for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowS
     grep -Fq "$metric" "$report" || { echo "BAD_SUREFIRE_METRIC: $suite $metric" >&2; exit 4; }
   done
 done
-echo 'PASS exact-source supervisor runtime bridge: 10 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
+echo 'PASS exact-source supervisor runtime bridge: 15 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
