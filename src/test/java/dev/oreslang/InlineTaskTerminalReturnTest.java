@@ -312,4 +312,61 @@ final class InlineTaskTerminalReturnTest {
                 """;
         assertEquals(42L, run(source));
     }
+
+    @Test void voidTaskUsesCallerScopeAndDoesNotReturnFromCaller() throws Exception {
+        assertEquals(42L, run("""
+                pub fnc main(): int {
+                  let int count = 0;
+                  do sync task<void> {
+                    count = 20;
+                    rt cooperate;
+                    return;
+                  }
+                  do sync task<void> {
+                    count = count + 22;
+                  };
+                  return count;
+                }
+                """));
+    }
+
+    @Test void voidTaskLocalLoopAndNestedScopeRemainIndependent() throws Exception {
+        assertEquals(42L, run("""
+                pub fnc main(): int {
+                  let int count = 0;
+                  do sync task<void> {
+                    loop {
+                      count = count + 1;
+                      if count eq 2 { continue; } fi
+                      if count eq 4 { break; } fi
+                    }
+                    do sync task<void> { count = count + 38; }
+                  }
+                  return count;
+                }
+                """));
+    }
+
+    @Test void voidTaskRejectsNonlocalTransfersAndValueReturns() {
+        for (String body : new String[] {
+                "return 42;", "return; rt cooperate;", "if true do return; fi"
+        }) {
+            String source = "pub fnc main(): int { do sync task<void> { "
+                    + body + " } return 42; }";
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parseStrictAtto(source)).getMessage()
+                    .contains("E_SYNC_TASK_VOID_RETURN_UNSUPPORTED"), body);
+        }
+        for (String transfer : new String[] { "break;", "continue;" }) {
+            String source = "pub fnc main(): int { loop { do sync task<void> { "
+                    + transfer + " } return 42; } return 1; }";
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parseStrictAtto(source)).getMessage()
+                    .contains("E_SYNC_TASK_CONTROL_TRANSFER"), transfer);
+        }
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> Parser.parseStrictAtto(
+                        "pub fnc main(): int { do sync task<int> { return 42; } return 0; }"))
+                .getMessage().contains("E_SYNC_TASK_VOID_RESULT"));
+    }
 }
