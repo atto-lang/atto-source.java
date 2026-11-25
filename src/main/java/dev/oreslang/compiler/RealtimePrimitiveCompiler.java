@@ -38,6 +38,8 @@ public final class RealtimePrimitiveCompiler {
     private static final int MAX_AST_NESTING = 64;
     private int visitedStatements;
     private int currentNesting;
+    private int matchExpressionSlots;
+    private static final int MAX_MATCH_EXPRESSION_SLOTS = 64;
 
     private RealtimePrimitiveCompiler() { }
 
@@ -271,6 +273,7 @@ public final class RealtimePrimitiveCompiler {
             return added(1, expression(unary.operand(), locals));
         }
         if (expr instanceof Ast.MatchExpr matched) {
+            if (matched.arms().size() > 2) return added(1, multiArmMatchCost(matched, locals));
             return expression(lowerPrimitiveMatch(matched), locals);
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
@@ -450,13 +453,22 @@ public final class RealtimePrimitiveCompiler {
                 out.append(javaType(p.type())).append(" ").append(p.name());
             }
             out.append(") {\n");
-            emitStatements(out, fn.body(), "    ");
+            // Declare only primitive scratch slots, not their initializers,
+            // before statements. Their assignments remain at the original
+            // expression position (including short-circuit branches).
+            matchExpressionSlots = 0;
+            StringBuilder body = new StringBuilder();
+            emitStatements(body, fn.body(), "    ");
+            for (int i = 0; i < matchExpressionSlots; i++) {
+                out.append("    int $matchExpr").append(i).append(";\n");
+            }
+            out.append(body);
             out.append("  }\n");
         }
         return out.append("}\n").toString();
     }
 
-    private static void emitStatements(StringBuilder out, List<Ast.Stmt> body, String indent) {
+    private void emitStatements(StringBuilder out, List<Ast.Stmt> body, String indent) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt ret) {
                 if (ret.value() instanceof Ast.MatchExpr matched && matched.arms().size() > 2) {
@@ -488,7 +500,7 @@ public final class RealtimePrimitiveCompiler {
         }
     }
 
-    private static void emitMultiArmMatchReturn(StringBuilder out, Ast.MatchExpr matched, String indent) {
+    private void emitMultiArmMatchReturn(StringBuilder out, Ast.MatchExpr matched, String indent) {
         validateMultiArmMatch(matched);
         // Compiler scratch names use a dollar prefix that is forbidden in guest identifiers.
         // The explicit block limits the temporary's lexical scope.
@@ -512,7 +524,28 @@ public final class RealtimePrimitiveCompiler {
         out.append(indent).append("}\n");
     }
 
-    private static String emitExpr(Ast.Expr expr) {
+    private String emitMultiArmMatchExpression(Ast.MatchExpr matched) {
+        validateMultiArmMatch(matched);
+        if (matchExpressionSlots >= MAX_MATCH_EXPRESSION_SLOTS) {
+            throw invalid("too many primitive match expression scratch slots");
+        }
+        // Compiler scratch names cannot collide with admitted guest identifiers.
+        String slot = "$matchExpr" + matchExpressionSlots++;
+        StringBuilder expr = new StringBuilder("(");
+        for (int i = 0; i + 1 < matched.arms().size(); i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            Ast.LiteralPattern literal = (Ast.LiteralPattern) arm.pattern();
+            String subject = i == 0
+                    ? "(" + slot + " = " + emitExpr(matched.subject()) + ")"
+                    : slot;
+            expr.append("(").append(subject).append(" == ").append(literal.value())
+                    .append(") ? ").append(emitExpr(arm.value())).append(" : ");
+        }
+        expr.append(emitExpr(matched.arms().getLast().value())).append(")");
+        return expr.toString();
+    }
+
+    private String emitExpr(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr lit) return String.valueOf(lit.value());
         if (expr instanceof Ast.NameExpr name) return name.name();
         if (expr instanceof Ast.BinaryExpr b) {
@@ -528,6 +561,7 @@ public final class RealtimePrimitiveCompiler {
         }
         if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
         if (expr instanceof Ast.MatchExpr matched) {
+            if (matched.arms().size() > 2) return emitMultiArmMatchExpression(matched);
             return emitExpr(lowerPrimitiveMatch(matched));
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
