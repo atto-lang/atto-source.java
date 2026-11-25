@@ -8627,6 +8627,21 @@ public final class OresEvalRootNode extends RootNode {
                         typedRef.send(args.getFirst());
                         return null;
                     };
+                    case "serve_resp2_async" -> (Invokable) args -> {
+                        if (args.size() != 3
+                                || !(args.get(0) instanceof dev.oreslang.runtime.AsyncNioTcp.Listener listener)
+                                || !(args.get(1) instanceof Number maxClients)
+                                || !(args.get(2) instanceof Number acceptCount)
+                                || !isIntegral(maxClients) || !isIntegral(acceptCount)) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef.serve_resp2_async requires NioListener and two integer quotas");
+                        }
+                        return new dev.oreslang.runtime.AsyncNioActorResp2Gateway(
+                                listener, typedRef,
+                                Math.toIntExact(maxClients.longValue()),
+                                Math.toIntExact(acceptCount.longValue())).serveAsync();
+                    };
+
                     case "stop" -> (Invokable) args -> {
                         requireZero(args, "ActorRef.stop");
                         actorRef.stop();
