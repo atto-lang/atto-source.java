@@ -36,7 +36,7 @@ bash scripts/verify-supervisor-failure-escrow-v1.sh
 # Compile the actual full ActorRuntime source tree and run real JUnit tests.
 mvn -B -q -Dtest=SupervisorFailureEscrowRuntimeIntegrationTest,SupervisorEscrowSubtreeRecoveryIntegrationTest,SupervisorEscrowAdmissionLinearizationIntegrationTest,SupervisorEscrowInheritedChildRaceIntegrationTest -DfailIfNoTests=true test
 
-for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:4' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:4' 'SupervisorEscrowInheritedChildRaceIntegrationTest:7'; do
+for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:4' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:4' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:4' 'SupervisorEscrowInheritedChildRaceIntegrationTest:7'; do
   suite="${spec%%:*}"
   count="${spec##*:}"
   report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
@@ -45,7 +45,7 @@ for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowS
     grep -Fq "$metric" "$report" || { echo "BAD_SUREFIRE_METRIC: $suite $metric" >&2; exit 4; }
   done
 done
-echo 'PASS exact-source supervisor runtime bridge: 18 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
+echo 'PASS exact-source supervisor runtime bridge: 19 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
 test "$(git rev-parse HEAD)" = "$actual_head" || {
   echo 'GIT_HEAD_CHANGED_DURING_TEST' >&2; exit 6;
 }
