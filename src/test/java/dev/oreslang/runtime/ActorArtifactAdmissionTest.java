@@ -638,6 +638,62 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void authenticatedStringHandoffUsesRealMailboxAndRejectsRetiredOrConsumedDelivery() throws Exception {
+        byte[] executable = "ELF-host-handoff".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+        var profile = new ActorIpcCodecProfileV1("messagepack", 2, "order.v1",
+                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cd", MESSAGE_ABI);
+        var shape = MessagePackWireV2.Shape.string();
+        var limits = new MessagePackWireV2.DecodeLimits(1024, 1024, 16, 2048, 8);
+        var observed = new java.util.concurrent.LinkedBlockingQueue<String>();
+        UUID route = UUID.randomUUID();
+        try (ActorRuntime runtime = new ActorRuntime(supervisorPolicy());
+             ActorRuntime other = new ActorRuntime(supervisorPolicy())) {
+            var artifact = runtime.admitIpcActorArtifact(
+                    "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
+                    attestation("ImageWorker", Ast.ActorKind.PRIVATE, manifest, profile.commitment()),
+                    TRUST_ATTESTATION, (builder, keyId) -> keys.getPublic(),
+                    targetPolicy(), privateWorkerPolicy());
+            ActorRuntime.ActorRef<String> receiver = runtime.spawnPrivateTrusted(
+                    context -> (message, ctx) -> observed.add(message));
+            ActorRuntime.ActorRef<String> foreign = other.spawnPrivateTrusted(
+                    context -> (message, ctx) -> { });
+            var session = runtime.openMessagePackBoundIpcSession(
+                    artifact, route, 1, 1, 2, 4096, profile, 1, 1, shape, limits);
+            try (var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+                session.acceptWorkerFrame(ActorIpcSessionV1.encodeWorkerFrame(bootstrap, artifact,
+                        ActorIpcSessionV1.Lane.CONTROL, ActorIpcSessionV1.FrameKind.READY,
+                        1, 0, new byte[0]));
+                assertThrows(SecurityException.class, () -> runtime.bindIpcStringReceiver(session, foreign));
+                runtime.bindIpcStringReceiver(session, receiver);
+                assertThrows(IllegalStateException.class, () -> runtime.bindIpcStringReceiver(session, receiver));
+                for (int i=1; i<=2; i++) {
+                    byte[] wire = ActorIpcSessionV1.encodeWorkerFrame(bootstrap, artifact,
+                            ActorIpcSessionV1.Lane.DATA, ActorIpcSessionV1.FrameKind.OUTPUT,
+                            i, i, MessagePackWireV2.encode(profile.schema(), shape, "value-"+i));
+                    assertTrue(session.tryQueueWorkerData(wire));
+                    try (var delivery = session.pollWorkerData();
+                         var decoded = session.tryDecodeWorkerData(delivery)) {
+                        assertNotNull(decoded);
+                        if (i==1) {
+                            runtime.forwardIpcString(session, decoded);
+                            assertEquals("value-1", observed.poll(5, java.util.concurrent.TimeUnit.SECONDS));
+                            assertFalse(decoded.liveFor(session));
+                            assertThrows(SecurityException.class, () -> runtime.forwardIpcString(session, decoded));
+                        } else {
+                            runtime.retireBoundIpcSession(session);
+                            assertThrows(SecurityException.class, () -> runtime.forwardIpcString(session, decoded));
+                            assertTrue(decoded.liveFor(session));
+                        }
+                    }
+                }
+                assertNull(observed.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS));
+            }
+        }
+    }
+
+    @Test
     void canonicalUnsignedManifestHasDeterministicSortedObjectKeys() throws Exception {
         byte[] executable = "ELF-canonical".getBytes(StandardCharsets.UTF_8);
         var manifest = manifest(executable, List.of("filesystem.read", "stdout"));
