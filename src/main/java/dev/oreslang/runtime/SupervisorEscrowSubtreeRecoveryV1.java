@@ -246,6 +246,14 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         runtime.requireSupervisorShutdownAuthority("commit supervisor replacement");
         Objects.requireNonNull(permit, "permit");
         Objects.requireNonNull(replacement, "replacement");
+        // Reject foreign/replayed permits before running a potentially
+        // expensive external physical-release verifier.
+        synchronized (lock) {
+            if (!issued.contains(permit) || permit.used
+                    || successorIds.containsKey(permit.oldNodeId)) {
+                throw new IllegalStateException("stale, foreign or reused restart permit");
+            }
+        }
         if (restartBlocker(permit.oldNodeId) != RestartBlocker.READY)
             throw new IllegalStateException("subtree not physically verified");
         if (replacement.generation() <= permit.oldGeneration)
@@ -255,8 +263,15 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         synchronized (lock) {
             expectedParent = successorIds.getOrDefault(
                     permit.oldParentId, permit.oldParentId);
-            if (!issued.remove(permit) || permit.used || actualParent != expectedParent)
+            // Validation must precede mutation. A denied misparented
+            // attempt must not consume the legitimate parent's permit.
+            // Recheck after the external verifier and reserve atomically.
+            if (controlFault.get() != null || !issued.contains(permit)
+                    || permit.used || successorIds.containsKey(permit.oldNodeId)
+                    || actualParent != expectedParent) {
                 throw new IllegalStateException("stale, reused or misparented restart permit");
+            }
+            issued.remove(permit);
             // Reserve the successor slot BEFORE releasing lock. Until the new
             // registration commits, -1 means permanently fenced/incomplete.
             // No second permit may race in the gap between validation and attach.
