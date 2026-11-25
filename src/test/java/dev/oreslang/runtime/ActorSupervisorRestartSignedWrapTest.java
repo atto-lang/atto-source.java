@@ -54,7 +54,7 @@ final class ActorSupervisorRestartSignedWrapTest {
         var first = circuit.onExit(0, 1, RestartPolicy.PERMANENT,
                 ExitClass.ABNORMAL, Strategy.ONE_FOR_ONE, Long.MAX_VALUE - 30);
         assertEquals(1, first.attempt());
-        circuit.admitGeneration(0, 2, Long.MAX_VALUE - 20);
+        circuit.admitGeneration(0, 2, (Long.MAX_VALUE - 30) + first.delayNanos());
         var second = circuit.onExit(0, 2, RestartPolicy.PERMANENT,
                 ExitClass.ABNORMAL, Strategy.ONE_FOR_ONE, Long.MIN_VALUE + 200);
         assertEquals(DecisionKind.RESTART, second.kind());
@@ -138,6 +138,35 @@ final class ActorSupervisorRestartSignedWrapTest {
             assertEquals(0, circuit.snapshot(2).pendingReplacements());
             assertEquals(3L, circuit.snapshot(2).acceptedReplacementRestarts());
         }
+    }
+
+
+    @Test
+    void backoffIsEnforcedForEveryReplacementAcrossSignedWrap() {
+        var circuit = new ActorSupervisorRestartCircuit(
+                new Config(2, 2, 1_000, 100, 100, 0));
+        long exit = Long.MAX_VALUE - 50;
+        circuit.admitGeneration(0, 1, exit - 1);
+        circuit.admitGeneration(1, 1, exit - 1);
+        var plan = circuit.onExit(0, 1, RestartPolicy.PERMANENT,
+                ExitClass.ABNORMAL, Strategy.ONE_FOR_ALL, exit);
+        assertEquals(100L, plan.delayNanos());
+        assertEquals(true, circuit.acknowledgeQuiesced(1, 1, exit + 1));
+        long early = exit + plan.delayNanos() - 1;
+        assertThrows(IllegalStateException.class,
+                () -> circuit.admitGeneration(0, 2, early));
+        assertThrows(IllegalStateException.class,
+                () -> circuit.admitGeneration(1, 2, early));
+        assertEquals(2, circuit.snapshot(early).pendingReplacements());
+        assertEquals(2L, circuit.snapshot(early).acceptedReplacementRestarts());
+        assertEquals(1L, circuit.generation(0));
+        assertEquals(1L, circuit.generation(1));
+
+        long ready = exit + plan.delayNanos();
+        circuit.admitGeneration(0, 2, ready);
+        circuit.admitGeneration(1, 2, ready);
+        assertEquals(0, circuit.snapshot(ready).pendingReplacements());
+        assertEquals(2L, circuit.snapshot(ready).acceptedReplacementRestarts());
     }
 
 }
