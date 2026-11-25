@@ -27,7 +27,7 @@ final class ExtensibleDeclarationPhase1Test {
     @Test void unsupportedFormsFailClosed() {
         String tail = "\ndefine class Control as end";
         String[][] cases = {
-            {"define keyword entity as actor end", "KIND_BASE_UNSUPPORTED"},
+            {"define keyword entity as module end", "KIND_BASE_UNSUPPORTED"},
             {"define keyword entity as class requires Entity; end", "KIND_CONTRACT_MISMATCH"},
             {"define pub keyword entity as class end", "KIND_VISIBILITY_UNSUPPORTED"},
             {"define keyword workflow as class end", "KIND_RESERVED"},
