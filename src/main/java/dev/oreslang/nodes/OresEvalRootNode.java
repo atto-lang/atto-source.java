@@ -7339,7 +7339,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
-            if (!fn.trapped() || functionContainsPotentialSuspension(fn)) {
+            if (!fn.trapped() || fn.async() || functionContainsPotentialSuspension(fn)) {
                 // SourceTask owns the trap boundary for scheduled execution.
                 return callFunctionBodyUnchecked(fn, args);
             }
