@@ -4114,6 +4114,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // runtime/actor locks after the bridge monitor: ancestor
                 // terminal failure acquires cell.lifecycleLock -> bridge.
                 synchronized (bridge) {
+                  synchronized (bridge.ledgerPublicationMonitorFromRuntime()) {
                     bridge.registerFromRuntime(ref, nodeId, parentId);
                     SupervisorEscrowBinding binding =
                             new SupervisorEscrowBinding(bridge, nodeId, ref.generation());
@@ -4123,9 +4124,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     "actor CONTROL binding concurrently published");
                         }
                     } catch (RuntimeException | Error failure) {
-                        bridge.rollbackHostAttachFromRuntime(ref, nodeId, parentId);
+                        try {
+                            bridge.rollbackHostAttachFromRuntime(ref, nodeId, parentId);
+                        } catch (RuntimeException | Error cleanup) {
+                            failure.addSuppressed(cleanup);
+                        }
                         throw failure;
                     }
+                  }
                 }
             }
         }
@@ -4719,6 +4725,11 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            SupervisorEscrowBinding inheritedControl = parent == null ? null
+                    : supervisorEscrowBindings.get(parent.ref.id());
+            if (inheritedControl != null && !inheritedControl.bridge().hasRecoveryCoordinatorFromRuntime()) {
+                throw new IllegalStateException("supervised nested spawn requires CONTROL recovery coordinator");
+            }
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -4764,6 +4775,11 @@ public final class ActorRuntime implements AutoCloseable {
                         Object publishLock = parentEscrow == null
                                 ? parent.lifecycleLock : parentEscrow.bridge();
                         synchronized (publishLock) {
+                          // The ledger transaction spans reservation, publication and rollback.
+                          // Snapshot and DATA readers cannot see provisional CONTROL nodes.
+                          Object ledgerLock = parentEscrow == null ? publishLock
+                                  : parentEscrow.bridge().ledgerPublicationMonitorFromRuntime();
+                          synchronized (ledgerLock) {
                             try {
                                 if (parentEscrow != null) {
                                     long childNode = parentEscrow.bridge()
@@ -4838,14 +4854,18 @@ public final class ActorRuntime implements AutoCloseable {
                                 if (reservedChildEscrow != null) {
                                     supervisorEscrowBindings.remove(
                                             id, reservedChildEscrow);
-                                    reservedChildEscrow.bridge()
-                                            .rollbackInheritedChildFromRuntime(
-                                                    ref, reservedChildEscrow.nodeId(),
-                                                    parentEscrow.nodeId());
-                                    reservedChildEscrow = null;
+                                    try {
+                                        reservedChildEscrow.bridge().rollbackInheritedChildFromRuntime(
+                                                ref, reservedChildEscrow.nodeId(), parentEscrow.nodeId());
+                                    } catch (RuntimeException | Error cleanup) {
+                                        publishFailure.addSuppressed(cleanup);
+                                    } finally {
+                                        reservedChildEscrow = null;
+                                    }
                                 }
                                 throw publishFailure;
                             }
+                          }
                         }
                     }
                 } else {

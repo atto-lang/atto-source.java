@@ -261,6 +261,13 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             ActorRuntime.ActorRef<?> ref;
             synchronized (lock) { ref = refs.get(id); }
             if (ref == null || !ref.done().isDone()) return RestartBlocker.CHILD_STILL_RUNNING;
+        }
+        // Verify the whole subtree is DONE before invoking any external verifier.
+        for (long id : states.keySet()) {
+            if (id != nodeId && !isBelow(id, nodeId, states)) continue;
+            ActorRuntime.ActorRef<?> ref;
+            synchronized (lock) { ref = refs.get(id); }
+            if (ref == null || !ref.done().isDone()) return RestartBlocker.CHILD_STILL_RUNNING;
             if (!physicalRelease.independentlyReclaimed(ref))
                 return RestartBlocker.PHYSICAL_RELEASE_UNVERIFIED;
         }

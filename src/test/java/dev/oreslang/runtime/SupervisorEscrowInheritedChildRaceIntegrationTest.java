@@ -243,14 +243,81 @@ final class SupervisorEscrowInheritedChildRaceIntegrationTest {
             long parentNode = recovery.attach(parent, null);
             int initialNodes = bridge.snapshot().size();
             synchronized (bridge) {
+              synchronized (bridge.ledgerPublicationMonitorFromRuntime()) {
                 assertThrows(IllegalStateException.class,
                         () -> bridge.reserveInheritedChildFromRuntime(
                                 provisional, parentNode, parent.generation() + 1));
+              }
             }
             assertEquals(initialNodes, bridge.snapshot().size(),
                     "stale-generation reservation leaked a CONTROL node");
             long freshId = recovery.attach(provisional, parent);
             assertEquals(parentNode, bridge.snapshot().get(freshId).parentId());
+        }
+    }
+
+    @Test
+    void nestedSpawnWithoutRecoveryFailsBeforeActorSlotReservation() throws Exception {
+        var done = new java.util.concurrent.CountDownLatch(1);
+        GROUP_FINISHED.set(done);
+        GROUP_REJECTED.set(null);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            ActorRuntime.ActorRef<String> parent = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        try {
+                            turn.runtime().spawnPrivate(nested -> (item, context) -> { });
+                        } catch (Throwable denied) {
+                            GROUP_REJECTED.set(denied);
+                        } finally {
+                            GROUP_FINISHED.get().countDown();
+                        }
+                    });
+            bridge.attach(parent, null);
+            parent.send("nested spawn");
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, GROUP_REJECTED.get());
+            assertTrue(GROUP_REJECTED.get().getMessage().contains("CONTROL recovery coordinator"));
+            assertEquals(1, runtime.actorCount());
+            assertEquals(2, bridge.snapshot().size());
+        } finally {
+            GROUP_REJECTED.set(null);
+            GROUP_FINISHED.compareAndSet(done, null);
+        }
+    }
+
+    @Test
+    void concurrentLedgerSnapshotCannotObserveRolledBackReservation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             ExecutorService control = Executors.newSingleThreadExecutor();
+             ExecutorService observer = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(runtime, bridge, control, ref -> false);
+            ActorRuntime.ActorRef<String> parent = runtime.spawnPrivate(ignored -> (m, t) -> { });
+            ActorRuntime.ActorRef<String> provisional = runtime.spawnPrivate(ignored -> (m, t) -> { });
+            long parentId = recovery.attach(parent, null);
+            long candidate;
+            java.util.concurrent.Future<java.util.Map<Long, SupervisorFailureEscrowV1.NodeStatus>> read;
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            synchronized (bridge) {
+                synchronized (bridge.ledgerPublicationMonitorFromRuntime()) {
+                    candidate = bridge.reserveInheritedChildFromRuntime(
+                            provisional, parentId, parent.generation());
+                    try {
+                        read = observer.submit(() -> {
+                            entered.countDown();
+                            return bridge.snapshot();
+                        });
+                        assertTrue(entered.await(5, TimeUnit.SECONDS));
+                        assertThrows(java.util.concurrent.TimeoutException.class,
+                                () -> read.get(100, TimeUnit.MILLISECONDS));
+                    } finally {
+                        bridge.rollbackInheritedChildFromRuntime(provisional, candidate, parentId);
+                    }
+                }
+            }
+            assertFalse(read.get(5, TimeUnit.SECONDS).containsKey(candidate));
+            assertEquals(2, bridge.snapshot().size());
         }
     }
 }
