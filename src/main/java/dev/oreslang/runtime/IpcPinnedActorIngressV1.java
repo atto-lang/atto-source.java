@@ -12,6 +12,7 @@ final class IpcPinnedActorIngressV1<M> implements AutoCloseable {
      * allocation-free with respect to payload size. It returns conservative
      * logical materialization credit, not a peer-declared size. */
     interface Decoder<M> {
+        default void requireBinding(IpcSchemaBoundDataV1.Binding binding) { }
         long preflight(ByteBuffer body) throws IOException;
         M decode(ByteBuffer body, long admittedBytes) throws IOException;
     }
@@ -66,6 +67,7 @@ final class IpcPinnedActorIngressV1<M> implements AutoCloseable {
         }
         this.binding = Objects.requireNonNull(binding);
         this.decoder = Objects.requireNonNull(decoder);
+        decoder.requireBinding(this.binding);
         this.budget = Objects.requireNonNull(budget);
         recipient.requireIpcIngressBudget(epoch.domain(),budget);
         if (maxDecodedBytes <= 0 || maxDecodedBytes > 8L*1024*1024)

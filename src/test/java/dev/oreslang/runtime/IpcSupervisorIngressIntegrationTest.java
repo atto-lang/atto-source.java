@@ -382,4 +382,234 @@ final class IpcSupervisorIngressIntegrationTest {
         }
     }
 
+    private static IpcCborDataPlanV1 orderPlan(){
+        return new IpcCborDataPlanV1("order.v1",1,"Order",java.util.List.of(
+                new IpcCborDataPlanV1.Node("Order",IpcCborDataPlanV1.Kind.RECORD,java.util.List.of(
+                        new IpcCborDataPlanV1.Field(1,"total","I64"),
+                        new IpcCborDataPlanV1.Field(0,"paid","Bool"))),
+                new IpcCborDataPlanV1.Node("Bool",IpcCborDataPlanV1.Kind.BOOL,java.util.List.of()),
+                new IpcCborDataPlanV1.Node("I64",IpcCborDataPlanV1.Kind.I64,java.util.List.of())),
+                new IpcCborDataPlanV1.Limits(1024,8192,4096,100,100,8));
+    }
+    @Test void canonicalCborPlanMatchesReferenceDigestAndPublishesActualOwnedRecord()throws Exception{
+        var plan=orderPlan();
+        var reference=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"order.v1",
+                HexFormat.of().parseHex("610eef10e566bf78d2741deea68e26171a2c03f901ccb2a7c2f032090afa969f"));
+        plan.requireBinding(reference);
+        assertThrows(IllegalArgumentException.class,()->plan.requireBinding(
+                new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"order.v1",new byte[32])));
+        byte[] key=new byte[32],connection=new byte[16];Arrays.fill(key,(byte)7);Arrays.fill(connection,(byte)8);
+        var delivered=new java.util.concurrent.atomic.AtomicReference<Object>();
+        try(ActorRuntime runtime=new ActorRuntime()){
+            var child=runtime.<Object>spawnPrivateTrusted(ignored->(message,turn)->delivered.set(message));
+            var budget=runtime.registerIpcIngressTenant("tenant",1024*1024,2);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
+            byte[] good=IpcSchemaBoundDataV1.wrap(reference,new byte[]{(byte)0x82,(byte)0xf5,0x18,42});
+            byte[] bad=IpcSchemaBoundDataV1.wrap(reference,new byte[]{(byte)0x82,1,(byte)0xf5});
+            var first=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "real-cbor",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bad)),
+                    1,child.generation(),3,4,1,1);
+            var second=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "real-cbor",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(good)),
+                    1,child.generation(),3,4,2,2);
+            try(var ingress=new IpcPinnedActorIngressV1<>(child,first,authority(5,connection,key),reference,budget,8192,plan)){
+                assertThrows(IOException.class,()->ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(first,bad,5,connection,key)));
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+                ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(second,good,5,connection,key));
+                child.drain().get(5,TimeUnit.SECONDS);
+                assertEquals(java.util.List.of(true,42L),delivered.get());
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            }
+        }
+    }
+    @Test void boundedCborPlanRejectsMalformedAndOneUnderCredit()throws Exception{
+        var plan=orderPlan();
+        var good=java.nio.ByteBuffer.wrap(new byte[]{(byte)0x82,(byte)0xf5,0x18,42}).asReadOnlyBuffer();
+        long credit=plan.preflight(good);
+        assertEquals(java.util.List.of(true,42L),plan.decode(good,credit));
+        assertThrows(IOException.class,()->plan.decode(good,credit-1));
+        for(byte[] bad:new byte[][]{{(byte)0x81,(byte)0xf5},{(byte)0x82,(byte)0xf5,0x18,1},
+                {(byte)0x82,(byte)0xf5,0x18},{(byte)0x82,(byte)0xf5,1,0},{(byte)0x9f,(byte)0xf5,1,(byte)0xff}}){
+            var input=java.nio.ByteBuffer.wrap(bad).asReadOnlyBuffer();
+            assertThrows(IOException.class,()->plan.preflight(input));
+        }
+        var textPlan=new IpcCborDataPlanV1("text.v1",1,"Text",java.util.List.of(
+                new IpcCborDataPlanV1.Node("Text",IpcCborDataPlanV1.Kind.TEXT,java.util.List.of())),
+                new IpcCborDataPlanV1.Limits(32,1024,128,4,4,2));
+        var valid=java.nio.ByteBuffer.wrap(new byte[]{0x62,(byte)0xc3,(byte)0xa9}).asReadOnlyBuffer();
+        assertEquals("é",textPlan.decode(valid,textPlan.preflight(valid)));
+        for(byte[] bad:new byte[][]{{0x62,(byte)0xc0,(byte)0x80},{0x63,(byte)0xed,(byte)0xa0,(byte)0x80},{0x61,(byte)0xc2}}){
+            assertThrows(IOException.class,()->textPlan.preflight(java.nio.ByteBuffer.wrap(bad).asReadOnlyBuffer()));
+        }
+    }
+
+    @Test void cborNamedRecursionAndScalarLimitsAreBounded()throws Exception{
+        var recursive=new IpcCborDataPlanV1("recursive.v1",1,"List",java.util.List.of(
+                new IpcCborDataPlanV1.Node("List",IpcCborDataPlanV1.Kind.LIST,
+                        java.util.List.of(new IpcCborDataPlanV1.Field(0,"element","List")))),
+                new IpcCborDataPlanV1.Limits(32,1024,128,8,8,2));
+        var finite=java.nio.ByteBuffer.wrap(new byte[]{(byte)0x81,(byte)0x81,(byte)0x80}).asReadOnlyBuffer();
+        assertEquals(java.util.List.of(java.util.List.of(java.util.List.of())),recursive.decode(finite,recursive.preflight(finite)));
+        var deep=java.nio.ByteBuffer.wrap(new byte[]{(byte)0x81,(byte)0x81,(byte)0x81,(byte)0x80}).asReadOnlyBuffer();
+        assertThrows(IOException.class,()->recursive.preflight(deep));
+        var scalar=new IpcCborDataPlanV1("int.v1",1,"Int",java.util.List.of(
+                new IpcCborDataPlanV1.Node("Int",IpcCborDataPlanV1.Kind.I64,java.util.List.of())),
+                new IpcCborDataPlanV1.Limits(32,1024,128,8,8,2));
+        for(long expected:new long[]{Long.MIN_VALUE,Long.MAX_VALUE}){
+            byte[] wire=java.nio.ByteBuffer.allocate(9).put((byte)(expected<0?0x3b:0x1b)).putLong(Long.MAX_VALUE).array();
+            var input=java.nio.ByteBuffer.wrap(wire).asReadOnlyBuffer();
+            assertEquals(expected,scalar.decode(input,scalar.preflight(input)));
+        }
+        var floatPlan=new IpcCborDataPlanV1("float.v1",1,"F64",java.util.List.of(
+                new IpcCborDataPlanV1.Node("F64",IpcCborDataPlanV1.Kind.F64,java.util.List.of())),
+                new IpcCborDataPlanV1.Limits(32,1024,128,8,8,2));
+        var negativeZero=java.nio.ByteBuffer.wrap(java.nio.ByteBuffer.allocate(9).put((byte)0xfb).putLong(Long.MIN_VALUE).array()).asReadOnlyBuffer();
+        assertEquals(Long.MIN_VALUE,Double.doubleToRawLongBits((Double)floatPlan.decode(negativeZero,floatPlan.preflight(negativeZero))));
+        var nan=java.nio.ByteBuffer.wrap(java.nio.ByteBuffer.allocate(9).put((byte)0xfb).putLong(0x7ff8000000000000L).array()).asReadOnlyBuffer();
+        assertThrows(IOException.class,()->floatPlan.preflight(nan));
+    }
+
+    private static IpcProtobufDataPlanV1 protobufPlan(){
+        return new IpcProtobufDataPlanV1("node.v1",1,"Node",java.util.List.of(
+                new IpcProtobufDataPlanV1.Node("Node",IpcProtobufDataPlanV1.Kind.MESSAGE,java.util.List.of(
+                        new IpcProtobufDataPlanV1.Field(2,"next","Node"),new IpcProtobufDataPlanV1.Field(1,"values","Packed"))),
+                new IpcProtobufDataPlanV1.Node("Packed",IpcProtobufDataPlanV1.Kind.PACKED,java.util.List.of(
+                        new IpcProtobufDataPlanV1.Field(0,"element","U64"))),
+                new IpcProtobufDataPlanV1.Node("U64",IpcProtobufDataPlanV1.Kind.VARINT,java.util.List.of())),
+                new IpcProtobufDataPlanV1.Limits(1024,8192,4096,16,32,4));
+    }
+    @Test void registeredProtobufMatchesCanonicalDigestAndPublishesNestedValues()throws Exception{
+        var plan=protobufPlan();
+        var reference=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.PROTOBUF,1,"node.v1",
+                HexFormat.of().parseHex("4a236e0ad94e1abe167060795850a16747ae5fd1d7c929151bc4ad4eed8bfebf"));
+        plan.requireBinding(reference);
+        byte[] key=new byte[32],connection=new byte[16];Arrays.fill(key,(byte)7);Arrays.fill(connection,(byte)8);
+        var delivered=new java.util.concurrent.atomic.AtomicReference<Object>();
+        try(ActorRuntime runtime=new ActorRuntime()){
+            var child=runtime.<Object>spawnPrivateTrusted(ignored->(message,turn)->delivered.set(message));
+            var budget=runtime.registerIpcIngressTenant("tenant",1024*1024,2);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
+            byte[] good=IpcSchemaBoundDataV1.wrap(reference,new byte[]{10,2,1,2,18,3,10,1,3});
+            byte[] bad=IpcSchemaBoundDataV1.wrap(reference,new byte[]{10,1,(byte)128});
+            var first=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "real-protobuf",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bad)),
+                    1,child.generation(),3,4,1,1);
+            var second=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "real-protobuf",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(good)),
+                    1,child.generation(),3,4,2,2);
+            try(var ingress=new IpcPinnedActorIngressV1<>(child,first,authority(5,connection,key),reference,budget,8192,plan)){
+                assertThrows(IOException.class,()->ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(first,bad,5,connection,key)));
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+                ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(second,good,5,connection,key));
+                child.drain().get(5,TimeUnit.SECONDS);
+                assertEquals(java.util.List.of(java.util.List.of(1L,java.util.List.of(1L,2L)),
+                        java.util.List.of(2L,java.util.List.of(java.util.List.of(1L,java.util.List.of(3L))))),delivered.get());
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            }
+        }
+    }
+    @Test void protobufSharedBudgetRejectsMalformedPackedAndRecursiveInputs()throws Exception{
+        var plan=protobufPlan();
+        var good=java.nio.ByteBuffer.wrap(new byte[]{10,2,1,2,10,1,3}).asReadOnlyBuffer();
+        long credit=plan.preflight(good);
+        assertEquals(java.util.List.of(java.util.List.of(1L,java.util.List.of(1L,2L)),java.util.List.of(1L,java.util.List.of(3L))),plan.decode(good,credit));
+        assertThrows(IOException.class,()->plan.decode(good,credit-1));
+        for(byte[] bad:new byte[][]{{8,1},{0},{26,0},{10,1,(byte)128},{18,2,10,1},{18,1,0},{10,10,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,(byte)255,2},
+                {18,8,18,6,18,4,18,2,18,0}}){
+            assertThrows(IOException.class,()->plan.preflight(java.nio.ByteBuffer.wrap(bad).asReadOnlyBuffer()));
+        }
+    }
+
+    private static final String COMPILER_ORDER_SOURCE="""
+            define class Order as
+              paid: bool;
+              total: i64;
+            end
+            """;
+    private static IpcCborDataPlanV1 compileOrder(String source){
+        return IpcCompilerCborPlanV1.compile(source,"Order","order.v1",1,
+                new IpcCborDataPlanV1.Limits(1024,8192,4096,100,100,8));
+    }
+    @Test void checkedCompilerSourceDerivesSameCanonicalCborBinding()throws Exception{
+        var plan=compileOrder(COMPILER_ORDER_SOURCE);
+        var reference=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"order.v1",
+                HexFormat.of().parseHex("610eef10e566bf78d2741deea68e26171a2c03f901ccb2a7c2f032090afa969f"));
+        plan.requireBinding(reference);
+        var input=java.nio.ByteBuffer.wrap(new byte[]{(byte)0x82,(byte)0xf5,0x18,42}).asReadOnlyBuffer();
+        assertEquals(java.util.List.of(true,42L),plan.decode(input,plan.preflight(input)));
+        var reordered=compileOrder("""
+                define class Order as
+                  total: i64;
+                  paid: bool;
+                end
+                """);
+        assertThrows(IllegalArgumentException.class,()->reordered.requireBinding(reference));
+        assertThrows(IOException.class,()->reordered.preflight(input));
+        for(String unsupported:new String[]{
+                COMPILER_ORDER_SOURCE.replace("i64","i32"),
+                COMPILER_ORDER_SOURCE.replace("i64","bigint"),
+                COMPILER_ORDER_SOURCE.replace("i64","List[i64]"),
+                COMPILER_ORDER_SOURCE+"\ndefine class Extra as\n  value: bool;\nend",
+                COMPILER_ORDER_SOURCE.replace("paid: bool","paid: void"),
+                COMPILER_ORDER_SOURCE+"\npub fnc bad() : i64 { return false; }"
+        })assertThrows(IllegalArgumentException.class,()->compileOrder(unsupported));
+    }
+    @Test void compilerDerivedCborPlanPublishesAuthenticatedOwnedRecord()throws Exception{
+        var plan=compileOrder(COMPILER_ORDER_SOURCE);
+        byte[] key=new byte[32],connection=new byte[16];Arrays.fill(key,(byte)7);Arrays.fill(connection,(byte)8);
+        var delivered=new java.util.concurrent.atomic.AtomicReference<Object>();
+        try(ActorRuntime runtime=new ActorRuntime()){
+            var child=runtime.<Object>spawnPrivateTrusted(ignored->(message,turn)->delivered.set(message));
+            var budget=runtime.registerIpcIngressTenant("tenant",1024*1024,2);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
+            byte[] good=IpcSchemaBoundDataV1.wrap(plan.binding(),new byte[]{(byte)0x82,(byte)0xf5,0x18,42});
+            var epoch=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "compiler-cbor",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(good)),
+                    1,child.generation(),3,4,1,1);
+            try(var ingress=new IpcPinnedActorIngressV1<>(child,epoch,authority(5,connection,key),plan.binding(),budget,8192,plan)){
+                ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,good,5,connection,key));
+                child.drain().get(5,TimeUnit.SECONDS);
+                assertEquals(java.util.List.of(true,42L),delivered.get());
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            }
+        }
+    }
+
+    @Test void authenticatedCompilerCborRecordReconstructsNominalGuestValue()throws Exception{
+        String source=java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/serialization/compiler-cbor-order.atto"));
+        var plan=compileOrder(source);
+        var reference=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"order.v1",
+                HexFormat.of().parseHex("610eef10e566bf78d2741deea68e26171a2c03f901ccb2a7c2f032090afa969f"));
+        plan.requireBinding(reference);
+        byte[] key=new byte[32],connection=new byte[16];Arrays.fill(key,(byte)7);Arrays.fill(connection,(byte)8);
+        var delivered=new java.util.concurrent.atomic.AtomicReference<Object>();
+        try(ActorRuntime runtime=new ActorRuntime();
+            org.graalvm.polyglot.Context context=org.graalvm.polyglot.Context.newBuilder(dev.oreslang.OresLanguage.ID)
+                    .allowAllAccess(false).build()){
+            var child=runtime.<Object>spawnPrivateTrusted(ignored->(message,turn)->delivered.set(message));
+            var budget=runtime.registerIpcIngressTenant("tenant",1024*1024,2);
+            runtime.authorizeIpcIngressActor(child,"tenant",budget);
+            var parsed=context.parse(org.graalvm.polyglot.Source.newBuilder(dev.oreslang.OresLanguage.ID,source,
+                    "compiler-cbor-order.atto").mimeType(dev.oreslang.OresLanguage.MIME_TYPE).build());
+            parsed.execute(dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
+            parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INIT_ONLY_COMMAND);
+            byte[] good=IpcSchemaBoundDataV1.wrap(reference,new byte[]{(byte)0x82,(byte)0xf5,0x18,42});
+            var epoch=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "guest-cbor",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(good)),
+                    1,child.generation(),3,4,1,1);
+            try(var ingress=new IpcPinnedActorIngressV1<>(child,epoch,authority(5,connection,key),reference,budget,8192,plan)){
+                ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,good,5,connection,key));
+                child.drain().get(5,TimeUnit.SECONDS);
+                assertInstanceOf(java.util.List.class,delivered.get());
+                var values=(java.util.List<?>)delivered.get();
+                assertEquals(java.util.List.of(true,42L),values);
+                var answer=parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INVOKE_PUBLIC_COMMAND,"consume",
+                        values.get(0),values.get(1));
+                assertEquals(42L,answer.asLong());
+                assertEquals(0L,parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INVOKE_PUBLIC_COMMAND,"consume",false,42L).asLong());
+                assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+            }
+        }
+    }
+
 }
