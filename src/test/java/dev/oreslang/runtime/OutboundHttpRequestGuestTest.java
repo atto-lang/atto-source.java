@@ -315,6 +315,62 @@ final class OutboundHttpRequestGuestTest {
     }
 
     @Test
+    void actorCancellationWithPendingOwnedBytesReadRetiresTheWholeRequest()
+            throws Exception {
+        CountDownLatch releaseServer = new CountDownLatch(1);
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress("127.0.0.1", 0), 8);
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        server.createContext("/", exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 4096);
+                exchange.getResponseBody().write('x');
+                exchange.getResponseBody().flush();
+                releaseServer.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        try {
+            String output = run("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val response = await http.request("GET", mail.value, []);
+                    val body = response.take_body();
+                    val Bytes first = await body.read_owned_bytes(1);
+                    stdio.println(first.byte_at(0));
+                    first.close();
+                    val pending = body.read_owned_bytes(64);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("http://127.0.0.1:%d/");
+                  await worker.get_done();
+                  stdio.println("retired");
+                  return;
+                }
+                """.formatted(port),
+                RuntimePermissions.denyAll().withAllowed(
+                        RuntimePermissions.Permission.NET,
+                        "127.0.0.1:" + port));
+
+            assertEquals("120\nretired\n", output);
+        } finally {
+            releaseServer.countDown();
+            server.stop(0);
+        }
+    }
+
+    @Test
     void responseCloseWinsAgainstLaterBodyExtraction()
             throws Exception {
         HttpServer server = HttpServer.create(
