@@ -441,7 +441,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<UUID, ActorIpcSessionV1> boundIpcRoutes = new java.util.HashMap<>();
     // Retain a bounded high-water mark for every issued route until runtime
     // shutdown. Never evict a tombstone to make a stale epoch valid again.
-    private record IpcRouteWatermark(long incarnation, long epoch, String codecCommitment) { }
+    private record IpcRouteWatermark(long incarnation, long epoch, String codecCommitment, boolean typed) { }
     private final Map<UUID, IpcRouteWatermark> ipcRouteWatermarks = new java.util.HashMap<>();
     private final ActorDataDecodeQuotaV1 ipcTransientQuota =
             new ActorDataDecodeQuotaV1(32L * 1024 * 1024, 64);
@@ -649,7 +649,7 @@ public final class ActorRuntime implements AutoCloseable {
             UUID logicalActorId, long incarnation, long routeEpoch,
             int slots, long bytes) {
         return openBoundIpcSessionInternal(artifact, logicalActorId, incarnation, routeEpoch,
-                slots, bytes, null, 0, 0);
+                slots, bytes, null, 0, 0, null, null);
     }
 
     /** New opt-in path; registry masks and profile are trusted host metadata. */
@@ -658,12 +658,25 @@ public final class ActorRuntime implements AutoCloseable {
             ActorIpcCodecProfileV1 profile, int allowed, int supported) {
         Objects.requireNonNull(profile, "codec profile");
         return openBoundIpcSessionInternal(artifact, logicalActorId, incarnation, routeEpoch,
-                slots, bytes, profile, allowed, supported);
+                slots, bytes, profile, allowed, supported, null, null);
+    }
+
+    /** Trusted launcher registration, no guest-visible API or decoder sniffing. */
+    ActorIpcSessionV1 openMessagePackBoundIpcSession(ActorArtifact<?> artifact,
+            UUID logicalActorId, long incarnation, long routeEpoch, int slots, long bytes,
+            ActorIpcCodecProfileV1 profile, int allowed, int supported,
+            MessagePackWireV2.Shape shape, MessagePackWireV2.DecodeLimits limits) {
+        Objects.requireNonNull(profile, "codec profile");
+        Objects.requireNonNull(shape, "compiler shape");
+        Objects.requireNonNull(limits, "decode limits");
+        return openBoundIpcSessionInternal(artifact, logicalActorId, incarnation, routeEpoch,
+                slots, bytes, profile, allowed, supported, shape, limits);
     }
 
     private ActorIpcSessionV1 openBoundIpcSessionInternal(ActorArtifact<?> artifact,
             UUID logicalActorId, long incarnation, long routeEpoch, int slots, long bytes,
-            ActorIpcCodecProfileV1 profile, int allowed, int supported) {
+            ActorIpcCodecProfileV1 profile, int allowed, int supported,
+            MessagePackWireV2.Shape shape, MessagePackWireV2.DecodeLimits limits) {
         requireSupervisorContext("open bounded IPC actor session");
         requireCallerRuntimeAffinity("open bounded IPC actor session");
         Objects.requireNonNull(logicalActorId, "logical actor ID");
@@ -688,16 +701,19 @@ public final class ActorRuntime implements AutoCloseable {
             if (prior != null && prior.codecCommitment() != null &&
                     !prior.codecCommitment().equals(commitment))
                 throw new SecurityException("IPC route codec profile cannot downgrade or change");
+            if (prior != null && prior.typed() && shape == null)
+                throw new SecurityException("typed IPC route cannot downgrade to metadata-only registration");
             // Existing artifact ownership and host capability checks are mandatory.
             ActorIpcSessionV1 session = openIpcSession(
                     artifact, logicalActorId, incarnation, routeEpoch);
             boolean registered = false;
             try {
                 if (profile != null) session.bindCodecProfile(profile, allowed, supported);
+                if (shape != null) session.bindMessagePackDecoder(shape, limits);
                 session.bindDataQueue(slots, bytes, ipcTransientQuota, ipcRetainedQuota);
                 // Burn the epoch before exposing the session; even a failed
                 // map insertion cannot make an issued generation reusable.
-                ipcRouteWatermarks.put(logicalActorId, new IpcRouteWatermark(incarnation, routeEpoch, commitment));
+                ipcRouteWatermarks.put(logicalActorId, new IpcRouteWatermark(incarnation, routeEpoch, commitment, shape != null));
                 boundIpcRoutes.put(logicalActorId, session);
                 registered = true;
                 return session;
