@@ -29,6 +29,36 @@ jobs:
           # Four actor-step fixtures + fourteen canonical demo fixtures.
           test "$(git ls-files 'src/test/resources/parity/actor-*.ores' | wc -l)" -eq 4
           test "$(git hash-object src/test/resources/parity/actor-coordinator-fork-join.ores)" = "80b8da1ba193b30137efa122d94f30b52dae7d46"
+          # Pin actual Java/Graal Context.eval test classes, not only report labels.
+          test "$(git rev-parse HEAD:src/test/java/dev/oreslang/SourceActorStepWorkflowExecutionTest.java)" = "9a0b96fd7ac05cfa85a1bf74cf80232ae1eebaaa"
+          test "$(git rev-parse HEAD:src/test/java/dev/oreslang/SourceActorDemoWorkflowExecutionTest.java)" = "9ef8be5ad1d3bf7d1c4f4441ea4ded60b070340b"
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          # Match the entire baseline/demo inventory to the JUnit-pinned SHA-1 Git blobs.
+          # Reject mode changes and symlink substitutions *before* Graal/Maven executes.
+          while read -r expected_blob file; do
+            test "$(git rev-parse "HEAD:$file")" = "$expected_blob"
+            test "$(git ls-tree HEAD -- "$file" | awk '{print $1 " " $2}')" = '100644 blob'
+          done <<'EXPECTED_GUEST_BLOBS'
+          80b8da1ba193b30137efa122d94f30b52dae7d46 src/test/resources/parity/actor-coordinator-fork-join.ores
+          40fd43e4b73bb29c9dd896d954ec2101bf36b1d1 src/test/resources/parity/actor-step-parallel.ores
+          f95baeb8fd8d0dec826c58bbe0ba88a3b444948f src/test/resources/parity/actor-step-rejection.ores
+          e8d9b1c0a870ff6a8d35ced1acf860f85fd7e42d src/test/resources/parity/actor-step-sequential.ores
+          f11f77b3216cfb2a05d6ea9d8a8b21c3bff56b62 src/test/resources/parity/step-demo-v1/agent-memory-quarantine.ores
+          058cf01e876faee1e27908039a5e81aea793346b src/test/resources/parity/step-demo-v1/agent-memory-workflow.ores
+          606f40654c35da572f8ef35fd71f53ed8a9e2508 src/test/resources/parity/step-demo-v1/bounded-retry.ores
+          b774babccb52ce4d51eff2d8262f6a5e6eeab0de src/test/resources/parity/step-demo-v1/cancel-before-work.ores
+          5c79f0f49593f501a525369c0f1b47b38ada8790 src/test/resources/parity/step-demo-v1/coordinator-state.ores
+          58e9bda1709c015bb7fa17693c8f08ad384a397c src/test/resources/parity/step-demo-v1/effect-receipt-ledger.ores
+          4319ec422a864feddf531eab7a80ade20f36fb5a src/test/resources/parity/step-demo-v1/order-rejected.ores
+          51ca94e1cbf983a495ed89f1531e9e740d50c34d src/test/resources/parity/step-demo-v1/order-saga-ambiguous.ores
+          cbf0650473414a7d53755f756633a07fe64f14c3 src/test/resources/parity/step-demo-v1/order-saga-compensated.ores
+          1d47ce2cfb929d43a7501fbc4bf2363ec2195fde src/test/resources/parity/step-demo-v1/order-saga-success.ores
+          82c9e08e95ab443e9ae5949466d322478ddec20a src/test/resources/parity/step-demo-v1/order-saga-void-unknown.ores
+          7fc2e538d980d7f925f5c6d8d81395533ff09e7a src/test/resources/parity/step-demo-v1/order-workflow.ores
+          f971404e7c33d95e9e92d88a76672f92bc23662c src/test/resources/parity/step-demo-v1/release-review-workflow.ores
+          2f99ce9bf194689659d49dbac57496cee022a759 src/test/resources/parity/step-demo-v1/release-waiting.ores
+          EXPECTED_GUEST_BLOBS
+          echo "NATIVE_GUEST_FIXTURE_PINS_VERIFIED cases=18"
           echo "NATIVE_GUEST_SOURCE_HEAD=$EXPECTED_SHA"
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
@@ -41,19 +71,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          java -version
-          mvn -B -ntp -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test
-          test -s target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
-          test -s target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
-          # Surefire can generate valid XML for partial test selection or skips.
-          # Require the exact expected executed case totals, and no errors/failures/skips.
-          for suite in \
-            target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml \
-            target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml; do
-            for zero in errors failures skipped; do
-              grep -Eq "$zero=\"0\"" "$suite"
-            done
-          done
-          grep -Eq 'tests="4"' target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
-          grep -Eq 'tests="14"' target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
-          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER cases=18'
+          test ! -L target
+          mkdir -p target
+          {
+            echo "source_head=$(git rev-parse HEAD)"
+            echo "source_tree=$(git rev-parse HEAD^{tree})"
+            echo "workflow_blob=$(git rev-parse HEAD:.github/workflows/actor-demo-native-guest.yml)"
+            echo "validator_blob=$(git rev-parse HEAD:scripts/VerifyNativeGuestReports.java)"
+            echo "validator_harness_blob=$(git rev-parse HEAD:scripts/test-native-guest-reports.mjs)"
+            java -version
+            mvn -version
+          } > target/native-guest-provenance.txt 2>&1
+          node scripts/test-native-guest-reports.mjs 2>&1 | tee target/native-guest-validator.log
+          # Discard any prior ignored/cached reports before executing Maven.
+          test ! -L target
+          rm -rf -- target/surefire-reports
+          test ! -e target/surefire-reports
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test 2>&1 | tee target/native-guest-maven.log
+          java scripts/VerifyNativeGuestReports.java target/surefire-reports 2>&1 | tee -a target/native-guest-validator.log
+      - name: Preserve compiler and guest evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: actor-native-guest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/surefire-reports/
+            target/native-guest-provenance.txt
+            target/native-guest-validator.log
+            target/native-guest-maven.log
+          if-no-files-found: warn
+          retention-days: 7
