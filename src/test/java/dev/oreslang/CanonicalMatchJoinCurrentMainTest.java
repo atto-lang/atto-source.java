@@ -16,9 +16,17 @@ final class CanonicalMatchJoinCurrentMainTest {
     }
 
     private static String run(String source, boolean optimize) throws Exception {
-        var program = optimize
-                ? OresCompiler.compileForBuildStrictAtto(source, BuildOptions.executable()).program()
-                : OresCompiler.parseAndTypeCheckStrictAtto(source);
+        dev.oreslang.ast.Ast.Program program;
+        if (optimize) {
+            var optimized = OresCompiler.compileForBuildStrictAtto(source, BuildOptions.executable());
+            var readmitted = dev.oreslang.types.TypeChecker.checkTypesWithDiagnostics(
+                    optimized.program(), true);
+            dev.oreslang.types.OwnershipChecker.check(
+                    readmitted.program(), readmitted.shortInferredAliases());
+            program = readmitted.program();
+        } else {
+            program = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        }
         var output = new ByteArrayOutputStream();
         String name = "canonical-match-join.ores";
         try (var lease = OresLanguage.openPrecheckedProgram(name, source, program);
