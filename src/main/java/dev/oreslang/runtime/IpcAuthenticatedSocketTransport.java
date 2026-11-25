@@ -69,6 +69,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private final Object sendGate = new Object();
     private final Object readGate = new Object();
     private final Object writeGate = new Object();
+    // Close intent must fence new receipt transactions before physical close.
+    private volatile boolean receiptReadsClosed;
 
     IpcAuthenticatedSocketTransport(
             Socket socket,
@@ -141,7 +143,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 physicalOwner,
                 (ignoredEnvelope, preparedFrame) -> {
                     synchronized (writeGate) {
-                        writeWireFrame(output, preparedFrame);
+                        try {
+                            writeWireFrame(output, preparedFrame);
+                        } catch (IOException | RuntimeException | Error failure) {
+                            receiptReadsClosed = true;
+                            throw failure;
+                        }
                     }
                 },
                 () -> {
@@ -151,7 +158,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                         // This is our private clone, never the broker's input.
                         // Destroy only after the lease has drained physical
                         // writers and entered authoritative close cleanup.
-                        Arrays.fill(this.macKey, (byte) 0);
+                        receiptReadsClosed = true;
+                        // Socket close unblocks admitted readers before key erasure.
+                        // No completion callback runs under readGate.
+                        synchronized (readGate) {
+                            Arrays.fill(this.macKey, (byte) 0);
+                        }
                     }
                 },
                 this.cleanupScheduler);
@@ -228,6 +240,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     IpcReceiptCorrelation.Stage readVerifiedReceipt() throws IOException {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt read");
         try {
+            if (receiptReadsClosed) throw new IOException("IPC receipt read after close request");
             // TCP receipt order is protocol order. Read, authenticate and
             // advance the ledger under one receive gate, but NEVER complete
             // a user-observable future while holding it: dependent callbacks
@@ -235,6 +248,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             final DecodedReceipt receipt;
             final IpcReceiptCompletionBridge.PreparedDelivery terminal;
             synchronized (readGate) {
+                if (receiptReadsClosed) throw new IOException("IPC receipt read after close request");
                 byte[] frame = readReceiptWireFrame(input);
                 receipt = decodeReceiptFrame(frame, connectionBinding, macKey);
                 if (receipt.physicalGeneration() != physicalGeneration) {
@@ -259,6 +273,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     void requestClose() {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC transport close request");
+        receiptReadsClosed = true;
         // Fence new sends first. If a physical write is still pinned, submit
         // the abort to the same bounded host cleanup domain; never run
         // Socket.close() on the requesting/actor carrier.
