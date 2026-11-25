@@ -1,0 +1,36 @@
+name: Java contextual import resolver tests (not guest parity)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/imports/ContextualImportPath.java'
+      - 'src/test/java/dev/oreslang/ContextualImportPathTest.java'
+      - '.github/workflows/contextual-import-path.yml'
+      - 'pom.xml'
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact head and tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD HEAD^{tree}
+          git diff --quiet
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          test -z "$(git ls-files --others --exclude-standard)"
+      - name: Execute JUnit resolver tests
+        run: |
+          set -eu
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          mvn -B -Dtest=ContextualImportPathTest -Dsurefire.failIfNoSpecifiedTests=true test
