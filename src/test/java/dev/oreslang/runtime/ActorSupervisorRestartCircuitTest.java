@@ -188,12 +188,12 @@ final class ActorSupervisorRestartCircuitTest {
                 Strategy.ONE_FOR_ONE, 110).kind(),
                 "restart exactly at the half-open cutoff still counts");
 
-        // The escalated generation is terminal. Start a new externally admitted
-        // generation only to prove the old budget entry expires after cutoff.
-        c.admitGeneration(0, 3, 111);
-        assertEquals(DecisionKind.RESTART, c.onExit(
-                0, 3, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
-                Strategy.ONE_FOR_ONE, 111).kind());
+        // History still expires, but expiry is not parent recovery authority.
+        assertEquals(0, c.snapshot(111).restartsInWindow());
+        assertTrue(c.escalated());
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(0, 3, 111));
+        assertEquals(2L, c.generation(0));
     }
 
     @Test
@@ -229,6 +229,10 @@ final class ActorSupervisorRestartCircuitTest {
         assertFalse(c.restartPending(0));
         assertFalse(c.restartPending(1));
         assertEquals(0, c.snapshot(1).acceptedReplacementRestarts());
+        assertTrue(c.escalated());
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(0, 2, 1_002));
+        assertEquals(0, c.snapshot(1_002).acceptedReplacementRestarts());
     }
 
     @Test
@@ -319,6 +323,20 @@ final class ActorSupervisorRestartCircuitTest {
                 "escalation must not erase the already-admitted restart episode");
         assertTrue(c.restartPending(3));
         assertTrue(c.restartPending(4));
+        assertTrue(c.escalated());
+        assertTrue(c.acknowledgeQuiesced(4, 5, 12));
+        // Even the formerly authorized younger episode cannot start after
+        // escalation. Keep its physical cleanup receipts for the parent.
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(3, 20, 12));
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(1, 20, 12));
+        var later = c.onExit(0, 1, RestartPolicy.PERMANENT,
+                ExitClass.ABNORMAL, Strategy.ONE_FOR_ONE, 13);
+        assertEquals(DecisionKind.ESCALATE, later.kind());
+        assertEquals(0, later.chargedRestarts());
+        assertEquals(2, c.snapshot(13).pendingReplacements());
+        assertEquals(2L, c.snapshot(13).acceptedReplacementRestarts());
     }
 
     @Test
