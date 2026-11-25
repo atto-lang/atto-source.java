@@ -10,7 +10,7 @@ final class ContextualImportPathTest {
             {null, "pkg.config", "config"},
             {"network.http", "self.utils", "network.http.utils"},
             {"network.http", "super.config", "network.config"},
-            {"network.http", "super.super.shared", "shared"},
+            {"network.http", "super.super.common", "common"},
             {null, "pkg.a.b.c.d.e.f.g", "a.b.c.d.e.f.g"},
             {"network.http", "pkg.config", "config"}
         };
@@ -29,6 +29,8 @@ final class ContextualImportPathTest {
             {"network.http", "self"},
             {"network.http", "super"},
             {"network.http.client", "super.super"},
+            {null, "pkg.shared"},
+            {"network.shared", "super.config"},
             {null, "self.utils"},
             {null, "super.config"},
             {"network.http", "super.super.super.shared"},
