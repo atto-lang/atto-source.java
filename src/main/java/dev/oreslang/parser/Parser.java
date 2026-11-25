@@ -49,6 +49,94 @@ public final class Parser {
     // Global conservatism is deliberate until typed-HIR symbol ownership is
     // available: preserving ordinary CallExpr beats inventing guest authority.
     private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
+    // Phase 1a: private file-root class aliases, registered before ordinary declarations.
+    // No runtime descriptor, textual rewrite, new AST kind, or imported authority.
+    private final java.util.Set<String> localClassKeywords = new java.util.HashSet<>();
+    private static final java.util.Set<String> RESERVED_CUSTOM_KINDS = java.util.Set.of(
+            "abstract",
+            "activity",
+            "actor",
+            "alias",
+            "annotation",
+            "ashr",
+            "capability",
+            "case",
+            "class",
+            "component",
+            "constructor",
+            "container",
+            "contract",
+            "critical",
+            "declare",
+            "derive",
+            "dimension",
+            "duplex",
+            "enum",
+            "event",
+            "export",
+            "extension",
+            "final",
+            "first",
+            "fnc",
+            "forward",
+            "function",
+            "grain",
+            "import",
+            "infer",
+            "int",
+            "interface",
+            "internal",
+            "isolated",
+            "kernel",
+            "keyword",
+            "macro",
+            "mailman",
+            "maybe",
+            "method",
+            "model",
+            "module",
+            "mtd",
+            "namespace",
+            "panics",
+            "pipe",
+            "private",
+            "protected",
+            "protocol",
+            "proxy",
+            "pub",
+            "raises",
+            "readable",
+            "receives",
+            "record",
+            "requires",
+            "routine",
+            "rpipe",
+            "scheduler",
+            "sends",
+            "service",
+            "shared",
+            "singleton",
+            "state",
+            "static",
+            "std",
+            "struct",
+            "supervisor",
+            "suspend",
+            "task",
+            "throws",
+            "trait",
+            "transform",
+            "tuple",
+            "type",
+            "unit",
+            "untrusted",
+            "use",
+            "virtual",
+            "when",
+            "with",
+            "workflow",
+            "writable");
+    private static final int MAX_LOCAL_KEYWORDS = 128;
     private int current;
     // A long chain of contextual ownership prefixes must not exhaust the JVM
     // call stack before the compiler can issue a deterministic parse error.
@@ -484,6 +572,13 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (canonicalAttoSource && isContextualIdentifier("keyword") && checkNext(IDENT)) {
+                    if (!rootDeclarations.isEmpty() || !modules.isEmpty() || !rootForwards.isEmpty()) {
+                        throw error(peek(), "KIND_HEADER_REQUIRED: phase 1a descriptors precede all ordinary declarations");
+                    }
+                    parseLocalClassKeyword(modifiers, annotations);
+                    continue;
+                }
                 if (isContextualIdentifier("singleton")) {
                     Token keyword = advance();
                     if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
@@ -549,6 +644,19 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
+                // Only the contextual declaration head is changed. Ordinary class
+                // parsing/semantic validation/codegen still owns every member.
+                if (canonicalAttoSource && check(IDENT) && checkNext(IDENT)
+                        && localClassKeywords.contains(peek().lexeme())) {
+                    advance();
+                    modifiers = mergeModifiers(modifiers, parseModifiers());
+                    rejectCallableStructuralAnnotation(annotations, "class declarations");
+                    validateCopyPolicyClassAnnotations(annotations);
+                    validateClassModifiers(modifiers);
+                    rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract,
+                            modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
+                    continue;
+                }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
                 // denote the same file-root callable, with identical modifiers.
                 if (check(FNC) || check(ROUTINE) || looksLikeReturnFirstCallableHead()) {
@@ -576,6 +684,33 @@ public final class Parser {
         return StaticProxySynthesis.expand(
                 new Ast.Program(namespace, imports, modules, exports),
                 staticProxyTargets, staticProxyInterceptors);
+    }
+
+    private void parseLocalClassKeyword(Modifiers modifiers, List<Ast.Annotation> annotations) {
+        Token at = advance(); // contextual keyword
+        validateOnlyVisibilityModifiers(modifiers, "keyword descriptors");
+        if (modifiers.visibilitySeen || !annotations.isEmpty()) {
+            throw error(at, "KIND_VISIBILITY_UNSUPPORTED: phase 1a descriptors are private and unannotated");
+        }
+        Token name = consume(IDENT, "expected contextual declaration kind name");
+        if (RESERVED_CUSTOM_KINDS.contains(name.lexeme())) {
+            throw error(name, "KIND_RESERVED: built-in or contextual declaration name");
+        }
+        if (localClassKeywords.contains(name.lexeme())) {
+            throw error(name, "KIND_DUPLICATE: duplicate declaration kind");
+        }
+        if (localClassKeywords.size() >= MAX_LOCAL_KEYWORDS) {
+            throw error(name, "KIND_BUDGET: too many file-local descriptors");
+        }
+        consume(AS, "expected 'as' before keyword base kind");
+        if (!match(CLASS)) {
+            throw error(peek(), "KIND_BASE_UNSUPPORTED: phase 1a supports class only");
+        }
+        if (!check(END)) {
+            throw error(peek(), "KIND_REQUIREMENTS_UNSUPPORTED: contract resolution is not implemented in phase 1a");
+        }
+        consume(END, "expected 'end' after descriptor");
+        localClassKeywords.add(name.lexeme());
     }
 
     /** `export pub Foo;` and `export pub[pkg] class Bar;` are file-level declarations. */
