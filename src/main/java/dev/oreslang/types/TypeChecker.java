@@ -6318,6 +6318,33 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    /**
+     * Async task-local Channel<T> handles are synchronized, Send-safe
+     * capabilities. The canonical actor/data trait lattice still deliberately
+     * rejects channels; only a *typed async Channel payload* may contain
+     * another Channel handle, and only when every element is recursively
+     * concrete and task-Send. Actor callable boundaries are unchanged.
+     *
+     * A tuple is a finite sequence shape, not an arbitrary user nominal type.
+     * No list-of-handles, borrowed/unknown, Rc, mutex, function, actor
+     * authority or shadowed Channel admission is added by this seam.
+     */
+    private boolean isAsyncTaskChannelPayloadSafe(Type type) {
+        if (type instanceof Named named && named.name().equals("Channel")) {
+            return findClass("Channel") == null
+                    && named.arguments().size() == 1
+                    && isAsyncTaskChannelPayloadSafe(named.arguments().getFirst());
+        }
+        if (type instanceof Tuple tuple) {
+            if (tuple.elements().isEmpty()) return false;
+            for (Type element : tuple.elements()) {
+                if (!isAsyncTaskChannelPayloadSafe(element)) return false;
+            }
+            return true;
+        }
+        return isSendSafe(type, new LinkedHashSet<>(), Map.of());
+    }
+
     private void validateAsyncBoundaryType(
             Type type,
             boolean returnPosition,
@@ -6328,8 +6355,9 @@ public final class TypeChecker {
         // its payload is concrete, owned and task-safe. Actor boundaries retain
         // their stricter rule and continue to reject Channel<T> entirely.
         if (type instanceof Named named && named.name().equals("Channel")
+                && findClass("Channel") == null
                 && named.arguments().size() == 1
-                && isSendSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isAsyncTaskChannelPayloadSafe(named.arguments().getFirst())) {
             return;
         }
         if (type == Primitive.VOID

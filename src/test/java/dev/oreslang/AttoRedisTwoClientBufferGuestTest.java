@@ -86,7 +86,18 @@ final class AttoRedisTwoClientBufferGuestTest {
     private interface Scenario {
         void run(Socket first, Socket second) throws Exception;
     }
+    @FunctionalInterface
+    private interface BeforeSecondConnect {
+        void run(Socket first) throws Exception;
+    }
+
     private static void runGuest(Scenario scenario) throws Exception {
+        runGuest(null, scenario);
+    }
+
+    private static void runGuest(
+            BeforeSecondConnect beforeSecond,
+            Scenario scenario) throws Exception {
         int port = freePort();
         String original = source();
         String needle = "network.listen_async(\"127.0.0.1\", 16399)";
@@ -108,12 +119,53 @@ final class AttoRedisTwoClientBufferGuestTest {
                     throw new RuntimeException(failure);
                 }
             });
-            try (Socket first = connect(run, port);
-                 Socket second = connect(run, port)) {
-                scenario.run(first, second);
+            try {
+                try (Socket first = connect(run, port)) {
+                    if (beforeSecond != null) {
+                        // Must complete an actual RESP2 response before the
+                        // second TCP connection exists.
+                        beforeSecond.run(first);
+                    }
+                    try (Socket second = connect(run, port)) {
+                        scenario.run(first, second);
+                    }
+                }
+                run.get(15, TimeUnit.SECONDS);
+            } catch (Exception wireFailure) {
+                // A connection reset often masks the actual failed Atto task.
+                // Keep the test fail-closed and report the guest exception.
+                try {
+                    run.get(2, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.ExecutionException guestFailure) {
+                    throw new AssertionError(
+                            "Real Atto two-client guest failed before completing RESP2",
+                            guestFailure.getCause());
+                } catch (java.util.concurrent.TimeoutException pending) {
+                    wireFailure.addSuppressed(pending);
+                }
+                throw wireFailure;
             }
-            run.get(15, TimeUnit.SECONDS);
         }
+    }
+
+    @Test
+    void firstClientReceivesReplyBeforeSecondTcpConnects() throws Exception {
+        byte[] key = new byte[]{0, (byte) 255, 10};
+        byte[] value = new byte[]{13, 0, (byte) 128, 10};
+        runGuest(first -> {
+            first.getOutputStream().write(command("SET", key, value));
+            expect(first, ascii("+OK\r\n"));
+            first.getOutputStream().write(command("GET", key));
+            expect(first, bulk(value));
+        }, (a, b) -> {
+            b.getOutputStream().write(command("GET", key));
+            expect(b, bulk(value));
+            a.getOutputStream().write(command("QUIT"));
+            expect(a, ascii("+OK\r\n"));
+            b.getOutputStream().write(command("QUIT"));
+            expect(b, ascii("+OK\r\n"));
+        });
+        System.out.println("ATTO_REDIS_NO_SECOND_ACCEPT_HOL=EXECUTED_PASS");
     }
 
     @Test
@@ -185,7 +237,7 @@ final class AttoRedisTwoClientBufferGuestTest {
         String original = source();
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(original));
         String wrongPayload = original.replace(
-                "writech requests, (client_id, kind, key, value);",
+                "writech requests, (client_id, request_id, kind, key, value);",
                 "writech requests, \"wrong payload\";");
         assertNotEquals(original, wrongPayload);
         assertThrows(RuntimeException.class,
