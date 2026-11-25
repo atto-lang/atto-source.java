@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -236,6 +237,37 @@ final class ActorDeclarationLexicalBoundaryTest {
                         end
                         """)));
         assertTrue(typeFailure.getMessage().contains("same-file type alias 'Payload'"), typeFailure.getMessage());
+    }
+
+    @Test
+    void actorMayUseOnlyExplicitlyLinkedPublicOrdinaryType() {
+        Ast.ClassDecl payload = (Ast.ClassDecl) Parser.parse("""
+                define pub class Payload as end
+                """).modules().get(0).declarations().get(0);
+        String worker = """
+                define actor Worker as
+                  pub inspect(Payload payload): void { return; }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypesWithImportedClasses(
+                Parser.parse("import class Payload from \"./payload\";\n" + worker),
+                Map.of("Payload", payload), Map.of()));
+
+        // A linked declaration without a source import must not grant authority.
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithImportedClasses(
+                        Parser.parse(worker), Map.of("Payload", payload), Map.of()));
+
+        // A same-file declaration must never acquire imported status by name.
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithImportedClasses(
+                        Parser.parse("import class Payload from \"./payload\";\n"
+                                + "define class Payload as end\n" + worker),
+                        Map.of("Payload", payload), Map.of()));
+        IllegalArgumentException sameFile = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("define class Payload as end\n" + worker)));
+        assertTrue(sameFile.getMessage().contains("same-file type 'Payload'"),
+                sameFile.getMessage());
     }
 
     @Test
