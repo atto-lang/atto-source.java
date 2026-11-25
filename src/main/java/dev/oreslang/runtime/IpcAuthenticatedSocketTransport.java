@@ -71,6 +71,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private final Object writeGate = new Object();
     // Close intent must fence new receipt transactions before physical close.
     private volatile boolean receiptReadsClosed;
+    private final Object encodingKeyGate = new Object();
 
     IpcAuthenticatedSocketTransport(
             Socket socket,
@@ -152,16 +153,13 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     }
                 },
                 () -> {
-                    try {
-                        socket.close();
-                    } finally {
-                        // This is our private clone, never the broker's input.
-                        // Destroy only after the lease has drained physical
-                        // writers and entered authoritative close cleanup.
-                        receiptReadsClosed = true;
-                        // Socket close unblocks admitted readers before key erasure.
-                        // No completion callback runs under readGate.
-                        synchronized (readGate) {
+                    receiptReadsClosed = true;
+                    // If close throws, the lease quarantines this generation.
+                    // Do not wait on a potentially blocked reader or erase its
+                    // key until an explicit successful close retry.
+                    socket.close();
+                    synchronized (readGate) {
+                        synchronized (encodingKeyGate) {
                             Arrays.fill(this.macKey, (byte) 0);
                         }
                     }
@@ -210,8 +208,19 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         // ambiguous remote-delivery state or consume a correlation slot.
         final byte[] preparedFrame;
         try {
-            preparedFrame = encodeDataFrame(
-                    message, body, physicalGeneration, connectionBinding, macKey);
+            // Do not race MAC encoding against key retirement. This lock
+            // covers memory-only work, never physical socket I/O or callbacks.
+            synchronized (encodingKeyGate) {
+                if (receiptReadsClosed) {
+                    return new SendSubmission(CompletableFuture.completedFuture(
+                            IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE)
+                            .minimalCompletionStage(),
+                            new IpcTransportSessionLease.PreDispatchRejectedException(
+                                    "closed IPC transport"));
+                }
+                preparedFrame = encodeDataFrame(
+                        message, body, physicalGeneration, connectionBinding, macKey);
+            }
         } catch (IOException impossibleMemoryEncodingFailure) {
             throw new IllegalStateException(
                     "in-memory authenticated IPC frame encoding failed",
@@ -369,8 +378,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
 
     /** Package-local audit hook: exposes no key bytes. */
     boolean keyCloneZeroized() {
-        for (byte value : macKey) if (value != 0) return false;
-        return true;
+        synchronized (encodingKeyGate) {
+            for (byte value : macKey) if (value != 0) return false;
+            return true;
+        }
     }
 
     @Override
