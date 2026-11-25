@@ -648,6 +648,22 @@ public final class ActorRuntime implements AutoCloseable {
     ActorIpcSessionV1 openBoundIpcSession(ActorArtifact<?> artifact,
             UUID logicalActorId, long incarnation, long routeEpoch,
             int slots, long bytes) {
+        return openBoundIpcSessionInternal(artifact, logicalActorId, incarnation, routeEpoch,
+                slots, bytes, null, 0, 0);
+    }
+
+    /** New opt-in path; registry masks and profile are trusted host metadata. */
+    ActorIpcSessionV1 openCodecBoundIpcSession(ActorArtifact<?> artifact,
+            UUID logicalActorId, long incarnation, long routeEpoch, int slots, long bytes,
+            ActorIpcCodecProfileV1 profile, int allowed, int supported) {
+        Objects.requireNonNull(profile, "codec profile");
+        return openBoundIpcSessionInternal(artifact, logicalActorId, incarnation, routeEpoch,
+                slots, bytes, profile, allowed, supported);
+    }
+
+    private ActorIpcSessionV1 openBoundIpcSessionInternal(ActorArtifact<?> artifact,
+            UUID logicalActorId, long incarnation, long routeEpoch, int slots, long bytes,
+            ActorIpcCodecProfileV1 profile, int allowed, int supported) {
         requireSupervisorContext("open bounded IPC actor session");
         requireCallerRuntimeAffinity("open bounded IPC actor session");
         Objects.requireNonNull(logicalActorId, "logical actor ID");
@@ -671,6 +687,7 @@ public final class ActorRuntime implements AutoCloseable {
                     artifact, logicalActorId, incarnation, routeEpoch);
             boolean registered = false;
             try {
+                if (profile != null) session.bindCodecProfile(profile, allowed, supported);
                 session.bindDataQueue(slots, bytes, ipcTransientQuota, ipcRetainedQuota);
                 // Burn the epoch before exposing the session; even a failed
                 // map insertion cannot make an issued generation reusable.
