@@ -299,6 +299,19 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
      * violation poisons the whole session and destroys host-side traffic keys.
      */
     public synchronized Frame acceptWorkerFrame(byte[] wire) {
+        // After DATA binding this is the trusted physical CONTROL path.
+        // Reject an apparent wrong lane or oversize before cloning/MAC work;
+        // the untrusted lane byte grants no authority, it can only reject.
+        if (dataQueue != null) {
+            requireNotTerminal("accept IPC CONTROL");
+            Objects.requireNonNull(wire, "wire");
+            if (wire.length < MIN_FRAME_BYTES ||
+                    wire.length > HEADER_BYTES + MAX_CONTROL_PAYLOAD_BYTES + HMAC_BYTES ||
+                    (wire[LANE_OFFSET] & 0xff) != Lane.CONTROL.code()) {
+                poison();
+                throw new ProtocolException(Reason.STATE, "invalid frame on bound CONTROL transport");
+            }
+        }
         return acceptWorkerFrameInternal(wire, false);
     }
 
@@ -395,7 +408,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     synchronized void bindDataQueue(int slots, long bytes,
             ActorDataDecodeQuotaV1 transientBudget, ActorDataDecodeQuotaV1 retainedBudget) {
         requireNotTerminal("bind IPC DATA queue");
-        if (dataQueue != null || slots <= 0 || slots > 4096 || bytes <= 0 ||
+        if (dataQueue != null || nextWorkerDataSequence != 1L || slots <= 0 || slots > 4096 || bytes <= 0 ||
                 bytes > 16L * MAX_PAYLOAD_BYTES || transientBudget == null ||
                 retainedBudget == null || transientBudget == retainedBudget)
             throw new IllegalArgumentException("invalid DATA queue binding");
