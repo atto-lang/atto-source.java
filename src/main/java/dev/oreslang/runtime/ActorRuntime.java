@@ -3460,7 +3460,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorSupervisor supervisor;
         private final int memberLimit;
         private final int eventTopicLimit;
-        private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        // One opaque identity per live membership; duplicate join retains
+        // identity, leave/rejoin allocates a fresh one. No retired tombstones.
+        private final Map<ActorId, Object> members = new ConcurrentHashMap<>();
         // Explicitly lifecycle-managed workers, distinct from cooperating
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
@@ -3506,7 +3508,7 @@ public final class ActorRuntime implements AutoCloseable {
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
-            if (creator != null) members.add(creator);
+            if (creator != null) members.put(creator, new Object());
         }
 
         public ActorGroupId id() { return id; }
@@ -3539,7 +3541,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public Set<ActorId> memberIds() {
             requireObserver("inspect ActorGroup membership");
-            return Set.copyOf(members);
+            return Set.copyOf(members.keySet());
         }
 
         /**
@@ -3675,7 +3677,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (groupMembershipLock) {
                 synchronized (authorityLock) {
                     requireOpen();
-                    epoch = installColumnarEpochLocked(new ArrayList<>(members), fields);
+                    epoch = installColumnarEpochLocked(new ArrayList<>(members.keySet()), fields);
                     empty = epoch.emptySnapshot();
                 }
             }
@@ -3711,7 +3713,7 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         ActorCell<?> cell = actors.get(ref.id());
                         if (cell == null || cell.ref != ref || cell.stopped.get()
-                                || !members.contains(ref.id())) {
+                                || !members.containsKey(ref.id())) {
                             throw new IllegalStateException(
                                     "batch recipient is not a live group member");
                         }
@@ -3985,7 +3987,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell == null || cell.stopped.get()) {
                         throw new IllegalStateException("actor is not alive: " + actorId);
                     }
-                    if (members.contains(actorId)) return;
+                    if (members.containsKey(actorId)) return;
                     if (members.size() >= memberLimit) {
                         throw new IllegalStateException(
                                 "ActorGroup member limit exceeded: maximum " + memberLimit);
@@ -3999,7 +4001,7 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new IllegalStateException(
                                 "actor ActorGroup membership limit exceeded: maximum " + limit);
                     }
-                    members.add(actorId);
+                    members.put(actorId, new Object());
                     joined.add(id);
                     if (groupClosed.get() || cell.stopped.get()) {
                         members.remove(actorId);
@@ -4041,7 +4043,7 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(ref, "ref");
             requireObserver("inspect ActorGroup membership");
             if (!ref.ownedBy(ActorRuntime.this)) return false;
-            return members.contains(ref.id());
+            return members.containsKey(ref.id());
         }
 
         private void requireObserver(String operation) {
@@ -4054,7 +4056,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         boolean isMember(ActorId actorId) {
-            return !groupClosed.get() && members.contains(actorId);
+            return !groupClosed.get() && members.containsKey(actorId);
         }
 
         /*
@@ -4067,6 +4069,26 @@ public final class ActorRuntime implements AutoCloseable {
          *
          * No lock/capability escapes to source guests or host callers.
          */
+        // Package-private trusted runtime proof only; never a source value.
+        record EventMembership(ActorId actor, Object incarnation) {}
+
+        EventMembership captureEventMembership(String operation) {
+            synchronized (groupMembershipLock) {
+                ActorId actor = currentMemberOrSystem(operation);
+                if (actor == null) return null;
+                Object incarnation = members.get(actor);
+                if (incarnation == null || groupClosed.get()) {
+                    throw new SecurityException("ActorGroup membership ended before " + operation);
+                }
+                return new EventMembership(actor, incarnation);
+            }
+        }
+
+        boolean hasEventMembership(EventMembership proof) {
+            return proof != null && !groupClosed.get()
+                    && members.get(proof.actor()) == proof.incarnation();
+        }
+
         <T> T withEventAdmissionMembershipFence(Supplier<T> publication) {
             Objects.requireNonNull(publication, "publication");
             synchronized (groupMembershipLock) {
@@ -4136,7 +4158,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void leaveIdUnderCompletionFence(ActorId actorId) {
             ActorGroupColumnarEpoch revoked = null;
             synchronized (groupMembershipLock) {
-                if (!members.remove(actorId)) return;
+                if (members.remove(actorId) == null) return;
                 Set<ActorGroupId> joined = groupMemberships.get(actorId);
                 if (joined != null) {
                     joined.remove(id);
@@ -4206,7 +4228,7 @@ public final class ActorRuntime implements AutoCloseable {
             // room close frees membership quota without stopping unrelated
             // members or tearing down their other room subscriptions.
             synchronized (groupMembershipLock) {
-                for (ActorId member : members) {
+                for (ActorId member : members.keySet()) {
                     Set<ActorGroupId> joined = groupMemberships.get(member);
                     if (joined != null) {
                         joined.remove(id);
