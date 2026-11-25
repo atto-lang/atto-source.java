@@ -6829,6 +6829,9 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.TaskExpr task) {
+            if (task.payloadType() != null) {
+                return checkTaskExpression(task, resolve(task.payloadType(), generics, self), env, generics, self);
+            }
             // A value-producing task needs contextual Future<T> information so
             // every return path can be checked without guessing a result type.
             // A no-value task is unambiguously Future<void>.
@@ -7794,6 +7797,11 @@ public final class TypeChecker {
                 && expected instanceof Named future
                 && future.name().equals("Future")
                 && future.arguments().size() == 1) {
+            if (task.payloadType() != null) {
+                Type actual = typeOf(task, env, generics, self);
+                requireAssignable(actual, future, "declared task payload");
+                return actual;
+            }
             Type result = future.arguments().getFirst();
             checkTaskExpression(task, result, env, generics, self);
             return future;
