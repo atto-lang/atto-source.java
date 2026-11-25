@@ -7869,7 +7869,8 @@ public final class OresEvalRootNode extends RootNode {
                 // The new explicit class plan guarantees a separate owned object,
                 // including nested class/Array fields. Trivial immutable Copy values
                 // preserve their existing value representation.
-                case "copy", "copy_deep" -> copyOwnedValueV1(value);
+                case "copy", "copy_deep" -> copyOwnedValueV1(value, false);
+                case "copy_shallow" -> copyOwnedValueV1(value, true);
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + operation + "'");
             };
@@ -7880,7 +7881,7 @@ public final class OresEvalRootNode extends RootNode {
          * OwnershipChecker. No reflection, guest callbacks, implicit constructors,
          * shallow map copy or user-defined copy() calls are permitted in v1.
          */
-        private Object copyOwnedValueV1(Object value) {
+        private Object copyOwnedValueV1(Object value, boolean shallow) {
             // An actor object currently lacks runtime provenance proving that
             // the source and destination allocations belong to the same actor
             // heap. Do not duplicate it under an evaluator-global owner tag.
@@ -7891,7 +7892,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof TypedGuestSequence sequence) {
                 dev.oreslang.types.DerivedCopyPlanV1.Plan plan =
-                        dev.oreslang.types.DerivedCopyPlanV1.derive(sequence.type, this::findClass);
+                        shallow
+                                ? dev.oreslang.types.DerivedCopyPlanV1.deriveShallow(sequence.type, this::findClass)
+                                : dev.oreslang.types.DerivedCopyPlanV1.derive(sequence.type, this::findClass);
                 if (!(plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Sequence)) {
                     throw new IllegalArgumentException("E_COPY_UNPROVEN: typed sequence copy plan missing");
                 }
@@ -7907,8 +7910,11 @@ public final class OresEvalRootNode extends RootNode {
                         "E_COPY_DOMAIN: cannot duplicate a foreign compiler owner's object");
             }
             dev.oreslang.types.DerivedCopyPlanV1.Plan plan =
-                    dev.oreslang.types.DerivedCopyPlanV1.derive(
-                            Ast.TypeRef.simple(original.klass.name()), this::findClass);
+                    shallow
+                            ? dev.oreslang.types.DerivedCopyPlanV1.deriveShallow(
+                                    Ast.TypeRef.simple(original.klass.name()), this::findClass)
+                            : dev.oreslang.types.DerivedCopyPlanV1.derive(
+                                    Ast.TypeRef.simple(original.klass.name()), this::findClass);
             if (!(plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Instance)) {
                 throw new IllegalArgumentException("E_COPY_UNPROVEN: expected class copy plan");
             }
