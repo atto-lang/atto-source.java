@@ -38,7 +38,7 @@ public final class OresKeyedMap<K, V> {
             SymbolPropertyKeyCodec.MAX_KEY_SET_WIRE_BYTES;
 
     public enum KeyDomain {
-        STRING, SYMBOL, STRING_OR_SYMBOL
+        STRING, SYMBOL, STRING_OR_SYMBOL, BYTES
     }
 
     /**
@@ -46,7 +46,7 @@ public final class OresKeyedMap<K, V> {
      * protects dynamic/foreign callers. ANY is explicitly dynamic only.
      */
     public enum ValueDomain {
-        ANY, INT, STRING, SYMBOL, BOOL
+        ANY, INT, STRING, SYMBOL, BOOL, BYTES
     }
 
     /**
@@ -173,6 +173,10 @@ public final class OresKeyedMap<K, V> {
                 Objects.requireNonNull(validator, "entry validator"));
     }
 
+    public static <V> OresKeyedMap<OresBytes, V> byteKeys(ValueDomain values) {
+        return new OresKeyedMap<>(KeyDomain.BYTES, values, NO_ENTRY_VALIDATOR);
+    }
+
     public KeyDomain keyDomain() {
         return domain;
     }
@@ -232,6 +236,7 @@ public final class OresKeyedMap<K, V> {
             case STRING -> key instanceof String;
             case SYMBOL -> key instanceof OresSymbol;
             case STRING_OR_SYMBOL -> key instanceof String || key instanceof OresSymbol;
+            case BYTES -> key instanceof OresBytes;
         };
         if (!valid) {
             throw new IllegalArgumentException("key is incompatible with Map key domain " + domain);
@@ -284,6 +289,7 @@ public final class OresKeyedMap<K, V> {
             case STRING -> value instanceof String;
             case SYMBOL -> value instanceof OresSymbol;
             case BOOL -> value instanceof Boolean;
+            case BYTES -> value instanceof OresBytes;
         };
         if (!valid) {
             throw new IllegalArgumentException(
@@ -315,7 +321,9 @@ public final class OresKeyedMap<K, V> {
         // The canonical tagged-key codec defines the identical logical
         // String/PROCESS/STABLE footprint used by bulk serialization. Use its
         // strict size preflight rather than allocating a throwaway wire frame.
-        return SymbolPropertyKeyCodec.encodedWireLength(key);
+        return key instanceof OresBytes bytes
+                ? bytes.wireKeyBytes()
+                : SymbolPropertyKeyCodec.encodedWireLength(key);
     }
 
     public synchronized V put(K key, V value) {

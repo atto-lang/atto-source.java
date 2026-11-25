@@ -1611,11 +1611,11 @@ public final class OwnershipChecker {
                 boolean primitiveKey = !key.inferArguments()
                         && key.arguments().isEmpty()
                         && (key.name().equals("string") || key.name().equals("String")
-                                || key.name().equals("Symbol"));
+                                || key.name().equals("Symbol") || key.name().equals("Bytes"));
                 boolean primitiveValue = !value.inferArguments()
                         && value.arguments().isEmpty()
                         && java.util.Set.of(
-                                "int", "bool", "Bool", "string", "String", "Symbol")
+                                "int", "bool", "Bool", "string", "String", "Symbol", "Bytes")
                                 .contains(value.name());
                 if (!primitiveKey || !primitiveValue) {
                     throw error("unproved typed empty Map key/value domain " + witness);
@@ -1714,6 +1714,21 @@ public final class OwnershipChecker {
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr bytesCall
+                && bytesCall.receiver() instanceof Ast.NameExpr bytesNamespace
+                && bytesNamespace.name().equals("Bytes") && scope.lookup("Bytes") == null
+                && findClass("Bytes") == null) {
+            if (bytesCall.member().equals("from_list") && call.arguments().size() == 1) {
+                // The Bytes constructor snapshots the list; it never takes an
+                // alias of mutable source backing or transports a borrow.
+                checkExpr(call.arguments().getFirst(), scope, false);
+                return new ValueInfo(Ast.TypeRef.simple("Bytes"), ValueKind.COPY, null);
+            }
+            if (bytesCall.member().equals("empty") && call.arguments().isEmpty()) {
+                return new ValueInfo(Ast.TypeRef.simple("Bytes"), ValueKind.COPY, null);
+            }
+            throw error("Bytes requires from_list(List<int>) or empty()");
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
@@ -5028,7 +5043,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void",
+                    "bool","Bool","string","String","Bytes","void",
                     "SelectCase","SelectSet","OptionUnwrapError"
                     -> type.arguments().isEmpty();
             case "SharedMutex", "Channel" -> type.arguments().size() == 1;

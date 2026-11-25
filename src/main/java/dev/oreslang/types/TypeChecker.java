@@ -42,7 +42,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Bytes", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
@@ -2536,6 +2536,8 @@ public final class TypeChecker {
                     || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
             }
+            if (name.name().equals("Bytes") && findClass("Bytes") == null)
+                return new Named("$BytesFactory", List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase")
                     || name.name().equals("SelectSet") || name.name().equals("SelectPlan")
@@ -2989,6 +2991,25 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr bytesFactory
+                    && bytesFactory.receiver() instanceof Ast.NameExpr builtinBytes
+                    && builtinBytes.name().equals("Bytes")
+                    && env.lookup("Bytes") == null && findClass("Bytes") == null) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("Bytes factory is not generic");
+                }
+                if (bytesFactory.member().equals("empty") && call.arguments().isEmpty()) {
+                    return new Named("Bytes", List.of());
+                }
+                if (bytesFactory.member().equals("from_list") && call.arguments().size() == 1) {
+                    requireAssignable(
+                            typeOf(call.arguments().getFirst(), env, generics, self),
+                            new ListType(Primitive.INT),
+                            "Bytes.from_list integer byte elements");
+                    return new Named("Bytes", List.of());
+                }
+                throw new IllegalArgumentException("Bytes supports empty() or from_list(List<int>)");
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -5318,14 +5339,15 @@ public final class TypeChecker {
     private static boolean isAdmittedEmptyMapScalarKey(Ast.TypeRef type) {
         return !type.inferArguments() && type.arguments().isEmpty()
                 && (type.name().equals("string") || type.name().equals("String")
-                        || type.name().equals("Symbol"));
+                        || type.name().equals("Symbol") || type.name().equals("Bytes"));
     }
 
     private static boolean isAdmittedEmptyMapScalarValue(Ast.TypeRef type) {
         return !type.inferArguments() && type.arguments().isEmpty()
                 && (type.name().equals("int") || type.name().equals("bool")
                         || type.name().equals("Bool") || type.name().equals("string")
-                        || type.name().equals("String") || type.name().equals("Symbol"));
+                        || type.name().equals("String") || type.name().equals("Symbol")
+                        || type.name().equals("Bytes"));
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
@@ -6087,6 +6109,12 @@ public final class TypeChecker {
                 switch (name) {
                     case "read_bytes_async" -> {
                         result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
+                    }
+                    case "read_owned_bytes_async" -> {
+                        result = new Named("Bytes", List.of()); parameters = List.of(Primitive.INT);
+                    }
+                    case "write_owned_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new Named("Bytes", List.of()));
                     }
                     case "write_bytes_async" -> {
                         result = Primitive.VOID; parameters = List.of(new ListType(Primitive.INT));
@@ -8171,11 +8199,15 @@ public final class TypeChecker {
         Type key = mapType.arguments().get(0);
         Type value = mapType.arguments().get(1);
         boolean keyOk = key == Primitive.STRING
+                || key instanceof Named bytes && bytes.name().equals("Bytes")
+                        && bytes.arguments().isEmpty()
                 || key instanceof Named symbol
                         && symbol.name().equals("$builtin$Symbol")
                         && symbol.arguments().isEmpty();
         boolean valueOk = value == Primitive.INT || value == Primitive.BOOL
                 || value == Primitive.STRING
+                || value instanceof Named bytes && bytes.name().equals("Bytes")
+                        && bytes.arguments().isEmpty()
                 || value instanceof Named symbol
                         && symbol.name().equals("$builtin$Symbol")
                         && symbol.arguments().isEmpty();
@@ -8229,6 +8261,15 @@ public final class TypeChecker {
                 case "get_optional" -> new Function(
                         List.of(named.arguments().get(0)),
                         new Named("Option", List.of(named.arguments().get(1))));
+                default -> null;
+            };
+        }
+        if (receiver instanceof Named bytes && bytes.name().equals("Bytes")
+                && bytes.arguments().isEmpty()) {
+            return switch (member) {
+                case "size" -> Primitive.INT;
+                case "get" -> new Function(List.of(Primitive.INT), Primitive.INT);
+                case "to_list" -> new Function(List.of(), new ListType(Primitive.INT));
                 default -> null;
             };
         }
@@ -10314,6 +10355,12 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
                 }
                 yield new Named("$builtin$Symbol", List.of());
+            }
+            case "Bytes" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty() || findClass("Bytes") != null) {
+                    throw new IllegalArgumentException("Bytes is a reserved, non-generic built-in value");
+                }
+                yield new Named("Bytes", List.of());
             }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {

@@ -85,7 +85,7 @@ public final class TypeAutoTraits {
         if (!(type instanceof Named named)) return Optional.of(NONE);
 
         return switch (named.name()) {
-            case "$builtin$Symbol", "ActorId", "ActorKind" ->
+            case "$builtin$Symbol", "Bytes", "ActorId", "ActorKind" ->
                     Optional.of(named.arguments().isEmpty() ? SCALAR : NONE);
             case "ActorRef" ->
                     Optional.of(named.arguments().size() == 1 ? SCALAR : NONE);

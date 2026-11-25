@@ -23,6 +23,7 @@ import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.OresKeyedMap;
+import dev.oreslang.runtime.OresBytes;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.TaskScope;
@@ -5635,9 +5636,10 @@ public final class OresEvalRootNode extends RootNode {
                 // and copyable scalar values. Dispatch through the canonical
                 // guest Map runtime; never expose a host Map or partial storage.
                 if (!(index instanceof String
-                        || index instanceof dev.oreslang.runtime.OresSymbol)) {
+                        || index instanceof dev.oreslang.runtime.OresSymbol
+                        || index instanceof OresBytes)) {
                     throw new IllegalArgumentException(
-                            "typed Map index must be a String or Symbol");
+                            "typed Map index must be String, Symbol or Bytes");
                 }
                 return typedMap.getRequired(index);
             }
@@ -7469,6 +7471,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this, false);
                 if (name.name().equals("DynamicSelectPlan")) return new SelectPlanFactory(this, true);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
+                if (name.name().equals("Bytes") && findClass("Bytes") == null) return BytesFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
                 }
@@ -7920,12 +7923,14 @@ public final class OresEvalRootNode extends RootNode {
                         case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
                         case "string", "String" -> OresKeyedMap.ValueDomain.STRING;
                         case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                        case "Bytes" -> OresKeyedMap.ValueDomain.BYTES;
                         default -> throw new IllegalArgumentException(
                                 "unverified Map<K,V> value domain " + value);
                     };
                     return switch (key.name()) {
                         case "string", "String" -> OresKeyedMap.stringKeys(valueDomain);
                         case "Symbol" -> OresKeyedMap.symbolKeys(valueDomain);
+                        case "Bytes" -> OresKeyedMap.byteKeys(valueDomain);
                         default -> throw new IllegalArgumentException(
                                 "unverified Map<K,V> key domain " + key);
                     };
@@ -8001,6 +8006,39 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver == BytesFactory.INSTANCE) {
+                return switch (name) {
+                    case "empty" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.empty");
+                        return OresBytes.empty();
+                    };
+                    case "from_list" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.from_list");
+                        if (!(args.getFirst() instanceof List<?> list)) {
+                            throw new IllegalArgumentException("Bytes.from_list requires List<int>");
+                        }
+                        return OresBytes.fromList(list);
+                    };
+                    default -> throw new IllegalArgumentException("unknown Bytes factory member " + name);
+                };
+            }
+            if (receiver instanceof OresBytes bytes) {
+                return switch (name) {
+                    case "size" -> (long) bytes.size();
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.get");
+                        if (!(args.getFirst() instanceof Number number)) {
+                            throw new IllegalArgumentException("Bytes.get requires an integer index");
+                        }
+                        return bytes.get(Math.toIntExact(number.longValue()));
+                    };
+                    case "to_list" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.to_list");
+                        return bytes.toList();
+                    };
+                    default -> throw new IllegalArgumentException("unknown Bytes member " + name);
+                };
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -8197,6 +8235,20 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
                 return switch (name) {
+                    case "read_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_owned_bytes_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("read byte limit must be integer");
+                        }
+                        return socket.readOwnedBytesAsync(n.intValue());
+                    };
+                    case "write_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_owned_bytes_async");
+                        if (!(args.getFirst() instanceof OresBytes bytes)) {
+                            throw new IllegalArgumentException("write requires a frozen Bytes value");
+                        }
+                        return socket.writeOwnedBytesAsync(bytes);
+                    };
                     case "read_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "socket.read_bytes_async");
                         if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
@@ -11720,6 +11772,7 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
     private enum FutureFactory { INSTANCE }
+    private enum BytesFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
     private record MutexFactory(boolean shared, OresContext context) {
