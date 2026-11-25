@@ -20,13 +20,19 @@ public final class ActorLocalReferences {
     // an unbounded pending queue or iterate attacker-controlled graphs forever.
     private static final int MAX_CHANNEL_GRAPH_NODES = 100_000;
 
-    private static void enqueueChild(java.util.ArrayDeque<Object> pending, Object child) {
-        if (child == null) return;
-        if (pending.size() >= MAX_CHANNEL_GRAPH_NODES) {
-            throw new IllegalArgumentException(
-                    "buffered channel payload exceeds maximum graph nodes " + MAX_CHANNEL_GRAPH_NODES);
+    // Charge every encountered slot, including null and repeated references.
+    // A pending-queue limit alone misses arbitrarily many null iterable entries.
+    private static final class ChannelGraphBudget {
+        private int remaining = MAX_CHANNEL_GRAPH_NODES;
+
+        void enqueue(java.util.ArrayDeque<Object> pending, Object child) {
+            if (remaining == 0) {
+                throw new IllegalArgumentException(
+                        "buffered channel payload exceeds maximum graph nodes " + MAX_CHANNEL_GRAPH_NODES);
+            }
+            remaining--;
+            if (child != null) pending.add(child);
         }
-        pending.add(child);
     }
 
     /**
@@ -52,13 +58,9 @@ public final class ActorLocalReferences {
         }
         java.util.ArrayDeque<Object> pending = new java.util.ArrayDeque<>();
         java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
-        enqueueChild(pending, value);
-        int visited = 0;
+        ChannelGraphBudget budget = new ChannelGraphBudget();
+        budget.enqueue(pending, value);
         while (!pending.isEmpty()) {
-            if (++visited > MAX_CHANNEL_GRAPH_NODES) {
-                throw new IllegalArgumentException(
-                        "buffered channel payload exceeds maximum graph nodes " + MAX_CHANNEL_GRAPH_NODES);
-            }
             Object node = pending.removeLast();
             if (node instanceof Ref<?> || node instanceof WeakRef<?>) {
                 throw new SecurityException(
@@ -75,26 +77,26 @@ public final class ActorLocalReferences {
             if (seen.put(node, Boolean.TRUE) != null) continue;
             if (node instanceof OresMutex.SharedState state) {
                 for (Object child : state.sharedStateChildren()) {
-                    if (child != null) enqueueChild(pending, child);
+                    budget.enqueue(pending, child);
                 }
             } else if (node instanceof java.util.Optional<?> optional) {
-                optional.ifPresent(child -> enqueueChild(pending, child));
+                optional.ifPresent(child -> budget.enqueue(pending, child));
             } else if (node instanceof java.util.Map.Entry<?, ?> entry) {
-                if (entry.getKey() != null) enqueueChild(pending, entry.getKey());
-                if (entry.getValue() != null) enqueueChild(pending, entry.getValue());
+                budget.enqueue(pending, entry.getKey());
+                budget.enqueue(pending, entry.getValue());
             } else if (node instanceof java.util.Map<?, ?> map) {
                 for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
-                    if (entry.getKey() != null) enqueueChild(pending, entry.getKey());
-                    if (entry.getValue() != null) enqueueChild(pending, entry.getValue());
+                    budget.enqueue(pending, entry.getKey());
+                    budget.enqueue(pending, entry.getValue());
                 }
             } else if (node instanceof Iterable<?> iterable) {
                 for (Object child : iterable) {
-                    if (child != null) enqueueChild(pending, child);
+                    budget.enqueue(pending, child);
                 }
             } else if (node.getClass().isArray()) {
                 for (int i = 0; i < java.lang.reflect.Array.getLength(node); i++) {
                     Object child = java.lang.reflect.Array.get(node, i);
-                    if (child != null) enqueueChild(pending, child);
+                    budget.enqueue(pending, child);
                 }
             }
         }
