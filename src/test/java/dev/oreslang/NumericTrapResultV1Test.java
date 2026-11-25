@@ -107,4 +107,66 @@ final class NumericTrapResultV1Test {
                 """;
         assertEquals(42L, run(guest));
     }
+
+    @Test
+    void bothTrapSpellingsPreserveCheckedQuotientAndTypedErrorPayload() {
+        for (String spelling : new String[] { "trap", "trap!" }) {
+            String guest = """
+                    pub fnc quotient(int a, int b): int { return a / b; }
+                    pub fnc main(): int {
+                      val Result<int, Error> ok = %1$s quotient(-7, 3);
+                      val Result<int, Error> zero = %1$s quotient(7, 0);
+                      val Result<int, Error> overflow = %1$s quotient(-9223372036854775808, -1);
+                      if ok.is_ok() then
+                        if ok.unwrap() eq -2 then
+                          if zero.is_err() then
+                            if zero.unwrap_err() is type DivisionByZeroError then
+                              if overflow.is_err() then
+                                if overflow.unwrap_err() is type ArithmeticOverflowError then
+                                  return 42;
+                                fi
+                              fi
+                            fi
+                          fi
+                        fi
+                      fi
+                      return 1;
+                    }
+                    """.formatted(spelling);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(guest)), spelling);
+            assertEquals(42L, run(guest), spelling);
+        }
+    }
+
+    @Test
+    void bothTrapSpellingsRejectTheSupersededOptionBoundary() {
+        for (String spelling : new String[] { "trap", "trap!" }) {
+            String guest = """
+                    pub fnc main(): int {
+                      val Option<int> obsolete = %s 42;
+                      return 1;
+                    }
+                    """.formatted(spelling);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)), spelling);
+        }
+    }
+
+    @Test
+    void bothTrapSpellingsKeepAnAbsentOptionInsideOk() {
+        for (String spelling : new String[] { "trap", "trap!" }) {
+            String guest = """
+                    fnc absent(): Option<int> { return None; }
+                    pub fnc main(): int {
+                      val Result<Option<int>, Error> result = %s absent();
+                      if result.is_ok() then
+                        if result.unwrap().is_none() then return 42; fi
+                      fi
+                      return 1;
+                    }
+                    """.formatted(spelling);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(guest)), spelling);
+            assertEquals(42L, run(guest), spelling);
+        }
+    }
 }
