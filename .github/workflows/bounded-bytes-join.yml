@@ -1,9 +1,11 @@
-name: Bounded Bytes join runtime regression (host-only)
+name: Bounded Bytes join runtime and guest regression
 on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/runtime/OresBytes.java'
       - 'src/main/java/dev/oreslang/runtime/BoundedByteAccumulator.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/AttoBytesCodecGuestTest.java'
       - 'src/test/java/dev/oreslang/runtime/BoundedByteAccumulatorTest.java'
       - '.github/workflows/bounded-bytes-join.yml'
   workflow_dispatch:
@@ -32,4 +34,4 @@ jobs:
           java-version: "25"
           distribution: graalvm
       - name: Runtime regression tests, not performance scores
-        run: mvn -B -ntp -Dtest=BoundedByteAccumulatorTest,OresBytesBinaryCodecTest,OresBytesNioResp2Test -Dsurefire.failIfNoSpecifiedTests=true test
+        run: mvn -B -ntp -Dtest=BoundedByteAccumulatorTest,OresBytesBinaryCodecTest,OresBytesNioResp2Test,AttoBytesCodecGuestTest -Dsurefire.failIfNoSpecifiedTests=true test

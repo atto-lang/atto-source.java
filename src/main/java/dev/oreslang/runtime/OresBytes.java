@@ -357,6 +357,26 @@ public final class OresBytes implements AutoCloseable {
         }
     }
 
+    /**
+     * Compiler-owned guest lowering for Bytes.join: the ownership checker
+     * consumes the List<Bytes>. Retire each transferred handle on success
+     * or failure, without changing the non-consuming host join helper.
+     * Only call with a compiler-checked, exclusively owned list.
+     */
+    public static OresBytes joinConsumed(java.util.List<?> ownedParts) {
+        Objects.requireNonNull(ownedParts, "ownedParts");
+        // Snapshot references before cleanup; no guest callbacks while a
+        // storage monitor is held and no mutable payload aliases escape.
+        var parts = new java.util.ArrayList<>(ownedParts);
+        try {
+            return join(parts);
+        } finally {
+            for (Object part : parts) {
+                if (part instanceof OresBytes bytes) bytes.close();
+            }
+        }
+    }
+
     /** New value holding this followed by other. Neither input is consumed. */
     public OresBytes concat(OresBytes other) {
         Objects.requireNonNull(other, "other");

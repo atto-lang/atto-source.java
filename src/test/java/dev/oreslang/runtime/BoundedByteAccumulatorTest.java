@@ -59,6 +59,40 @@ final class BoundedByteAccumulatorTest {
         }
     }
 
+    @Test void consumingJoinRetiresTransferredInputsButNotOutputOrLiveLeases() {
+        byte[] detached = {0, (byte) 255};
+        try (var first = OresBytes.fromDetached(detached);
+             var second = OresBytes.copyOf(new byte[] {3});
+             var lease = first.readLease();
+             var joined = OresBytes.joinConsumed(List.of(first, second, first))) {
+            assertThrows(IllegalStateException.class, first::size);
+            assertThrows(IllegalStateException.class, second::size);
+            assertArrayEquals(new byte[] {0, (byte) 255, 3, 0, (byte) 255}, joined.toArrayCopy());
+            assertEquals(255, lease.buffer().get(1) & 255);
+            lease.close();
+            assertArrayEquals(new byte[] {0, 0}, detached);
+            assertEquals(255, joined.byteAt(1));
+        }
+    }
+
+    @Test void consumingJoinRetiresAllInputsEvenWhenBudgetOrTypeFails() {
+        try (var full = OresBytes.copyOf(new byte[OresBytes.MAX_LENGTH]);
+             var extra = OresBytes.copyOf(new byte[] {3});
+             var tail = OresBytes.copyOf(new byte[] {4})) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresBytes.joinConsumed(List.of(full, extra, tail)));
+            assertThrows(IllegalStateException.class, full::size);
+            assertThrows(IllegalStateException.class, extra::size);
+            assertThrows(IllegalStateException.class, tail::size);
+        }
+        try (var first = OresBytes.empty(); var last = OresBytes.empty()) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresBytes.joinConsumed(List.of(first, "wrong", last)));
+            assertThrows(IllegalStateException.class, first::size);
+            assertThrows(IllegalStateException.class, last::size);
+        }
+    }
+
     @Test void joinRejectsOversizeAndInvalidOrRetiredPartsWithoutConsumingInputs() {
         try (var full = OresBytes.copyOf(new byte[OresBytes.MAX_LENGTH]);
              var one = OresBytes.copyOf(new byte[] {1});
