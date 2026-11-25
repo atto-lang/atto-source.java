@@ -1,0 +1,54 @@
+name: Typed scheduled task forward-port exact-head JVM
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/**'
+      - 'src/test/java/dev/oreslang/**'
+      - '.github/workflows/typed-scheduled-task-forward-port.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-head-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute compiler guest and cancellation regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true -Dtest=TypedScheduledTaskForwardPortTest,SourceTaskCancelTest test
+      - name: Require actual passing JUnit receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in TypedScheduledTaskForwardPortTest SourceTaskCancelTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            test -s "$report"
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '(<skipped|<failure|<error|skipped="[1-9]|failures="[1-9]|errors="[1-9])' "$report"; then
+              echo "FAILED_OR_SKIPPED $suite" >&2
+              exit 1
+            fi
+            echo "EXECUTED_JVM_SUITE_PASS $suite"
+          done
