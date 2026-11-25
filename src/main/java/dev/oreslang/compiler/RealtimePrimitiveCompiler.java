@@ -267,6 +267,9 @@ public final class RealtimePrimitiveCompiler {
             }
             return added(1, expression(unary.operand(), locals));
         }
+        if (expr instanceof Ast.MatchExpr matched) {
+            return expression(lowerPrimitiveMatch(matched), locals);
+        }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             // Both alternatives must independently satisfy closed-world
             // admission, including an unselected branch. Only one executes.
@@ -293,6 +296,45 @@ public final class RealtimePrimitiveCompiler {
             return new Cost(plus(steps, callee.steps()), Math.max(depth, 1 + callee.depth()));
         }
         throw invalid("reference/heap/suspend/unknown expression: " + expr.getClass().getSimpleName());
+    }
+
+    /**
+     * Closed two-arm scalar match lowering. The first arm tests one literal;
+     * the second must be an unguarded wildcard or its boolean complement.
+     * The subject occurs exactly once in the resulting conditional, even if
+     * it is a direct call. The checked frontend remains responsible for
+     * type compatibility, overlap, exhaustiveness and result ownership.
+     */
+    private static Ast.ConditionalExpr lowerPrimitiveMatch(Ast.MatchExpr matched) {
+        if (matched.arms().size() != 2) {
+            throw invalid("primitive value match requires exactly two arms");
+        }
+        Ast.MatchValueArm first = matched.arms().get(0);
+        Ast.MatchValueArm last = matched.arms().get(1);
+        if (first.guard() != null || last.guard() != null
+                || !first.prefixStatements().isEmpty() || !last.prefixStatements().isEmpty()) {
+            throw invalid("primitive value match does not admit guards or block prefixes");
+        }
+        if (!(first.pattern() instanceof Ast.LiteralPattern literal)) {
+            throw invalid("primitive value match requires a literal first arm");
+        }
+        Object value = literal.value();
+        boolean scalar = value instanceof Boolean || value instanceof Byte
+                || value instanceof Short || value instanceof Integer
+                || (value instanceof Long n && n >= Integer.MIN_VALUE && n <= Integer.MAX_VALUE);
+        if (!scalar) throw invalid("primitive value match requires a bool/i32 literal");
+        boolean complement = value instanceof Boolean b
+                && last.pattern() instanceof Ast.LiteralPattern other
+                && other.value() instanceof Boolean c && b != c;
+        if (!(last.pattern() instanceof Ast.WildcardPattern) && !complement) {
+            throw invalid("primitive value match requires an exhaustive wildcard or bool complement");
+        }
+        if (matched.resultType() != null && !primitive(matched.resultType())) {
+            throw invalid("primitive value match requires a primitive result type");
+        }
+        Ast.Expr condition = new Ast.BinaryExpr(
+                "eq", matched.subject(), new Ast.LiteralExpr(value));
+        return new Ast.ConditionalExpr(condition, first.value(), last.value());
     }
 
     private static Cost combined(long own, Cost first, Cost second) {
@@ -399,6 +441,9 @@ public final class RealtimePrimitiveCompiler {
             return "(" + emitExpr(b.left()) + " " + operator + " " + emitExpr(b.right()) + ")";
         }
         if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
+        if (expr instanceof Ast.MatchExpr matched) {
+            return emitExpr(lowerPrimitiveMatch(matched));
+        }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             // Primitive Java conditional bytecode uses forward branches and
             // evaluates only the selected arm. No boxing or fallback evaluator.
