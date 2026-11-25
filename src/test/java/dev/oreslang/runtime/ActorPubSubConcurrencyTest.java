@@ -402,6 +402,96 @@ final class ActorPubSubConcurrencyTest {
         }
     }
 
+    @Test
+    void membershipRejoinCannotResurrectPublicationAlreadyFreezing() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            ActorEventBus.Topic<List<String>> topic = group.events().topic(
+                    "freeze-incarnation", ActorEventBus.DeliveryPolicy.RELIABLE, 2);
+            var subscribed = new CountDownLatch(1);
+            var freezing = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var rejected = new CountDownLatch(1);
+            var fresh = new CountDownLatch(1);
+            var subscription = new AtomicReference<ActorEventBus.Subscription<List<String>>>();
+            var oldFailure = new AtomicReference<Throwable>();
+            var freshFailure = new AtomicReference<Throwable>();
+            var receipt = new AtomicReference<ActorEventBus.PublishReceipt>();
+            var firstTraversal = new java.util.concurrent.atomic.AtomicBoolean(true);
+            // Host-only payload fixture: pause precisely after authority capture
+            // and before immutable graph admission, not with a timing sleep.
+            List<String> delayed = new java.util.AbstractList<>() {
+                @Override public String get(int index) {
+                    if (index != 0) throw new IndexOutOfBoundsException(index);
+                    return "old";
+                }
+                @Override public int size() {
+                    if (firstTraversal.compareAndSet(true, false)) {
+                        freezing.countDown();
+                        try {
+                            if (!release.await(5, TimeUnit.SECONDS))
+                                throw new AssertionError("freeze release timed out");
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    }
+                    return 1;
+                }
+            };
+            var observer = runtime.<String>spawnShared(() -> (message, context) -> {
+                join.join();
+                subscription.set(topic.subscribe());
+                subscribed.countDown();
+            });
+            var publisher = runtime.<String>spawnShared(() -> (message, context) -> {
+                if ("old".equals(message)) {
+                    try {
+                        join.join();
+                        topic.tryPublishReliable(delayed);
+                    } catch (Throwable problem) {
+                        oldFailure.set(problem);
+                    } finally {
+                        rejected.countDown();
+                    }
+                } else {
+                    try {
+                        receipt.set(topic.tryPublishReliable(List.of("fresh")).orElseThrow());
+                    } catch (Throwable problem) {
+                        freshFailure.set(problem);
+                    } finally {
+                        fresh.countDown();
+                    }
+                }
+            });
+            try {
+                observer.send("subscribe");
+                assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+                publisher.send("old");
+                assertTrue(freezing.await(5, TimeUnit.SECONDS));
+                group.leave(publisher);
+                group.join(publisher, join);
+                release.countDown();
+                assertTrue(rejected.await(5, TimeUnit.SECONDS));
+                assertInstanceOf(SecurityException.class, oldFailure.get());
+                assertEquals(0, subscription.get().pending());
+                assertEquals(0L, runtime.sharedMemoryBytes());
+                publisher.send("fresh");
+                assertTrue(fresh.await(5, TimeUnit.SECONDS));
+                assertNull(freshFailure.get());
+                assertEquals(1L, receipt.get().sequence());
+                assertEquals(1, subscription.get().pending());
+                group.leave(observer);
+                assertEquals(0L, runtime.sharedMemoryBytes());
+            } finally {
+                release.countDown();
+                observer.stop();
+                publisher.stop();
+            }
+        }
+    }
+
     private static ActorRuntime.ActorRef<String> publisher(
             ActorRuntime runtime,
             ActorRuntime.ActorGroupJoinCapability join,
