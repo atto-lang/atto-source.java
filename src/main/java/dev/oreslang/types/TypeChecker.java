@@ -11700,6 +11700,24 @@ public final class TypeChecker {
             String no = strictNumericSource(ternary.whenFalse(), env);
             return yes != null && yes.equals(no) ? yes : null;
         }
+        // Conservative literal-only match join proof. Do not consult the outer
+        // environment for a name declared or shadowed by an arm pattern/prefix.
+        // Explicit result annotations alone cannot prove exact numeric width.
+        if (expr instanceof Ast.MatchExpr match) {
+            String common = null;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                if (!(arm.value() instanceof Ast.LiteralExpr literal)) return null;
+                String width = literal.value() instanceof Long ? "int"
+                        : literal.value() instanceof Double ? "float" : null;
+                if (width == null || (common != null && !common.equals(width))) return null;
+                common = width;
+            }
+            if (match.resultType() != null
+                    && !java.util.Objects.equals(common, strictNumericName(match.resultType()))) {
+                return null;
+            }
+            return common;
+        }
         if (expr instanceof Ast.BinaryExpr arithmetic
                 && Set.of("+", "-", "*").contains(arithmetic.operator())) {
             String left = strictNumericSource(arithmetic.left(), env);
