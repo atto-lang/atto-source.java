@@ -203,6 +203,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
              Socket client = new Socket(
                      InetAddress.getLoopbackAddress(), server.getLocalPort());
              Socket peer = server.accept()) {
+            check(peer.isConnected());
             var occupiedBridge = new IpcReceiptCompletionBridge(1);
             occupiedBridge.claimPhysicalTransport(
                     new Object(), configMessage, 13);
@@ -1252,6 +1253,45 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
             check(transport.keyCloneZeroized());
             check(scheduled.get() == 2);
+            check(bridge.invariant());
+        }
+
+        // Closing with cleanup deliberately withheld must reject a new
+        // receipt transaction, even with an authentic buffered frame and
+        // a still-open physical socket. It must not advance correlation.
+        var fencedMessage = envelope(1, "closeFence", 3, 4, configPayload);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            var queued = new AtomicReference<Runnable>();
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    client, bridge, fencedMessage, 930, 1, key, connectionBinding,
+                    cleanup -> {
+                        if (!queued.compareAndSet(null, cleanup))
+                            throw new IllegalStateException("duplicate cleanup");
+                    });
+            var result = transport.send(fencedMessage, configPayload);
+            IpcAuthenticatedSocketTransport.writeWireFrame(peer.getOutputStream(),
+                    IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                            fencedMessage, 930, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                            connectionBinding, key));
+            transport.requestClose();
+            check(queued.get() != null);
+            check(!client.isClosed());
+            try {
+                transport.readVerifiedReceipt();
+                throw new AssertionError("receipt admitted after close intent");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains("after close request"));
+            }
+            check(!result.outcome().toCompletableFuture().isDone());
+            check(bridge.counters().pending() == 1);
+            offCallerCleanup(queued.get());
+            check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
+            check(result.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(transport.keyCloneZeroized());
             check(bridge.invariant());
         }
 
