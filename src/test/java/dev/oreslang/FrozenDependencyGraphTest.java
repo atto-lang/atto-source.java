@@ -147,4 +147,52 @@ final class FrozenDependencyGraphTest {
         String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer();}";
         assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(FrozenScalarImportCompiler.compile(guest,List.of(a,d))));
     }
+    @Test void actualStrictSessionReusesAndRechecksWithAtomicFailure()throws Exception {
+        var c=snapshot(C,"1.0.0",Map.of(),Map.of(),"use namespace network; pub fnc answer(int x):int{return x*2;}");
+        var b=snapshot(B,"1.0.0",Map.of(C,c.version()),Map.of(C,c.lockDigest()),
+            "use namespace network; import fnc answer as twice from pkg '"+C+"/api'; pub fnc answer(int x):int{return twice(x)+1;}");
+        var a=snapshot(A,"1.0.0",Map.of(B,b.version()),Map.of(B,b.lockDigest()),
+            "use namespace network; import fnc answer as next from pkg '"+B+"/api'; pub fnc answer(int x):int{return next(x)+1;}");
+        var d=withDeps(D);
+        var inventory=List.of(a,b,c,d);
+        var graph=FrozenDependencyGraph.verify(inventory);
+        String unitD="pinned/provider_"+graph.providerIdentity(D,"network")+".atto";
+        var session=new FrozenScalarImportCompiler.Session();
+        String guest="import pkg '"+A+"' as p; pub fnc main()->int{return p.network.answer(20);}";
+        var cold=session.compile(guest,inventory);
+        assertEquals(5,cold.rebuiltUnits().size());
+        assertEquals(5,cold.reparsedUnits().size());
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(cold));
+        var warm=session.compile(guest,List.of(d,c,b,a));
+        assertEquals(Set.of(),warm.rebuiltUnits());
+        assertEquals(Set.of(),warm.reparsedUnits());
+        assertEquals(5,warm.reusedUnits().size());
+        assertEquals(42,dev.oreslang.imports.FrozenTrustedFixture.run(warm));
+        var c2=snapshot(C,"1.0.0",Map.of(),Map.of(),"use namespace network; pub fnc answer(int x):int{return x*2+1;}");
+        var b2=snapshot(B,"1.0.0",Map.of(C,c2.version()),Map.of(C,c2.lockDigest()),b.providerSource("network"));
+        var a2=snapshot(A,"1.0.0",Map.of(B,b2.version()),Map.of(B,b2.lockDigest()),a.providerSource("network"));
+        var updated=List.of(a2,b2,c2,d);
+        var changed=session.compile(guest,updated);
+        assertEquals(Set.of(unitD),changed.reusedUnits());
+        assertEquals(4,changed.rebuiltUnits().size());
+        assertEquals(1,changed.reparsedUnits().size());
+        assertEquals(43,dev.oreslang.imports.FrozenTrustedFixture.run(changed));
+        // A package sorting ahead of all existing providers must not shift IDs.
+        var extra=withDeps("@org/project/0extra");
+        var expanded=session.compile(guest,List.of(extra,d,c2,b2,a2));
+        assertEquals(1,expanded.rebuiltUnits().size());
+        assertEquals(5,expanded.reusedUnits().size());
+        assertEquals(43,dev.oreslang.imports.FrozenTrustedFixture.run(expanded));
+        // Failed authenticated compilation must not publish any cache changes.
+        var bad=snapshot(D,"1.0.0",Map.of(),Map.of(),"use namespace network; pub fnc answer():int{return unknown();}");
+        assertThrows(IllegalArgumentException.class,()->session.compile(guest,List.of(a2,b2,c2,bad,extra)));
+        var recovered=session.compile(guest,updated);
+        assertEquals(Set.of(),recovered.rebuiltUnits());
+        assertEquals(5,recovered.reusedUnits().size());
+        assertEquals(43,dev.oreslang.imports.FrozenTrustedFixture.run(recovered));
+        deny("E_LOCK_HASH",()->session.compile(guest,List.of(a,b,c2,d)));
+        assertEquals(Set.of(),session.compile(guest,updated).rebuiltUnits());
+        session.clear();
+        assertEquals(5,session.compile(guest,updated).rebuiltUnits().size());
+    }
 }

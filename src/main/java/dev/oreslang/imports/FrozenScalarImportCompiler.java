@@ -36,6 +36,11 @@ public final class FrozenScalarImportCompiler {
             this.build=build; this.resolutions=Map.copyOf(resolutions);
         }
 
+        /** Actual strict compiler counters, not predicted cache hits. */
+        public Set<String> rebuiltUnits() {return build.rebuiltUnits();}
+        public Set<String> reusedUnits() {return build.reusedUnits();}
+        public Set<String> reparsedUnits() {return build.reparsedUnits();}
+
         public int run(ExecutionProfile profile) {
             return execute(IsolatePolicy.strictFaas().restrictedContextBuilder(profile));
         }
@@ -73,13 +78,35 @@ public final class FrozenScalarImportCompiler {
         }
     }
 
+    /**
+     * One bounded, in-process strict frontend cache. Every build reauthenticates
+     * the entire supplied graph and re-resolves imports; no disk artifacts,
+     * runtime values, or checked units are accepted from callers.
+     */
+    public static final class Session {
+        private final IncrementalCompiler compiler=new IncrementalCompiler();
+        private FrozenDependencyGraph previous;
+        public synchronized CheckedGuest compile(String consumer,List<FrozenImportSnapshot> packages) {
+            return compileInSession(consumer,packages,this);
+        }
+        public synchronized void clear() {
+            compiler.clear();
+            previous=null;
+        }
+    }
+
     public static CheckedGuest compile(String consumer,List<FrozenImportSnapshot> packages) {
+        return new Session().compile(consumer,packages);
+    }
+    private static CheckedGuest compileInSession(String consumer,List<FrozenImportSnapshot> packages,Session session) {
         if(consumer==null||consumer.length()>65536||packages==null||packages.isEmpty()||packages.size()>16)
             throw fail("E_SOURCE_LIMIT","invalid frozen scalar compilation budget");
         var available=new TreeMap<String,FrozenImportSnapshot>();
-        for(var pkg:packages)
+        for(var pkg:packages) {
+            if(pkg==null) throw fail("E_LOCK","null snapshot");
             if(available.putIfAbsent(pkg.name(),pkg)!=null)
                 throw fail("E_AMBIGUOUS","multiple snapshots for package name");
+        }
         var reader=new Reader(new Lexer(consumer).scan());
         var graph=new StaticImportGraph();
         var aliases=new ArrayList<StaticImportGraph.Alias>();
@@ -210,7 +237,15 @@ public final class FrozenScalarImportCompiler {
         sources.put(ENTRY,declarations+"pub fnc main(): int { "+prelude+"return "+result+"; }");
         var allResolutions=new LinkedHashMap<String,Map<String,String>>(linked.resolutions());
         allResolutions.put(ENTRY,Map.copyOf(resolutions));
-        var build=new IncrementalCompiler().compileStrictAtto(sources,allResolutions);
+        var invalidation=closure.planAgainst(session.previous);
+        var dirtyOwners=new HashSet<>(invalidation.rebuild());
+        var forced=new HashSet<String>();
+        for(var unit:linked.units().entrySet())
+            if(dirtyOwners.contains(unit.getKey().owner())) forced.add(unit.getValue());
+        // Entry is affected only by the providers it actually references.
+        if(resolutions.values().stream().anyMatch(forced::contains)) forced.add(ENTRY);
+        var build=session.compiler.compileStrictAtto(sources,allResolutions,forced);
+        session.previous=closure;
         return new CheckedGuest(build,allResolutions);
     }
 
