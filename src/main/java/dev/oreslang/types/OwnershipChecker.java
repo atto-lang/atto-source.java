@@ -3502,7 +3502,7 @@ public final class OwnershipChecker {
         if (!concrete.name().equals("List") || concrete.arguments().size() != 1
                 || !concrete.arguments().getFirst().name().equals("int")) return null;
         if (!arguments.isEmpty()) {
-            throw error("built-in List<int>.utf8_string expects 0 argument(s)");
+            throw error(E_ARITY, "built-in List<int>.utf8_string expects 0 argument(s)");
         }
         checkExpr(member.receiver(), scope, false);
         Ast.TypeRef result = Ast.TypeRef.simple("String");
