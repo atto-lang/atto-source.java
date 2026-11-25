@@ -521,7 +521,7 @@ public final class NativeHttp implements AutoCloseable {
                     sendWithRequestTraceContext(exchange, () -> worker.actor.send(
                             exchange.moveTo(worker.actor, type, binding,
                                     authorityClass, scopeGeneration, nextDispatchSequence(),
-                                    scopeGeneration > 0)));
+                                    scopeGeneration > 0, false)));
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
@@ -548,7 +548,7 @@ public final class NativeHttp implements AutoCloseable {
                 sendWithRequestTraceContext(exchange, () -> target.send(
                         exchange.moveTo(target, type, binding,
                                 authorityClass, scopeGeneration, nextDispatchSequence(),
-                                scopeGeneration > 0)));
+                                scopeGeneration > 0, true)));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
@@ -800,6 +800,10 @@ public final class NativeHttp implements AutoCloseable {
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
         Handler.Worker poolWorker;
+        // Only a fresh handler spawned for this exchange is request-owned.
+        // Manual and pooled destinations may handle unrelated requests.
+        boolean ownsActorLifetime;
+        OresFuture.RuntimeWaiterRegistration<?> actorDoneWaiter;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = hostOwner;
             // Admission already validated raw header count/size. Unknown,
@@ -840,8 +844,7 @@ public final class NativeHttp implements AutoCloseable {
                 terminal = true;
             }
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
-            if (alreadyClosed && poolWorker != null) { release(); return; }
-            if (actor != null && cancelOwner) actor.cancel();
+            if (actor != null && ownsActorLifetime && cancelOwner) actor.cancel();
             if (alreadyClosed) { release(); return; }
             InputStream responseInput = activeResponseInput;
             // A hostile InputStream.close() can block. Never wait for producer
@@ -876,7 +879,11 @@ public final class NativeHttp implements AutoCloseable {
             // pools bound worker count separately and release closed exchanges;
             // subsequent mail still waits for the current receive to finish.
             synchronized (this) {
-                if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
+                if (!transportClosed || (ownsActorLifetime && actor != null && !actor.done().isDone())) return;
+                if (actorDoneWaiter != null) {
+                    actorDoneWaiter.detach();
+                    actorDoneWaiter = null;
+                }
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 dispatchReceipt = null;
                 if (deadline != null) deadline.cancel(false);
@@ -915,12 +922,12 @@ public final class NativeHttp implements AutoCloseable {
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
-            return moveTo(destination, "manual", "manual", "unscoped", 0, 0, false);
+            return moveTo(destination, "manual", "manual", "unscoped", 0, 0, false, false);
         }
 
         private String moveTo(ActorRuntime.ActorRef<?> destination, String handlerType,
                               String binding, String authorityClass, long scopeGeneration,
-                              long sequence, boolean attested) {
+                              long sequence, boolean attested, boolean ownsActorLifetime) {
             synchronized (state) {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
@@ -933,6 +940,7 @@ public final class NativeHttp implements AutoCloseable {
                 state.generation++;
                 state.owner = destination.id();
                 state.actor = destination;
+                state.ownsActorLifetime = ownsActorLifetime;
                 state.dispatchReceipt = new DispatchReceipt(
                         receiptLabel(handlerType, "handler"),
                         receiptLabel(binding, "binding"),
@@ -948,7 +956,10 @@ public final class NativeHttp implements AutoCloseable {
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                if (state.poolWorker == null) {
+                    state.actorDoneWaiter = destination.done().whenCompleteRuntimeCancellable(
+                            (ignored, failure) -> state.abort(500, false));
+                }
                 return token;
             }
         }
