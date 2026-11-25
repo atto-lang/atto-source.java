@@ -3,7 +3,8 @@ package dev.oreslang.runtime;
 /**
  * Trusted host-owned concurrent DATA decode admission budget. One instance
  * must be shared by every session of a tenant; never constructed from wire data.
- * This accounts transient work only, not retained mailbox/receiver allocations.
+ * Accounts logical transient or retained credits according to the trusted owner.
+ * Not an exact physical heap measurement.
  */
 final class ActorDataDecodeQuotaV1 {
     private final long maxBytes;
@@ -25,6 +26,9 @@ final class ActorDataDecodeQuotaV1 {
         usedBytes += bytes;
         active++;
         return lease;
+    }
+    boolean canFit(long bytes, int slots) {
+        return bytes > 0 && bytes <= maxBytes && slots > 0 && slots <= maxActive;
     }
     synchronized long usedBytes() { return usedBytes; }
     synchronized int active() { return active; }
