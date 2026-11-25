@@ -5096,6 +5096,8 @@ public final class Parser {
                 throw error(peek(), "copy!! accepts exactly two adjacent bangs");
             }
             operation = "copy_deep";
+        } else if (operation.equals("copy")) {
+            operation = "copy_shallow";
         }
         // Canonical mutable borrow is `borrow! mut value`. Keep the earlier
         // `mut borrow! value` form as a compatibility alias, but reject two
