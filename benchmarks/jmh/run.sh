@@ -14,7 +14,8 @@ mvn -B -ntp -Dmaven.repo.local="$repo" -f benchmarks/jmh/pom.xml package depende
 cp="$root/benchmarks/jmh/target/classes:$(cat benchmarks/jmh/target/classpath.txt)"
 printf 'COMPILER_HEAD=%s COMPILER_TREE=%s\n' "$head" "$tree"
 java -version
-java -cp "$cp" org.openjdk.jmh.Main "$@"
+# Fail closed on setup or measurement exceptions; JMH defaults may continue.
+java -cp "$cp" org.openjdk.jmh.Main "$@" -foe true
 test "$(git rev-parse HEAD)" = "$head"
 test "$(git rev-parse 'HEAD^{tree}')" = "$tree"
 test -z "$(git status --porcelain --untracked-files=all)"
