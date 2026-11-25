@@ -55,9 +55,9 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
-    void blockingDoSelectMustNotDiscardArmReturns() {
-        IllegalArgumentException diagnostic = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("""
+    void blockingDoSelectRejectsValuesButAcceptsVoidArmExits() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
                     fnc choose(Channel<int> input): int {
                       do select {
                         case readch input: val value
@@ -67,21 +67,19 @@ final class ChannelSelectSyntaxTest {
                       }
                       return 19;
                     }
-                    """));
-        assertTrue(diagnostic.getMessage().contains("FUNCTION_RETURN"),
-                diagnostic::toString);
+                    """)));
 
-        IllegalArgumentException bare = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("""
+        for (String exit : new String[] {"return;", "return void;", "^ void;"}) {
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                     fnc probe(Channel<int> input): void {
                       do select {
                         case readch input: val value
-                          return;
+                          %s
                       }
                       return;
                     }
-                    """));
-        assertTrue(bare.getMessage().contains("FUNCTION_RETURN"), bare::toString);
+                    """.formatted(exit))));
+        }
     }
 
     @Test
@@ -114,8 +112,8 @@ final class ChannelSelectSyntaxTest {
                 }
                 """)));
 
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc bad(Channel<int> input): void {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc probe(Channel<int> input): void {
                   do select {
                   case readch input: val value
                     if value > 1 then
@@ -124,7 +122,7 @@ final class ChannelSelectSyntaxTest {
                   }
                   return;
                 }
-                """));
+                """)));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(Channel<int> input): void {
