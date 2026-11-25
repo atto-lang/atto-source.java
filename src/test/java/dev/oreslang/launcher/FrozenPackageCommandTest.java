@@ -34,13 +34,12 @@ final class FrozenPackageCommandTest {
     private String[] command(String verb,Path guest,Path zip,String digest) {
         return new String[]{verb,guest.toString(),"--package",zip.toString(),NAME,VERSION,digest};
     }
-    @Test void actualLauncherChecksAndRunsFrozenArchiveAndRejectsTampering()throws Exception {
+    @Test void actualLauncherChecksFrozenArchiveAndRejectsTampering()throws Exception {
         Path guest=root.resolve("main.atto");
         Files.writeString(guest,"import pkg '"+NAME+"' as p; pub fnc main()->int{return p.network.answer(40);}");
         byte[] lock=bytes("[lock]\nmanifest_sha256 = \""+sha(bytes(MANIFEST))+"\"\n[files]\n\""+PATH+"\" = \""+sha(bytes(SOURCE))+"\"\n");
         String pin=sha(lock); Path good=archive("good.zip",lock,SOURCE,null);
         assertEquals(0,OresMain.exitStatusForArgs(command("check-frozen",guest,good,pin)));
-        assertEquals(42,OresMain.exitStatusForArgs(command("run-frozen",guest,good,pin)));
         assertNotEquals(0,OresMain.exitStatusForArgs(command("check-frozen",guest,good,"0".repeat(64))));
         Path changed=archive("tampered.zip",lock,SOURCE.replace("2;","3;"),null);
         assertNotEquals(0,OresMain.exitStatusForArgs(command("check-frozen",guest,changed,pin)));
@@ -53,6 +52,13 @@ final class FrozenPackageCommandTest {
         assertNotEquals(0,OresMain.exitStatusForArgs(grant));
         Files.writeString(guest,"import pkg '"+NAME+"' as p; pub fnc main()->int{return p.network.missing(40);}");
         assertNotEquals(0,OresMain.exitStatusForArgs(command("check-frozen",guest,good,pin)));
+    }
+    @Test void strictLauncherRunsFrozenArchive()throws Exception {
+        Path guest=root.resolve("main.atto");
+        Files.writeString(guest,"import pkg '"+NAME+"' as p; pub fnc main()->int{return p.network.answer(40);}");
+        byte[] lock=bytes("[lock]\nmanifest_sha256 = \""+sha(bytes(MANIFEST))+"\"\n[files]\n\""+PATH+"\" = \""+sha(bytes(SOURCE))+"\"\n");
+        String pin=sha(lock); Path good=archive("good.zip",lock,SOURCE,null);
+        assertEquals(42,OresMain.exitStatusForArgs(command("run-frozen",guest,good,pin)));
     }
     @Test void archiveTransportRejectsCentralDirectoryTruncationAndInconsistency()throws Exception {
         byte[] lock=bytes("[lock]\nmanifest_sha256 = \""+sha(bytes(MANIFEST))+"\"\n[files]\n\""+PATH+"\" = \""+sha(bytes(SOURCE))+"\"\n");
