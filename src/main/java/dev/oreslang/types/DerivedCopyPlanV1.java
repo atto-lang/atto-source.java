@@ -46,6 +46,28 @@ public final class DerivedCopyPlanV1 {
         return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0);
     }
 
+    /**
+     * Conservative phase-1 shallow capability: a fresh root whose immediate
+     * fields/elements are all proven immutable scalars. The existing bounded
+     * executor may execute this plan without recursively allocating a mutable
+     * child. Shared-child witnesses and inline ADTs are deliberately deferred.
+     * Not yet wired to legacy copy! syntax; edition migration is separate.
+     */
+    public static Plan deriveShallow(Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
+        Plan plan = derive(type, findClass);
+        boolean safe = switch (plan) {
+            case Scalar scalar -> true;
+            case Sequence sequence -> sequence.element() instanceof Scalar;
+            case Instance instance -> instance.fields().stream()
+                    .allMatch(field -> field.plan() instanceof Scalar);
+        };
+        if (!safe) {
+            throw fail("E_COPY_SHALLOW_ALIAS",
+                    "shallow root would duplicate an unproved owned child; use copy!!");
+        }
+        return plan;
+    }
+
     private static Plan build(
             Ast.TypeRef type, Function<String, Ast.ClassDecl> lookup,
             Set<String> visiting, int[] work, int depth) {
