@@ -34,7 +34,9 @@ final class ActorIpcSessionV1Test {
                     session.bindMessagePackDecoder(MessagePackWireV2.Shape.i64(), limits));
             session.bindMessagePackDecoder(shape, limits);
             var transientQuota = new ActorDataDecodeQuotaV1(65536, 1);
-            var retained = new ActorDataDecodeQuotaV1(65536, 4);
+            var retained = new ActorDataDecodeQuotaV1(6500, 4);
+            assertThrows(IllegalArgumentException.class, () -> session.bindDataQueue(2, 4096,
+                    transientQuota, new ActorDataDecodeQuotaV1(5000, 4)));
             session.bindDataQueue(2, 4096, transientQuota, retained);
             try (var bootstrap = session.claimBootstrapForTrustedLauncher()) {
                 ready(session, bootstrap, artifact);
@@ -42,13 +44,17 @@ final class ActorIpcSessionV1Test {
                 byte[] frame = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
                         ActorIpcSessionV1.FrameKind.OUTPUT, 1, 9, payload);
                 assertTrue(session.tryQueueWorkerData(frame));
+                byte[] next = worker(bootstrap, artifact, ActorIpcSessionV1.Lane.DATA,
+                        ActorIpcSessionV1.FrameKind.OUTPUT, 2, 10, payload);
+                assertFalse(session.tryQueueWorkerData(next));
+                assertEquals(frame.length + 5120L, retained.usedBytes());
                 try (var delivery = session.pollWorkerData()) {
                     assertNotNull(delivery);
                     assertThrows(SecurityException.class, delivery::copyPayload);
                     try (var held = transientQuota.tryReserve(1)) {
                         assertNotNull(held);
                         assertNull(session.tryDecodeWorkerData(delivery));
-                        assertEquals(frame.length, retained.usedBytes());
+                        assertEquals(frame.length + 5120L, retained.usedBytes());
                     }
                     try (var decoded = session.tryDecodeWorkerData(delivery)) {
                         assertNotNull(decoded);
@@ -60,9 +66,14 @@ final class ActorIpcSessionV1Test {
                     }
                     assertEquals(0L, retained.usedBytes());
                 }
+                assertTrue(session.tryQueueWorkerData(next));
+                try (var delivery = session.pollWorkerData(); var decoded = session.tryDecodeWorkerData(delivery)) {
+                    assertEquals(10L, decoded.messageSequence());
+                }
+                assertEquals(0L, retained.usedBytes());
                 byte[] wrong = MessagePackWireV2.encode("wrong.schema", shape, "hello");
                 assertTrue(session.tryQueueWorkerData(worker(bootstrap, artifact,
-                        ActorIpcSessionV1.Lane.DATA, ActorIpcSessionV1.FrameKind.OUTPUT, 2, 10, wrong)));
+                        ActorIpcSessionV1.Lane.DATA, ActorIpcSessionV1.FrameKind.OUTPUT, 3, 11, wrong)));
                 try (var delivery = session.pollWorkerData()) {
                     assertThrows(ActorIpcSessionV1.ProtocolException.class,
                             () -> session.tryDecodeWorkerData(delivery));
