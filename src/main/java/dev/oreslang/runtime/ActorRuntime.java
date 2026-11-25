@@ -4704,6 +4704,17 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            // An opt-in supervised actor cannot safely publish a new child
+            // without reserving that child's CONTROL ownership first. Deny
+            // BEFORE reserveActorSlot, ActorCell construction, memory slice
+            // allocation, or output stream registration to avoid rollback leaks.
+            // No host can bind an already-executing parent to supervision, so
+            // its escrow membership cannot appear midway through this turn.
+            if (parent != null
+                    && supervisorEscrowBindings.containsKey(parent.ref.id())) {
+                throw new IllegalStateException(
+                        "supervised actor nested spawn requires atomic CONTROL child registration");
+            }
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -5581,6 +5592,11 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
+                    // Preflight is not a commit: the bridge's DATA permit
+                    // issuance is the single linearization point against
+                    // fail() on the ancestor's CONTROL ledger. A permit issued
+                    // before the fence may finish its mailbox write afterward,
+                    // but it is never a new post-fence logical admission.
                     requireSupervisorEscrowAdmission(ref);
                     if (cell.sealing) {
                         throw new ActorSealedException(ref.id());
@@ -5599,15 +5615,30 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor mailbox sequence exhausted for " + ref.id(),
                                 exhausted);
                     }
-                    envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
-                    if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                    SupervisorEscrowBinding escrowBinding =
+                            supervisorEscrowBindings.get(ref.id());
+                    SupervisorFailureEscrowV1.DataAdmission dataPermit = null;
+                    if (escrowBinding != null) {
+                        dataPermit = escrowBinding.bridge().beginDataAdmissionFromRuntime(
+                                escrowBinding.nodeId(), escrowBinding.generation());
+                        if (dataPermit == null) throw new ActorSealedException(ref.id());
                     }
-                    cell.nextUserMessageSequence = nextSequence;
-                    mailboxSlotTransferred = true;
-                    admitted = true;
-                    commitSharedMutexBindings(sharedMutexReservations);
+                    try {
+                        envelope = MessageEnvelope.message(
+                                prepared, release, sender, sequence);
+                        if (!cell.mailbox.tryWrite(envelope)) {
+                            throw new ActorMailboxFullException(ref.id());
+                        }
+                        cell.nextUserMessageSequence = nextSequence;
+                        mailboxSlotTransferred = true;
+                        admitted = true;
+                        commitSharedMutexBindings(sharedMutexReservations);
+                    } finally {
+                        if (dataPermit != null) {
+                            escrowBinding.bridge().finishDataAdmissionFromRuntime(
+                                    dataPermit, admitted);
+                        }
+                    }
                 }
             }
         } finally {

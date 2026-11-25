@@ -1,8 +1,11 @@
 package dev.oreslang.runtime;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Experimental trusted-host CONTROL ledger. Guest supervisor policy actors
@@ -14,10 +17,21 @@ import java.util.Objects;
 final class SupervisorFailureEscrowV1 {
     static final int MAX_NODES = 4096;
     static final int MAX_DEPTH = 64;
+    static final int MAX_DATA_ADMISSIONS_IN_FLIGHT = 65_536;
 
     record Notice(long failedId, long failedGeneration, long reservationSequence) {}
     record NodeStatus(long id, long parentId, long generation,
                       boolean alive, boolean fenced, boolean pending) {}
+
+    /** Admission is logically linearized at issuance while holding this
+     * ledger's monitor. A physical mailbox write may complete later; it is
+     * still an operation that won admission before the ancestor fence. */
+    static final class DataAdmission {
+        private final Cell owner;
+        private DataAdmission(Cell owner) { this.owner = owner; }
+    }
+
+    record DataAdmissionStatus(int inFlight, long committed, long aborted) {}
 
     /** Object identity is an unforgeable, one-use, process-local CONTROL permit. */
     static final class Delivery {
@@ -43,6 +57,9 @@ final class SupervisorFailureEscrowV1 {
         Notice terminal;
         boolean pending;
         Delivery delivery;
+        int dataInFlight;
+        long dataCommitted;
+        long dataAborted;
 
         Cell(long id, long parentId, long generation, long reservation, int depth) {
             this.id = id;
@@ -54,6 +71,8 @@ final class SupervisorFailureEscrowV1 {
     }
 
     private final LinkedHashMap<Long, Cell> nodes = new LinkedHashMap<>();
+    private final Set<DataAdmission> dataAdmissions =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private long nextReservation = 1;
     private long rootId;
 
@@ -151,6 +170,76 @@ final class SupervisorFailureEscrowV1 {
     synchronized boolean mayAdmit(long id, long generation) {
         Cell cell = nodes.get(id);
         return cell != null && cell.alive && !cell.fenced && cell.generation == generation;
+    }
+
+    /** Reserve one logical DATA admission at a single atomic point shared
+     * with fail() and completeNormally(). Returns null for any stale/fenced
+     * generation. No transport callback is executed while the ledger is held. */
+    synchronized DataAdmission beginDataAdmission(long id, long generation) {
+        if (!mayAdmit(id, generation)) return null;
+        if (dataAdmissions.size() >= MAX_DATA_ADMISSIONS_IN_FLIGHT) {
+            throw new IllegalStateException("CONTROL DATA admission permits exhausted");
+        }
+        Cell owner = requireNode(id);
+        if (owner.dataInFlight == Integer.MAX_VALUE) {
+            throw new IllegalStateException("actor DATA admission count exhausted");
+        }
+        // Any currently in-flight operation may commit OR abort. Reserve
+        // enough headroom in BOTH counters before granting another permit,
+        // so a valid mailbox write never discovers a fatal accounting
+        // overflow while settling after publication.
+        long needed = (long) owner.dataInFlight + 1L;
+        if (owner.dataCommitted > Long.MAX_VALUE - needed
+                || owner.dataAborted > Long.MAX_VALUE - needed) {
+            throw new IllegalStateException("actor DATA accounting sequence exhausted");
+        }
+        DataAdmission permit = new DataAdmission(owner);
+        if (!dataAdmissions.add(permit)) {
+            throw new IllegalStateException("duplicate DATA admission permit");
+        }
+        owner.dataInFlight++;
+        return permit;
+    }
+
+    /** Must be called once after a mailbox write succeeds or is rolled back.
+     * It remains legal after an ancestor crashes, because the admission
+     * logically preceded the fence. Foreign/replayed permits are rejected. */
+    synchronized void finishDataAdmission(DataAdmission permit, boolean committed) {
+        Objects.requireNonNull(permit, "permit");
+        if (!dataAdmissions.contains(permit) || permit.owner.dataInFlight <= 0) {
+            throw new IllegalStateException("foreign or replayed DATA admission");
+        }
+        // Compute first, then consume identity and decrement the outstanding
+        // reservation. An invariant violation must leave the permit pinned,
+        // not make an accepted mailbox write look physically unaccounted for.
+        long next = committed
+                ? Math.addExact(permit.owner.dataCommitted, 1L)
+                : Math.addExact(permit.owner.dataAborted, 1L);
+        if (!dataAdmissions.remove(permit)) {
+            throw new IllegalStateException("DATA admission permit concurrently consumed");
+        }
+        permit.owner.dataInFlight--;
+        if (committed) permit.owner.dataCommitted = next;
+        else permit.owner.dataAborted = next;
+    }
+
+    /** Descendant retirement must wait until every admission reserved before
+     * the fence has settled, even if it was granted to a future descendant. */
+    synchronized int dataInFlightInSubtree(long root) {
+        requireNode(root);
+        int total = 0;
+        for (Cell cell : nodes.values()) {
+            if (cell.id == root || isDescendantOf(cell, root)) {
+                total = Math.addExact(total, cell.dataInFlight);
+            }
+        }
+        return total;
+    }
+
+    synchronized DataAdmissionStatus dataAdmissionStatus(long id) {
+        Cell cell = requireNode(id);
+        return new DataAdmissionStatus(
+                cell.dataInFlight, cell.dataCommitted, cell.dataAborted);
     }
 
     synchronized int pendingCount() {
