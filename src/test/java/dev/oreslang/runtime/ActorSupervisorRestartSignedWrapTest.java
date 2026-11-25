@@ -104,4 +104,40 @@ final class ActorSupervisorRestartSignedWrapTest {
                 exactBoundary).kind(),
                 "restart exactly at now-window must still count after signed wrap");
     }
+
+    @Test
+    void groupRestartCannotAdmitFirstReplacementBeforeEverySiblingQuiesces() {
+        for (Strategy strategy : new Strategy[] {
+                Strategy.ONE_FOR_ALL, Strategy.REST_FOR_ONE }) {
+            var circuit = new ActorSupervisorRestartCircuit(
+                    new Config(3, 3, 100, 0, 0, 0));
+            for (int child = 0; child < 3; ++child) {
+                circuit.admitGeneration(child, 1, 0);
+            }
+            var plan = circuit.onExit(0, 1, RestartPolicy.PERMANENT,
+                    ExitClass.ABNORMAL, strategy, 1);
+            assertEquals(DecisionKind.RESTART, plan.kind());
+            assertEquals(3, plan.chargedRestarts());
+            assertEquals(1, circuit.snapshot(1).quiescedPendingReplacements());
+            assertThrows(IllegalStateException.class,
+                    () -> circuit.admitGeneration(0, 2, 2));
+            assertThrows(IllegalStateException.class,
+                    () -> circuit.acknowledgeQuiesced(1, 1, 2));
+            assertEquals(true, circuit.acknowledgeQuiesced(2, 1, 2));
+            assertThrows(IllegalStateException.class,
+                    () -> circuit.admitGeneration(0, 2, 2));
+            assertEquals(true, circuit.acknowledgeQuiesced(1, 1, 2));
+            assertThrows(IllegalStateException.class,
+                    () -> circuit.admitGeneration(2, 2, 2));
+            assertEquals(3, circuit.snapshot(2).pendingReplacements());
+            assertEquals(3, circuit.snapshot(2).restartsInWindow());
+            assertEquals(1L, circuit.generation(0));
+            for (int child = 0; child < 3; ++child) {
+                circuit.admitGeneration(child, 2, 2);
+            }
+            assertEquals(0, circuit.snapshot(2).pendingReplacements());
+            assertEquals(3L, circuit.snapshot(2).acceptedReplacementRestarts());
+        }
+    }
+
 }
