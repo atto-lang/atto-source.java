@@ -36,6 +36,7 @@ public final class Parser {
     private final AttoCallableVersion attoCallableVersion;
     /** Canonical AttoLang source rules, never guessed from a legacy filename. */
     private final boolean canonicalAttoSource;
+    private final boolean extensibleDeclarationSource;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private static final java.util.Set<String> BUILTIN_OF_TYPES =
             java.util.Set.of("Map", "Array", "Tuple", "Record");
@@ -172,6 +173,12 @@ public final class Parser {
 
     private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource,
                    boolean singletonCheckOnly) {
+        this(tokens, version, canonicalAttoSource, singletonCheckOnly, canonicalAttoSource);
+    }
+
+    private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource,
+                   boolean singletonCheckOnly, boolean extensibleDeclarationSource) {
+        this.extensibleDeclarationSource = extensibleDeclarationSource;
         this.singletonCheckOnly = singletonCheckOnly;
         this.attoCallableVersion = version;
         this.canonicalAttoSource = canonicalAttoSource;
@@ -268,6 +275,14 @@ public final class Parser {
 
     public static Ast.Program parse(String source) {
         return new Parser(new Lexer(source).scan()).parseProgram();
+    }
+
+    /** Linked source admission: enable contextual descriptors only for canonical
+     * source-unit identities. Do not silently switch unrelated legacy-compatible
+     * grammar/equality/ownership rules to the strict profile. */
+    public static Ast.Program parseSourceUnit(String unitId, String source) {
+        boolean atto = unitId.toLowerCase(java.util.Locale.ROOT).endsWith(".atto");
+        return new Parser(new Lexer(source).scan(), null, false, false, atto).parseProgram();
     }
 
     /** Explicit draft v1/v2 source grammar. This is a real parser entrypoint,
@@ -572,7 +587,7 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
-                if (canonicalAttoSource && isContextualIdentifier("keyword") && checkNext(IDENT)) {
+                if (extensibleDeclarationSource && isContextualIdentifier("keyword") && checkNext(IDENT)) {
                     if (!rootDeclarations.isEmpty() || !modules.isEmpty() || !rootForwards.isEmpty()) {
                         throw error(peek(), "KIND_HEADER_REQUIRED: phase 1a descriptors precede all ordinary declarations");
                     }
@@ -646,7 +661,7 @@ public final class Parser {
                 }
                 // Only the contextual declaration head is changed. Ordinary class
                 // parsing/semantic validation/codegen still owns every member.
-                if (canonicalAttoSource && check(IDENT) && checkNext(IDENT)
+                if (extensibleDeclarationSource && check(IDENT) && checkNext(IDENT)
                         && localClassKeywords.containsKey(peek().lexeme())) {
                     Token kind = advance();
                     // The existing whole-file intrinsic-shadow scanner does not
