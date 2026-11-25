@@ -2,10 +2,10 @@
   "schema": 1,
   "scope": "synthetic correctness, never performance",
   "benchmark_repo": "atto-lang/atto-benchmarks",
-  "benchmark_commit": "a87f57a063d1ae621a91a0fcb3e1420726865ab5",
-  "benchmark_tree": "4f85bc3ad8a5be98a39974ff564ef91957c56775",
+  "benchmark_commit": "07e0d99fd0e0b10ad6b35670a379e8f2dca1f06e",
+  "benchmark_tree": "1e551585ed2d054d2b7c25e07b2ac355aab12cfb",
   "blobs": {
-    "tests/fixtures/sharkbench-admission/sharkbench-web.atto": "7cb1932bd2def3906770747c7ec042313174a268",
+    "tests/fixtures/sharkbench-admission/sharkbench-web.atto": "e8314cccd8e53e5bf3932cb3fd1683c329cd90e5",
     "tests/fixtures/sharkbench-admission/check_contract.py": "2f5514245444e5fc9f268f18bf73a5a09a58b3e2",
     "tests/fixtures/sharkbench-admission/check_faults.py": "7dd3671428f87aff533444b0e5a76e99b729c74c",
     "tests/fixtures/sharkbench-admission/check_lifecycle.py": "805b1318ce56495535f80699553abd09223118be"

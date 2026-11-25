@@ -3,16 +3,6 @@
 import class Json from "alloc/json";
 import class JsonValue from "alloc/json";
 
-fnc valid_symbol(string symbol): bool {
-  val codes = symbol.codepoints();
-  if codes.size < 1 || codes.size > 3; then return false; fi
-  if codes.get(0) < 65 || codes.get(0) > 90; then return false; fi
-  for (let int i = 1; i < codes.size; i = i + 1) {
-    if codes.get(i) < 97 || codes.get(i) > 122; then return false; fi
-  }
-  return true;
-}
-
 define actor SharkBenchWorker as
   receive(ActorMail<String> mail): void {
     val exchange = http.claim(mail.value);
@@ -44,7 +34,23 @@ define actor SharkBenchWorker as
       return;
     fi
     val symbol = query.get(1);
-    if !valid_symbol(symbol); then
+    // Actor-local validation: no implicit capture of a file/module callable.
+    val symbol_codes = symbol.codepoints();
+    let bool symbol_valid = true;
+    if symbol_codes.size < 1 || symbol_codes.size > 3; then
+      symbol_valid = false;
+    else
+      if symbol_codes.get(0) < 65 || symbol_codes.get(0) > 90; then
+        symbol_valid = false;
+      fi
+      for (let int i = 1; i < symbol_codes.size; i = i + 1) {
+        if symbol_codes.get(i) < 97 || symbol_codes.get(i) > 122; then
+          symbol_valid = false;
+          break;
+        fi
+      }
+    fi
+    if !symbol_valid; then
       await exchange.respond(400, "text/plain", "invalid symbol");
       self.end();
       return;
