@@ -1,8 +1,9 @@
-name: Canonical JSON runtime admission (host only)
+name: Canonical JSON runtime and guest admission
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/runtime/**'
+      - 'src/main/java/dev/oreslang/**'
+      - 'library/alloc/json.atto'
       - 'src/test/java/dev/oreslang/runtime/**'
       - '.github/workflows/canonical-json-runtime-admission.yml'
   workflow_dispatch:
@@ -34,4 +35,9 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dtest=OresJsonValueTest,AllocJsonTextTest,OresKeyedMapTest,OresKeyedMapLookupOptionTest,SymbolPropertyKeyCodecTest -Dsurefire.failIfNoSpecifiedTests=true test
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Run linked Atto guest fixtures separately
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=CanonicalJsonGuestTest -Dsurefire.failIfNoSpecifiedTests=true test
           test -z "$(git status --porcelain --untracked-files=all)"
