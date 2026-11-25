@@ -6861,15 +6861,53 @@ public final class Parser {
                 throw error(previous(), "E_SYNC_TASK_RESULT: sync task requires a terminal return value");
             }
             List<Ast.Stmt> prefix = body.subList(0, body.size() - 1);
-            if (valueArmPrefixContainsReturn(prefix)) {
-                throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: inline branch returns require dedicated CFG lowering");
-            }
             if (inlineTaskHasEscapingTransfer(prefix, 0)) {
                 throw error(previous(), "E_SYNC_TASK_CONTROL_TRANSFER: inline break/continue must target a task-local loop; yield requires dedicated lowering");
             }
+            Ast.Expr result = returned.value();
+            List<Ast.Stmt> outerPrefix = prefix;
+            if (valueArmPrefixContainsReturn(prefix)) {
+                // Admit only a single top-level, one-arm conditional whose
+                // taken branch terminates in a value return. The fallthrough
+                // remains a separate typed arm, not a caller ReturnStmt.
+                int split = 0;
+                while (split < prefix.size()
+                        && !valueArmPrefixContainsReturn(List.of(prefix.get(split)))) split++;
+                if (split == prefix.size() || !(prefix.get(split) instanceof Ast.IfStmt conditional)
+                        || conditional.branches().size() != 1 || !conditional.elseBody().isEmpty()) {
+                    throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: inline branch returns require dedicated CFG lowering");
+                }
+                Ast.IfBranch branch = conditional.branches().getFirst();
+                Ast.Expr condition = branch.condition();
+                // Narrow to simple boolean names/literals: pattern captures,
+                // narrowing, and effectful predicates need their own proof.
+                if (!(condition instanceof Ast.NameExpr)
+                        && !(condition instanceof Ast.LiteralExpr literal && literal.value() instanceof Boolean)) {
+                    throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: conditional return requires a simple bool predicate");
+                }
+                List<Ast.Stmt> yes = branch.body();
+                List<Ast.Stmt> no = prefix.subList(split + 1, prefix.size());
+                if (yes.isEmpty() || !(yes.getLast() instanceof Ast.ReturnStmt early)
+                        || early.value() == null
+                        || valueArmPrefixContainsReturn(yes.subList(0, yes.size() - 1))
+                        || no.stream().anyMatch(stmt -> !(stmt instanceof Ast.ExprStmt))) {
+                    // Moving declarations into the false arm could silently
+                    // change duplicate-binding or cleanup semantics. Refuse.
+                    throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED: branch must return a value and fallthrough must contain only expressions");
+                }
+                // Boolean patterns are exhaustive and disjoint; double
+                // negation preserves the ordinary boolean-condition check.
+                result = new Ast.MatchExpr(
+                        new Ast.UnaryExpr("!", new Ast.UnaryExpr("!", condition)),
+                        List.of(new Ast.MatchValueArm(new Ast.LiteralPattern(true), null,
+                                        yes.subList(0, yes.size() - 1), early.value()),
+                                new Ast.MatchValueArm(new Ast.LiteralPattern(false), null, no, result)),
+                        payload);
+                outerPrefix = prefix.subList(0, split);
+            }
             return new Ast.MatchExpr(new Ast.LiteralExpr(true),
                     List.of(new Ast.MatchValueArm(new Ast.WildcardPattern(), null,
-                            List.copyOf(prefix), returned.value())), payload);
+                            List.copyOf(outerPrefix), result)), payload);
         }
 
         // task is contextual: task(...) and identifiers named task remain legal.
