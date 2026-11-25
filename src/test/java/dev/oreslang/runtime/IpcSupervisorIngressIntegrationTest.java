@@ -11,6 +11,22 @@ import org.junit.jupiter.api.Timeout;
 
 @Timeout(30)
 final class IpcSupervisorIngressIntegrationTest {
+    private static final long BOOL_CREDIT=64;
+    @FunctionalInterface private interface BoolDecode { Boolean run(byte[] bytes) throws IOException; }
+    private static IpcPinnedActorIngressV1.Decoder<Boolean> boolDecoder(BoolDecode action) {
+        return new IpcPinnedActorIngressV1.Decoder<>() {
+            public long preflight(java.nio.ByteBuffer body) throws IOException {
+                if(body.remaining()!=1 || body.get()!=(byte)0xf5)throw new IOException("not bool true");
+                return BOOL_CREDIT;
+            }
+            public Boolean decode(java.nio.ByteBuffer body,long admitted) throws IOException {
+                assertEquals(BOOL_CREDIT,admitted);
+                assertTrue(body.isReadOnly());
+                assertEquals(1,body.remaining());
+                return action.run(new byte[]{body.get()});
+            }
+        };
+    }
     @Test void authenticatedDecodeRacingAncestorFailureCannotPublish() throws Exception {
         byte[] key = new byte[32], connection = new byte[16], digest = new byte[32];
         Arrays.fill(key,(byte)7); Arrays.fill(connection,(byte)8); Arrays.fill(digest,(byte)9);
@@ -37,7 +53,7 @@ final class IpcSupervisorIngressIntegrationTest {
                     child.id().value().toString(),"session",hash,1,child.generation(),3,4,2,2);
             CountDownLatch decoded = new CountDownLatch(1), resume = new CountDownLatch(1);
             java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
-            var ingress = new IpcPinnedActorIngressV1<>(child,first,5,binding,budget,bytes->{
+            var ingress = new IpcPinnedActorIngressV1<>(child,first,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->{
                 if (!Arrays.equals(bytes,new byte[]{(byte)0xf5})) throw new IOException("not bool true");
                 if (calls.incrementAndGet()==2) {
                     decoded.countDown();
@@ -46,7 +62,7 @@ final class IpcSupervisorIngressIntegrationTest {
                     } catch (InterruptedException e) {Thread.currentThread().interrupt();throw new IOException(e);}
                 }
                 return Boolean.TRUE;
-            });
+            }));
             ingress.admit(IpcAuthenticatedSocketTransport.encodeDataFrame(first,body,5,connection,key),connection,key);
             assertEquals(1,bridge.dataAdmissionStatus(node).committed());
             var late = worker.submit(()->{
@@ -89,12 +105,12 @@ final class IpcSupervisorIngressIntegrationTest {
                     oldChild.id().value().toString(),"old-session",hash,1,oldChild.generation(),3,4,1,1);
             byte[] oldFrame=IpcAuthenticatedSocketTransport.encodeDataFrame(oldEpoch,body,5,connection,key);
             CountDownLatch decoding=new CountDownLatch(1), resume=new CountDownLatch(1);
-            var oldIngress=new IpcPinnedActorIngressV1<>(oldChild,oldEpoch,5,binding,budget,bytes->{
+            var oldIngress=new IpcPinnedActorIngressV1<>(oldChild,oldEpoch,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->{
                 decoding.countDown();
                 try {if(!resume.await(10,TimeUnit.SECONDS))throw new IOException("fixture deadline");}
                 catch(InterruptedException e){Thread.currentThread().interrupt();throw new IOException(e);}
                 return Boolean.TRUE;
-            });
+            }));
             var late=worker.submit(()->{oldIngress.admit(oldFrame,connection,key);return null;});
             try {
                 assertTrue(decoding.await(5,TimeUnit.SECONDS));
@@ -110,13 +126,13 @@ final class IpcSupervisorIngressIntegrationTest {
                 newChild.getReady().get(5,TimeUnit.SECONDS);
                 var newEpoch=new IpcReceiptCorrelation.Envelope("tenant","sender",
                         newChild.id().value().toString(),"new-session",hash,1,newChild.generation(),3,4,1,1);
-                var newIngress=new IpcPinnedActorIngressV1<>(newChild,newEpoch,6,binding,budget,bytes->{
+                var newIngress=new IpcPinnedActorIngressV1<>(newChild,newEpoch,6,binding,budget,BOOL_CREDIT,boolDecoder(bytes->{
                     if(!Arrays.equals(bytes,new byte[]{(byte)0xf5}))throw new IOException("invalid bool");
                     return Boolean.TRUE;
-                });
+                }));
                 assertThrows(IOException.class,()->newIngress.admit(oldFrame,connection,key));
                 assertThrows(IllegalArgumentException.class,()->new IpcPinnedActorIngressV1<>(
-                        newChild,oldEpoch,5,binding,budget,bytes->Boolean.TRUE));
+                        newChild,oldEpoch,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->Boolean.TRUE)));
                 resume.countDown();
                 var rejected=assertThrows(ExecutionException.class,()->late.get(5,TimeUnit.SECONDS));
                 assertInstanceOf(ActorRuntime.SendError.class,rejected.getCause());
@@ -143,11 +159,11 @@ final class IpcSupervisorIngressIntegrationTest {
                     "budget-session",hash,1,child.generation(),3,4,1,1);
             byte[] frame=IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,body,5,connection,key);
             long charge=IpcIngressBudgetV1.chargeFor(frame.length);
-            var budget=new IpcIngressBudgetV1(charge,1);
+            var budget=new IpcIngressBudgetV1(charge+BOOL_CREDIT,1);
             var calls=new java.util.concurrent.atomic.AtomicInteger();
-            var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,budget,bytes->{
+            var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,budget,BOOL_CREDIT,boolDecoder(bytes->{
                 calls.incrementAndGet();return Boolean.TRUE;
-            });
+            }));
             var raw=new java.io.ByteArrayOutputStream();
             IpcAuthenticatedSocketTransport.writeWireFrame(raw,frame);
             var stream=new java.io.ByteArrayInputStream(raw.toByteArray());
@@ -172,6 +188,46 @@ final class IpcSupervisorIngressIntegrationTest {
             assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
             assertThrows(IOException.class,()->ingress.admit(frame,connection,key));
             assertEquals(new IpcIngressBudgetV1.Usage(0,0),budget.usage());
+        }
+    }
+
+    @Test void decodedCreditDeniedBeforeMaterializationAndHeldUntilPublication() throws Exception {
+        byte[] key=new byte[32], connection=new byte[16], digest=new byte[32];
+        Arrays.fill(key,(byte)7); Arrays.fill(connection,(byte)8); Arrays.fill(digest,(byte)9);
+        var binding=new IpcSchemaBoundDataV1.Binding(IpcSchemaBoundDataV1.Codec.CBOR,1,"bool.v1",digest);
+        try(ActorRuntime runtime=new ActorRuntime()) {
+            ActorRuntime.ActorRef<Boolean> child=runtime.spawnPrivate(ignored->(m,turn)->{});
+            byte[] body=IpcSchemaBoundDataV1.wrap(binding,new byte[]{(byte)0xf5});
+            String hash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body));
+            var epoch=new IpcReceiptCorrelation.Envelope("tenant","sender",child.id().value().toString(),
+                    "decoded-credit",hash,1,child.generation(),3,4,1,1);
+            byte[] frame=IpcAuthenticatedSocketTransport.encodeDataFrame(epoch,body,5,connection,key);
+            long charge=IpcIngressBudgetV1.chargeFor(frame.length);
+            var calls=new java.util.concurrent.atomic.AtomicInteger();
+            var shortBudget=new IpcIngressBudgetV1(charge+BOOL_CREDIT-1,1);
+            var refused=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,shortBudget,BOOL_CREDIT,
+                    boolDecoder(bytes->{calls.incrementAndGet();return Boolean.TRUE;}));
+            assertThrows(IllegalStateException.class,()->refused.admit(frame,connection,key));
+            assertEquals(0,calls.get());
+            assertEquals(new IpcIngressBudgetV1.Usage(0,0),shortBudget.usage());
+            var exact=new IpcIngressBudgetV1(charge+BOOL_CREDIT,1);
+            var ingress=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,exact,BOOL_CREDIT,
+                    boolDecoder(bytes->{
+                        assertEquals(new IpcIngressBudgetV1.Usage(charge+BOOL_CREDIT,1),exact.usage());
+                        calls.incrementAndGet();return Boolean.TRUE;
+                    }));
+            ingress.admit(frame,connection,key);
+            assertEquals(1,calls.get());
+            assertEquals(new IpcIngressBudgetV1.Usage(0,0),exact.usage());
+            var limited=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,exact,BOOL_CREDIT-1,
+                    boolDecoder(bytes->{calls.incrementAndGet();return Boolean.TRUE;}));
+            assertThrows(IOException.class,()->limited.admit(frame,connection,key));
+            assertEquals(1,calls.get());
+            assertEquals(new IpcIngressBudgetV1.Usage(0,0),exact.usage());
+            var failing=new IpcPinnedActorIngressV1<>(child,epoch,5,binding,exact,BOOL_CREDIT,
+                    boolDecoder(bytes->{throw new IOException("decoder failure");}));
+            assertThrows(IOException.class,()->failing.admit(frame,connection,key));
+            assertEquals(new IpcIngressBudgetV1.Usage(0,0),exact.usage());
         }
     }
 

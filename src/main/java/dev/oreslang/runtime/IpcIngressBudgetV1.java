@@ -49,9 +49,22 @@ final class IpcIngressBudgetV1 {
     }
 
     final class Lease implements AutoCloseable {
-        private final long charge;
+        private long charge;
         private boolean released;
         private Lease(long charge){this.charge=charge;}
+        /** Add decoded graph staging credit to this already-held frame lease.
+         * No additional frame slot is consumed; no waiting for other leases. */
+        void reserveMaterialization(long bytes) {
+            RuntimeBlockingGuard.requireBlockingHostThread("reserve IPC decoder materialization");
+            if (bytes <= 0 || bytes > 8L*1024*1024)
+                throw new IllegalArgumentException("invalid decoded logical credit");
+            synchronized(IpcIngressBudgetV1.this) {
+                if(released)throw new IllegalStateException("released ingress lease");
+                if(bytes>maxBytes-usedBytes)
+                    throw new IllegalStateException("tenant IPC decoded staging exhausted");
+                usedBytes+=bytes; charge+=bytes;
+            }
+        }
         @Override public void close() {
             RuntimeBlockingGuard.requireBlockingHostThread("release IPC ingress staging");
             synchronized(IpcIngressBudgetV1.this) {

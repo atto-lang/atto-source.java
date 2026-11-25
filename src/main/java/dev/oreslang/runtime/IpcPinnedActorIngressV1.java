@@ -3,11 +3,18 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.io.DataInputStream;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.util.Objects;
 
 /** Trusted host adapter; never grants CONTROL or looks up a wire-selected actor. */
 final class IpcPinnedActorIngressV1<M> {
-    @FunctionalInterface interface Decoder<M> { M decode(byte[] body) throws IOException; }
+    /** Trusted registration-time codec. Preflight must be bounded and
+     * allocation-free with respect to payload size. It returns conservative
+     * logical materialization credit, not a peer-declared size. */
+    interface Decoder<M> {
+        long preflight(ByteBuffer body) throws IOException;
+        M decode(ByteBuffer body, long admittedBytes) throws IOException;
+    }
     private final ActorRuntime.ActorRef<M> recipient;
     private final IpcReceiptCorrelation.Envelope epoch;
     private final long physicalGeneration;
@@ -16,10 +23,12 @@ final class IpcPinnedActorIngressV1<M> {
     private final IpcSchemaBoundDataV1.Binding binding;
     private final Decoder<M> decoder;
     private final IpcIngressBudgetV1 budget;
+    private final long maxDecodedBytes;
 
     IpcPinnedActorIngressV1(ActorRuntime.ActorRef<M> recipient,
             IpcReceiptCorrelation.Envelope epoch, long physicalGeneration,
-            IpcSchemaBoundDataV1.Binding binding, IpcIngressBudgetV1 budget, Decoder<M> decoder) {
+            IpcSchemaBoundDataV1.Binding binding, IpcIngressBudgetV1 budget,
+            long maxDecodedBytes, Decoder<M> decoder) {
         RuntimeBlockingGuard.requireBlockingHostThread("register pinned IPC ingress");
         this.recipient = Objects.requireNonNull(recipient);
         this.epoch = Objects.requireNonNull(epoch);
@@ -32,6 +41,9 @@ final class IpcPinnedActorIngressV1<M> {
         this.binding = Objects.requireNonNull(binding);
         this.decoder = Objects.requireNonNull(decoder);
         this.budget = Objects.requireNonNull(budget);
+        if (maxDecodedBytes <= 0 || maxDecodedBytes > 8L*1024*1024)
+            throw new IllegalArgumentException("invalid registered decoded limit");
+        this.maxDecodedBytes = maxDecodedBytes;
     }
 
     /** Caller owns the authenticated-session key and immutable frame snapshot.
@@ -43,7 +55,7 @@ final class IpcPinnedActorIngressV1<M> {
         Objects.requireNonNull(frame, "frame");
         IpcIngressBudgetV1.Lease lease = budget.reserve(frame.length);
         try {
-            authenticateDecodePublish(frame.clone(), connectionBinding, key);
+            authenticateDecodePublish(frame.clone(), connectionBinding, key, lease);
         } finally { lease.close(); }
     }
 
@@ -60,14 +72,21 @@ final class IpcPinnedActorIngressV1<M> {
         try {
             byte[] frame = new byte[length];
             in.readFully(frame);
-            authenticateDecodePublish(frame, connectionBinding, key);
+            authenticateDecodePublish(frame, connectionBinding, key, lease);
         } finally { lease.close(); }
     }
 
-    private void authenticateDecodePublish(byte[] frame, byte[] connectionBinding, byte[] key) throws IOException {
+    private void authenticateDecodePublish(byte[] frame, byte[] connectionBinding, byte[] key,
+            IpcIngressBudgetV1.Lease lease) throws IOException {
         byte[] body = IpcSchemaBoundDataV1.authenticateAndUnwrap(
                 frame, epoch, physicalGeneration, replay, connectionBinding, key, binding);
-        M message = Objects.requireNonNull(decoder.decode(body));
+        ByteBuffer immutable = ByteBuffer.wrap(body).asReadOnlyBuffer();
+        long decodedBytes = decoder.preflight(immutable.asReadOnlyBuffer());
+        if (decodedBytes <= 0 || decodedBytes > maxDecodedBytes)
+            throw new IOException("registered decoded credit exceeded");
+        lease.reserveMaterialization(decodedBytes);
+        // New read-only view: preflight cannot mutate bytes or its decode cursor.
+        M message = Objects.requireNonNull(decoder.decode(immutable.asReadOnlyBuffer(), decodedBytes));
         // Do not resolve a new recipient by logical ID, even after restart.
         // Existing ActorRuntime.send owns the mailbox/ancestor DATA permit.
         recipient.send(message);
