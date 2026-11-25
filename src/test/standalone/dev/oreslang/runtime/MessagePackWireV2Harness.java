@@ -85,6 +85,27 @@ public final class MessagePackWireV2Harness {
     @SuppressWarnings("unchecked") List<Object> receiver=(List<Object>)MessagePackWireV2.decode("demo.Mutation.v1",Shape.list(Shape.string()),owned);
     Arrays.fill(owned,(byte)0);receiver.set(1,"receiver");
     if(!receiver.equals(List.of("before","receiver"))||!sender.equals(List.of("after","stable")))throw new AssertionError("ownership isolation broken");
+    // Actual decode path, cumulative nested collection budgets and exact caps.
+    String budgetId="budget.v1";
+    Shape budgetShape=Shape.list(Shape.list(Shape.string()));
+    List<?> budgetValue=List.of(List.of("abcd","efgh"),List.of("ijkl","mnop"));
+    byte[] budgetBytes=MessagePackWireV2.encode(budgetId,budgetShape,budgetValue);
+    long expanded=32L*7+8L*6+4L*(budgetId.length()+16);
+    var exact=new MessagePackWireV2.DecodeLimits(budgetBytes.length,expanded,6,4L*MessagePackWireV2.MAX_BYTES,2);
+    if(!MessagePackWireV2.decode(budgetId,budgetShape,budgetBytes,exact).equals(budgetValue))
+      throw new AssertionError("exact decode budget");
+    cases++;
+    reject(()->MessagePackWireV2.decode(budgetId,budgetShape,budgetBytes,
+        new MessagePackWireV2.DecodeLimits(budgetBytes.length-1,expanded,6,1000,2)));
+    reject(()->MessagePackWireV2.decode(budgetId,budgetShape,budgetBytes,
+        new MessagePackWireV2.DecodeLimits(budgetBytes.length,expanded-1,6,1000,2)));
+    reject(()->MessagePackWireV2.decode(budgetId,budgetShape,budgetBytes,
+        new MessagePackWireV2.DecodeLimits(budgetBytes.length,expanded,5,1000,2)));
+    reject(()->MessagePackWireV2.decode(budgetId,budgetShape,budgetBytes,
+        new MessagePackWireV2.DecodeLimits(budgetBytes.length,expanded,6,1,2)));
+    reject(()->MessagePackWireV2.decode(budgetId,budgetShape,budgetBytes,
+        new MessagePackWireV2.DecodeLimits(budgetBytes.length,expanded,6,1000,1)));
+    reject(()->new MessagePackWireV2.DecodeLimits(0,expanded,6,1000,2));
     mutationAudit();
     // A mutable list with a changing size cannot cause a wire header/body
     // mismatch: the encoder uses one admitted logical element count.
