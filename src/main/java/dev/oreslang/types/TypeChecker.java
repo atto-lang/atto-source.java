@@ -7779,6 +7779,28 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list && !list.explicitArrayConstructor()) {
+            // A fresh literal can be constructed directly at its expected
+            // string-tuple element type. Do not widen existing mutable lists
+            // or grant variance to arbitrary tuple/collection payloads.
+            if (expected instanceof ListType sequence
+                    && sequence.element() instanceof Tuple header
+                    && header.kind() == TupleKind.TUPLE
+                    && !header.elements().isEmpty()
+                    && header.elements().stream().allMatch(t -> t == Primitive.STRING)) {
+                for (Ast.Expr item : list.elements()) {
+                    Type actual = typeOf(item, env, generics, self);
+                    if (!(actual instanceof Tuple tuple)
+                            || tuple.kind() != TupleKind.TUPLE
+                            || tuple.elements().size() != header.elements().size()
+                            || !tuple.elements().stream().allMatch(t ->
+                                    t == Primitive.STRING || t instanceof StringLiteral)) {
+                        throw new IllegalArgumentException(
+                                "string tuple list literal element must match " + header
+                                        + "; got " + actual);
+                    }
+                }
+                return expected;
+            }
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
