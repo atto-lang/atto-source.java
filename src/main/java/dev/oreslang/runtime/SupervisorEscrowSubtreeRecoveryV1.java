@@ -47,26 +47,35 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     }
 
     /**
-     * Opt-in permanent ONE_FOR_ONE policy for one explicitly registered
-     * guardian child and its successors. The circuit owns only restart
-     * admission; escrow remains the sole terminal/physical authority.
+     * One bounded ONE_FOR_ONE circuit shared by an explicitly registered
+     * guardian cohort. Each declaration slot keeps its own pending plan.
+     * Escrow remains the sole terminal/physical authority.
      */
-    private static final class RootRestartPolicy {
+    private static final class RootRestartGroup {
         final ActorSupervisorRestartCircuit circuit;
         final java.util.function.LongSupplier clock;
-        ActorSupervisorRestartCircuit.RestartPlan plan;
-        long decidedAt;
-        RootRestartPolicy(ActorSupervisorRestartCircuit.Config config,
-                java.util.function.LongSupplier clock, long generation) {
-            if (config.childCount() != 1)
-                throw new IllegalArgumentException("root restart policy requires exactly one child");
+        // Guarded by the recovery lock. Runtime attachment happens outside
+        // that lock; no new decision may overtake an in-flight attachment.
+        boolean attaching;
+        RootRestartGroup(ActorSupervisorRestartCircuit.Config config,
+                java.util.function.LongSupplier clock) {
             this.clock = Objects.requireNonNull(clock, "clock");
             this.circuit = new ActorSupervisorRestartCircuit(config);
-            circuit.admitGeneration(0, generation, clock.getAsLong());
         }
     }
 
-    // Guarded by lock. A policy follows the successor, not the physical node.
+    private static final class RootRestartPolicy {
+        final RootRestartGroup group;
+        final int slot;
+        ActorSupervisorRestartCircuit.RestartPlan plan;
+        long decidedAt;
+        RootRestartPolicy(RootRestartGroup group, int slot) {
+            this.group = group;
+            this.slot = slot;
+        }
+    }
+
+    // Guarded by lock. A slot follows its successor, not its physical node.
     private final Map<Long, RootRestartPolicy> rootPolicies = new HashMap<>();
 
     private final ActorRuntime runtime;
@@ -123,11 +132,52 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             java.util.function.LongSupplier clock) {
         runtime.requireSupervisorShutdownAuthority("attach restart-managed guardian child");
         Objects.requireNonNull(ref, "ref");
-        var policy = new RootRestartPolicy(Objects.requireNonNull(config, "config"),
-                clock, ref.generation());
-        long nodeId = attach(ref, null);
-        synchronized (lock) { rootPolicies.put(nodeId, policy); }
-        return nodeId;
+        return attachRestartManagedRoots(List.of(ref), config, clock).get(0);
+    }
+
+    /**
+     * Register a fixed declaration-ordered guardian cohort before activation.
+     * All members share one intensity window and sticky escalation, but
+     * ONE_FOR_ONE plans remain per slot. No guest receives the policy handle.
+     */
+    List<Long> attachRestartManagedRoots(List<? extends ActorRuntime.ActorRef<?>> roots,
+            ActorSupervisorRestartCircuit.Config config) {
+        return attachRestartManagedRoots(roots, config, System::nanoTime);
+    }
+
+    List<Long> attachRestartManagedRoots(List<? extends ActorRuntime.ActorRef<?>> roots,
+            ActorSupervisorRestartCircuit.Config config,
+            java.util.function.LongSupplier clock) {
+        runtime.requireSupervisorShutdownAuthority("attach restart-managed guardian cohort");
+        var actors = List.copyOf(Objects.requireNonNull(roots, "roots"));
+        Objects.requireNonNull(config, "config");
+        if (actors.size() != config.childCount())
+            throw new IllegalArgumentException("cohort size must match restart circuit child count");
+        var identities = new HashSet<ActorRuntime.ActorId>();
+        for (var actor : actors) {
+            if (!identities.add(actor.id()))
+                throw new IllegalArgumentException("duplicate actor in restart cohort");
+        }
+        var group = new RootRestartGroup(config, clock);
+        long now = group.clock.getAsLong();
+        for (int slot = 0; slot < actors.size(); slot++)
+            group.circuit.admitGeneration(slot, actors.get(slot).generation(), now);
+        var ids = new ArrayList<Long>(actors.size());
+        try {
+            for (int slot = 0; slot < actors.size(); slot++) {
+                long id = attach(actors.get(slot), null);
+                ids.add(id);
+                synchronized (lock) {
+                    rootPolicies.put(id, new RootRestartPolicy(group, slot));
+                }
+            }
+            return List.copyOf(ids);
+        } catch (RuntimeException | Error failure) {
+            // Partial host registration is not a valid smaller cohort.
+            // Preserve all existing ledger fences and poison CONTROL.
+            controlFault.compareAndSet(null, failure);
+            throw failure;
+        }
     }
 
     /** Called only from the already-fenced runtime failure publication path. */
@@ -246,7 +296,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         synchronized (lock) {
             if (successorIds.containsKey(nodeId)) return RestartBlocker.ALREADY_REPLACED;
             RootRestartPolicy policy = rootPolicies.get(nodeId);
-            if (policy != null && policy.circuit.escalated())
+            if (policy != null && policy.group.circuit.escalated())
                 return RestartBlocker.RESTART_ESCALATED;
         }
         if (root.alive()) return RestartBlocker.STILL_ALIVE;
@@ -282,19 +332,22 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         var permit = new RestartPermit(nodeId, old.generation(), old.parentId());
         final RootRestartPolicy policy;
         synchronized (lock) { policy = rootPolicies.get(nodeId); }
-        // The trusted clock is sampled outside the recovery monitor.
-        long now = policy == null ? 0L : policy.clock.getAsLong();
         synchronized (lock) {
             if (controlFault.get() != null || successorIds.containsKey(nodeId) ||
                     issued.stream().anyMatch(p -> p.oldNodeId == nodeId)) {
                 throw new IllegalStateException("restart already reserved or committed");
             }
             if (policy != null) {
+                if (policy.group.attaching)
+                    throw new IllegalStateException("cohort replacement attachment in progress");
+                // Only a trusted nonblocking monotonic clock may be injected.
+                // Sample in the same order as decisions across all slots.
+                long now = policy.group.clock.getAsLong();
                 // We have passed terminal ACK and independent physical release.
                 // PERMANENT treats normal and abnormal exits identically.
                 // Charge exactly once per old generation, not per retry.
                 if (policy.plan == null) {
-                    policy.plan = policy.circuit.onExit(0, old.generation(),
+                    policy.plan = policy.group.circuit.onExit(policy.slot, old.generation(),
                             ActorSupervisorRestartCircuit.RestartPolicy.PERMANENT,
                             ActorSupervisorRestartCircuit.ExitClass.NORMAL,
                             ActorSupervisorRestartCircuit.Strategy.ONE_FOR_ONE, now);
@@ -322,12 +375,11 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             policy = rootPolicies.get(permit.oldNodeId);
             if (policy == null) return 0L;
         }
-        long now = policy.clock.getAsLong();
         synchronized (lock) {
             if (!issued.contains(permit) || permit.used || controlFault.get() != null
-                    || policy.circuit.escalated() || policy.plan == null)
+                    || policy.group.circuit.escalated() || policy.plan == null)
                 throw new IllegalStateException("restart permit no longer admitted");
-            long elapsed = now - policy.decidedAt;
+            long elapsed = policy.group.clock.getAsLong() - policy.decidedAt;
             if (elapsed < 0L) throw new IllegalStateException("restart clock regressed");
             return Math.max(0L, policy.plan.delayNanos() - elapsed);
         }
@@ -354,7 +406,6 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         long expectedParent;
         final RootRestartPolicy policy;
         synchronized (lock) { policy = rootPolicies.get(permit.oldNodeId); }
-        long now = policy == null ? 0L : policy.clock.getAsLong();
         synchronized (lock) {
             expectedParent = successorIds.getOrDefault(
                     permit.oldParentId, permit.oldParentId);
@@ -370,7 +421,11 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
                 // Early timing denial must leave the permit intact. If actor
                 // attachment later fails, successor -1 keeps the old node
                 // permanently fenced; no second attempt spends the budget.
-                policy.circuit.admitGeneration(0, replacement.generation(), now);
+                if (policy.group.attaching)
+                    throw new IllegalStateException("cohort replacement attachment in progress");
+                policy.group.circuit.admitGeneration(policy.slot, replacement.generation(),
+                        policy.group.clock.getAsLong());
+                policy.group.attaching = true;
             }
             issued.remove(permit);
             // Reserve the successor slot BEFORE releasing lock. Until the new
@@ -379,17 +434,26 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             permit.used = true;
             successorIds.put(permit.oldNodeId, -1L);
         }
-        long newNode = attach(replacement, liveParent);
-        synchronized (lock) {
-            successorIds.put(permit.oldNodeId, newNode);
+        try {
+            long newNode = attach(replacement, liveParent);
+            synchronized (lock) {
+                successorIds.put(permit.oldNodeId, newNode);
+                if (policy != null) {
+                    rootPolicies.remove(permit.oldNodeId);
+                    policy.plan = null;
+                    policy.decidedAt = 0L;
+                    rootPolicies.put(newNode, policy);
+                }
+            }
+            return newNode;
+        } catch (RuntimeException | Error failure) {
+            if (policy != null) controlFault.compareAndSet(null, failure);
+            throw failure;
+        } finally {
             if (policy != null) {
-                rootPolicies.remove(permit.oldNodeId);
-                policy.plan = null;
-                policy.decidedAt = 0L;
-                rootPolicies.put(newNode, policy);
+                synchronized (lock) { policy.group.attaching = false; }
             }
         }
-        return newNode;
     }
 
     Throwable controlFault() {
