@@ -701,6 +701,69 @@ final class ActorArtifactAdmissionTest {
     }
 
     @Test
+    void concurrentIpcReceiverAndGroupAdoptionHaveExactlyOneWinner() throws Exception {
+        byte[] executable = "ELF-host-claim-race".getBytes(StandardCharsets.UTF_8);
+        KeyPair keys = keyPair();
+        var manifest = sign(manifest(executable, List.of()), keys);
+        var profile = new ActorIpcCodecProfileV1("messagepack", 2, "order.v1",
+                "21c2efdbff08dd4e1320d8abe1ba0cc6aea8e4cf104b984be7b7079968fad3cd", MESSAGE_ABI);
+        var shape = MessagePackWireV2.Shape.string();
+        var limits = new MessagePackWireV2.DecodeLimits(1024, 1024, 16, 2048, 8);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        int ipcWins = 0, groupWins = 0;
+        try (ActorRuntime runtime = new ActorRuntime(supervisorPolicy())) {
+            var artifact = runtime.admitIpcActorArtifact(
+                    "ImageWorker", Ast.ActorKind.PRIVATE, manifest, executable,
+                    attestation("ImageWorker", Ast.ActorKind.PRIVATE, manifest, profile.commitment()),
+                    TRUST_ATTESTATION, (builder, keyId) -> keys.getPublic(),
+                    targetPolicy(), privateWorkerPolicy());
+            for (int i=0; i<128; i++) {
+                ActorRuntime.ActorRef<String> receiver = runtime.spawnPrivateTrusted(
+                        context -> (message, ctx) -> { });
+                var group = runtime.createActorGroup();
+                var session = runtime.openMessagePackBoundIpcSession(
+                        artifact, UUID.randomUUID(), 1, 1, 2, 4096, profile, 1, 1, shape, limits);
+                try (var bootstrap = session.claimBootstrapForTrustedLauncher()) {
+                    session.acceptWorkerFrame(ActorIpcSessionV1.encodeWorkerFrame(bootstrap, artifact,
+                            ActorIpcSessionV1.Lane.CONTROL, ActorIpcSessionV1.FrameKind.READY,
+                            1, 0, new byte[0]));
+                    var start = new java.util.concurrent.CyclicBarrier(2);
+                    var ipc = pool.submit(() -> {
+                        start.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                        try { runtime.bindIpcStringReceiver(session, receiver); return true; }
+                        catch (SecurityException denied) { return false; }
+                    });
+                    var managed = pool.submit(() -> {
+                        start.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                        try { group.manageWorker(receiver); return true; }
+                        catch (SecurityException denied) { return false; }
+                    });
+                    boolean ipcWon = ipc.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                    boolean groupWon = managed.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                    assertNotEquals(ipcWon, groupWon, "exactly one ownership claimant must win");
+                    if (ipcWon) {
+                        ipcWins++;
+                        assertThrows(SecurityException.class, () -> group.manageWorker(receiver));
+                    } else {
+                        groupWins++;
+                        assertThrows(SecurityException.class, () -> runtime.bindIpcStringReceiver(session, receiver));
+                    }
+                } finally {
+                    runtime.retireBoundIpcSession(session);
+                    receiver.stop();
+                    assertTrue(receiver.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+                    group.close();
+                }
+            }
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        assertEquals(128, ipcWins + groupWins);
+        System.out.println("IPC_RECEIVER_CLAIM_RACE_PASS rounds=128 ipc=" + ipcWins + " group=" + groupWins);
+    }
+
+    @Test
     void canonicalUnsignedManifestHasDeterministicSortedObjectKeys() throws Exception {
         byte[] executable = "ELF-canonical".getBytes(StandardCharsets.UTF_8);
         var manifest = manifest(executable, List.of("filesystem.read", "stdout"));
