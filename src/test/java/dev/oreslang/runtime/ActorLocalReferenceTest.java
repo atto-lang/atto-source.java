@@ -149,6 +149,24 @@ final class ActorLocalReferenceTest {
     }
 
     @Test
+    void graphPublicationMetersAllSlotsAndChecksHostReferenceWrappers() {
+        Object actor = new Object();
+        var foreign = ActorLocalReference.createForDomain(new Object(), 7L);
+        assertDoesNotThrow(() -> ActorLocalReference.createForDomain(
+                actor, java.util.Collections.nCopies(99_999, null)));
+        assertThrows(IllegalArgumentException.class, () -> ActorLocalReference.createForDomain(
+                actor, java.util.Collections.nCopies(100_000, null)));
+        assertThrows(IllegalArgumentException.class, () -> ActorLocalReference.createForDomain(
+                actor, java.util.Collections.nCopies(100_000, 1L)));
+        assertThrows(SecurityException.class, () -> ActorLocalReference.createForDomain(
+                actor, java.util.Optional.of(foreign)));
+        assertThrows(SecurityException.class, () -> ActorLocalReference.createForDomain(
+                actor, java.util.Map.entry("foreign", foreign)));
+        assertThrows(SecurityException.class, () -> ActorLocalReference.createForDomain(
+                actor, new java.util.concurrent.atomic.AtomicReference<>(foreign)));
+    }
+
+    @Test
     void managedReferenceGraphMayContainIdentityCyclesWithoutCopyingOwnedValues() {
         Object actor = new Object();
         List<Object> node = new ArrayList<>();
