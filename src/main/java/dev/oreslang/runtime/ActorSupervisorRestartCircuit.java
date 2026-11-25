@@ -112,6 +112,9 @@ final class ActorSupervisorRestartCircuit {
     private int restartHead;
     private int restartSize;
 
+    // Escalation transfers authority to the parent/root. This circuit must
+    // never resume admission merely because time passes or a child retries.
+    private boolean escalated;
     private boolean hasNowNanos;
     private long lastNowNanos;
     private long nextDecisionSequence = 1L;
@@ -141,6 +144,9 @@ final class ActorSupervisorRestartCircuit {
             long nowNanos) {
         requireChild(childIndex);
         requireMonotonicTime(nowNanos);
+        if (escalated) {
+            throw new IllegalStateException("supervisor restart circuit escalated; parent recovery required");
+        }
         if (actorGeneration <= 0) {
             throw new IllegalArgumentException("actor generation must be positive");
         }
@@ -245,6 +251,13 @@ final class ActorSupervisorRestartCircuit {
         // the failed generation itself is already quiesced at this boundary.
         live[childIndex] = false;
 
+        if (escalated) {
+            escalations = saturatingIncrement(escalations);
+            return new RestartPlan(
+                    DecisionKind.ESCALATE, childIndex, childIndex,
+                    0, 0, 0, decisionSequence, "supervisor-already-escalated");
+        }
+
         if (!shouldRestart(policy, exitClass)) {
             noRestartDecisions = saturatingIncrement(noRestartDecisions);
             consecutiveAttempts[childIndex] = 0;
@@ -277,6 +290,7 @@ final class ActorSupervisorRestartCircuit {
         // new budget/order proof; fail closed by escalating instead.
         for (int i = first; i < end; ++i) {
             if (restartPending[i]) {
+                escalated = true;
                 escalations = saturatingIncrement(escalations);
                 overlappingEpisodeEscalations =
                         saturatingIncrement(overlappingEpisodeEscalations);
@@ -295,6 +309,7 @@ final class ActorSupervisorRestartCircuit {
         pruneWindow(nowNanos);
         if (width > config.maxRestarts()
                 || restartSize > config.maxRestarts() - width) {
+            escalated = true;
             escalations = saturatingIncrement(escalations);
             return new RestartPlan(
                     DecisionKind.ESCALATE,
@@ -340,6 +355,10 @@ final class ActorSupervisorRestartCircuit {
                 restartDelayNanos(childIndex, actorGeneration, attempt),
                 decisionSequence,
                 "restart-admitted");
+    }
+
+    synchronized boolean escalated() {
+        return escalated;
     }
 
     synchronized boolean restartPending(int childIndex) {
