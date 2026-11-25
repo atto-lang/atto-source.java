@@ -3565,12 +3565,9 @@ public final class TypeChecker {
             }
             Type right = typeOf(binary.right(), env, generics, self);
             return switch (binary.operator()) {
-                case "^^" -> {
-                    requireAssignable(left, Primitive.BOOL, "logical operand");
-                    requireAssignable(right, Primitive.BOOL, "logical operand");
-                    yield Primitive.BOOL;
-                }
-                case "&", "|", "^", "<<<", ">>>", "ashr" -> {
+                case "^" -> throw new IllegalArgumentException(
+                        "E_OPERATOR_CARET: single infix ^ is invalid");
+                case "&", "|", "^^", "<<<", ">>>", "ashr" -> {
                     requireInteger(left, "bitwise left operand");
                     requireInteger(right, "bitwise right operand");
                     yield Primitive.INT;
@@ -10065,6 +10062,7 @@ public final class TypeChecker {
                     case "+" -> Math.addExact(a, b);
                     case "-" -> Math.subtractExact(a, b);
                     case "*" -> Math.multiplyExact(a, b);
+                    case "^^" -> a ^ b;
                     case "eq", "==" -> a.longValue() == b.longValue();
                     case "neq", "!=" -> a.longValue() != b.longValue();
                     case "<" -> a < b;
@@ -10078,7 +10076,6 @@ public final class TypeChecker {
                 return switch (operator) {
                     case "&&" -> a && b;
                     case "||" -> a || b;
-                    case "^^" -> a ^ b;
                     case "eq", "==" -> a.equals(b);
                     case "neq", "!=" -> !a.equals(b);
                     default -> null;
