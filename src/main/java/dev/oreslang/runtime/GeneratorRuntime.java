@@ -42,10 +42,28 @@ public final class GeneratorRuntime {
     }
 
     public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
+        // Even synchronous generator construction retains a lazy Producer
+        // closure that could be pulled outside this turn. Actor-private
+        // values cannot escape through a root-owned activation.
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "ACTOR_GENERATOR_UNSUPPORTED: sync gen* requires actor-owned "
+                    + "activation/receiver lifetime; generic AsyncRuntime cannot retain actor authority");
+        }
         return new Generator<>(new Engine<>(runtime, producer));
     }
 
     public static <T> AsyncGenerator<T> asyncGenerator(AsyncRuntime runtime, Producer<T> producer) {
+        // The generic AsyncRuntime owns process/root virtual carriers. It
+        // does not carry an actor-incarnation execution lease or guarantee
+        // that await/yield/cleanup resumes on that actor's kind-specific pool.
+        // Reject construction during an actor turn rather than let a captured
+        // actor-private producer execute outside its owner's scheduler.
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "ACTOR_GENERATOR_UNSUPPORTED: async gen* requires actor-owned "
+                    + "continuation/pool admission; generic AsyncRuntime cannot retain actor authority");
+        }
         return new AsyncGenerator<>(runtime, new Engine<>(runtime, producer));
     }
 
@@ -107,6 +125,11 @@ public final class GeneratorRuntime {
 
         @Override
         public void close() {
+            if (ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "ACTOR_GENERATOR_UNSUPPORTED: synchronous generator close "
+                        + "requires root-owner cleanup; an actor cannot park its carrier");
+            }
             engine.close();
         }
     }
@@ -143,6 +166,14 @@ public final class GeneratorRuntime {
          * engine step has exited (cancellation can settle first).
          */
         public OresFuture<Step<T>> nextStep() {
+            // A root-owned activation can be passed to actor code. Even an
+            // otherwise Sendable value may not grant that actor a generic
+            // root-task execution capability. Preserve the Future return ABI.
+            if (ActorRuntime.inActorExecution()) {
+                return OresFuture.failed(new IllegalStateException(
+                        "ACTOR_GENERATOR_UNSUPPORTED: actor pull requires "
+                        + "actor-owned continuation/pool admission"));
+            }
             PullAdmission<T> ticket = new PullAdmission<>();
             for (;;) {
                 PullAdmission<T> previous = activePull.get();
@@ -209,16 +240,24 @@ public final class GeneratorRuntime {
          * needed, so runtime shutdown cannot cancel the only cleanup waiter.
          */
         public synchronized OresFuture<Void> closeAsync() {
+            // A root-owned generator is not an actor capability. Even a
+            // non-parking close would cancel its producer from a foreign
+            // actor turn and could execute finalizers outside the owner pool.
+            if (ActorRuntime.inActorExecution()) {
+                return OresFuture.failed(new IllegalStateException(
+                        "ACTOR_GENERATOR_UNSUPPORTED: async generator close "
+                        + "requires its owning execution domain"));
+            }
             if (closeFuture == null) closeFuture = engine.closeAsyncReceipt();
             return closeFuture;
         }
 
         @Override
         public void close() {
-            if (ActorRuntime.inActorExecution() && !engine.isTerminalReady()) {
+            if (ActorRuntime.inActorExecution()) {
                 throw new IllegalStateException(
-                        "synchronous AsyncIterator.close() would park an actor carrier; "
-                                + "use/await the asynchronous close operation");
+                        "ACTOR_GENERATOR_UNSUPPORTED: synchronous async generator "
+                        + "close requires its owning execution domain");
             }
             engine.close();
         }
@@ -323,8 +362,17 @@ public final class GeneratorRuntime {
                         } catch (CancellationException cancelled) {
                             if (!closed.get()) publish(new FailedEvent<>(cancelled));
                         } catch (Throwable failure) {
-                            if (!closed.get()) publish(new FailedEvent<>(failure));
-                            else closeFailure.compareAndSet(null, failure);
+                            if (!closed.get()) {
+                                publish(new FailedEvent<>(failure));
+                            } else if (!(failure instanceof InterruptedException)) {
+                                // close() cancels the producer task with
+                                // interruption. The interrupt used to stop
+                                // its blocked body is an expected cancellation,
+                                // not a failed defer/finally. Preserve all
+                                // other cleanup errors, including exceptions
+                                // raised while unwinding after cancellation.
+                                closeFailure.compareAndSet(null, failure);
+                            }
                         }
                         return null;
                     });
