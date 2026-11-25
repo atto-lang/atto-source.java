@@ -90,3 +90,7 @@ orders, plus five denied edges. These are test candidates, not executed receipts
 The lane is still bounded: grouped and namespace imports inside providers,
 relative source dependencies, multi-file namespaces, and general CLI linking
 remain outside this profile.
+
+## Strict ZIP32 transport envelope
+
+The frozen preview uses single-disk ZIP32, stored or deflated ASCII-named entries, no archive comment or trailing bytes, and contiguous non-overlapping local records. The complete central directory and end record must be present, and central/local names, offsets, flags, sizes and CRCs must agree. Supported data descriptors must agree with the central record. Decoded content is checked against that inventory before SHA-256 snapshot admission. No ZIP extraction or filesystem discovery. This is deliberately a bounded transport subset, not a normative general-purpose ZIP reader. Valid production trust still comes from independently supplied lock pins, not CRCs.
