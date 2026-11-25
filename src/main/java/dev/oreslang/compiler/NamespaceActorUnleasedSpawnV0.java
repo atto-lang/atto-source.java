@@ -24,8 +24,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The parser creates the same AST used for ordinary Atto programs, but
  * this stage admits only one fully checked shared actor plus an exact
- * pure-literal main script: const spawn, direct ActorRef.send(int), bounded
- * constant-count for sends, and a scalar return. No guest object, host
+ * closed-world main script: const spawn, direct ActorRef.send(int), bounded
+ * constant-count for sends, and either a literal or a single checked actor
+ * output-value projection after verified mailbox drain. No guest object, host
  * executor, mutable state loan, reflection callback or privileged descriptor
  * crosses the source boundary. The general TypeChecker stays fail closed for
  * every source form not proven by this complete AST admission.</p>
@@ -49,7 +50,8 @@ public final class NamespaceActorUnleasedSpawnV0 {
         }
     }
     private record Plan(Ast.Program program, String codeUnitId,
-                        String actorType, List<Action> actions, long result) {
+                        String actorType, List<Action> actions, long result,
+                        String outputVariable) {
         private Plan { actions = List.copyOf(actions); }
     }
 
@@ -71,8 +73,12 @@ public final class NamespaceActorUnleasedSpawnV0 {
         // Validate the complete actor IR at parse/admission time, before a
         // guest root is installed. Each invocation gets a fresh image later.
         try (SharedCodeImageStore images = new SharedCodeImageStore()) {
-            NamespaceActorCriticalIrCompiler.compileForVerifiedMain(
+            var code = NamespaceActorCriticalIrCompiler.compileForVerifiedMain(
                     images.publish(codeUnitId, program));
+            if (plan.outputVariable() != null
+                    && !NamespaceActorCriticalIrCompiler.emitsScalarOutput(code)) {
+                throw reject("output projection requires native actor receive to emit checked scalar output");
+            }
         }
         return new GuestRoot(language, plan).getCallTarget();
     }
@@ -119,17 +125,21 @@ public final class NamespaceActorUnleasedSpawnV0 {
         List<Action> actions = new ArrayList<>();
         Map<String, Long> sent = new LinkedHashMap<>();
         long returnValue = 0L;
+        String outputVariable = null;
         long totalMessages = 0L;
         boolean finished = false;
         for (int index = 0; index < main.body().size(); index++) {
             Ast.Stmt statement = main.body().get(index);
             if (statement instanceof Ast.ReturnStmt ret) {
-                if (index != main.body().size() - 1
-                        || !(ret.value() instanceof Ast.LiteralExpr literal)
-                        || !(literal.value() instanceof Long n)) {
-                    throw reject("main needs exactly one final signed-i64 return");
+                if (index != main.body().size() - 1) {
+                    throw reject("main return must be final");
                 }
-                returnValue = n;
+                if (ret.value() instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof Long number) {
+                    returnValue = number;
+                } else {
+                    outputVariable = verifyOutputProjection(ret.value(), sent);
+                }
                 finished = true;
             } else if (statement instanceof Ast.BindingStmt binding) {
                 if (binding.kind() != Ast.BindingKind.CONST
@@ -150,6 +160,8 @@ public final class NamespaceActorUnleasedSpawnV0 {
                 Send send = verifySend(expression.expression(), sent, 1);
                 actions.add(send);
                 totalMessages = Math.addExact(totalMessages, send.count());
+                sent.put(send.variable(), Math.addExact(
+                        sent.get(send.variable()), (long) send.count()));
             } else if (statement instanceof Ast.ForStmt loop) {
                 int count = verifyBoundedLoop(loop, sent);
                 if (loop.body().size() != 1
@@ -159,6 +171,8 @@ public final class NamespaceActorUnleasedSpawnV0 {
                 Send send = verifySend(call.expression(), sent, count);
                 actions.add(send);
                 totalMessages = Math.addExact(totalMessages, count);
+                sent.put(send.variable(), Math.addExact(
+                        sent.get(send.variable()), (long) send.count()));
             } else {
                 throw reject("no arbitrary calls, actor aliases, state reads or effects in main");
             }
@@ -167,7 +181,33 @@ public final class NamespaceActorUnleasedSpawnV0 {
                 || totalMessages > 4096) {
             throw reject("main must spawn actors, send 1..4096 values and return");
         }
-        return new Plan(program, codeUnitId, actorType, actions, returnValue);
+        // Output is an immutable scalar projection after drain, not a
+        // mailbox sender, critical-state alias or arbitrary guest callback.
+        // Exactly one event per actor guarantees bounded output queues and
+        // an unambiguous first output. Keep larger streams for general async
+        // source lowering, not this temporary host-side script bridge.
+        if (outputVariable != null) {
+            if (sent.get(outputVariable) != 1L
+                    || sent.values().stream().anyMatch(n -> n != 1L)) {
+                throw reject("output readback requires exactly one checked send per spawned actor");
+            }
+        }
+        return new Plan(program, codeUnitId, actorType, actions, returnValue, outputVariable);
+    }
+
+    private static String verifyOutputProjection(
+            Ast.Expr expression, Map<String, Long> sent) {
+        if (!(expression instanceof Ast.CallExpr call)
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()
+                || !call.arguments().isEmpty()
+                || !(call.callee() instanceof Ast.MemberExpr member)
+                || !member.member().equals("output_value")
+                || !(member.receiver() instanceof Ast.NameExpr receiver)
+                || !sent.containsKey(receiver.name())) {
+            throw reject("main may only project verified actor.output_value()");
+        }
+        return receiver.name();
     }
 
     private static Send verifySend(Ast.Expr expression,
@@ -266,7 +306,9 @@ public final class NamespaceActorUnleasedSpawnV0 {
                                 images.publish(plan.codeUnitId(), plan.program()));
                 var descriptor = NamespaceActorCriticalIrCompiler.descriptor(code);
                 if (!descriptor.actorName().equals(plan.actorType())
-                        || descriptor.codeImage() != code.codeImage()) {
+                        || descriptor.codeImage() != code.codeImage()
+                        || (plan.outputVariable() != null
+                            && !NamespaceActorCriticalIrCompiler.emitsScalarOutput(code))) {
                     throw new SecurityException("actor code image/descriptor mismatch");
                 }
                 Map<String, ActorRuntime.ActorRef<Object>> refs = new LinkedHashMap<>();
@@ -303,7 +345,19 @@ public final class NamespaceActorUnleasedSpawnV0 {
                                     "source actor mailbox receipt invalid or incorrect");
                         }
                     }
-                    return plan.result();
+                    if (plan.outputVariable() == null) return plan.result();
+                    var resultActor = refs.get(plan.outputVariable());
+                    if (resultActor == null || !resultActor.isAlive()) {
+                        throw new SecurityException("checked output actor is no longer live");
+                    }
+                    var next = resultActor.outputs().next().get(5, TimeUnit.SECONDS);
+                    if (next.done() || next.value() == null
+                            || !next.value().actorId().equals(resultActor.id())
+                            || next.value().sequence() != 0L
+                            || !(next.value().value() instanceof Long output)) {
+                        throw new SecurityException("checked actor output is missing or has invalid identity/type");
+                    }
+                    return output;
                 } finally {
                     for (var ref : refs.values()) {
                         ref.stop();
