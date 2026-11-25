@@ -54,4 +54,26 @@ final class FrozenPackageCommandTest {
         Files.writeString(guest,"import pkg '"+NAME+"' as p; pub fnc main()->int{return p.network.missing(40);}");
         assertNotEquals(0,OresMain.exitStatusForArgs(command("check-frozen",guest,good,pin)));
     }
+    @Test void archiveTransportRejectsCentralDirectoryTruncationAndInconsistency()throws Exception {
+        byte[] lock=bytes("[lock]\nmanifest_sha256 = \""+sha(bytes(MANIFEST))+"\"\n[files]\n\""+PATH+"\" = \""+sha(bytes(SOURCE))+"\"\n");
+        String pin=sha(lock);
+        Path good=archive("intact.zip",lock,SOURCE,null);
+        byte[] valid=Files.readAllBytes(good);
+        int eocd=valid.length-22;
+        int central=java.nio.ByteBuffer.wrap(valid,eocd+16,4).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt();
+        assertTrue(central>0&&central<eocd);
+        assertEquals(SOURCE,dev.oreslang.imports.FrozenPackageArchive.read(good,NAME,VERSION,pin).providerSource("network"));
+        var truncated=Arrays.copyOf(valid,central);
+        var trailing=Arrays.copyOf(valid,valid.length+1);
+        var changedName=valid.clone();changedName[central+46]^=1;
+        var changedOffset=valid.clone();changedOffset[central+42]^=1;
+        var changedCrc=valid.clone();changedCrc[central+16]^=1;
+        var changedCount=valid.clone();changedCount[eocd+10]^=1;
+        for(byte[] bad:List.of(truncated,trailing,changedName,changedOffset,changedCrc,changedCount)) {
+            Path file=root.resolve("invalid.zip");
+            Files.write(file,bad);
+            var failure=assertThrows(java.io.IOException.class,()->dev.oreslang.imports.FrozenPackageArchive.read(file,NAME,VERSION,pin));
+            assertTrue(failure.getMessage().startsWith("E_IMPORT_PATH:"),failure.getMessage());
+        }
+    }
 }
