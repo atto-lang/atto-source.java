@@ -37,9 +37,21 @@ public final class FrozenScalarImportCompiler {
         }
 
         public int run(ExecutionProfile profile) {
-            // Use the existing restricted runtime, prechecked AST and static
-            // linked-unit protocol. No runtime alias values or host interop.
-            try(Context ctx=IsolatePolicy.strictFaas().restrictedContextBuilder(profile).build()) {
+            return execute(IsolatePolicy.strictFaas().restrictedContextBuilder(profile));
+        }
+
+        // Package-private test seam, never selected by the production CLI.
+        // Only trusted, bounded fixtures may use the in-process interpreter.
+        int runTrustedFixture(ExecutionProfile profile) {
+            var policy=new IsolatePolicy(Set.of(),128L*1024*1024,1024,
+                java.time.Duration.ofSeconds(30),false);
+            return execute(policy.restrictedContextBuilder(profile));
+        }
+
+        private int execute(Context.Builder builder) {
+            // Prechecked AST and static linked-unit protocol. No runtime
+            // alias values or host interop.
+            try(Context ctx=builder.build()) {
                 var units=new TreeMap<String,Value>();
                 for(var unit:build.units().values()) {
                     Source source=Source.newBuilder(OresLanguage.ID,unit.sourceText(),unit.unitId())
