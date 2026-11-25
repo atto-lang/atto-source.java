@@ -334,6 +334,45 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
     }
 
     /**
+     * Opt-in trusted launcher admission for the physical DATA lane. A null
+     * result means backpressure before authentication/sequence consumption;
+     * retry the identical owned frame, never skip it. The caller must use a
+     * tenant-owned quota shared by all sessions and separately reserve
+     * retained-frame/mailbox bytes before calling. Not a guest entrypoint.
+     *
+     * CONTROL uses its independently admitted transport path; never choose
+     * this API or the CONTROL path based solely on attacker-provided bytes.
+     */
+    Frame tryAcceptWorkerDataFrame(byte[] wire, ActorDataDecodeQuotaV1 quota) {
+        Objects.requireNonNull(wire, "wire");
+        Objects.requireNonNull(quota, "quota");
+        // Bounded before the snapshot and all parser/MAC allocations.
+        if (wire.length < MIN_FRAME_BYTES ||
+                wire.length > HEADER_BYTES + MAX_PAYLOAD_BYTES + HMAC_BYTES) {
+            synchronized (this) {
+                requireNotTerminal("accept IPC worker DATA frame");
+                poison();
+            }
+            throw new ProtocolException(Reason.MALFORMED, "IPC DATA frame size outside bounds");
+        }
+        // Conservative logical transient charge for snapshot, payload copies
+        // and MAC work. Not an assertion of exact physical heap consumption.
+        long charge = 8L * wire.length + 4096L;
+        ActorDataDecodeQuotaV1.Lease lease = quota.tryReserve(charge);
+        if (lease == null) return null;
+        try (lease) {
+            synchronized (this) {
+                Frame frame = acceptWorkerFrame(wire);
+                if (frame.lane() != Lane.DATA || frame.kind() != FrameKind.OUTPUT) {
+                    poison();
+                    throw new ProtocolException(Reason.STATE, "non-DATA frame on DATA transport");
+                }
+                return frame;
+            }
+        }
+    }
+
+    /**
      * Encode a supervisor DATA frame after READY. This is a pure byte-frame
      * producer; a later transport layer owns actual write/backpressure.
      */
