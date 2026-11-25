@@ -23,6 +23,9 @@ on:
       - 'src/main/java/dev/oreslang/imports/FrozenZipDirectory.java'
       - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/runtime/TraceParent.java'
+      - 'src/test/java/dev/oreslang/runtime/TraceParentTest.java'
+      - 'src/main/resources/META-INF/native-image/dev.oreslang/oreslang/native-image.properties'
       - 'pom.xml'
 permissions:
   contents: read
@@ -51,7 +54,7 @@ jobs:
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
-          mvn -B -Dtest=ContextualImportPathTest,StaticImportGraphTest,FrozenImportSnapshotTest,FrozenPackageCommandTest#actualLauncherChecksFrozenArchiveAndRejectsTampering+archiveTransportRejectsCentralDirectoryTruncationAndInconsistency,FrozenDependencyGraphTest -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -Dtest=ContextualImportPathTest,StaticImportGraphTest,FrozenImportSnapshotTest,FrozenPackageCommandTest#actualLauncherChecksFrozenArchiveAndRejectsTampering+archiveTransportRejectsCentralDirectoryTruncationAndInconsistency,FrozenDependencyGraphTest,TraceParentTest -Dsurefire.failIfNoSpecifiedTests=true test
       - name: Strict production isolate CLI gate (no fallback)
         run: |
           set -eu

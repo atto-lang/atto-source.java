@@ -14,7 +14,6 @@ import java.util.Optional;
  */
 public record TraceParent(String traceId, String spanId, int flags) {
     private static final int HEADER_LENGTH = 55;
-    private static final SecureRandom RANDOM = new SecureRandom();
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     public TraceParent {
@@ -73,7 +72,7 @@ public record TraceParent(String traceId, String spanId, int flags) {
     private static String randomHex(int bytes) {
         byte[] entropy = new byte[bytes];
         for (int attempt = 0; attempt < 16; attempt++) {
-            RANDOM.nextBytes(entropy);
+            TraceParentEntropy.nextBytes(entropy);
             boolean anyNonzero = false;
             for (byte b : entropy) anyNonzero |= b != 0;
             if (!anyNonzero) continue;
@@ -109,4 +108,15 @@ public record TraceParent(String traceId, String spanId, int flags) {
         return (value >= '0' && value <= '9')
                 || (value >= 'a' && value <= 'f');
     }
+}
+
+/**
+ * Separate lazy class initialization keeps cryptographic entropy out of the
+ * native image heap. Explicitly initialized at runtime by native-image.properties.
+ * Parsing and formatting TraceParent do not initialize the random generator.
+ */
+final class TraceParentEntropy {
+    private static final SecureRandom RANDOM = new SecureRandom();
+    private TraceParentEntropy() {}
+    static void nextBytes(byte[] bytes) { RANDOM.nextBytes(bytes); }
 }
