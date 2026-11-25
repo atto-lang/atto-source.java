@@ -435,6 +435,15 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                 bytes > 16L * MAX_PAYLOAD_BYTES || transientBudget == null ||
                 retainedBudget == null || transientBudget == retainedBudget)
             throw new IllegalArgumentException("invalid DATA queue binding");
+        if (messagePackDecoder != null) {
+            long expanded = messagePackDecoder.expandedLimit() + 4096L;
+            long maxWire = Math.min(bytes, (long)messagePackDecoder.wireLimit()
+                    + HEADER_BYTES + HMAC_BYTES);
+            if (maxWire < MIN_FRAME_BYTES || !retainedBudget.canFit(maxWire + expanded, 2)
+                    || !transientBudget.canFit(expanded, 1)
+                    || !transientBudget.canFit(8L * maxWire + 4096L, 1))
+                throw new IllegalArgumentException("typed DATA budget cannot admit a full configured frame");
+        }
         dataQueue = new DataDelivery[slots];
         maxQueuedBytes = bytes;
         transientQuota = transientBudget;
@@ -488,6 +497,11 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
                 wire.length > HEADER_BYTES + MAX_PAYLOAD_BYTES + HMAC_BYTES) {
             poison();
             throw new ProtocolException(Reason.MALFORMED, "IPC DATA frame size outside bounds");
+        }
+        if (messagePackDecoder != null &&
+                wire.length > messagePackDecoder.wireLimit() + HEADER_BYTES + HMAC_BYTES) {
+            poison();
+            throw new ProtocolException(Reason.MALFORMED, "typed DATA exceeds registered wire limit");
         }
         // Charge the whole wire length, a conservative retained frame bound.
         int charge = wire.length;
