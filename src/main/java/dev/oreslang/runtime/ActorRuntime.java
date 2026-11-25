@@ -4925,8 +4925,80 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Trusted host-only scalar endpoint registration. A compiler/loader must
+     * supply the exact descriptor and correctly typed ref; no guest binding
+     * or authenticated transport is installed by this method.
+     */
+    void bindSerializedI64(ActorRef<Long> ref,
+            dev.oreslang.types.PortableCodecRegistry.Descriptor descriptor,
+            long bytes, long work, int slots) {
+        requireCallerRuntimeAffinity("bind serialized DATA");
+        if (currentActorId().isPresent()) throw new SecurityException("host-only DATA registration");
+        Objects.requireNonNull(ref);
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get() || !ref.ownedBy(this)) throw new IllegalStateException("invalid DATA endpoint");
+            ActorCell<?> cell = actors.get(ref.id());
+            if (cell == null || cell.ref != ref) throw terminated(ref);
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized || cell.sealing
+                        || cell.serializedI64 != null || cell.scheduled.get()
+                        || cell.activeTurns != 0 || cell.nextUserMessageSequence != 0
+                        || ref.readyFuture.isDone()) {
+                    throw new IllegalStateException("DATA endpoint must be bound once before activation");
+                }
+                if (bytes > cell.policy.maxHeapBytes() || slots > cell.policy.maxMailboxMessages()) {
+                    throw new IllegalArgumentException("DATA decode quota exceeds endpoint policy");
+                }
+                cell.serializedI64 = new ActorDataDecodeEscrowV1(
+                        descriptor, ref.generation(), bytes, work, slots);
+            }
+        }
+    }
+
+    /**
+     * Called only by trusted ingress after transport authentication and
+     * exclusive ownership of wire bytes. The normal send path reserves
+     * the real mailbox slot before decoding and rechecks lifecycle before
+     * publishing. Temporary credits remain held through send's finally.
+     */
+    void sendSerializedI64(ActorRef<Long> ref, long epoch,
+            dev.oreslang.types.PortableCodecRegistry.Format format,
+            String schemaId, int version, String fingerprint, byte[] ownedWire) {
+        requireCallerRuntimeAffinity("send serialized DATA");
+        if (currentActorId().isPresent()) throw new SecurityException("host-only DATA ingress");
+        Objects.requireNonNull(ref);
+        Objects.requireNonNull(ownedWire);
+        if (closed.get() || !ref.ownedBy(this)) throw new IllegalStateException("invalid DATA endpoint");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref) throw terminated(ref);
+        final ActorDataDecodeEscrowV1 ingress;
+        final ActorDataDecodeEscrowV1.Ticket ticket;
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.sealing || cell.forceKillFenced)
+                throw terminated(ref);
+            ingress = cell.serializedI64;
+            if (ingress == null) throw new IllegalStateException("no pinned DATA endpoint");
+            ticket = ingress.reserve(epoch, format, schemaId, version, fingerprint, ownedWire.length);
+            if (ticket == null) throw new IllegalArgumentException("serialized DATA admission denied");
+        }
+        try {
+            sendPrepared(ref, () -> {
+                Long value = ingress.decodeForMailbox(ticket, ownedWire);
+                if (value == null) throw new IllegalArgumentException("invalid serialized scalar DATA");
+                return value;
+            });
+        } finally {
+            ingress.finishMailboxDecode(ticket);
+        }
+    }
+
     public <M> void send(ActorRef<M> ref, M message) {
+        sendPrepared(ref, () -> message);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendPrepared(ActorRef<M> ref, Supplier<M> prepareMessage) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -4938,7 +5010,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell == null || cell.ref != ref || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
@@ -4948,6 +5020,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         boolean mailboxSlotTransferred = false;
         try {
+        M message = prepareMessage.get();
         validateMessageGraph(message);
         if (cell.kind == ActorKind.UNTRUSTED) {
             rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
@@ -6704,6 +6777,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport for ordinary user messages. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
+        /** Trusted serialized scalar endpoint, guarded by lifecycleLock. */
+        private ActorDataDecodeEscrowV1 serializedI64;
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;

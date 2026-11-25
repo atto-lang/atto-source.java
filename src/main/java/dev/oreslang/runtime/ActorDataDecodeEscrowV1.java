@@ -118,6 +118,26 @@ final class ActorDataDecodeEscrowV1 {
         }
     }
 
+    // ActorRuntime uses this path instead of the standalone staging queue.
+    // Keep the temporary decode credits charged until ordinary mailbox
+    // admission has either committed or rolled back. No monitor held across
+    // runtime lifecycle locks; the caller owns this ticket exclusively.
+    Long decodeForMailbox(Ticket ticket, byte[] ownedWire) {
+        synchronized (this) {
+            if (ticket == null || !pending.containsKey(ticket) || ticket.decoding
+                    || ticket.cancelled || ownedWire == null
+                    || ownedWire.length != ticket.wireLength) return null;
+            ticket.decoding = true;
+        }
+        Object decoded = MessagePackWireV2.decode(descriptor.schemaId(),
+                MessagePackWireV2.Shape.i64(), ownedWire);
+        return decoded instanceof Long value ? value : null;
+    }
+
+    synchronized void finishMailboxDecode(Ticket ticket) {
+        release(ticket);
+    }
+
     synchronized void cancel(Ticket ticket) {
         if (!pending.containsKey(ticket)) return;
         ticket.cancelled = true;

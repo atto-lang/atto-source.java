@@ -47,7 +47,7 @@ jobs:
             src/main/java/dev/oreslang/types/PortableCodecRegistry.java \
             src/main/java/dev/oreslang/runtime/MessagePackWireV2.java \
             src/main/java/dev/oreslang/runtime/ActorDataDecodeEscrowV1.java \
-            src/test/standalone/dev/oreslang/types/ActorDataDescriptorFixture.java \
+            src/test/java/dev/oreslang/types/ActorDataDescriptorFixture.java \
             src/test/standalone/dev/oreslang/runtime/ActorDataDecodeEscrowHarness.java
           java -ea -cp "$out" dev.oreslang.runtime.ActorDataDecodeEscrowHarness
       - name: Execute cross-backend independent wire oracle
@@ -55,7 +55,7 @@ jobs:
       - name: Compile real Java actor and portable codec JUnit regressions
         run: >
           mvn -B -ntp -Dores.runtime.carriers=native
-          -Dtest=ActorTransportHardeningTest,UntrustedActorTest,PortableCodecRegistryTest,PortableCodecBudgetHardeningTest,DualSerdeBorrowBoundaryTest,SourceActorDataRoundTripTest,ActorDataSnapshotIsolationTest,ActorDataCapabilityContractTest,ActorDataCodecAdmissionTest
+          -Dtest=ActorTransportHardeningTest,UntrustedActorTest,PortableCodecRegistryTest,PortableCodecBudgetHardeningTest,DualSerdeBorrowBoundaryTest,SourceActorDataRoundTripTest,ActorDataSnapshotIsolationTest,ActorSerializedI64AdmissionTest,ActorDataCapabilityContractTest,ActorDataCodecAdmissionTest
           test
   full-runtime:
     needs: standalone-and-focused
