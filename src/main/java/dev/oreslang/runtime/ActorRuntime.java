@@ -2287,12 +2287,16 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("actor is not authorized for IPC tenant");
         }
 
-        void sendAuthenticatedIpc(M message, IpcIngressBudgetV1 budget) {
+        void sendAuthenticatedIpc(M message, IpcIngressBudgetV1 budget,IpcPinnedActorIngressV1.Session session) {
             requireSupervisorShutdownAuthority("publish authenticated IPC DATA");
             RuntimeBlockingGuard.requireBlockingHostThread("publish authenticated IPC DATA");
             if (budget == null || ipcTenantBudget != budget)
                 throw new SecurityException("IPC actor tenant authority mismatch");
-            ActorRuntime.this.send(this,message,budget);
+            ActorRuntime.this.send(this,message,budget,Objects.requireNonNull(session));
+        }
+        void closeIpcIngressSession(IpcIngressBudgetV1 budget,IpcPinnedActorIngressV1.Session session){
+            requireSupervisorShutdownAuthority("close IPC ingress session");
+            synchronized(runtimeLifecycleLock){budget.closeSession(session);}
         }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
@@ -5637,11 +5641,12 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public <M> void send(ActorRef<M> ref, M message) {
-        send(ref,message,null);
+        send(ref,message,null,null);
     }
 
     @SuppressWarnings("unchecked")
-    private <M> void send(ActorRef<M> ref, M message, IpcIngressBudgetV1 ipcBudget) {
+    private <M> void send(ActorRef<M> ref, M message, IpcIngressBudgetV1 ipcBudget,
+            IpcPinnedActorIngressV1.Session ipcSession) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -5732,7 +5737,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // Retirement shares runtimeLifecycleLock; no IPC publication
                 // can commit after retirement returns. Ordinary local sends
                 // do not acquire IPC authority or change their semantics.
-                if (ipcBudget != null && (ref.ipcTenantBudget != ipcBudget || ipcBudget.retired()))
+                if (ipcBudget != null && (ref.ipcTenantBudget != ipcBudget || ipcBudget.retired()
+                        || ipcSession==null || ipcSession.fenced()))
                     throw new IllegalStateException("IPC tenant publication fenced");
                 if (cell.kind == ActorKind.SHARED) {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);

@@ -1,0 +1,3 @@
+# Registered Protobuf wire-kind plan
+
+Derive canonical digest from immutable bounded named graph. Root is a message; fields use legal tags, sorted lookup, strict unknown/wire rejection. Shared per-pass message/depth/field/work/logical counters include packed scalars. Materialized message is ordered list of [tag, value] pairs, preserving repeated segments; varints use raw unsigned 64-bit bits in Java long, fixed32 zero-extended, fixed64 raw bits, bytes detached. No signed/zigzag/enum/default/cardinality or nominal ADT semantics; packed-only policy, not full Protobuf compatibility. Host preflight and materialization share parser; no peer-selected descriptor. Actual mailbox regression and independent digest vector, not compiler guest or physical allocation proof.

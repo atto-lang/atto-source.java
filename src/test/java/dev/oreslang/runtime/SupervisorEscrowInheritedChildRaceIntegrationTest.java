@@ -205,6 +205,10 @@ final class SupervisorEscrowInheritedChildRaceIntegrationTest {
             parent.getReady().get(5, TimeUnit.SECONDS);
             parent.send("spawn with exhausted inherited group");
             assertTrue(done.await(5, TimeUnit.SECONDS));
+            // The callback's latch fires before the active input envelope closes.
+            // Drain marks the message processed only after the envelope reservation
+            // is released; observe the original zero-credit assertion after that fence.
+            parent.drain().get(5, TimeUnit.SECONDS);
             assertInstanceOf(IllegalStateException.class, GROUP_REJECTED.get(),
                     "inherited managed-worker limit must fail admission");
             assertEquals(1, runtime.actorCount(),

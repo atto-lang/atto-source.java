@@ -22,13 +22,13 @@ verify_blob() {
 }
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java d68e0c5066b5842924d398a0c7bbecba382844ff
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java 8509358b7646db6a2efae76dfbcddee347617c36
-verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java b114aec5542a2d2c0adb6e2a2b25343297c5903c
+verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java b8ae572328743ecedc1be7206f0a5b5608782e19
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java 9f5a7f863484e23fbab47e8a549765a8ea0bb14d
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java 86e8bf385165c194355d151275bb7738571db9ae
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java 79c8bf1ec6245ff1f45de04accfc6d8832a7a1e5
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java 0d8e5a4eba9eff407b4c610ce09f1e2a1cd827d0
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java a2449b5b96b214f3e5417c4f47e923dbeee8e6dc
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowInheritedChildRaceIntegrationTest.java 484c70422b5b59e77e5482d3b23dc75257fe0294
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowInheritedChildRaceIntegrationTest.java 203e2bfeb9ccbe65302bda7da9260d12f94e4710
 
 # The existing dependency-free 557-assertion host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
