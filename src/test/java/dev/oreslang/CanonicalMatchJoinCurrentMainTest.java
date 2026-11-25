@@ -94,6 +94,46 @@ final class CanonicalMatchJoinCurrentMainTest {
     }
 
     @Test
+    void literalJoinDoesNotEraseNumericWidthOrTrustUnprovenArmLocals() {
+        assertDoesNotThrow(() -> check("""
+                fnc choose(bool flag): int {
+                    val int n = match flag over
+                        on true -> { return 42; }
+                        on false -> { return 7; }
+                    end;
+                    return n;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> check("""
+                fnc choose(bool flag): int {
+                    val int n = match flag over
+                        on true -> { return 42; }
+                        on false -> { return 7.5; }
+                    end;
+                    return n;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> check("""
+                fnc choose(bool flag): int {
+                    val i8 n = match flag over
+                        on true -> { return 128; }
+                        on false -> { return 7; }
+                    end;
+                    return 0;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> check("""
+                fnc choose(bool flag): int {
+                    val int n = match flag over
+                        on true -> { val i8 local = 7; return local; }
+                        on false -> { return 7; }
+                    end;
+                    return n;
+                }
+                """));
+    }
+
+    @Test
     void discardedValueMatchCannotSatisfyNamedCallableReturn() {
         assertThrows(IllegalArgumentException.class, () -> check("""
                 fnc choose(bool flag): int {
