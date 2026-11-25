@@ -51,7 +51,7 @@ public final class Parser {
     private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
     // Phase 1a: private file-root class aliases, registered before ordinary declarations.
     // No runtime descriptor, textual rewrite, new AST kind, or imported authority.
-    private final java.util.Set<String> localClassKeywords = new java.util.HashSet<>();
+    private final java.util.Map<String, List<Ast.TypeRef>> localClassKeywords = new java.util.LinkedHashMap<>();
     private static final java.util.Set<String> RESERVED_CUSTOM_KINDS = java.util.Set.of(
             "abstract",
             "activity",
@@ -647,7 +647,7 @@ public final class Parser {
                 // Only the contextual declaration head is changed. Ordinary class
                 // parsing/semantic validation/codegen still owns every member.
                 if (canonicalAttoSource && check(IDENT) && checkNext(IDENT)
-                        && localClassKeywords.contains(peek().lexeme())) {
+                        && localClassKeywords.containsKey(peek().lexeme())) {
                     Token kind = advance();
                     // The existing whole-file intrinsic-shadow scanner does not
                     // yet recognize custom generic headers. Keep this slice
@@ -661,7 +661,8 @@ public final class Parser {
                     validateCopyPolicyClassAnnotations(annotations);
                     validateClassModifiers(modifiers);
                     rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
+                            modifiers.visibility != Ast.Visibility.PUBLIC, annotations,
+                            localClassKeywords.get(kind.lexeme())));
                     continue;
                 }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
@@ -682,6 +683,7 @@ public final class Parser {
             rootDeclarations.add(declaration);
         }
 
+        validateLocalKeywordRequirements(imports, modules, rootDeclarations);
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         validateExports(exports, rootDeclarations);
         if (!rootDeclarations.isEmpty()) {
@@ -703,7 +705,7 @@ public final class Parser {
         if (RESERVED_CUSTOM_KINDS.contains(name.lexeme()) || COLLECTION_OF_TYPES.contains(name.lexeme())) {
             throw error(name, "KIND_RESERVED: built-in or contextual declaration name");
         }
-        if (localClassKeywords.contains(name.lexeme())) {
+        if (localClassKeywords.containsKey(name.lexeme())) {
             throw error(name, "KIND_DUPLICATE: duplicate declaration kind");
         }
         if (localClassKeywords.size() >= MAX_LOCAL_KEYWORDS) {
@@ -713,11 +715,41 @@ public final class Parser {
         if (!match(CLASS)) {
             throw error(peek(), "KIND_BASE_UNSUPPORTED: phase 1a supports class only");
         }
-        if (!check(END)) {
-            throw error(peek(), "KIND_REQUIREMENTS_UNSUPPORTED: contract resolution is not implemented in phase 1a");
+        List<Ast.TypeRef> requirements = new ArrayList<>();
+        while (matchContextualIdentifier("requires")) {
+            Token contract = consume(IDENT, "KIND_CONTRACT_UNSUPPORTED: expected a simple file-root interface name");
+            Ast.TypeRef required = Ast.TypeRef.simple(contract.lexeme());
+            if (requirements.contains(required))
+                throw error(contract, "KIND_CONTRACT_DUPLICATE: repeated requirement");
+            if (requirements.size() >= 32)
+                throw error(contract, "KIND_CONTRACT_BUDGET: too many requirements");
+            consume(SEMICOLON, "keyword requirements must end with ';'");
+            requirements.add(required);
         }
         consume(END, "expected 'end' after descriptor");
-        localClassKeywords.add(name.lexeme());
+        localClassKeywords.put(name.lexeme(), List.copyOf(requirements));
+    }
+
+    // v1b deliberately binds only unambiguous, non-generic interfaces in the
+    // same file root. No imported or module contract authority is manufactured.
+    private void validateLocalKeywordRequirements(List<Ast.ImportDecl> imports,
+            List<Ast.ModuleDecl> modules, List<Ast.Decl> declarations) {
+        for (var entry : localClassKeywords.entrySet()) {
+            for (Ast.TypeRef requirement : entry.getValue()) {
+                if (!imports.isEmpty() || !modules.isEmpty()) {
+                    throw error(peek(), "KIND_CONTRACT_SCOPE_UNSUPPORTED: local requirements do not yet support imports or modules");
+                }
+                List<Ast.Decl> matches = declarations.stream()
+                        .filter(d -> requirement.name().equals(definedName(d)))
+                        .toList();
+                if (matches.size() != 1 || !(matches.getFirst() instanceof Ast.InterfaceDecl iface)
+                        || iface.declarationKind() != Ast.InterfaceKind.INTERFACE
+                        || !iface.genericParameters().isEmpty()) {
+                    throw error(peek(), "KIND_CONTRACT_MISMATCH: expected unique local non-generic interface "
+                            + requirement.name() + " for " + entry.getKey());
+                }
+            }
+        }
     }
 
     /** `export pub Foo;` and `export pub[pkg] class Bar;` are file-level declarations. */
@@ -1557,6 +1589,12 @@ public final class Parser {
             boolean isAbstract,
             boolean filePrivateScope,
             List<Ast.Annotation> classAnnotations) {
+        return parseClass(visibility, isAbstract, filePrivateScope, classAnnotations, List.of());
+    }
+
+    private Ast.ClassDecl parseClass(Ast.Visibility visibility, boolean isAbstract,
+            boolean filePrivateScope, List<Ast.Annotation> classAnnotations,
+            List<Ast.TypeRef> requiredInterfaces) {
         String name = consumeTypeDeclarationName("expected class name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -1570,6 +1608,13 @@ public final class Parser {
             }
             interfaces = parseTypeRefList();
             consume(AS, "expected 'as' after class implements clause");
+        }
+        if (!requiredInterfaces.isEmpty()) {
+            List<Ast.TypeRef> combined = new ArrayList<>(interfaces);
+            for (Ast.TypeRef required : requiredInterfaces) {
+                if (!combined.contains(required)) combined.add(required);
+            }
+            interfaces = List.copyOf(combined);
         }
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
