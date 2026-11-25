@@ -98,7 +98,9 @@ public final class AffineDropPlanV1 {
             if (builder.returnsOwner) throw denied("owned return missing on a reachable path");
             return builder.dropAll(remaining, new Finish());
         });
-        return new Plan(owners, booleans, builder.returnsOwner, entry);
+        Plan plan = new Plan(owners, booleans, builder.returnsOwner, entry);
+        AffineDropPlanVerifierV1.verify(plan);
+        return plan;
     }
 
     private static boolean simple(Ast.TypeRef type, String name) {
