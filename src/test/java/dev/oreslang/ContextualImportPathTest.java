@@ -45,4 +45,37 @@ final class ContextualImportPathTest {
         }
         assertThrows(IllegalArgumentException.class, () -> ContextualImportPath.normalize("pkg." + "a".repeat(521), null));
     }
+    @Test void productionParserRejectsContextualPathsBeforeFileResolution() {
+        for (String source : new String[]{
+                "import self.utils;",
+                "use namespace network.http; import super.super.super.shared;",
+                "use namespace network.__atto_hidden; import super.config;",
+                "import pkg;",
+                "import pkg.config.;"}) {
+            var error = assertThrows(RuntimeException.class,
+                    () -> dev.oreslang.parser.Parser.parse(source + " pub fnc main(): int { return 42; }"));
+            assertTrue(error.getMessage().contains("E_IMPORT_PATH"), error.getMessage());
+        }
+        for (String source : new String[]{
+                "import pkg.config;",
+                "use namespace network.http; import self.utils;",
+                "use namespace network.http; import super.config;"}) {
+            var error = assertThrows(RuntimeException.class,
+                    () -> dev.oreslang.parser.Parser.parse(source + " pub fnc main(): int { return 42; }"));
+            assertTrue(error.getMessage().contains("authenticated package-export graph"), error.getMessage());
+        }
+    }
+
+    @Test void namespaceFirstBuiltinUsesExistingImportIdentity() {
+        String suffix = " pub fnc main(): int { return 42; }";
+        var expected = dev.oreslang.parser.Parser.parse("import * as n from \"core/num\";" + suffix).imports();
+        for (String source : new String[]{"core.num", "'core.num'", "\"core.num\""}) {
+            assertEquals(expected, dev.oreslang.parser.Parser.parse("import namespace n from " + source + ";" + suffix).imports());
+        }
+        for (String source : new String[]{"'./core.num'", "'@org/project/package'", "'core.unknown'"}) {
+            var error = assertThrows(RuntimeException.class,
+                    () -> dev.oreslang.parser.Parser.parse("import namespace n from " + source + ";" + suffix));
+            assertTrue(error.getMessage().contains("authenticated package-export graph"), error.getMessage());
+        }
+    }
 }
