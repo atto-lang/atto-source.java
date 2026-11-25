@@ -28,7 +28,7 @@ final class ExtensibleDeclarationPhase1Test {
         String tail = "\ndefine class Control as end";
         String[][] cases = {
             {"define keyword entity as actor end", "KIND_BASE_UNSUPPORTED"},
-            {"define keyword entity as class requires Entity; end", "KIND_REQUIREMENTS_UNSUPPORTED"},
+            {"define keyword entity as class requires Entity; end", "KIND_CONTRACT_MISMATCH"},
             {"define pub keyword entity as class end", "KIND_VISIBILITY_UNSUPPORTED"},
             {"define keyword workflow as class end", "KIND_RESERVED"},
             {"define keyword Map as class end", "KIND_RESERVED"},
@@ -64,5 +64,33 @@ final class ExtensibleDeclarationPhase1Test {
         src.append("define class Control as end");
         var e = assertThrows(IllegalArgumentException.class, () -> Parser.parseStrictAtto(src.toString()));
         assertTrue(e.getMessage().contains("KIND_BUDGET"), e::getMessage);
+    }
+    @Test void localInterfaceRequirementsElaborateToOrdinaryImplements() {
+        String iface = "define interface Entity as end\n";
+        String manual = iface + "define class Customer implements Entity as end\n";
+        String custom = "define keyword entity as class requires Entity; end\n"
+                + iface + "define entity Customer as end\n";
+        assertEquals(Parser.parseStrictAtto(manual), Parser.parseStrictAtto(custom));
+        String explicit = "define keyword entity as class requires Entity; end\n"
+                + iface + "define entity Customer as implements Entity as end\n";
+        assertEquals(Parser.parseStrictAtto(manual), Parser.parseStrictAtto(explicit));
+    }
+
+    @Test void requirementsCannotBindWrongKindOrAmbiguousNominalName() {
+        String head = "define keyword entity as class requires Entity; end\n";
+        for (String invalid : new String[] {
+                "define class Entity as end",
+                "define trait Entity as end",
+                "define interface Entity<T> as end",
+                "define interface Entity as end\ndefine interface Entity as end"
+        }) {
+            var e = assertThrows(IllegalArgumentException.class, () ->
+                    Parser.parseStrictAtto(head + invalid + "\ndefine entity Customer as end"));
+            assertTrue(e.getMessage().contains("KIND_CONTRACT_MISMATCH"), e::getMessage);
+        }
+        var duplicate = assertThrows(IllegalArgumentException.class, () ->
+                Parser.parseStrictAtto("define keyword entity as class requires Entity; requires Entity; end\n"
+                        + "define interface Entity as end\ndefine entity Customer as end"));
+        assertTrue(duplicate.getMessage().contains("KIND_CONTRACT_DUPLICATE"), duplicate::getMessage);
     }
 }
