@@ -6186,8 +6186,8 @@ public final class Parser {
     }
 
     private boolean hasBangOwnershipAlias() {
-        // Only the operation verb must be adjacent to '!'. Whitespace after
-        // '!' is valid; no ordinary identifier's trailing ! becomes a macro.
+        // The lexer requires whitespace after the complete bang suffix.
+        // The operation verb must be adjacent to '!'.
         int verbIndex = current;
         if (check(MUT)) {
             verbIndex++;
@@ -6361,9 +6361,13 @@ public final class Parser {
             return new Ast.TaskExpr(domain, parseBlock(), false);
         }
 
-        // Expression-level trap is a typed Option boundary; the declaration
-        // modifier "trap fnc" remains a distinct grammar production.
-        if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
+        // Both expression spellings lower to the same typed Result boundary.
+        // A separated logical NOT is not a keyword suffix.
+        if (match(TRAP)) {
+            Token keyword = previous();
+            if (check(BANG) && adjacent(keyword, peek())) advance();
+            return new Ast.TrapExpr(parseUnary());
+        }
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
