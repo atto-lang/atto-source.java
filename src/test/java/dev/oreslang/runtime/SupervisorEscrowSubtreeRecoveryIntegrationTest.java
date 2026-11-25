@@ -216,4 +216,62 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
             assertEquals(1, bridge.pendingCount());
         }
     }
+
+    @Test
+    void rootRecoveryUsesOneBudgetAcrossSuccessorsAndEnforcesBackoffAtAttach()
+            throws Exception {
+        // Synthetic physical verifier, not native/FFI release certification.
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> true);
+            var clock = new java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE - 50);
+            ActorRuntime.ActorRef<String> first = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        throw new IllegalStateException("first failed");
+                    });
+            long firstNode = recovery.attachRestartManagedRoot(first,
+                    new ActorSupervisorRestartCircuit.Config(1, 1, 1_000, 100, 100, 0),
+                    clock::get);
+            first.send("fail");
+            assertThrows(ExecutionException.class,
+                    () -> first.done().get(5, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(firstNode));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(firstNode), () -> { }));
+            var permit = recovery.reserveRestart(firstNode);
+            assertEquals(100L, recovery.restartDelayRemainingNanos(permit));
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(firstNode));
+
+            ActorRuntime.ActorRef<String> next = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        throw new IllegalStateException("replacement failed");
+                    });
+            clock.addAndGet(99);
+            assertEquals(1L, recovery.restartDelayRemainingNanos(permit));
+            assertThrows(IllegalStateException.class,
+                    () -> recovery.attachReplacement(permit, next, null));
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(firstNode));
+            clock.incrementAndGet();
+            assertEquals(0L, recovery.restartDelayRemainingNanos(permit));
+            long nextNode = recovery.attachReplacement(permit, next, null);
+            assertNotEquals(firstNode, nextNode);
+            assertThrows(IllegalStateException.class,
+                    () -> recovery.restartDelayRemainingNanos(permit));
+            assertThrows(IllegalStateException.class,
+                    () -> recovery.attachReplacement(permit, next, null));
+            next.send("fail again");
+            assertThrows(ExecutionException.class,
+                    () -> next.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(nextNode), () -> { }));
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(nextNode));
+            assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.RESTART_ESCALATED,
+                    recovery.restartBlocker(nextNode));
+            clock.addAndGet(2_000);
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(nextNode));
+            assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.RESTART_ESCALATED,
+                    recovery.restartBlocker(nextNode));
+        }
+    }
+
 }
