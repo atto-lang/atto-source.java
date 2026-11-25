@@ -23,7 +23,11 @@ final class SupervisorFailureEscrowRuntimeIntegrationTest {
         var defaults = IsolatePolicy.developer();
         var policy = new IsolatePolicy(defaults.capabilities(), defaults.maxHeapBytes(),
                 2, defaults.maxWallTime());
-        try (ActorRuntime runtime = new ActorRuntime()) {
+        // This test deliberately occupies one native carrier with a blocking
+        // host latch. Require a second carrier for the independent child;
+        // CPU-quota-derived defaults may legitimately provide only one.
+        var dispatcher = new ActorRuntime.DispatcherConfig(2, 1, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(defaults, dispatcher)) {
             var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
             ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivateTrusted(
                     policy, ignored -> (message, turn) -> {

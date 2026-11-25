@@ -21,14 +21,14 @@ verify_blob() {
   fi
 }
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java d68e0c5066b5842924d398a0c7bbecba382844ff
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java 96d0ff1794b614a80ce11b41d80f06e4c5934151
-verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java 48b6551bfe85913bba07998c895c1cabdb943965
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java 83e82653ffc08c63342f1c2e5b80c53513db103f
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java ee0c4d9b48fc7664e6985e84e07e2f77a6cec818
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java 8509358b7646db6a2efae76dfbcddee347617c36
+verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java b8ae572328743ecedc1be7206f0a5b5608782e19
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java 9f5a7f863484e23fbab47e8a549765a8ea0bb14d
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java 86e8bf385165c194355d151275bb7738571db9ae
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java 79c8bf1ec6245ff1f45de04accfc6d8832a7a1e5
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java 0d8e5a4eba9eff407b4c610ce09f1e2a1cd827d0
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java 2f7e31ef7bc5050f171dd4ffaee44efe7586071b
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowInheritedChildRaceIntegrationTest.java 4482ddcf22431a11c6e52e43e60200e8e485a955
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java a2449b5b96b214f3e5417c4f47e923dbeee8e6dc
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowInheritedChildRaceIntegrationTest.java 203e2bfeb9ccbe65302bda7da9260d12f94e4710
 
 # The existing dependency-free 557-assertion host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
@@ -36,7 +36,7 @@ bash scripts/verify-supervisor-failure-escrow-v1.sh
 # Compile the actual full ActorRuntime source tree and run real JUnit tests.
 mvn -B -q -Dtest=SupervisorFailureEscrowRuntimeIntegrationTest,SupervisorEscrowSubtreeRecoveryIntegrationTest,SupervisorEscrowAdmissionLinearizationIntegrationTest,SupervisorEscrowInheritedChildRaceIntegrationTest -DfailIfNoTests=true test
 
-for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:4' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:4' 'SupervisorEscrowInheritedChildRaceIntegrationTest:5'; do
+for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:4' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:4' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:4' 'SupervisorEscrowInheritedChildRaceIntegrationTest:7'; do
   suite="${spec%%:*}"
   count="${spec##*:}"
   report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
@@ -45,7 +45,7 @@ for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowS
     grep -Fq "$metric" "$report" || { echo "BAD_SUREFIRE_METRIC: $suite $metric" >&2; exit 4; }
   done
 done
-echo 'PASS exact-source supervisor runtime bridge: 16 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
+echo 'PASS exact-source supervisor runtime bridge: 19 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
 test "$(git rev-parse HEAD)" = "$actual_head" || {
   echo 'GIT_HEAD_CHANGED_DURING_TEST' >&2; exit 6;
 }

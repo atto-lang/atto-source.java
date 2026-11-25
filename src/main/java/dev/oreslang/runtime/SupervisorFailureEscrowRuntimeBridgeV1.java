@@ -80,6 +80,21 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         recovery = coordinator;
     }
 
+    boolean hasRecoveryCoordinatorFromRuntime() { return recovery != null; }
+
+    /** Runtime-only monitor: acquire after the bridge and lifecycle locks.
+     * The ledger is the single authority for DATA, failure and visibility. */
+    Object ledgerPublicationMonitorFromRuntime() {
+        if (!Thread.holdsLock(this)) throw new IllegalStateException("CONTROL bridge lock required");
+        return ledger;
+    }
+
+    private void requirePublicationTransaction() {
+        if (!Thread.holdsLock(this) || !Thread.holdsLock(ledger)) {
+            throw new IllegalStateException("CONTROL ledger publication transaction required");
+        }
+    }
+
     /** An internal mapping used only for generation-fenced replacement checks. */
     long nodeId(ActorRuntime.ActorRef<?> ref) {
         runtime.requireSupervisorShutdownAuthority("inspect trusted supervisor node identity");
@@ -100,6 +115,7 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
      * atomically against terminal failure. */
     synchronized void registerFromRuntime(
             ActorRuntime.ActorRef<?> actor, long id, long parentId) {
+        requirePublicationTransaction();
         Objects.requireNonNull(actor, "actor");
         ledger.registerChild(id, parentId, actor.generation());
         boolean mapped = false;
@@ -134,7 +150,9 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
      */
     synchronized long reserveInheritedChildFromRuntime(
             ActorRuntime.ActorRef<?> child, long parentNodeId, long parentGeneration) {
+        requirePublicationTransaction();
         Objects.requireNonNull(child, "child");
+        if (recovery == null) throw new IllegalStateException("CONTROL recovery coordinator required");
         if (!ledger.mayAdmit(parentNodeId, parentGeneration)) {
             throw new IllegalStateException("parent supervisor CONTROL is fenced or stale");
         }
@@ -162,13 +180,21 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
     synchronized void rollbackInheritedChildFromRuntime(
             ActorRuntime.ActorRef<?> child, long nodeId,
             long parentNodeId) {
+        requirePublicationTransaction();
         Objects.requireNonNull(child, "child");
         if (!Objects.equals(ids.get(child.id()), nodeId)) {
             throw new IllegalStateException("inherited CONTROL rollback identity mismatch");
         }
         ledger.rollbackUnpublishedChild(nodeId, parentNodeId, child.generation());
         SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
-        if (coordinator != null) coordinator.rollbackInheritedChildFromRuntime(nodeId, child);
+        try {
+            if (coordinator != null) coordinator.rollbackInheritedChildFromRuntime(nodeId, child);
+        } catch (RuntimeException | Error failure) {
+            if (!ids.remove(child.id(), nodeId)) {
+                failure.addSuppressed(new IllegalStateException("inherited CONTROL child mapping changed"));
+            }
+            throw failure;
+        }
         if (!ids.remove(child.id(), nodeId)) {
             throw new IllegalStateException("inherited CONTROL child mapping changed");
         }

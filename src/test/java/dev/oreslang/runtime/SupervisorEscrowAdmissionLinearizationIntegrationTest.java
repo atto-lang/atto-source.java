@@ -215,11 +215,13 @@ final class SupervisorEscrowAdmissionLinearizationIntegrationTest {
             long parentId = recovery.attach(parent, null);
             long candidateId;
             synchronized (bridge) {
+              synchronized (bridge.ledgerPublicationMonitorFromRuntime()) {
                 candidateId = bridge.reserveInheritedChildFromRuntime(
                         notPublished, parentId, parent.generation());
                 assertEquals(parentId, bridge.snapshot().get(candidateId).parentId());
                 bridge.rollbackInheritedChildFromRuntime(
                         notPublished, candidateId, parentId);
+              }
             }
             assertFalse(bridge.snapshot().containsKey(candidateId),
                     "rollback may not leave a dangling CONTROL child");
