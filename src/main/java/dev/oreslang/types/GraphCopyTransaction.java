@@ -84,6 +84,7 @@ public final class GraphCopyTransaction {
                     int child = shape instanceof DerivedGraphCopyPlan.Instance instance
                             ? instance.fields().get(i).descriptor()
                             : ((DerivedGraphCopyPlan.Sequence) shape).element();
+                    tx.pendingEdges--;
                     item.target().slots[i] = tx.edge(child, item.source().slots[i], 0);
                 }
             }
@@ -102,7 +103,7 @@ public final class GraphCopyTransaction {
         final AtomicBoolean cancelled;
         final IdentityHashMap<Cell, Memo> memo = new IdentityHashMap<>();
         final ArrayDeque<Pending> pending = new ArrayDeque<>();
-        int visits, cells, slots, stringUnits;
+        int visits, cells, slots, stringUnits, pendingEdges;
 
         Transaction(DerivedGraphCopyPlan.Graph plan, Domain domain, Limits limits,
                     AtomicBoolean cancelled) {
@@ -111,6 +112,61 @@ public final class GraphCopyTransaction {
             this.limits = limits;
             this.cancelled = cancelled;
             if (plan.nodes().isEmpty() || plan.nodes().size() > 16384) throw refused("descriptor capacity");
+            validatePlan();
+        }
+
+        // Public Graph records are data, not proof. Validate the entire closed
+        // descriptor table, including element types hidden by empty containers.
+        void validatePlan() {
+            node(plan.root());
+            int edges = 0;
+            for (var shape : plan.nodes()) {
+                checkCancellation();
+                if (shape instanceof DerivedGraphCopyPlan.Scalar scalar) {
+                    if (!java.util.Set.of("string", "String", "bool", "Bool", "i8", "i16",
+                            "i32", "int", "i64", "f32", "float", "f64").contains(scalar.typeName())) {
+                        throw refused("unsupported scalar descriptor");
+                    }
+                } else if (shape instanceof DerivedGraphCopyPlan.OptionalValue optional) {
+                    node(optional.element());
+                    edges++;
+                } else if (shape instanceof DerivedGraphCopyPlan.Sequence sequence) {
+                    if (!java.util.Set.of("Array", "List").contains(sequence.typeName())) {
+                        throw refused("unsupported sequence descriptor");
+                    }
+                    node(sequence.element());
+                    edges++;
+                } else if (shape instanceof DerivedGraphCopyPlan.Instance instance) {
+                    if (instance.className() == null || instance.fields().size() > 128) {
+                        throw refused("invalid class descriptor");
+                    }
+                    var names = new java.util.HashSet<String>();
+                    for (var field : instance.fields()) {
+                        if (field.name() == null || !names.add(field.name())) throw refused("duplicate field");
+                        node(field.descriptor());
+                        edges++;
+                    }
+                } else throw refused("unknown descriptor");
+                if (edges > 32768) throw refused("descriptor edge capacity");
+            }
+            // Inline Option-only recursion has no identity shell to close it.
+            // Color each optional chain once; class/sequence nodes terminate it.
+            byte[] colors = new byte[plan.nodes().size()];
+            for (int i = 0; i < colors.length; i++) {
+                int cursor = i;
+                while (node(cursor) instanceof DerivedGraphCopyPlan.OptionalValue optional
+                        && colors[cursor] == 0) {
+                    colors[cursor] = 1;
+                    cursor = optional.element();
+                }
+                if (colors[cursor] == 1) throw refused("inline optional descriptor cycle");
+                cursor = i;
+                while (node(cursor) instanceof DerivedGraphCopyPlan.OptionalValue optional
+                        && colors[cursor] == 1) {
+                    colors[cursor] = 2;
+                    cursor = optional.element();
+                }
+            }
         }
 
         void checkCancellation() {
@@ -158,11 +214,12 @@ public final class GraphCopyTransaction {
                 return old.target();
             }
             if (cells >= limits.cells() || source.slots.length > limits.slots() - slots
-                    || source.slots.length > limits.visits() - visits) {
+                    || source.slots.length > limits.visits() - visits - pendingEdges) {
                 throw refused("allocation/work budget");
             }
             cells++;
             slots += source.slots.length;
+            pendingEdges += source.slots.length;
             Cell target = new Cell(domain, source.name, source.sequence, source.slots.length);
             memo.put(source, new Memo(id, target)); // before following any outgoing edge
             pending.addLast(new Pending(id, source, target));
