@@ -492,6 +492,67 @@ final class ActorPubSubConcurrencyTest {
         }
     }
 
+    @Test
+    void scopedSubscriptionCannotCommitAfterPublisherRevocationWinsFence() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            group.events().topic("scope-fence", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            var joined = new CountDownLatch(2);
+            var attempting = new CountDownLatch(1);
+            var done = new CountDownLatch(1);
+            var problem = new AtomicReference<Throwable>();
+            var edge = new AtomicReference<ActorEventBus.Subscription<String>>();
+            var publisher = runtime.<String>spawnShared(() -> (message, context) -> {
+                join.join();
+                joined.countDown();
+            });
+            var observer = runtime.<String>spawnShared(() -> (message, context) -> {
+                if ("join".equals(message)) {
+                    join.join();
+                    joined.countDown();
+                    return;
+                }
+                attempting.countDown();
+                try {
+                    edge.set(group.events().subscribePublisher("scope-fence", publisher));
+                } catch (Throwable failure) {
+                    problem.set(failure);
+                } finally {
+                    done.countDown();
+                }
+            });
+            try {
+                publisher.send("join");
+                observer.send("join");
+                assertTrue(joined.await(5, TimeUnit.SECONDS));
+                group.withEventAdmissionMembershipFence(() -> {
+                    observer.send("subscribe");
+                    try {
+                        assertTrue(attempting.await(5, TimeUnit.SECONDS));
+                        // The observer must not publish a subscription while
+                        // this carrier owns the authoritative membership fence.
+                        assertFalse(done.await(100, TimeUnit.MILLISECONDS));
+                        group.leave(publisher);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                    return null;
+                });
+                assertTrue(done.await(5, TimeUnit.SECONDS));
+                assertInstanceOf(SecurityException.class, problem.get());
+                assertNull(edge.get());
+                assertEquals(0, group.events().tryPublishReliableSystem(
+                        "scope-fence", "no edge").orElseThrow().accepted());
+                assertEquals(0L, runtime.sharedMemoryBytes());
+            } finally {
+                observer.stop();
+                publisher.stop();
+            }
+        }
+    }
+
     private static ActorRuntime.ActorRef<String> publisher(
             ActorRuntime runtime,
             ActorRuntime.ActorGroupJoinCapability join,
