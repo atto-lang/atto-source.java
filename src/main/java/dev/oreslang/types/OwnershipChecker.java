@@ -1348,7 +1348,10 @@ public final class OwnershipChecker {
                     }
                     yield taken;
                 }
-                case "copy" -> {
+                case "copy", "copy_deep" -> {
+                    // The explicit deep mode currently shares the verified
+                    // acyclic plan only; recursive graph execution remains
+                    // unadmitted until real guest ownership proof exists.
                     ValueInfo source = checkExpr(argument, scope, false);
                     CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
                     if (projected != null && projected.noCopy()) {
