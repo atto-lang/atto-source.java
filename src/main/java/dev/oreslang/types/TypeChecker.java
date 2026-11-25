@@ -202,6 +202,8 @@ public final class TypeChecker {
         if (map.putIfAbsent(qualified, value) != null) {
             throw new IllegalArgumentException("duplicate " + kind + " '" + qualified + "'; fnc/routine declarations cannot overload");
         }
+        // Once ambiguous, a third declaration must not resurrect the short name.
+        if (ambiguous.contains(name)) return;
         T previous = map.putIfAbsent(name, value);
         if (previous != null && previous != value) {
             ambiguous.add(name);
@@ -7351,7 +7353,9 @@ public final class TypeChecker {
     /** One-step iso-recursive unfolding for structural data compatibility. */
     private Type unfoldRecursiveAlias(Named reference) {
         String qualified = reference.name().substring("$recursive_alias$".length());
-        Ast.TypeAliasDecl alias = findTypeAlias(qualified);
+        // A recursive knot names its declaration, not a caller-visible short alias.
+        Ast.TypeAliasDecl alias = typeAliases.get(qualified.contains(".")
+                ? qualified : "__root__." + qualified);
         if (alias == null) {
             throw new IllegalArgumentException("unknown recursive alias marker '" + qualified + "'");
         }
@@ -7363,13 +7367,16 @@ public final class TypeChecker {
                 .map(Ast.TypeRef::simple).toList();
         AliasFrame previous = resolvingAliases.put(alias, new AliasFrame(0, symbolicArguments));
         int previousDepth = recursiveAliasGuardDepth;
+        String previousModule = currentLexicalModule;
         recursiveAliasGuardDepth = 0;
+        currentLexicalModule = typeAliasOwners.get(alias);
         try {
             Type body = resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
             return substituteGenerics(body, genericBindings(
                     alias.genericParameters(), reference.arguments(), "recursive alias " + qualified));
         } finally {
             recursiveAliasGuardDepth = previousDepth;
+            currentLexicalModule = previousModule;
             if (previous == null) resolvingAliases.remove(alias);
             else resolvingAliases.put(alias, previous);
         }
@@ -7660,6 +7667,10 @@ public final class TypeChecker {
     }
 
     private Ast.TypeAliasDecl findTypeAlias(String name) {
+        if (currentLexicalModule != null && !name.contains(".")) {
+            Ast.TypeAliasDecl local = typeAliases.get(currentLexicalModule + "." + name);
+            if (local != null) return local;
+        }
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
     }
