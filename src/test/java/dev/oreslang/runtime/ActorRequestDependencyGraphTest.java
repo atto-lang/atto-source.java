@@ -82,4 +82,30 @@ final class ActorRequestDependencyGraphTest {
         }
         assertEquals(0, graph.activeCount());
     }
+
+    @Test
+    void convergentDependencyPathsRejectCyclesAndRestoreAllCapacity() {
+        var graph = new ActorRequestDependencyGraph(64);
+        var leases = new java.util.ArrayList<ActorRequestDependencyGraph.Lease>();
+        var root = actor("root");
+        var sink = actor("sink");
+        for (int n = 0; n < 32; n++) {
+            var branch = actor("branch" + n);
+            leases.add(graph.suspendUntilReply(root, branch));
+            leases.add(graph.suspendUntilReply(branch, sink));
+        }
+        assertEquals(64, graph.activeCount());
+        assertThrows(ActorRequestDependencyGraph.CyclicRequestException.class,
+                () -> graph.suspendUntilReply(sink, root));
+        assertEquals(64, graph.activeCount());
+        for (var lease : leases) {
+            lease.close();
+            lease.close();
+        }
+        assertEquals(0, graph.activeCount());
+        try (var reverse = graph.suspendUntilReply(sink, root)) {
+            assertEquals(1, graph.activeCount());
+        }
+        assertEquals(0, graph.activeCount());
+    }
 }
