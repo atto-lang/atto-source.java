@@ -1,0 +1,57 @@
+name: Authenticated IPC DATA admission v1 (host only)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorIpcSessionV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorDataDecodeQuotaV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorIpcCodecProfileV1.java'
+      - 'src/main/java/dev/oreslang/runtime/MessagePackWireV2.java'
+      - 'src/test/standalone/**/MessagePackWireV2Harness.java'
+      - 'src/test/standalone/**/ActorIpcCodecProfileV1Harness.java'
+      - 'src/test/**/ActorIpcSessionV1Test.java'
+      - 'src/test/**/ActorArtifactAdmissionTest.java'
+      - 'src/test/standalone/**/ActorDataDecodeQuotaV1*.java'
+      - '.github/workflows/ipc-bound-data-admission-v1.yml'
+  push:
+    branches: [draft/ipc-tenant-data-admission-v1-20261124]
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Exact source identity and standalone quota
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          git rev-parse 'HEAD^{tree}'
+          java -version
+          mkdir -p "$RUNNER_TEMP/quota"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/quota" src/main/java/dev/oreslang/runtime/ActorDataDecodeQuotaV1.java src/test/standalone/dev/oreslang/runtime/ActorDataDecodeQuotaV1Harness.java src/test/standalone/dev/oreslang/runtime/ActorDataDecodeQuotaV1Contention.java
+          java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.ActorDataDecodeQuotaV1Harness
+          java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.ActorDataDecodeQuotaV1Contention
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/quota" src/main/java/dev/oreslang/runtime/ActorIpcCodecProfileV1.java src/test/standalone/dev/oreslang/runtime/ActorIpcCodecProfileV1Harness.java
+          java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.ActorIpcCodecProfileV1Harness
+          javac -Xlint:all -Werror -cp "$RUNNER_TEMP/quota" -d "$RUNNER_TEMP/quota" src/main/java/dev/oreslang/runtime/MessagePackWireV2.java src/test/standalone/dev/oreslang/runtime/MessagePackWireV2Harness.java
+          java -cp "$RUNNER_TEMP/quota" dev.oreslang.runtime.MessagePackWireV2Harness
+      - name: Execute actual IPC and runtime artifact host tests
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ActorIpcSessionV1Test,ActorArtifactAdmissionTest -Dsurefire.failIfNoSpecifiedTests=true test
+          for name in ActorIpcSessionV1Test ActorArtifactAdmissionTest; do
+            test -s "target/surefire-reports/TEST-dev.oreslang.runtime.$name.xml"
+          done
+          echo 'GUEST_CONFORMANCE=NOT_EXECUTED'

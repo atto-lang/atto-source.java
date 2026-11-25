@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.ast.Ast;
+
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Array;
@@ -433,6 +435,23 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
+    // One bounded account per runtime security domain. This is not a global
+    // TenantVM registry: a tenant spanning runtimes needs an upstream budget.
+    // Guarded by runtimeLifecycleLock; sessions never call back into runtime.
+    private final Map<UUID, ActorIpcSessionV1> boundIpcRoutes = new java.util.HashMap<>();
+    // Explicit trusted host forwarding only. No worker-chosen receiver or
+    // impersonation of a guest actor sender. Guarded by runtimeLifecycleLock.
+    private final Map<UUID, ActorRef<String>> ipcStringReceivers = new java.util.HashMap<>();
+    private record IpcStringHandoff(ActorIpcSessionV1 session,
+            ActorIpcSessionV1.DecodedData decoded) { }
+    // Retain a bounded high-water mark for every issued route until runtime
+    // shutdown. Never evict a tombstone to make a stale epoch valid again.
+    private record IpcRouteWatermark(long incarnation, long epoch, String codecCommitment, boolean typed) { }
+    private final Map<UUID, IpcRouteWatermark> ipcRouteWatermarks = new java.util.HashMap<>();
+    private final ActorDataDecodeQuotaV1 ipcTransientQuota =
+            new ActorDataDecodeQuotaV1(32L * 1024 * 1024, 64);
+    private final ActorDataDecodeQuotaV1 ipcRetainedQuota =
+            new ActorDataDecodeQuotaV1(16L * 1024 * 1024, 4096);
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     /** Read-only parent-observable streams retained until drained/runtime close. */
@@ -542,6 +561,245 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    /**
+     * Host/supervisor admission boundary for a prebuilt IPC actor executable.
+     *
+     * <p>The runtime's actual policy ceiling is used as authority; callers
+     * cannot pass a fabricated supervisor policy. Minting an executable actor
+     * capability requires spawn, IPC, child-process and hot-code authority.
+     * This method does not launch a process.</p>
+     */
+    public <T> ActorArtifact<T> admitIpcActorArtifact(
+            String actorTypeName,
+            Ast.ActorKind actorKind,
+            ActorArtifactAdmission.Manifest manifest,
+            byte[] exactArtifactBytes,
+            ActorArtifactAdmission.TrustedBuildAttestation attestation,
+            ActorArtifactAdmission.TrustedBuildAttestationPolicy attestationPolicy,
+            ActorArtifactAdmission.TrustedKeyPolicy keyPolicy,
+            ActorArtifactAdmission.TargetPolicy targetPolicy,
+            IsolatePolicy workerPolicy) {
+        requireSupervisorContext("admit IPC actor artifact");
+        for (IsolatePolicy.Capability capability : List.of(
+                IsolatePolicy.Capability.ACTOR_SPAWN,
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS,
+                IsolatePolicy.Capability.HOT_CODE_LOAD)) {
+            if (!policyCeiling.allows(capability)) {
+                throw new SecurityException(
+                        capability + " capability required to admit IPC actor artifact");
+            }
+        }
+        return ActorArtifactAdmission.admitIpcActor(
+                runtimeInstanceId,
+                actorTypeName,
+                actorKind,
+                manifest,
+                exactArtifactBytes,
+                attestation,
+                attestationPolicy,
+                keyPolicy,
+                targetPolicy,
+                policyCeiling,
+                workerPolicy);
+    }
+
+    /** Trusted runtime affinity check used by the future IPC launcher. */
+    boolean ownsActorArtifact(ActorArtifact<?> artifact) {
+        return artifact != null && artifact.admittedForRuntime(runtimeInstanceId);
+    }
+
+    /**
+     * Create authenticated IPC session state for one logical route. This does
+     * not spawn a process or allocate a transport; the future launcher must
+     * separately claim the one-shot bootstrap material and bind it to the
+     * exact admitted executable.
+     */
+    public ActorIpcSessionV1 openIpcSession(
+            ActorArtifact<?> artifact,
+            UUID logicalActorId,
+            long incarnation,
+            long routeEpoch) {
+        requireSupervisorContext("open authenticated IPC actor session");
+        if (closed.get()) {
+            throw new IllegalStateException("actor runtime is closed");
+        }
+        if (!ownsActorArtifact(artifact)) {
+            throw new SecurityException(
+                    "actor artifact was not admitted by this runtime");
+        }
+        for (IsolatePolicy.Capability capability : List.of(
+                IsolatePolicy.Capability.ACTOR_SPAWN,
+                IsolatePolicy.Capability.IPC,
+                IsolatePolicy.Capability.CHILD_PROCESS)) {
+            if (!policyCeiling.allows(capability)) {
+                throw new SecurityException(
+                        capability + " capability required to open IPC actor session");
+            }
+        }
+        return ActorIpcSessionV1.create(
+                artifact,
+                Objects.requireNonNull(logicalActorId, "logicalActorId"),
+                incarnation,
+                routeEpoch);
+    }
+
+    /**
+     * Trusted launcher path: bind exactly one active session per logical route
+     * to this runtime's shared DATA accounts. This does not launch a process
+     * or admit decoded guest messages; the old framing-only API is unchanged.
+     */
+    ActorIpcSessionV1 openBoundIpcSession(ActorArtifact<?> artifact,
+            UUID logicalActorId, long incarnation, long routeEpoch,
+            int slots, long bytes) {
+        return openBoundIpcSessionInternal(artifact, logicalActorId, incarnation, routeEpoch,
+                slots, bytes, null, 0, 0, null, null);
+    }
+
+    /** New opt-in path; registry masks and profile are trusted host metadata. */
+    ActorIpcSessionV1 openCodecBoundIpcSession(ActorArtifact<?> artifact,
+            UUID logicalActorId, long incarnation, long routeEpoch, int slots, long bytes,
+            ActorIpcCodecProfileV1 profile, int allowed, int supported) {
+        Objects.requireNonNull(profile, "codec profile");
+        return openBoundIpcSessionInternal(artifact, logicalActorId, incarnation, routeEpoch,
+                slots, bytes, profile, allowed, supported, null, null);
+    }
+
+    /** Trusted launcher registration, no guest-visible API or decoder sniffing. */
+    ActorIpcSessionV1 openMessagePackBoundIpcSession(ActorArtifact<?> artifact,
+            UUID logicalActorId, long incarnation, long routeEpoch, int slots, long bytes,
+            ActorIpcCodecProfileV1 profile, int allowed, int supported,
+            MessagePackWireV2.Shape shape, MessagePackWireV2.DecodeLimits limits) {
+        Objects.requireNonNull(profile, "codec profile");
+        Objects.requireNonNull(shape, "compiler shape");
+        Objects.requireNonNull(limits, "decode limits");
+        return openBoundIpcSessionInternal(artifact, logicalActorId, incarnation, routeEpoch,
+                slots, bytes, profile, allowed, supported, shape, limits);
+    }
+
+    private ActorIpcSessionV1 openBoundIpcSessionInternal(ActorArtifact<?> artifact,
+            UUID logicalActorId, long incarnation, long routeEpoch, int slots, long bytes,
+            ActorIpcCodecProfileV1 profile, int allowed, int supported,
+            MessagePackWireV2.Shape shape, MessagePackWireV2.DecodeLimits limits) {
+        requireSupervisorContext("open bounded IPC actor session");
+        requireCallerRuntimeAffinity("open bounded IPC actor session");
+        Objects.requireNonNull(logicalActorId, "logical actor ID");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (boundIpcRoutes.containsKey(logicalActorId) || boundIpcRoutes.size() >= 64)
+                throw new IllegalStateException("IPC route already registered or route quota full");
+            IpcRouteWatermark prior = ipcRouteWatermarks.get(logicalActorId);
+            if (prior == null) {
+                if (ipcRouteWatermarks.size() >= 4096)
+                    throw new IllegalStateException("IPC route identity budget exhausted");
+                if (incarnation != 1 || routeEpoch != 1)
+                    throw new SecurityException("new IPC route must start at incarnation and epoch one");
+            } else if (prior.epoch() == Long.MAX_VALUE || routeEpoch != prior.epoch() + 1 ||
+                    (incarnation != prior.incarnation() &&
+                     (prior.incarnation() == Long.MAX_VALUE || incarnation != prior.incarnation() + 1))) {
+                throw new SecurityException("stale or nonconsecutive IPC route generation");
+            }
+            String commitment = profile == null ? null : profile.commitment();
+            // Once opted in, replacement may not downgrade to raw framing or
+            // silently change codecs/schema. An explicit upgrade protocol is future work.
+            if (prior != null && prior.codecCommitment() != null &&
+                    !prior.codecCommitment().equals(commitment))
+                throw new SecurityException("IPC route codec profile cannot downgrade or change");
+            if (prior != null && prior.typed() && shape == null)
+                throw new SecurityException("typed IPC route cannot downgrade to metadata-only registration");
+            // Existing artifact ownership and host capability checks are mandatory.
+            ActorIpcSessionV1 session = openIpcSession(
+                    artifact, logicalActorId, incarnation, routeEpoch);
+            boolean registered = false;
+            try {
+                if (profile != null) session.bindCodecProfile(profile, allowed, supported);
+                if (shape != null) session.bindMessagePackDecoder(shape, limits);
+                session.bindDataQueue(slots, bytes, ipcTransientQuota, ipcRetainedQuota);
+                // Burn the epoch before exposing the session; even a failed
+                // map insertion cannot make an issued generation reusable.
+                ipcRouteWatermarks.put(logicalActorId, new IpcRouteWatermark(incarnation, routeEpoch, commitment, shape != null));
+                boundIpcRoutes.put(logicalActorId, session);
+                registered = true;
+                return session;
+            } finally {
+                if (!registered) session.close();
+            }
+        }
+    }
+
+    /** Exact-object retirement; a stale or foreign session cannot retire a replacement. */
+    void retireBoundIpcSession(ActorIpcSessionV1 session) {
+        requireSupervisorContext("retire bounded IPC actor session");
+        requireCallerRuntimeAffinity("retire bounded IPC actor session");
+        Objects.requireNonNull(session, "session");
+        synchronized (runtimeLifecycleLock) {
+            if (boundIpcRoutes.get(session.logicalActorId()) != session)
+                throw new SecurityException("IPC session is not the registered route");
+            // Close before allowing replacement registration. Outstanding deliveries
+            // remain charged until their owner closes them; downstream must fence.
+            session.close();
+            boundIpcRoutes.remove(session.logicalActorId());
+            ipcStringReceivers.remove(session.logicalActorId());
+        }
+    }
+
+    /**
+     * Restricted host adapter: bind a registered IPC route to a single
+     * trusted root private actor receiving immutable strings. Guest code,
+     * supervised children, shared actors, and arbitrary worker-selected
+     * recipients are deliberately not supported by this slice.
+     */
+    void bindIpcStringReceiver(ActorIpcSessionV1 session, ActorRef<String> target) {
+        requireSupervisorContext("bind IPC host receiver");
+        requireCallerRuntimeAffinity("bind IPC host receiver");
+        Objects.requireNonNull(session); Objects.requireNonNull(target);
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get() || boundIpcRoutes.get(session.logicalActorId()) != session ||
+                    !session.ready() || session.codecProfile() == null ||
+                    !"messagepack".equals(session.codecProfile().codec()))
+                throw new SecurityException("inactive or untyped IPC route");
+            if (!target.ownedBy(this)) throw new SecurityException("foreign IPC receiver");
+            ActorCell<?> cell = actors.get(target.id());
+            if (cell == null || cell.ref != target || cell.kind != ActorKind.PRIVATE ||
+                    !cell.trustedFactory || cell.parent != null || cell.codeImage != null)
+                throw new SecurityException("IPC receiver must be a trusted root private host actor");
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized || cell.sealing)
+                    throw terminated(target);
+                synchronized (cell.managedByGroup) {
+                    if (cell.managedByGroup.get() != null)
+                        throw new SecurityException("group-managed actor cannot bind host IPC receiver");
+                    if (ipcStringReceivers.putIfAbsent(session.logicalActorId(), target) != null)
+                        throw new IllegalStateException("IPC receiver already bound");
+                    cell.ipcHostReceiver = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * Forward one authenticated decoded string with host sender identity.
+     * Existing mailbox admission accounts receiver memory before publication.
+     * On failure the decoded lease remains owned by the caller for retry/drop.
+     * On successful enqueue the lease is consumed, even if scheduling fails.
+     */
+    void forwardIpcString(ActorIpcSessionV1 session, ActorIpcSessionV1.DecodedData decoded) {
+        requireSupervisorContext("forward IPC host DATA");
+        requireCallerRuntimeAffinity("forward IPC host DATA");
+        Objects.requireNonNull(session); Objects.requireNonNull(decoded);
+        ActorRef<String> target;
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get() || boundIpcRoutes.get(session.logicalActorId()) != session)
+                throw new SecurityException("inactive IPC route");
+            target = ipcStringReceivers.get(session.logicalActorId());
+            if (target == null) throw new SecurityException("no bound IPC receiver");
+        }
+        if (!decoded.liveFor(session) || !(decoded.value() instanceof String value))
+            throw new SecurityException("foreign, consumed or non-string IPC DATA");
+        sendInternal(target, value, new IpcStringHandoff(session, decoded));
+    }
+
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
@@ -2337,12 +2595,17 @@ public final class ActorRuntime implements AutoCloseable {
                 // A worker has exactly one structured ActorGroup owner.
                 // Other cooperation groups may still admit it as a member,
                 // but no second manager may acquire independent stop rights.
-                ActorGroupId owningGroup = cell.managedByGroup.get();
-                if (owningGroup == null) {
-                    if (cell.managedByGroup.compareAndSet(null, id)) {
-                        owningGroup = id;
-                    } else {
-                        owningGroup = cell.managedByGroup.get();
+                ActorGroupId owningGroup;
+                synchronized (cell.managedByGroup) {
+                    if (cell.ipcHostReceiver)
+                        throw new SecurityException("IPC host receiver cannot acquire structured group ownership");
+                    owningGroup = cell.managedByGroup.get();
+                    if (owningGroup == null) {
+                        if (cell.managedByGroup.compareAndSet(null, id)) {
+                            owningGroup = id;
+                        } else {
+                            owningGroup = cell.managedByGroup.get();
+                        }
                     }
                 }
                 if (!id.equals(owningGroup)) {
@@ -4925,8 +5188,12 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
-    @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        sendInternal(ref, message, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendInternal(ActorRef<M> ref, M message, IpcStringHandoff handoff) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -5038,8 +5305,31 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
-                    if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                    if (handoff == null) {
+                        if (!cell.mailbox.tryWrite(envelope))
+                            throw new ActorMailboxFullException(ref.id());
+                    } else {
+                        // Runtime -> actor lifecycle -> session -> decoded lease.
+                        // Session methods never call back into ActorRuntime.
+                        // The same critical section checks the exact current
+                        // route, recipient and lease, then performs enqueue.
+                        synchronized (handoff.session()) {
+                            synchronized (handoff.decoded()) {
+                                // Permanent receiver claim excludes subsequent
+                                // structured group acquisition; still check the live
+                                // group value defensively at the publication point.
+                                if (cell.managedByGroup.get() != null ||
+                                        boundIpcRoutes.get(handoff.session().logicalActorId()) != handoff.session()
+                                        || ipcStringReceivers.get(handoff.session().logicalActorId()) != ref
+                                        || actors.get(ref.id()) != cell || cell.ref != ref
+                                        || !handoff.session().ready()
+                                        || !handoff.decoded().liveFor(handoff.session()))
+                                    throw new SecurityException("stale IPC mailbox handoff");
+                                if (!cell.mailbox.tryWrite(envelope))
+                                    throw new ActorMailboxFullException(ref.id());
+                                handoff.decoded().close();
+                            }
+                        }
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
@@ -6420,10 +6710,16 @@ public final class ActorRuntime implements AutoCloseable {
 
         final boolean firstClose;
         final List<ActorCell<?>> snapshot;
+        final List<ActorIpcSessionV1> ipcSnapshot;
         synchronized (runtimeLifecycleLock) {
             firstClose = closed.compareAndSet(false, true);
             snapshot = List.copyOf(actors.values());
+            ipcSnapshot = List.copyOf(boundIpcRoutes.values());
+            boundIpcRoutes.clear();
+            ipcStringReceivers.clear();
+            ipcRouteWatermarks.clear();
         }
+        for (ActorIpcSessionV1 session : ipcSnapshot) session.close();
         for (ActorCell<?> cell : snapshot) cell.stop();
 
         if (firstClose) {
@@ -6644,6 +6940,11 @@ public final class ActorRuntime implements AutoCloseable {
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
+        // Guarded by managedByGroup's monitor. Host-only IPC registration and
+        // first group ownership acquisition linearize on the same monitor.
+        // Once set, permanent for this physical actor lifetime (even after
+        // route retirement); avoids a gap allowing later supervisor adoption.
+        private boolean ipcHostReceiver;
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
