@@ -37,7 +37,7 @@ jobs:
       - name: Run compiler and runtime regression gates excluding isolated NativeHttpTest
         run: |
           set -euo pipefail
-          bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=SharkBenchTransportGuestTest,OutboundHttpRequestGuestTest,StringTransformTest,Utf8StringAbiTest,CanonicalJsonGuestTest,AllocJsonTextTest,OresJsonValueTest,OresKeyedMapTest,OresKeyedMapLookupOptionTest,SymbolPropertyKeyCodecTest -Dsurefire.failIfNoSpecifiedTests=true test
+          bash tests/fixtures/sharkbench-admission/maven-retry.sh -B -ntp -Dtest=SharkBenchTransportGuestTest,OutboundHttpRequestGuestTest,StringTransformTest,Utf8StringAbiTest,CanonicalJsonGuestTest,AllocJsonTextTest,OresJsonValueTest,OresKeyedMapTest,OresKeyedMapLookupOptionTest,SymbolPropertyKeyCodecTest,ActorDeclarationLexicalBoundaryTest,ActorCodeIsolationAttoGuestTest -Dsurefire.failIfNoSpecifiedTests=true test
   native-http-regressions:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

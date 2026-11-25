@@ -7,7 +7,7 @@
   "blobs": {
     "tests/fixtures/sharkbench-admission/sharkbench-web.atto": "85d33dae2ea2021fbfdf6e6e87311adb96e1ff28",
     "tests/fixtures/sharkbench-admission/check_contract.py": "2f5514245444e5fc9f268f18bf73a5a09a58b3e2",
-    "tests/fixtures/sharkbench-admission/check_faults.py": "7dd3671428f87aff533444b0e5a76e99b729c74c",
+    "tests/fixtures/sharkbench-admission/check_faults.py": "11f3f35ecb5d17871122c8ff9ccc67ad92904ca5",
     "tests/fixtures/sharkbench-admission/check_lifecycle.py": "805b1318ce56495535f80699553abd09223118be"
   },
   "compiler_parents": {
@@ -24,5 +24,11 @@
     "commit": "d546d81dec7aaf209f619943d2368f9212c0b10f",
     "tree": "6fa1c16d27dae7a5c924d54e862a8cfd240ed219",
     "path": "benchmark/web/sharkbench/adapters/jvm/sharkbench-web.atto"
+  },
+  "fault_probe_source": {
+    "repo": "atto-lang/atto-benchmarks",
+    "commit": "4689b87c388fb66113f61987b454b94fda80f5e2",
+    "tree": "d1b462fed3043e8ef6290a69b42794e482497a27",
+    "path": "benchmark/web/sharkbench/check_faults.py"
   }
 }
