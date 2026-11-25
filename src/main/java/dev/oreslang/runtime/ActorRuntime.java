@@ -441,7 +441,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<UUID, ActorIpcSessionV1> boundIpcRoutes = new java.util.HashMap<>();
     // Retain a bounded high-water mark for every issued route until runtime
     // shutdown. Never evict a tombstone to make a stale epoch valid again.
-    private record IpcRouteWatermark(long incarnation, long epoch) { }
+    private record IpcRouteWatermark(long incarnation, long epoch, String codecCommitment) { }
     private final Map<UUID, IpcRouteWatermark> ipcRouteWatermarks = new java.util.HashMap<>();
     private final ActorDataDecodeQuotaV1 ipcTransientQuota =
             new ActorDataDecodeQuotaV1(32L * 1024 * 1024, 64);
@@ -682,6 +682,12 @@ public final class ActorRuntime implements AutoCloseable {
                      (prior.incarnation() == Long.MAX_VALUE || incarnation != prior.incarnation() + 1))) {
                 throw new SecurityException("stale or nonconsecutive IPC route generation");
             }
+            String commitment = profile == null ? null : profile.commitment();
+            // Once opted in, replacement may not downgrade to raw framing or
+            // silently change codecs/schema. An explicit upgrade protocol is future work.
+            if (prior != null && prior.codecCommitment() != null &&
+                    !prior.codecCommitment().equals(commitment))
+                throw new SecurityException("IPC route codec profile cannot downgrade or change");
             // Existing artifact ownership and host capability checks are mandatory.
             ActorIpcSessionV1 session = openIpcSession(
                     artifact, logicalActorId, incarnation, routeEpoch);
@@ -691,7 +697,7 @@ public final class ActorRuntime implements AutoCloseable {
                 session.bindDataQueue(slots, bytes, ipcTransientQuota, ipcRetainedQuota);
                 // Burn the epoch before exposing the session; even a failed
                 // map insertion cannot make an issued generation reusable.
-                ipcRouteWatermarks.put(logicalActorId, new IpcRouteWatermark(incarnation, routeEpoch));
+                ipcRouteWatermarks.put(logicalActorId, new IpcRouteWatermark(incarnation, routeEpoch, commitment));
                 boundIpcRoutes.put(logicalActorId, session);
                 registered = true;
                 return session;
