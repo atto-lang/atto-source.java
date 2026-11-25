@@ -895,6 +895,8 @@ public final class TypeChecker {
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
+    private final Set<String> opaqueJsonBindings = new HashSet<>();
+
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> rootFunctions = new HashSet<>();
@@ -967,6 +969,15 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (imported.kind() == Ast.ImportKind.CLASS && !imported.wildcard()
+                    && Set.of("alloc/json", "alloc/json.atto", "atto.alloc/json", "atto.alloc/json.atto")
+                            .contains(imported.path())) {
+                for (String selected : imported.names()) {
+                    if (selected.equals("Json") || selected.equals("JsonValue")) {
+                        opaqueJsonBindings.add(ImportRules.localName(imported, selected));
+                    }
+                }
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 // An explicit import alias may not redirect a compiler-owned
                 // ADT constructor/type to a user package or host interop symbol.
@@ -6679,6 +6690,9 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (opaqueJsonBindings.contains(created.type().name())) {
+                throw new IllegalArgumentException("canonical Json and JsonValue are opaque; use Json.parse");
+            }
             if (created.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
                 throw new IllegalArgumentException(
                         "NAMED_CONSTRUCTOR_BINDING_UNSUPPORTED: named constructor arguments require "
