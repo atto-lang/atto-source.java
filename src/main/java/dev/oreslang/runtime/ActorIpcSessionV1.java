@@ -325,15 +325,18 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
             validateCommonIdentity(decoded);
             if (requireData && (decoded.lane() != Lane.DATA || decoded.kind() != FrameKind.OUTPUT))
                 throw new ProtocolException(Reason.STATE, "non-DATA frame on DATA transport");
+            if (!requireData && dataQueue != null && decoded.lane() == Lane.DATA)
+                throw new ProtocolException(Reason.STATE, "bound DATA requires queue admission");
             validateWorkerSequence(decoded);
-            validateWorkerState(decoded);
-            advanceWorkerSequence(decoded.lane());
-            return new Frame(
+            Frame accepted = new Frame(
                     decoded.lane(),
                     decoded.kind(),
                     decoded.frameSequence(),
                     decoded.messageSequence(),
                     decoded.payload());
+            validateWorkerState(decoded);
+            advanceWorkerSequence(decoded.lane());
+            return accepted;
         } catch (ProtocolException failure) {
             poison();
             throw failure;
@@ -355,7 +358,12 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
      * CONTROL uses its independently admitted transport path; never choose
      * this API or the CONTROL path based solely on attacker-provided bytes.
      */
-    Frame tryAcceptWorkerDataFrame(byte[] wire, ActorDataDecodeQuotaV1 quota) {
+    synchronized Frame tryAcceptWorkerDataFrame(byte[] wire, ActorDataDecodeQuotaV1 quota) {
+        if (dataQueue != null) throw new IllegalStateException("bound DATA requires queue admission");
+        return tryAcceptWorkerDataFrameInternal(wire, quota);
+    }
+
+    private Frame tryAcceptWorkerDataFrameInternal(byte[] wire, ActorDataDecodeQuotaV1 quota) {
         Objects.requireNonNull(wire, "wire");
         Objects.requireNonNull(quota, "quota");
         // Bounded before the snapshot and all parser/MAC allocations.
@@ -443,7 +451,7 @@ public final class ActorIpcSessionV1 implements AutoCloseable {
         try {
             // Allocate the delivery before sequence consumption.
             delivery = new DataDelivery(credit, charge);
-            Frame frame = tryAcceptWorkerDataFrame(wire, transientQuota);
+            Frame frame = tryAcceptWorkerDataFrameInternal(wire, transientQuota);
             if (frame == null) return false;
             delivery.frame = frame;
             int tail = (dataHead + dataCount) % dataQueue.length;
