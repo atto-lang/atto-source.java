@@ -1,0 +1,7 @@
+# M6 ActorCell finalization-order audit (2026-11-12)
+
+The first implementation of `ActorStorageBinding.lifetime().close()` occurred **before** `parent.childFinalized(this)`. That ordering allowed a failure removing the child from its parent actor's registry to be recorded **after** the exclusive partition claim had already been released. A successor `SupervisorStorageEpochAuthority.activate()` could then observe `boundActor == null` although a physical/registry cleanup stage failed.
+
+This change moves `parent.childFinalized(this)` into the physical-retirement checklist **before** releasing the lifetime claim, and records any non-fatal exception as `physicalRetirementComplete=false`. As in the existing failed-heap/shard/exit-hook tests, unresolved cleanup keeps the actor binding claimed and fails successor activation closed. Fatal VM/thread errors propagate without executing the claim release. This is an ordering correction to the trusted JVM host integration, **not** proof of compiler guest parity or actor-heap/FFI memory reclamation.
+
+Verification gate: run `SupervisorStorageActorIngressTest` plus full runtime JUnit regression suite with an actual source-local runner, nonzero executed steps and exact PR head/tree. Independently review actor parent registry cleanup and the exclusive binding lease; CI job admission failure or local source inspection is not executable guest evidence. #2975 and #2977 form the recommended pre-registration M6 path; #2985 post-spawn binding should not be merged as a competing M6 implementation.

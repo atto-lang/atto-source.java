@@ -12,6 +12,10 @@ on:
         description: "Exact 40-character PR head commit SHA"
         required: true
         type: string
+      source_tree:
+        description: "Exact 40-character Git root tree SHA for this PR HEAD"
+        required: true
+        type: string
       run_native_image:
         description: "Also compile the Java/GraalVM native image"
         required: true
@@ -38,10 +42,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_TREE: ${{ inputs.source_tree }}
         run: |
           set -euo pipefail
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]{0,7}$ ]]
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_TREE" =~ ^[0-9a-f]{40}$ ]]
           test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
           test "$GITHUB_REF" = "refs/heads/main"
           test "$RUNNER_ENVIRONMENT" = "self-hosted"
@@ -52,6 +58,7 @@ jobs:
             --jq '[.head.sha, .head.repo.full_name, .state, (.head.repo.private|tostring), (.user.id|tostring)] | @tsv')"
           IFS=$'\t' read -r actual_sha actual_repo state private pr_author_id <<< "$receipt"
           test "$actual_sha" = "$SOURCE_SHA"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${SOURCE_SHA}" --jq '.tree.sha')" = "$SOURCE_TREE"
           test "$actual_repo" = "$GITHUB_REPOSITORY"
           test "$state" = "open"
           test "$private" = "true"
@@ -82,9 +89,11 @@ jobs:
         shell: bash
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_TREE: ${{ inputs.source_tree }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
           git diff --quiet --exit-code
           test -z "$(git ls-files --others --exclude-standard)"
           test "$RUNNER_ENVIRONMENT" = 'self-hosted'
@@ -100,8 +109,24 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=ActorLinearArenaTest,ActorLinearArenaLifecycleTest,ActorHeapAdmissionTest,ActorHeapPlacementGuardTest \
-            -DfailIfNoTests=true test
+            -Dtest=ActorLinearArenaTest,ActorLinearArenaLifecycleTest,ActorHeapAdmissionTest,ActorHeapPlacementGuardTest,SupervisorStorageEpochAuthorityTest,SupervisorStorageActorIngressTest \
+            -Dsurefire.failIfNoSpecifiedTests=true -DfailIfNoTests=true test
+      - name: Require executed M6 supervisor JUnit (not just successful Maven exit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in \
+            dev.oreslang.runtime.SupervisorStorageEpochAuthorityTest \
+            dev.oreslang.runtime.SupervisorStorageActorIngressTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report"
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '(errors|failures)="[1-9][0-9]*"' "$report"; then
+              echo "::error::Nonzero JUnit errors or failures in $suite"
+              exit 1
+            fi
+            echo "M6_JUNIT_EXECUTED=$suite"
+          done
 
       - name: Optional real GraalVM Native Image build
         if: inputs.run_native_image
@@ -126,6 +151,7 @@ jobs:
             echo 'Source-org exact-head Java actor JUnit workflow.'
             echo "PR: $PR_NUMBER; commit: $SOURCE_SHA"
             echo "Tree: $(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo NOT_CHECKED_OUT)"
+            echo 'M6 suites required: SupervisorStorageEpochAuthorityTest, SupervisorStorageActorIngressTest.'
             echo "Native Image requested: $NATIVE_IMAGE_REQUESTED"
             echo 'Job outcome is authoritative only if the actual JUnit step executed.'
             echo 'Runner must be disposable, pre-provisioned by the admin and destroyed after one job.'
