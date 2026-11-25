@@ -182,6 +182,55 @@ class CorePerfTest {
         assertTrue(output.contains("\"recorded\":256,\"reserved\":256,\"saturated\":true"));
     }
 
+    @Test void relativeMonotonicOffsetsNeverWrapNegativeOrBecomeMisleading() {
+        assertEquals(0L, CorePerf.Recorder.relativeNanos(9L, 10L));
+        assertEquals(0L, CorePerf.Recorder.relativeNanos(Long.MIN_VALUE, Long.MAX_VALUE));
+        assertEquals(100L, CorePerf.Recorder.relativeNanos(110L, 10L));
+        assertEquals(Long.MAX_VALUE, CorePerf.Recorder.relativeNanos(Long.MAX_VALUE, Long.MIN_VALUE));
+    }
+
+    @Test void randomizedDurationAndOffsetArithmeticUsesExactOracle() {
+        java.util.SplittableRandom samples = new java.util.SplittableRandom(20261016L);
+        java.math.BigInteger max = java.math.BigInteger.valueOf(Long.MAX_VALUE);
+        for (int i = 0; i < 20_000; i++) {
+            long started = samples.nextLong();
+            long finished = samples.nextLong();
+            java.math.BigInteger exact = java.math.BigInteger.valueOf(finished)
+                    .subtract(java.math.BigInteger.valueOf(started));
+            boolean durationValid = exact.signum() >= 0 && exact.compareTo(max) <= 0;
+            long offset = exact.signum() < 0 ? 0L
+                    : exact.compareTo(max) > 0 ? Long.MAX_VALUE : exact.longValueExact();
+            assertEquals(durationValid, CorePerf.validDuration(started, finished),
+                    "validDuration iteration " + i);
+            assertEquals(offset, CorePerf.Recorder.relativeNanos(finished, started),
+                    "relativeNanos iteration " + i);
+        }
+    }
+
+    @Test void invalidPublicDiagnosticIdsAreInertEvenWhenEnabled() {
+        assertFalse(CorePerf.knownPhase(-1));
+        assertFalse(CorePerf.knownPhase(0));
+        assertFalse(CorePerf.knownPhase(Integer.MAX_VALUE));
+        assertTrue(CorePerf.knownPhase(CorePerf.HTTP_RECEIVE));
+        assertFalse(CorePerf.knownDebugEvent(-1));
+        assertFalse(CorePerf.knownDebugEvent(0));
+        assertFalse(CorePerf.knownDebugEvent(Integer.MAX_VALUE));
+        assertTrue(CorePerf.knownDebugEvent(CoreDebug.ACTOR_POOLS_CREATED));
+        CorePerf.configure(true);
+        CoreDebug.configure(true);
+        try {
+            assertDoesNotThrow(() -> CorePerf.end(0, 1L));
+            assertDoesNotThrow(() -> CorePerf.end(Integer.MAX_VALUE, 1L));
+            assertDoesNotThrow(() -> CorePerf.elapsed(0, 1L, 2L));
+            assertDoesNotThrow(() -> CorePerf.elapsed(Integer.MIN_VALUE, 1L, 2L));
+            assertDoesNotThrow(() -> CoreDebug.event(0, 7L));
+            assertDoesNotThrow(() -> CoreDebug.event(Integer.MAX_VALUE, 7L));
+        } finally {
+            CorePerf.configure(false);
+            CoreDebug.configure(false);
+        }
+    }
+
     @Test void invalidSamplesFailClosed() {
         var recorder = new CorePerf.Recorder(1);
         assertThrows(IllegalArgumentException.class, () -> recorder.record(0, 1L, 2L));

@@ -1,0 +1,5 @@
+define actor RemoteAdder as {
+    pub fnc on_message(int value): int {
+        return value + 10;
+    }
+}

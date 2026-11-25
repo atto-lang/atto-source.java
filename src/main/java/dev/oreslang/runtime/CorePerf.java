@@ -29,6 +29,13 @@ public final class CorePerf {
     public static final int HTTP_EXECUTOR_QUEUE = 15;
     public static final int STDIO_WRITE = 16;
     public static final int HTTP_LIFETIME = 17;
+    // Redis RESP2 diagnosis: numeric-only phases, core-owned, no guest data or logging I/O.
+    public static final int REDIS_RESP_PARSE = 18;
+    public static final int REDIS_RESP_HEX = 19;
+    public static final int REDIS_RESP_ENCODE = 20;
+    public static final int REDIS_TCP_WRITE = 21;
+    public static final int REDIS_TCP_WRITE_SUBMIT = 22;
+
 
     private static final String[] NAMES = {
         "unused", "vm.control.startup", "actor.pools.startup",
@@ -37,7 +44,9 @@ public final class CorePerf {
         "http.io.queue", "http.io.work",
         "async.io.queue", "async.io.work",
         "http.timer.schedule", "actor.spawn", "http.executor.queue",
-        "stdio.write", "http.lifetime"
+        "stdio.write", "http.lifetime",
+        "redis.resp.parse", "redis.resp.hex", "redis.resp.encode",
+        "redis.tcp.write", "redis.tcp.write.submit"
     };
     private static final String[] DEBUG_NAMES = {
         "unused", "actor.pools.created", "http.listener.ready",
@@ -109,7 +118,7 @@ public final class CorePerf {
 
     static void debugEvent(int event, long value) {
         Recorder recorder = debugActive;
-        if (recorder != null && !recorder.saturated) {
+        if (recorder != null && !recorder.saturated && knownDebugEvent(event)) {
             recorder.recordEvent(event, value);
         }
     }
@@ -133,7 +142,7 @@ public final class CorePerf {
     public static void end(int phase, long started) {
         if (started == 0L) return;
         Recorder recorder = active;
-        if (recorder != null && !recorder.saturated) {
+        if (recorder != null && !recorder.saturated && knownPhase(phase)) {
             long finished = System.nanoTime();
             // Diagnostics must not change request outcomes if a clock sample is invalid.
             if (validDuration(started, finished)) {
@@ -145,10 +154,19 @@ public final class CorePerf {
     /** Reuse timestamps already obtained for actor lifecycle bookkeeping. */
     public static void elapsed(int phase, long started, long ended) {
         Recorder recorder = active;
-        if (recorder != null && !recorder.saturated
+        if (recorder != null && !recorder.saturated && knownPhase(phase)
                 && started != 0L && validDuration(started, ended)) {
             recorder.record(phase, started, ended);
         }
+    }
+
+    /** Invalid instrumentation IDs must never abort host or guest execution. */
+    static boolean knownPhase(int phase) {
+        return phase > 0 && phase < NAMES.length;
+    }
+
+    static boolean knownDebugEvent(int event) {
+        return event > 0 && event < DEBUG_NAMES.length;
     }
 
     /** Guard subtraction overflow as well as reversed timestamps. */
@@ -179,6 +197,13 @@ public final class CorePerf {
             this.threadIds = new long[capacity];
         }
 
+        /** Clamp out-of-order samples and saturate signed subtraction overflow. */
+        static long relativeNanos(long sample, long origin) {
+            if (sample < origin) return 0L;
+            long delta = sample - origin;
+            return delta < 0L ? Long.MAX_VALUE : delta;
+        }
+
         void record(int phase, long started, long finished) {
             long duration = finished - started;
             if (phase < 1 || phase >= NAMES.length || !validDuration(started, finished)) {
@@ -188,7 +213,7 @@ public final class CorePerf {
             if (index < 0) {
                 return;
             }
-            offsets[index] = Math.max(0L, started - origin);
+            offsets[index] = relativeNanos(started, origin);
             durations[index] = duration;
             threadIds[index] = Thread.currentThread().threadId();
             // Release-publish last. Dumps use acquire-reads, never partial rows.
@@ -203,7 +228,7 @@ public final class CorePerf {
             if (index < 0) {
                 return;
             }
-            offsets[index] = Math.max(0L, System.nanoTime() - origin);
+            offsets[index] = relativeNanos(System.nanoTime(), origin);
             durations[index] = value;
             threadIds[index] = Thread.currentThread().threadId();
             published.set(index, -event);

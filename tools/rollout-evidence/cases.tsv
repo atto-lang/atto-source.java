@@ -1,0 +1,9 @@
+guest-scalar	java	execution
+async-carrier-progress	java	execution
+cancellation-backpressure	java	execution
+inverted-index	java	execution
+ownership-task	java	execution
+export-bindings	java	execution
+generator-cleanup	java	execution
+supervisor-generation	java	execution
+negative-admission	java	rejection

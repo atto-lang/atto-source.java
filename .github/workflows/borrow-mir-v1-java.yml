@@ -1,0 +1,77 @@
+name: Java borrow MIR observer — compiler admission
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
+      - "src/main/java/dev/oreslang/types/BorrowMirAuditV1.java"
+      - "src/main/java/dev/oreslang/compiler/OresCompiler.java"
+      - "src/test/java/dev/oreslang/BorrowMirAuditV1Test.java"
+      - "src/test/java/dev/oreslang/BorrowMirCompilerAdmissionV1Test.java"
+      - "src/test/java/dev/oreslang/types/BorrowMirAuditV1CollectorTest.java"
+      - ".github/workflows/borrow-mir-v1-java.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  borrow-mir-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact PR commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Authenticate checked-out source tree and changed blobs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mkdir -p target/borrow-mir-v1-evidence
+          printf 'head=%s\ntree=%s\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" > target/borrow-mir-v1-evidence/identity.txt
+          for path in \
+            src/main/java/dev/oreslang/types/OwnershipChecker.java \
+            src/main/java/dev/oreslang/types/BorrowMirAuditV1.java \
+            src/main/java/dev/oreslang/compiler/OresCompiler.java \
+            src/test/java/dev/oreslang/BorrowMirAuditV1Test.java \
+            src/test/java/dev/oreslang/BorrowMirCompilerAdmissionV1Test.java \
+            src/test/java/dev/oreslang/types/BorrowMirAuditV1CollectorTest.java; do
+            test "$(git rev-parse "HEAD:$path")" = "$(git hash-object --no-filters "$path")"
+            printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path")" >> target/borrow-mir-v1-evidence/identity.txt
+          done
+      - name: Install GraalVM Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Execute parser/typechecker/ownership observer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version 2>&1 | tee target/borrow-mir-v1-evidence/java-version.txt
+          mvn -B -ntp -Dtest=BorrowMirAuditV1Test,BorrowMirCompilerAdmissionV1Test,BorrowMirAuditV1CollectorTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test | tee target/borrow-mir-v1-evidence/maven.log
+          for suite in BorrowMirAuditV1Test BorrowMirCompilerAdmissionV1Test BorrowMirAuditV1CollectorTest; do
+            case "$suite" in
+              BorrowMirAuditV1CollectorTest) package="dev.oreslang.types" ;;
+              *) package="dev.oreslang" ;;
+            esac
+            report="target/surefire-reports/TEST-$package.$suite.xml"
+            test -s "$report"
+            sha256sum "$report" >> target/borrow-mir-v1-evidence/reports.sha256
+            cp "$report" target/borrow-mir-v1-evidence/
+          done
+      - name: Preserve test logs and exact-head identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: borrow-mir-java-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/borrow-mir-v1-evidence/
+          if-no-files-found: warn
+          retention-days: 7

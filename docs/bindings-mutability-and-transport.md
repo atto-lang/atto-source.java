@@ -9,6 +9,47 @@ Oreslang's proposed canonical contract, agreed 2026-10-06. The compiler and owne
 | `let x` | yes | no |
 | `let mut x` | yes | yes if ownership permits |
 
+## Canonical type-first class field initializers
+
+Direct class fields canonically initialize with a colon. An equals sign is
+accepted by the compiler as input compatibility, but `oreslang-format`
+normalizes that syntax to a colon.
+
+```ores
+define class Example as
+  final int fixed: 5
+  string label: "100"
+  final mut Array<int> items: [1, 2]
+  mut Array<int> queue: []
+end
+```
+
+These two field capabilities are **orthogonal**:
+
+- `final` fixes the field slot after its declaration initializer and does
+  **not** grant mutable-referent access.
+- `mut` permits mutation through the field's referent, subject to borrow,
+  readonly and ownership rules. It does **not** make a `final` slot
+  reassignable.
+- A field without `final` is a reassignable slot under the new type-first
+  spelling. Readonly-referent constraints still apply.
+- Legacy `val int late;` fields without declaration initializers retain a
+  constructor-only initialization exception. That exception permits **at most
+  one syntactic write**, and the current conservative checker also rejects
+  separate writes in mutually exclusive branches. This is stricter than a
+  future path-sensitive may-initialize analysis; the compiler must never
+  admit a possible double write. Initialized `final` fields have **no**
+  constructor rewrite exception.
+- Defer bodies and captured lambdas cannot inherit the constructor
+  initialization capability, and destructive `rt take` of fixed fields is
+  rejected.
+
+The current LLVM source frontend admits integer-literal class field
+initializers, but does not yet lower the Java compiler's full string,
+container or general-expression field initializer set. It must reject
+unsupported types before emitting IR. Do not treat targeted parser admission
+as full cross-backend runtime parity.
+
 In select cases, `case job = readch(jobs) -> { ... }` defaults to immutable/read-only. `case val job` fixes binding but permits referent mutation; `case mut job` is shorthand for `case let mut job`. Only the winning case receives ownership. Existing `case readch channel: val job { ... }` may be accepted for compatibility.
 
 `mut` is not a bypass around borrowing: a live immutable borrow excludes mutation; only one mutable borrow may exist at once; a moved owner is unusable; nested fields, indexes, collection methods, closure captures, deferred continuations, and actor access paths must be checked transitively. Mutation through a readonly view is rejected, even if another alias may have write permission at other times. Use canonical `rt borrow`, `rt copy`, `rt take`, `rt share`, never raw pointer operators as public syntax.
@@ -26,3 +67,46 @@ Test matrix: all four declaration modes; const initialization with runtime expre
 
 
 The same declaration matrix applies to destructuring and iterator bindings. Examples: `val [x] = value` gives a fixed binding with mutable referent access; `let [x]` permits rebinding but not referent mutation; `let mut [x]` permits both. `for val x of values` and `for let mut x of values` follow identical rules.
+
+## Callable parameters: binding reassignment versus referent mutation
+
+Parameter mutability has two independent axes, just like local bindings:
+
+| Source parameter | Rebind the parameter name | Mutate the referent |
+| --- | --- | --- |
+| `Box s` | no | only if its owned parameter capability allows it |
+| `Box mut s` | yes | yes, subject to ownership |
+| `borrow Box s` | no | no |
+| `borrow mut Box s` | no | yes, through an exclusive lexical loan |
+
+The `mut` **after the owned parameter's type** makes the *name* rebindable.
+The `mut` **inside `borrow mut T`** makes the *borrowed referent*
+writable, **not** the name. A declaration such as `borrow mut Box mut s`
+(or `borrow Box mut s`) is rejected rather than silently turning a loan
+into a replaceable pointer. This does not change the established
+`const`/`val`/`let`/`let mut` binding matrix above.
+
+In pipe lambdas, `|mut s|` means a rebindable inferred parameter, while
+`|borrow mut s|` means a fixed exclusive mutable-borrow parameter with
+an **inferred referent type**. The latter is admitted only when a typed
+callback contract proves that its corresponding parameter is an exclusive
+borrow; it cannot upgrade a shared borrow to exclusive ownership. Use
+`|borrow mut Box s|` when a concrete type is available. In a callback
+expecting `Fnc<borrow mut State, void>`, the following is the intended
+shape:
+
+```atto
+|borrow mut s| -> void {
+  s.generation = s.generation + 1;  // referent write
+  // s = new State();              // ERROR: fixed borrowed binding
+}
+```
+
+For actors, `handle_state` must be explicitly typed as a synchronously
+invoked, nonescaping exclusive-borrow callback before this shorthand can
+be used as a verified actor-state API. Parser acceptance alone does **not**
+prove runtime actor ownership, critical-section safety, exception cleanup,
+or no-suspension behavior. Borrowed callbacks cannot escape, be sent in
+messages, or cross `await`. The shared Java/LLVM/.NET/Wasm/Forge
+conformance matrix must test these independently; this document does not
+claim cross-backend parity.

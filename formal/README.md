@@ -81,3 +81,86 @@ The next models should cover:
 - Structured actor failure propagation/restart policy beyond the already-modeled cancellation tree.
 
 For unbounded properties we should add a second tier using an external prover/model checker once its toolchain is pinned reproducibly; this bounded executable layer remains useful as the fast CI gate.
+
+## InvertedArray handle and field-sensitive loan safety
+
+See [INVERTED_ARRAY_MODEL.md](INVERTED_ARRAY_MODEL.md) for a bounded explicit-state checker with four negative mutation oracles. It does not certify executable guest lowering; tracked by issue #1424.
+
+
+## Static-effect model checking (2026-10-19)
+
+`FormalEffectClosureModelCheckTest` independently enumerates all 512 three-function directed call graphs
+and 64 pairs of direct IO/PANIC effect assignments (32,768 configurations).
+A breadth-first reachability oracle checks the fixed-point effect summaries for
+every possible root, including recursive strongly connected components. It also
+checks rejection of over-budget graph input and proves via tests that the
+current trapping abstraction does not discard PANIC or unknown calls.
+
+**Scope boundary:** this is a finite-state proof of the graph summary library,
+not a proof that compiler-produced call edges, exception handlers, imports,
+or FFI effect labels are complete or authenticated. Source AST-to-effect-IR
+refinement remains an independent obligation.
+
+## Effect-model trust-boundary regression (2026-10-19 follow-up)
+
+`EffectGraphAdmissionBoundaryTest` verifies transitive unresolved-host effects
+through recursive call graphs, that trapping cannot swallow RAISE/PANIC or
+cancellation, and that rejected over-budget symbol/edge graphs do not mutate
+the accepted environment. The existing
+`FormalEffectClosureModelCheckTest` exhausts finite three-node effect graphs.
+
+Run both with `mvn -B -Dtest=FormalEffectClosureModelCheckTest,EffectGraphAdmissionBoundaryTest,TypeclassesAndEffectsFoundationTest test`.
+
+**Important:** all graph nodes and edges are supplied to the Java analysis
+library, not derived from the full Oreslang source frontend. A pass is a model
+property only; complete AST/HIR-to-effect-IR refinement, authenticated imports
+and dynamic dispatch effects are still unproved.
+
+## Standalone JDK effect-closure verification
+
+To check the actual `EffectContracts` implementation without Maven,
+Truffle or third-party libraries, run:
+
+```bash
+bash tools/formal-standalone/verify-effects.sh
+```
+
+This compiles the production effect-graph class with JDK 21, and explores
+**all 98,304 starting roots** across 512 three-node call graphs and 64
+IO/PANIC direct-effect configurations, against an independent BFS oracle.
+A negative control ensures `trap` cannot swallow PANIC or unknown FFI calls.
+The standalone checker is a bounded finite-state library proof, not a proof
+that Java Oreslang lowering constructs complete or authenticated call edges.
+
+`RustScalarGuestParityTest` separately runs `40+2` in a Graal guest and
+checks the observed value `42`; it does not yet emit comparable effect IR.
+
+
+## Static-effect model checking (2026-10-19)
+
+`FormalEffectClosureModelCheckTest` independently enumerates all 512 three-function directed call graphs
+and 64 pairs of direct IO/PANIC effect assignments (32,768 configurations).
+A breadth-first reachability oracle checks the fixed-point effect summaries for
+every possible root, including recursive strongly connected components. It also
+checks rejection of over-budget graph input and proves via tests that the
+current trapping abstraction does not discard PANIC or unknown calls.
+
+**Scope boundary:** this is a finite-state proof of the graph summary library,
+not a proof that compiler-produced call edges, exception handlers, imports,
+or FFI effect labels are complete or authenticated. Source AST-to-effect-IR
+refinement remains an independent obligation.
+
+## Effect-model trust-boundary regression (2026-10-19 follow-up)
+
+`EffectGraphAdmissionBoundaryTest` verifies transitive unresolved-host effects
+through recursive call graphs, that trapping cannot swallow RAISE/PANIC or
+cancellation, and that rejected over-budget symbol/edge graphs do not mutate
+the accepted environment. The existing
+`FormalEffectClosureModelCheckTest` exhausts finite three-node effect graphs.
+
+Run both with `mvn -B -Dtest=FormalEffectClosureModelCheckTest,EffectGraphAdmissionBoundaryTest,TypeclassesAndEffectsFoundationTest test`.
+
+**Important:** all graph nodes and edges are supplied to the Java analysis
+library, not derived from the full Oreslang source frontend. A pass is a model
+property only; complete AST/HIR-to-effect-IR refinement, authenticated imports
+and dynamic dispatch effects are still unproved.

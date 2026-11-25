@@ -1,0 +1,373 @@
+package dev.oreslang.compiler;
+
+import org.junit.jupiter.api.Test;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.ArrayList;
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Real typed Oreslang frontend admission; real installed Z3 required. */
+public final class TypedScalarSmtTest {
+    private static String core() throws Exception {
+        return Files.readString(Path.of("stdlib/core.atto"), StandardCharsets.UTF_8);
+    }
+
+    private static String evaluateWithZ3(String smt) throws Exception {
+        return evaluateWithCommand(smt, List.of("z3", "-smt2", "-in"), 30_000);
+    }
+
+    // A solver may write more than a pipe's capacity before reading stdin.
+    // All three streams must therefore be handled concurrently. Never block
+    // the test thread writing input, waiting for EOF, or reading diagnostics
+    // without the bounded process deadline and output budgets.
+    private static String evaluateWithCommand(String smt, List<String> command,
+                                              long timeoutMillis) throws Exception {
+        byte[] input = smt.getBytes(StandardCharsets.UTF_8);
+        if (input.length > 65_536 || timeoutMillis <= 0 || timeoutMillis > 30_000) {
+            throw new IllegalArgumentException("invalid SMT input length or solver deadline");
+        }
+        long deadlineNanos = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        Process process = new ProcessBuilder(command).start();
+        java.util.concurrent.ExecutorService streams =
+                java.util.concurrent.Executors.newFixedThreadPool(3, runnable -> {
+                    Thread t = new Thread(runnable, "typed-scalar-z3-stream");
+                    t.setDaemon(true);
+                    return t;
+                });
+        try {
+            var write = streams.submit(() -> {
+                try (var stdin = process.getOutputStream()) {
+                    stdin.write(input);
+                }
+                return true;
+            });
+            var stdout = streams.submit(
+                    () -> process.getInputStream().readNBytes(4097));
+            var stderr = streams.submit(
+                    () -> process.getErrorStream().readNBytes(4097));
+
+            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
+                throw new IllegalArgumentException("Z3 timed out: no proof accepted");
+            }
+            // The child may exit while an inherited pipe remains open. Neither
+            // a completed process nor an empty stdout alone is a valid receipt.
+            // A child can exit and leave stdout/stderr open in a descendant.
+            // Enforce one overall deadline, including all stream completion.
+            byte[] stdoutBytes;
+            byte[] stderrBytes;
+            try {
+                write.get(Math.max(1, deadlineNanos - System.nanoTime()),
+                        TimeUnit.NANOSECONDS);
+                stdoutBytes = stdout.get(Math.max(1, deadlineNanos - System.nanoTime()),
+                        TimeUnit.NANOSECONDS);
+                stderrBytes = stderr.get(Math.max(1, deadlineNanos - System.nanoTime()),
+                        TimeUnit.NANOSECONDS);
+            } catch (java.util.concurrent.TimeoutException
+                    | java.util.concurrent.ExecutionException failure) {
+                throw new IllegalArgumentException(
+                        "Z3 stream transport incomplete at proof deadline", failure);
+            }
+            if (stdoutBytes.length > 4096 || stderrBytes.length > 4096) {
+                throw new IllegalArgumentException("Z3 output exceeds proof transcript budget");
+            }
+            String diagnostics = new String(stderrBytes, StandardCharsets.UTF_8);
+            if (process.exitValue() != 0 || !diagnostics.isEmpty()) {
+                throw new IllegalArgumentException("Z3 exit failure or unexpected solver diagnostic");
+            }
+            return requireExactSolverTranscript(
+                    new String(stdoutBytes, StandardCharsets.UTF_8));
+        } finally {
+            if (process.isAlive()) process.destroyForcibly();
+            streams.shutdownNow();
+            // Force both readers/writer to stop on every failure path, even
+            // when the solver forks and its descendants inherit the pipes.
+            try { process.getOutputStream().close(); } catch (java.io.IOException ignored) { }
+            try { process.getInputStream().close(); } catch (java.io.IOException ignored) { }
+            try { process.getErrorStream().close(); } catch (java.io.IOException ignored) { }
+            process.waitFor(2, TimeUnit.SECONDS);
+        }
+    }
+
+    // The only Z3 responses generated by this fixed checked-AST proof slice.
+    // In particular missing newlines, CRLF, trailing blanks and extra lines
+    // must fail before an apparent SAT/UNSAT answer can be recorded.
+    private static String requireExactSolverTranscript(String raw) {
+        if (!List.of("unsat\n", "sat\n", "unsat\nsat\n", "sat\nsat\n").contains(raw)) {
+            throw new IllegalArgumentException("noncanonical or partial raw Z3 output");
+        }
+        return raw.substring(0, raw.length() - 1);
+    }
+
+    private static void writeReceipt(String label, String source, String smt, String verdict)
+            throws Exception {
+        Path dir = Path.of("target", "formal-typed-scalar");
+        Files.createDirectories(dir);
+        String sourceDigest = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256")
+                        .digest(source.getBytes(StandardCharsets.UTF_8)));
+        String smtDigest = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256")
+                        .digest(smt.getBytes(StandardCharsets.UTF_8)));
+        Files.writeString(dir.resolve(label + ".smt2"), smt, StandardCharsets.UTF_8);
+        Files.writeString(dir.resolve(label + ".z3.out"), verdict + "\n", StandardCharsets.UTF_8);
+        Files.writeString(dir.resolve(label + ".receipt.txt"),
+                "source-sha256=" + sourceDigest + "\n"
+                + "smt-sha256=" + smtDigest + "\n"
+                + "verdicts=" + verdict.replace("\n", ",") + "\n",
+                StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Fail-closed splitter for the two exact queries emitted by TypedScalarSmt.
+     * This is structural extraction from a real checked-AST-derived SMT file,
+     * NOT an independently proved translation from AST to SMT.
+     */
+    /**
+     * Only accept the exact sequence of top-level declarations generated by
+     * TypedScalarSmt, never extra solver commands between checked declarations.
+     */
+    private static void validatePrelude(String prelude) {
+        if (prelude.indexOf(';') >= 0 || prelude.indexOf('"') >= 0
+                || prelude.indexOf('|') >= 0 || prelude.indexOf('\r') >= 0) {
+            throw new IllegalArgumentException("unsupported scalar SMT prelude token");
+        }
+        List<String> forms = new ArrayList<>();
+        int cursor = 0;
+        while (cursor < prelude.length()) {
+            if (prelude.charAt(cursor) != '(') {
+                throw new IllegalArgumentException("unexpected SMT prelude text");
+            }
+            int start = cursor;
+            int depth = 0;
+            do {
+                char ch = prelude.charAt(cursor++);
+                if (ch == '(') depth++;
+                else if (ch == ')') depth--;
+                if (depth < 0) throw new IllegalArgumentException("unbalanced SMT prelude");
+            } while (depth > 0 && cursor < prelude.length());
+            if (depth != 0 || cursor >= prelude.length()
+                    || prelude.charAt(cursor++) != '\n') {
+                throw new IllegalArgumentException("unterminated SMT prelude declaration");
+            }
+            forms.add(prelude.substring(start, cursor - 1));
+        }
+        if ((forms.size() != 5 && forms.size() != 6)
+                || !"(set-logic QF_BV)".equals(forms.get(0))
+                || !forms.get(1).startsWith("(define-fun implementation (")
+                || !forms.get(2).startsWith("(define-fun contract (")) {
+            throw new IllegalArgumentException("unsupported SMT prelude forms");
+        }
+        String[] variables = {"x", "y", "z"};
+        for (int i = 3; i < forms.size(); i++) {
+            String expected = "(declare-const " + variables[i - 3] + " (_ BitVec 64))";
+            if (!expected.equals(forms.get(i))) {
+                throw new IllegalArgumentException("unexpected SMT parameter declaration");
+            }
+        }
+    }
+
+    private static List<String> separateProofAndControl(String document) {
+        if (document == null || document.length() > 65_536
+                || !document.startsWith("(set-logic QF_BV)\n")
+                || document.contains("(echo ") || document.contains("(exit)")) {
+            throw new IllegalArgumentException("unrecognized scalar SMT document");
+        }
+        String marker = "(push 1)\n";
+        int first = document.indexOf(marker);
+        int second = first < 0 ? -1 : document.indexOf(marker, first + marker.length());
+        if (first < 0 || second < 0
+                || document.indexOf(marker, second + marker.length()) >= 0) {
+            throw new IllegalArgumentException("expected exactly two scalar obligations");
+        }
+        String prelude = document.substring(0, first);
+        validatePrelude(prelude);
+        String positive = document.substring(first + marker.length(), second);
+        String control = document.substring(second + marker.length());
+        for (String body : List.of(positive, control)) {
+            String termination = "\n(check-sat)\n(pop 1)\n";
+            if (!body.startsWith("(assert ") || !body.endsWith(termination)
+                    || body.indexOf(termination) != body.lastIndexOf(termination)
+                    || body.indexOf("(check-sat)") != body.lastIndexOf("(check-sat)")
+                    || body.contains("(push 1)") || body.contains("(echo ")) {
+                throw new IllegalArgumentException("noncanonical scalar obligation");
+            }
+            // Restrict to one balanced top-level assert. Extra solver commands
+            // must never execute before a verdict becomes a proof receipt.
+            String assertion = body.substring(0, body.length() - termination.length());
+            if (assertion.indexOf('\n') >= 0 || assertion.indexOf('\r') >= 0
+                    || assertion.indexOf(';') >= 0 || assertion.indexOf('"') >= 0
+                    || assertion.indexOf('|') >= 0) {
+                throw new IllegalArgumentException("unsupported assertion text");
+            }
+            int depth = 0;
+            for (int i = 0; i < assertion.length(); i++) {
+                char ch = assertion.charAt(i);
+                if (ch == '(') depth++;
+                else if (ch == ')') depth--;
+                if (depth < 0 || (depth == 0 && i != assertion.length() - 1)) {
+                    throw new IllegalArgumentException("extra top-level SMT command");
+                }
+            }
+            if (depth != 0) throw new IllegalArgumentException("unbalanced assertion");
+        }
+        return List.of(prelude + marker + positive, prelude + marker + control);
+    }
+
+    private static void replaySeparated(String label, String source, String combined,
+                                        String positiveVerdict) throws Exception {
+        List<String> slices = separateProofAndControl(combined);
+        String observedPositive = evaluateWithZ3(slices.get(0));
+        String observedControl = evaluateWithZ3(slices.get(1));
+        writeReceipt(label + "-implementation", source, slices.get(0), observedPositive);
+        writeReceipt(label + "-negative-control", source, slices.get(1), observedControl);
+        assertEquals(positiveVerdict, observedPositive,
+                "actual checked implementation SMT disagrees: " + label);
+        assertEquals("sat", observedControl,
+                "required independent incorrect-implementation control is absent: " + label);
+    }
+
+    @Test
+    void genuineCheckedJavaAstRefinesAllThreeCoreFunctions() throws Exception {
+        String source = core();
+        for (String name : new String[]{"min_int","max_int","clamp_int"}) {
+            String smt = TypedScalarSmt.fromSource(source, "core", name);
+            assertTrue(smt.contains("(define-fun implementation"));
+            String observed = evaluateWithZ3(smt);
+            writeReceipt("checked-" + name, source, smt, observed);
+            replaySeparated("checked-" + name, source, smt, "unsat");
+            assertEquals("unsat\nsat", observed,
+                    "typed AST did not refine BV64 contract: " + name);
+        }
+    }
+
+    @Test
+    void incorrectSourceBranchesProduceRealSolverCounterexamples() throws Exception {
+        String source = core();
+        assertTrue(source.contains("if left < right; do"));
+        assertTrue(source.contains("if lower > upper; do"));
+        String badMin = source.replace("if left < right; do", "if left > right; do");
+        String badClamp = source.replace("if lower > upper; do", "if lower < upper; do");
+        String minSmt = TypedScalarSmt.fromSource(badMin, "core", "min_int");
+        String minVerdict = evaluateWithZ3(minSmt);
+        writeReceipt("mutated-min_int", badMin, minSmt, minVerdict);
+        replaySeparated("mutated-min_int", badMin, minSmt, "sat");
+        assertEquals("sat\nsat", minVerdict);
+        String clampSmt = TypedScalarSmt.fromSource(badClamp, "core", "clamp_int");
+        String clampVerdict = evaluateWithZ3(clampSmt);
+        writeReceipt("mutated-clamp_int", badClamp, clampSmt, clampVerdict);
+        replaySeparated("mutated-clamp_int", badClamp, clampSmt, "sat");
+        assertEquals("sat\nsat", clampVerdict);
+    }
+
+    @Test
+    void unsupportedStatementsAndUnverifiedSignaturesFailClosed() throws Exception {
+        String source = core();
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(source, "core", "does_not_exist"));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(source, "missing-module", "min_int"));
+        // Literal return is well-typed Oreslang, but cannot be silently
+        // reinterpreted as a parameter-only return in this proof subset.
+        assertTrue(source.contains("return upper;"));
+        String literal = source.replace("return upper;", "return 1;");
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(literal, "core", "clamp_int"));
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
+    void boundedSolverProcessRejectsDeadlocksAndForgedStdout() throws Exception {
+        assertEquals("unsat", evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; printf 'unsat\\n'"), 2_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; printf 'unsat\\n'; printf 'diagnostic\\n' >&2"),
+                2_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; printf 'unsat\\n'; exit 91"), 2_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; yes overflow | head -c 200000"), 1_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("(check-sat)\n",
+                List.of("sh", "-c", "cat >/dev/null; yes error | head -c 200000 >&2"), 1_000));
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("x".repeat(65_536),
+                List.of("sh", "-c", "sleep 5"), 250));
+        // A child may exit successfully while its descendant holds the output
+        // pipe open: the proof must not be accepted after the deadline.
+        assertThrows(IllegalArgumentException.class, () -> evaluateWithCommand("x\n",
+                List.of("sh", "-c", "cat >/dev/null; sleep 5 & printf 'unsat\\n'"), 350));
+    }
+
+    @Test
+    void rawSolverTranscriptCannotBeNormalizedIntoFalseEvidence() {
+        assertEquals("unsat", requireExactSolverTranscript("unsat\n"));
+        assertEquals("sat", requireExactSolverTranscript("sat\n"));
+        assertEquals("unsat\nsat", requireExactSolverTranscript("unsat\nsat\n"));
+        assertEquals("sat\nsat", requireExactSolverTranscript("sat\nsat\n"));
+        for (String rejected : List.of("unsat", "sat", "unknown\n",
+                "unsat\n\n", "unsat\r\n", "unsat \n", "unsat\nsat\n\n",
+                "unsat\n(error \"bad\")\n", "sat\nunsat\n", "")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> requireExactSolverTranscript(rejected), rejected);
+        }
+    }
+
+    @Test
+    void separatedQueryParserRejectsPartialAndInjectedDocuments() throws Exception {
+        String smt = TypedScalarSmt.fromSource(core(), "core", "min_int");
+        assertEquals(2, separateProofAndControl(smt).size());
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replace("(set-logic QF_BV)\n",
+                        "(set-logic QF_BV)\n(reset)\n")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replace("(set-logic QF_BV)\n",
+                        "(set-logic QF_BV)\n(set-option :produce-models true)\n")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replace("(declare-const x (_ BitVec 64))\n",
+                        "(declare-const x (_ BitVec 64))\n(declare-const evil (_ BitVec 64))\n")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replaceFirst("\\(check-sat\\)", "(echo \"unsat\")")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt + "(check-sat)\n"));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replaceFirst("\\(check-sat\\)",
+                        "(reset)\n(check-sat)")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replaceFirst("\\(check-sat\\)",
+                        "(assert true)\n(check-sat)")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt.replace("(push 1)\n", "")));
+        assertThrows(IllegalArgumentException.class, () ->
+                separateProofAndControl(smt + "(push 1)\n(check-sat)\n(pop 1)\n"));
+    }
+
+    @Test
+    void invalidProofInputsFailClosed() throws Exception {
+        String source = core();
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(null, "core", "min_int"));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(source, "core", null));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(" ".repeat(2_000_001), "core", "min_int"));
+    }
+
+    @Test
+    void pureScalarProofRejectsAddedLocalBindingAndArithmetic() throws Exception {
+        String source = core();
+        String withBinding = source.replace("return left;",
+                "val int unchecked = 0; return left;");
+        String withArithmetic = source.replace("return right;",
+                "return right + 1;");
+        assertNotEquals(source, withBinding);
+        assertNotEquals(source, withArithmetic);
+        assertThrows(RuntimeException.class, () ->
+                TypedScalarSmt.fromSource(withBinding, "core", "min_int"));
+        assertThrows(RuntimeException.class, () ->
+                TypedScalarSmt.fromSource(withArithmetic, "core", "min_int"));
+    }
+}

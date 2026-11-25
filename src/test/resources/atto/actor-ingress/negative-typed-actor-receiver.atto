@@ -1,0 +1,12 @@
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    return;
+  }
+end
+
+define class Probe as
+  invoke(Worker worker, ActorMail<String> mail): void {
+    worker.receive(mail);
+    return;
+  }
+end

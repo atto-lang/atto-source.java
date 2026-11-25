@@ -16,13 +16,12 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ArityOverloadAotTest {
 
     @Test
-    void boundAndStaticCallableValuesParticipateInProperTailCalls() throws Exception {
+    void directInstanceCallsAndStaticFunctionValuesParticipateInProperTailCalls() throws Exception {
         String program = """
                 define class Counter as
                   pub descend(int n): int {
                     if n == 0; do return 0; fi
-                    val Fnc<int, int> next = self.descend;
-                    return next(n - 1);
+                    return self.descend(n - 1);
                   }
                   pub static fnc count(int n): int {
                     if n == 0; do return 0; fi
@@ -56,12 +55,12 @@ final class ArityOverloadAotTest {
                   private read(int extra): int { return self.base + extra; }
                   private static fnc secret(): int { return 1; }
                   private static fnc secret(int value): int { return value * 2; }
-                  pub reader(): Fnc<int> { return self.read; }
+                  pub reader(): int { return self.read(); }
                   pub static fnc multiplier(): Fnc<int, int> { return Box.secret; }
                 end
                 pub routine main(): void {
                   val box = new Box(10);
-                  val read = box.reader();
+                  val Fnc<int> read = || -> { return box.reader(); };
                   val multiply = Box.multiplier();
                   stdio.stdout.write(read());
                   stdio.stdout.write(":");
@@ -78,7 +77,7 @@ final class ArityOverloadAotTest {
         assertEquals("10:18", out.toString(StandardCharsets.UTF_8));
 
         for (String extraction : new String[]{
-                "val Fnc<int> callback = new Box().read;",
+                "val int callback = new Box().read();",
                 "val Fnc<int, int> callback = Box.secret;"}) {
             IllegalArgumentException denied = assertThrows(IllegalArgumentException.class, () ->
                     TypeChecker.check(Parser.parse("""
@@ -302,7 +301,7 @@ final class ArityOverloadAotTest {
     }
 
     @Test
-    void expectedFunctionTypeBindsOverloadedMethodValueAndSelfWithoutCloningMethodCode() throws Exception {
+    void explicitLambdasPreserveOverloadArityAndDirectSelfDispatch() throws Exception {
         String program = """
 
                 pub fnc call0(Fnc<int> callback) : int {
@@ -325,11 +324,11 @@ final class ArityOverloadAotTest {
                   }
 
                   pub via_self0() : int {
-                    return call0(self.pick);
+                    return self.pick();
                   }
 
                   pub via_self1() : int {
-                    return call1(self.pick);
+                    return self.pick(5);
                   }
 
                   pub static fnc select() : int {
@@ -346,10 +345,10 @@ final class ArityOverloadAotTest {
                   val right = new Box(20);
                   val typed = new Box(30);
 
-                  stdio.println(call0(left.pick));
-                  stdio.println(call1(right.pick));
+                  stdio.println(call0(|| -> { return left.pick(); }));
+                  stdio.println(call1(|int delta| -> { return right.pick(delta); }));
 
-                  val Fnc<int> callback = typed.pick;
+                  val Fnc<int> callback = || -> { return typed.pick(); };
                   stdio.println(callback());
 
                   stdio.println(new Box(40).via_self0());

@@ -1,0 +1,48 @@
+// Concrete JVM/AOT refinement smoke for the reviewed BV64 core math model.
+// The SMT proof is about the abstract model; this executes real Oreslang.
+// Keep independent of host Java logic and of the solver implementation.
+import module core from "std/core";
+
+pub routine main(): void {
+  val int lowest = -9223372036854775807 - 1;
+  val int highest = 9223372036854775807;
+
+  if core.min_int(lowest, highest) != lowest; do
+    rt fail("min rejects signed lower extreme");
+  fi
+  if core.min_int(highest, lowest) != lowest; do
+    rt fail("min must be commutative on extremes");
+  fi
+  if core.min_int(7, 7) != 7; do
+    rt fail("min equal arguments");
+  fi
+  if core.max_int(lowest, highest) != highest; do
+    rt fail("max rejects signed upper extreme");
+  fi
+  if core.max_int(highest, lowest) != highest; do
+    rt fail("max must be commutative on extremes");
+  fi
+  if core.max_int(-7, -7) != -7; do
+    rt fail("max equal arguments");
+  fi
+  if core.clamp_int(lowest, -12, 13) != -12; do
+    rt fail("clamp lower bound");
+  fi
+  if core.clamp_int(highest, -12, 13) != 13; do
+    rt fail("clamp upper bound");
+  fi
+  if core.clamp_int(0, -12, 13) != 0; do
+    rt fail("clamp value inside interval");
+  fi
+  if core.clamp_int(10, 10, 10) != 10; do
+    rt fail("clamp equal endpoints");
+  fi
+  if core.clamp_int(lowest, highest, lowest) != highest; do
+    rt fail("clamp inverted endpoints must return lower");
+  fi
+  if core.clamp_int(highest, lowest, highest) != highest; do
+    rt fail("clamp upper extreme is inclusive");
+  fi
+  stdio.stdout.println("CORE-SMT-REFINEMENT-OK");
+  return;
+}

@@ -1,0 +1,4 @@
+// Native Java/Graal guest: pure StateGraph step arithmetic.
+pub fnc main(): int {
+  return (6 + 1) * 6;
+}

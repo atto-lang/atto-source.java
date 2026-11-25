@@ -1,0 +1,43 @@
+name: Pull/push demand admission — exact-head JVM and guest
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/BoundedDemandChannel.java'
+      - 'src/test/java/dev/oreslang/runtime/BoundedDemandChannelTest.java'
+      - 'src/test/java/dev/oreslang/PullPushGuestBoundaryTest.java'
+      - '.github/workflows/pull-push-demand-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  demand-admission-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse 'HEAD^{tree}'
+          git hash-object src/main/java/dev/oreslang/runtime/BoundedDemandChannel.java src/test/java/dev/oreslang/runtime/BoundedDemandChannelTest.java src/test/java/dev/oreslang/PullPushGuestBoundaryTest.java
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute bounded host adapter and actual .atto guest regressions
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=BoundedDemandChannelTest,PullPushGuestBoundaryTest -DfailIfNoTests=true test
+          for xml in target/surefire-reports/TEST-dev.oreslang.runtime.BoundedDemandChannelTest.xml target/surefire-reports/TEST-dev.oreslang.PullPushGuestBoundaryTest.xml; do
+            test -s "$xml"
+            ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' "$xml"
+          done

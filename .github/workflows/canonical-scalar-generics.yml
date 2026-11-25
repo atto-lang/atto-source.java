@@ -1,0 +1,64 @@
+name: Canonical scalar generics JVM and Native Image
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-generic-jvm-aot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Java backend without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Checkout immutable canonical common-source mirror from THIS private repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.repository }}
+          ref: 15f4b7e81dd969c82356cec6e90c72d07e763b55
+          path: _canonical_common
+          persist-credentials: false
+      - name: Prove entire canonical source tree and unmodified checkout
+        run: |
+          set -euo pipefail
+          test "$(git -C _canonical_common rev-parse HEAD^{tree})" = "858c37d48a4c3a886260b26320bb0dd931b228ab"
+          test -z "$(git -C _canonical_common status --porcelain=v1 --untracked-files=all)"
+          python3 _canonical_common/contracts/v1/generic-scalar/verify.py --validate-only
+      - name: Setup GraalVM 25 and Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Verify canonical consumer rejects absent or altered sources
+        run: python3 -m unittest discover -s tests -p 'test_canonical_generic_scalar_consumer.py' -v
+      - name: Verify actual pinned worktree against index bypasses
+        run: python3 -B tests/test_pinned_generic_worktree.py -v
+      - name: Build real JVM guest launcher and resolve dependencies
+        run: |
+          mvn -B -ntp -DskipTests package
+          mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Execute 19 required canonical JVM guests and negative diagnostics
+        run: |
+          python3 scripts/verify_canonical_generic_scalar.py --common-source-root _canonical_common --backend jvm --report target/generic-scalar-jvm.json
+      - name: Build real GraalVM Native Image Oreslang launcher
+        run: mvn -B -ntp -Pnative-aot -DskipTests -Dnative.image.optimization=-O0 package
+      - name: Execute 19 required canonical AOT guests and negative diagnostics
+        run: |
+          python3 scripts/verify_canonical_generic_scalar.py --common-source-root _canonical_common --backend native-image --native-binary ./target/ores-aot --report target/generic-scalar-native-image.json
+      - name: Preserve machine-readable real guest results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: canonical-scalar-generics-jvm-aot
+          path: |
+            target/generic-scalar-jvm.json
+            target/generic-scalar-native-image.json
+          if-no-files-found: ignore

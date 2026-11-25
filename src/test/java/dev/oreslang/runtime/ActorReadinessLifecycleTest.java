@@ -22,7 +22,11 @@ final class ActorReadinessLifecycleTest {
                         return (message, context) -> { };
                     });
 
-            assertFalse(ref.ready().cancel(false),
+            assertSame(ref.ready(), ref.getReady(),
+                    "getReady must return the same non-cancellable Future observer");
+            assertSame(ref.done(), ref.getDone(),
+                    "getDone must return the finalization observer");
+            assertFalse(ref.getReady().cancel(false),
                     "guest observers must not cancel runtime-owned readiness");
             ref.ready().get(5, TimeUnit.SECONDS);
             assertEquals(1, created.get());
@@ -62,12 +66,14 @@ final class ActorReadinessLifecycleTest {
             ExecutionException ready = assertThrows(
                     ExecutionException.class,
                     () -> ref.ready().get(5, TimeUnit.SECONDS));
-            assertEquals("constructor failed", ready.getCause().getMessage());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, ready.getCause());
+            assertEquals("constructor failed", ref.failure().orElseThrow().getMessage());
 
             ExecutionException done = assertThrows(
                     ExecutionException.class,
                     () -> ref.done().get(5, TimeUnit.SECONDS));
-            assertEquals("constructor failed", done.getCause().getMessage());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, done.getCause());
+            assertEquals("constructor failed", ref.failure().orElseThrow().getMessage());
         }
     }
 

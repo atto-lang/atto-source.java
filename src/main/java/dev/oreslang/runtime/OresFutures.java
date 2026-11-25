@@ -15,8 +15,17 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * accepted only as a host-interop input and is immediately normalized into an
  * OresFuture so dependent Oreslang work never inherits a host callback
  * execution policy.</p>
+ *
+ * <p>These combinators observe already-started Futures. Cancellation of
+ * an aggregate detaches its waiters, NEVER cancelling its borrowed input
+ * sources; only explicit owners such as TaskScope may revoke work.</p>
  */
 public final class OresFutures {
+    // Bound listener and input allocations for both guest and host adapters.
+    // Keep parity with FutureCombinators; a source TaskScope can impose a
+    // tighter actor/tenant-specific budget before invoking this helper.
+    public static final int MAX_FAN_IN = 65_536;
+
     private OresFutures() { }
 
     public record Settled<T>(T value, Throwable error) {
@@ -32,8 +41,10 @@ public final class OresFutures {
         Runnable detachWaiters = () -> detachAll(waiters);
 
         OresFuture<List<T>> result = new OresFuture<>(() -> {
+            // An aggregate only OBSERVES borrowed input Futures. Revoking
+            // the observer must never cancel a shared Task or actor reply.
+            // Structured child cancellation belongs to an owning TaskScope.
             detachWaiters.run();
-            children.forEach(child -> child.cancel(true));
         });
         if (children.isEmpty()) {
             result.completeFromRuntime(List.of());
@@ -96,8 +107,10 @@ public final class OresFutures {
         Runnable detachWaiters = () -> detachAll(waiters);
 
         OresFuture<T> result = new OresFuture<>(() -> {
+            // An aggregate only OBSERVES borrowed input Futures. Revoking
+            // the observer must never cancel a shared Task or actor reply.
+            // Structured child cancellation belongs to an owning TaskScope.
             detachWaiters.run();
-            children.forEach(child -> child.cancel(true));
         });
 
         for (int index = 0; index < children.size(); index++) {
@@ -131,8 +144,15 @@ public final class OresFutures {
 
     public static <T> OresFuture<List<Settled<T>>> allSettled(List<?> awaitables) {
         List<OresFuture<T>> children = normalize(awaitables, "Futures.all_settled");
-        OresFuture<List<Settled<T>>> result = new OresFuture<>(
-                () -> children.forEach(child -> child.cancel(true)));
+        AtomicReferenceArray<OresFuture.RuntimeWaiterRegistration> waiters =
+                new AtomicReferenceArray<>(children.size());
+        Runnable detachWaiters = () -> detachAll(waiters);
+        OresFuture<List<Settled<T>>> result = new OresFuture<>(() -> {
+            // An aggregate only OBSERVES borrowed input Futures. Revoking
+            // the observer must never cancel a shared Task or actor reply.
+            // Structured child cancellation belongs to an owning TaskScope.
+            detachWaiters.run();
+        });
         if (children.isEmpty()) {
             result.completeFromRuntime(List.of());
             return result;
@@ -144,23 +164,52 @@ public final class OresFutures {
 
         for (int index = 0; index < children.size(); index++) {
             int slot = index;
-            children.get(index).whenCompleteRuntime((value, failure) -> {
-                settled.set(
-                        slot,
-                        new Settled<>(
-                                failure == null ? value : null,
-                                failure == null ? null : OresFuture.unwrap(failure)));
-                if (remaining.decrementAndGet() == 0) {
-                    ArrayList<Settled<T>> ordered =
-                            new ArrayList<>(children.size());
-                    for (int i = 0; i < children.size(); i++) {
-                        ordered.add(settled.get(i));
-                    }
-                    result.completeFromRuntime(List.copyOf(ordered));
-                }
-            });
+            OresFuture.RuntimeWaiterRegistration registration =
+                    children.get(index).whenCompleteRuntimeCancellable((value, failure) -> {
+                            if (result.isDone()) {
+                                detachWaiters.run();
+                                return;
+                            }
+                            settled.set(
+                                    slot,
+                                    new Settled<>(
+                                            failure == null ? value : null,
+                                            failure == null ? null : OresFuture.unwrap(failure)));
+                            if (remaining.decrementAndGet() == 0) {
+                                ArrayList<Settled<T>> ordered =
+                                        new ArrayList<>(children.size());
+                                for (int i = 0; i < children.size(); i++) {
+                                    ordered.add(settled.get(i));
+                                }
+                                result.completeFromRuntime(List.copyOf(ordered));
+                                detachWaiters.run();
+                            }
+                        });
+            waiters.set(slot, registration);
+            if (result.isDone()) {
+                OresFuture.RuntimeWaiterRegistration raced =
+                        waiters.getAndSet(slot, null);
+                if (raced != null) raced.detach();
+            }
         }
         return result;
+    }
+
+    /**
+     * Cancellation-aware replacement for the legacy Settled(value,error)
+     * view. It preserves SUCCESS, FAILURE and runtime-authenticated CANCELLED
+     * independently, including failures whose Throwable happens to be a
+     * CancellationException. It does not cancel borrowed input sources.
+     *
+     * <p>Host-runtime staging only. The source compiler must enforce checked
+     * throws/raises/panics before exposing this as a guest allSettled: an
+     * Oreslang panic may never be reclassified as a catchable failure.</p>
+     */
+    public static <T> OresFuture<List<FutureCombinators.Outcome<T>>>
+            allSettledDetailed(List<?> awaitables) {
+        List<OresFuture<T>> children =
+                normalize(awaitables, "Futures.all_settled_detailed");
+        return FutureCombinators.allSettled(children);
     }
 
     private static void detachAll(
@@ -177,8 +226,16 @@ public final class OresFutures {
             List<?> awaitables,
             String operation) {
         Objects.requireNonNull(awaitables, "awaitables");
-        ArrayList<OresFuture<T>> children = new ArrayList<>(awaitables.size());
-        for (Object awaitable : awaitables) {
+        if (awaitables.size() > MAX_FAN_IN) {
+            throw new IllegalArgumentException(
+                    operation + " exceeds maximum fan-in " + MAX_FAN_IN);
+        }
+        // Do not iterate a mutable, caller-owned List while installing
+        // runtime waiters. Snapshot all arguments before any normalization
+        // or host completion-stage subscription is created.
+        List<?> snapshot = List.copyOf(awaitables);
+        ArrayList<OresFuture<T>> children = new ArrayList<>(snapshot.size());
+        for (Object awaitable : snapshot) {
             Objects.requireNonNull(awaitable, "future");
             if (awaitable instanceof OresFuture<?> ores) {
                 children.add((OresFuture<T>) ores);

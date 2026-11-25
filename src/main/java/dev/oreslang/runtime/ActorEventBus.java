@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -23,6 +24,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * exposed through this API.</p>
  */
 public final class ActorEventBus implements AutoCloseable {
+    // Independent of topic capacity: a single actor cannot allocate one
+    // channel per topic across the group's 1024-topic definition budget.
+    private static final int MAX_SUBSCRIPTIONS_PER_ACTOR_PER_GROUP = 64;
     public enum DeliveryPolicy {
         /** Every active subscriber receives every event; publishers may await backpressure. */
         RELIABLE,
@@ -123,12 +127,26 @@ public final class ActorEventBus implements AutoCloseable {
             int accepted,
             int dropped,
             int coalesced,
-            OresFuture<List<Void>> completion) {
+            OresFuture<List<Void>> completion,
+            long sequence) {
+        // Preserve the existing host constructor for non-publication paths,
+        // including unchanged reduction results and third-party callers.
+        public PublishReceipt(
+                int subscribers, int accepted, int dropped, int coalesced,
+                OresFuture<List<Void>> completion) {
+            this(subscribers, accepted, dropped, coalesced, completion, 0L);
+        }
+
         public PublishReceipt {
             if (subscribers < 0 || accepted < 0 || dropped < 0 || coalesced < 0) {
                 throw new IllegalArgumentException("publication counts cannot be negative");
             }
             Objects.requireNonNull(completion, "completion");
+        }
+
+        /** Full unsigned 64-bit sequence as decimal text for guest/wire receipts. */
+        public String sequenceUnsignedString() {
+            return Long.toUnsignedString(sequence);
         }
     }
 
@@ -151,12 +169,54 @@ public final class ActorEventBus implements AutoCloseable {
             long dropped,
             long coalesced) { }
 
+    /**
+     * Typed host/runtime facade that mirrors the intended source-level {@code Topic<T>}
+     * abstraction. It carries no lifecycle authority and delegates all
+     * membership, isolation, bounded-admission, and teardown checks to this bus.
+     */
+    public final class Topic<T> {
+        private final String name;
+        private final DeliveryPolicy policy;
+        private final int capacity;
+
+        private Topic(String name, DeliveryPolicy policy, int capacity) {
+            this.name = Objects.requireNonNull(name, "name");
+            this.policy = Objects.requireNonNull(policy, "policy");
+            this.capacity = capacity;
+        }
+
+        public String name() { return name; }
+        public DeliveryPolicy policy() { return policy; }
+        public int capacity() { return capacity; }
+
+        public Subscription<T> subscribe() {
+            return ActorEventBus.this.subscribe(name);
+        }
+
+        public PublishReceipt publish(T value) {
+            return ActorEventBus.this.publish(name, value);
+        }
+
+        /** Host-only nonblocking RELIABLE attempt; empty means bounded Full. */
+        public Optional<PublishReceipt> tryPublishReliable(T value) {
+            return ActorEventBus.this.tryPublishReliable(name, value);
+        }
+    }
+
     private final ActorRuntime runtime;
     private final ActorRuntime.ActorGroup group;
     private final Map<String, TopicState> topics = new ConcurrentHashMap<>();
     private final Map<String, DoubleReductionState> doubleReductions = new ConcurrentHashMap<>();
     private final Object definitionLock = new Object();
+    private final Object subscriptionCreditLock = new Object();
+    // All accesses are guarded by subscriptionCreditLock. Do not use a
+    // per-actor AtomicInteger that can be removed while another thread
+    // still holds an unregistered reference to the old counter.
+    private final Map<ActorRuntime.ActorId, Integer> subscriptionCredits = new HashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // A formerly single-topic subscription may now fan out into several
+    // publisher-scoped leases. Bound this new multiplicative allocation path.
+    private static final int MAX_SUBSCRIPTIONS_PER_OBSERVER_TOPIC = 64;
 
     ActorEventBus(ActorRuntime runtime, ActorRuntime.ActorGroup group) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -176,6 +236,23 @@ public final class ActorEventBus implements AutoCloseable {
                 .map(TopicState::info)
                 .sorted((left, right) -> left.name().compareTo(right.name()))
                 .toList();
+    }
+
+    /**
+     * Define (idempotently) and return a typed topic facade. Topic identity is
+     * still group-local and name-based at the runtime boundary; T is the
+     * source/compiler type carried by the facade.
+     */
+    public <T> Topic<T> topic(String name, DeliveryPolicy policy, int capacity) {
+        defineTopic(name, policy, capacity);
+        return new Topic<>(normalizeTopicName(name), policy, capacity);
+    }
+
+    /** Return a typed facade for an already-defined topic. */
+    public <T> Topic<T> topic(String name) {
+        requireOpen();
+        TopicState state = requireTopic(name);
+        return new Topic<>(state.name, state.policy, state.capacity);
     }
 
     public void defineTopic(String name, DeliveryPolicy policy, int capacity) {
@@ -242,7 +319,36 @@ public final class ActorEventBus implements AutoCloseable {
         }
     }
 
+    /**
+     * Subscribe to one publisher on an existing ActorGroup topic. This is a
+     * host/runtime substrate for ObservableActor, not its source-level grant
+     * API. Group membership is required for both parties; source-level
+     * observation grants must be checked by the eventual frontend adapter.
+     * This method is intentionally PACKAGE-PRIVATE until that nonforgeable
+     * grant boundary exists. A public ActorRef is not publisher authorization.
+     *
+     * Unlike a topic-wide subscription, an event from a different publisher
+     * never consumes this subscription's quota or pending writes.
+     */
+    <T> Subscription<T> subscribePublisher(
+            String name, ActorRuntime.ActorRef<?> publisher) {
+        Objects.requireNonNull(publisher, "publisher");
+        requireOpen();
+        group.requireCurrentMember("subscribe to publisher ActorGroup events");
+        if (!runtime.isAlive(publisher)
+                || !runtime.isLiveActorAddress(publisher.address())
+                || !group.isMember(publisher.id())) {
+            throw new SecurityException("publisher must be a live member of this ActorGroup");
+        }
+        return subscribeInternal(name, publisher.address());
+    }
+
     public <T> Subscription<T> subscribe(String name) {
+        return subscribeInternal(name, null);
+    }
+
+    private <T> Subscription<T> subscribeInternal(
+            String name, ActorRuntime.ActorAddress publisherScope) {
         requireOpen();
         ActorRuntime.ActorId subscriber =
                 group.requireCurrentMember("subscribe to ActorGroup events");
@@ -252,13 +358,24 @@ public final class ActorEventBus implements AutoCloseable {
                             + "use actor mailboxes until isolated event delivery is available");
         }
         TopicState topic = requireTopic(name);
+        SubscriptionKey key = new SubscriptionKey(subscriber, publisherScope);
 
         int actorLimit =
                 Math.max(1, ActorRuntime.currentActorPolicy().maxMailboxMessages());
         int capacity = Math.min(topic.capacity, actorLimit);
+        int subscriptionLimit = Math.min(
+                MAX_SUBSCRIPTIONS_PER_ACTOR_PER_GROUP, actorLimit);
 
         synchronized (topic.deliveryLock) {
             requireOpen();
+            // Publisher leave/stop can overtake initial authorization while
+            // the observer is waiting for this topic's admission lock.
+            if (publisherScope != null
+                    && (!runtime.isLiveActorAddress(publisherScope)
+                            || !group.isMember(publisherScope.actorId()))) {
+                throw new IllegalStateException(
+                        "publisher ended before scoped subscription admission");
+            }
             if (topics.get(topic.name) != topic) {
                 throw new IllegalStateException(
                         "ActorGroup event topic is no longer registered: " + topic.name);
@@ -267,21 +384,39 @@ public final class ActorEventBus implements AutoCloseable {
             for (;;) {
                 @SuppressWarnings("unchecked")
                 Subscription<T> existing =
-                        (Subscription<T>) topic.subscriptions.get(subscriber);
+                        (Subscription<T>) topic.subscriptions.get(key);
                 if (existing != null) {
                     if (!existing.closed()) return existing;
-                    topic.subscriptions.remove(subscriber, existing);
+                    topic.subscriptions.remove(key, existing);
                     continue;
                 }
 
-                Subscription<T> created =
-                        new Subscription<>(topic, subscriber, capacity);
+                // Existing leases are idempotent; only NEW scopes consume
+                // the observer's finite per-topic subscription budget.
+                int limit = Math.min(actorLimit, MAX_SUBSCRIPTIONS_PER_OBSERVER_TOPIC);
+                long owned = topic.subscriptions.keySet().stream()
+                        .filter(existingKey -> existingKey.subscriber().equals(subscriber))
+                        .count();
+                if (owned >= limit) {
+                    throw new IllegalStateException(
+                            "ActorGroup event subscription limit exceeded for observer "
+                                    + subscriber + ": " + limit);
+                }
+                // The group-wide per-actor credit (#2440) is released on close.
+                reserveSubscriptionCredit(subscriber, subscriptionLimit);
+                Subscription<T> created;
+                try {
+                    created = new Subscription<>(topic, key, capacity);
+                } catch (RuntimeException | Error failure) {
+                    releaseSubscriptionCredit(subscriber);
+                    throw failure;
+                }
                 Subscription<?> raced =
-                        topic.subscriptions.putIfAbsent(subscriber, created);
+                        topic.subscriptions.putIfAbsent(key, created);
                 if (raced != null) {
                     created.closeChannelOnly();
                     if (raced.closed()) {
-                        topic.subscriptions.remove(subscriber, raced);
+                        topic.subscriptions.remove(key, raced);
                         continue;
                     }
                     @SuppressWarnings("unchecked")
@@ -289,8 +424,11 @@ public final class ActorEventBus implements AutoCloseable {
                     return typed;
                 }
 
-                if (!group.isMember(subscriber) || closed.get()) {
-                    topic.subscriptions.remove(subscriber, created);
+                if (!group.isMember(subscriber) || closed.get()
+                        || (publisherScope != null
+                            && (!runtime.isLiveActorAddress(publisherScope)
+                                    || !group.isMember(publisherScope.actorId())))) {
+                    topic.subscriptions.remove(key, created);
                     created.closeChannelOnly();
                     throw new IllegalStateException(
                             "ActorGroup membership ended during subscription");
@@ -307,6 +445,50 @@ public final class ActorEventBus implements AutoCloseable {
                 requirePublishableTopic(name),
                 runtime.freezeActorGroupEventPayload(value),
                 publisher);
+    }
+
+    /**
+     * Nonblocking, host/runtime admission primitive for RELIABLE topics only.
+     * A present receipt means all current recipients passed the bounded
+     * reservation preflight; it is NOT handler acknowledgment or proof that
+     * the returned completion future has finished. Only a Full refusal maps
+     * to Optional.empty(): revoked authority, closed topics, invalid payloads
+     * and resource errors still fail explicitly and never mint a receipt.
+     *
+     * Guest Topic<T>.try_publish remains intentionally unlowered until the
+     * typed Result<PublishReceipt, PublishError> and membership-grant ABI are
+     * supported. Do not expose this Optional as portable-v1 success evidence.
+     */
+    public Optional<PublishReceipt> tryPublishReliable(String name, Object value) {
+        requireOpen();
+        ActorRuntime.ActorId publisher =
+                group.currentMemberOrSystem("try publish ActorGroup events");
+        return tryPublishReliableFrozen(name, value, publisher);
+    }
+
+    /** Supervisor-authenticated nonblocking RELIABLE admission. */
+    public Optional<PublishReceipt> tryPublishReliableSystem(String name, Object value) {
+        group.requireSupervisor("try publish system ActorGroup events");
+        requireOpen();
+        return tryPublishReliableFrozen(name, value, null);
+    }
+
+    private Optional<PublishReceipt> tryPublishReliableFrozen(
+            String name, Object value, ActorRuntime.ActorId publisher) {
+        TopicState topic = requirePublishableTopic(name);
+        if (topic.policy != DeliveryPolicy.RELIABLE) {
+            throw new IllegalArgumentException(
+                    "tryPublishReliable requires a RELIABLE ActorGroup topic");
+        }
+        try {
+            // Revalidates registered topic and membership at deliveryLock.
+            // On Full, publishFrozen rolls back all staged reservations and
+            // releases the frozen payload before returning to this caller.
+            return Optional.of(publishFrozen(
+                    topic, runtime.freezeActorGroupEventPayload(value), publisher));
+        } catch (EventBackpressureException full) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -371,12 +553,44 @@ public final class ActorEventBus implements AutoCloseable {
         }
     }
 
+    private void reserveSubscriptionCredit(
+            ActorRuntime.ActorId subscriber, int limit) {
+        synchronized (subscriptionCreditLock) {
+            int held = subscriptionCredits.getOrDefault(subscriber, 0);
+            if (held >= limit) {
+                throw new IllegalStateException(
+                        "ActorGroup subscription limit exceeded: " + limit);
+            }
+            subscriptionCredits.put(subscriber, held + 1);
+        }
+    }
+
+    private void releaseSubscriptionCredit(ActorRuntime.ActorId subscriber) {
+        synchronized (subscriptionCreditLock) {
+            int held = subscriptionCredits.getOrDefault(subscriber, 0);
+            if (held <= 0) {
+                throw new IllegalStateException(
+                        "ActorGroup subscription credit underflow");
+            }
+            if (held == 1) subscriptionCredits.remove(subscriber);
+            else subscriptionCredits.put(subscriber, held - 1);
+        }
+    }
+
     void removeActor(ActorRuntime.ActorId actorId) {
         for (TopicState topic : topics.values()) {
             synchronized (topic.deliveryLock) {
-                Subscription<?> subscription =
-                        topic.subscriptions.remove(actorId);
-                if (subscription != null) subscription.closeChannelOnly();
+                for (Map.Entry<SubscriptionKey, Subscription<?>> entry
+                        : List.copyOf(topic.subscriptions.entrySet())) {
+                    SubscriptionKey key = entry.getKey();
+                    if (key.subscriber().equals(actorId)
+                            || (key.publisher() != null
+                                    && key.publisher().actorId().equals(actorId))) {
+                        if (topic.subscriptions.remove(key, entry.getValue())) {
+                            entry.getValue().closeChannelOnly();
+                        }
+                    }
+                }
             }
         }
     }
@@ -420,67 +634,102 @@ public final class ActorEventBus implements AutoCloseable {
         try {
             synchronized (topic.deliveryLock) {
                 requireOpen();
+                // A publisher may lose membership while its payload is being
+                // frozen. Revalidate at the delivery admission boundary so
+                // no post-revocation publication can commit to subscribers.
+                // System publications have a separately checked authority.
+                if (publisher != null && !group.isMember(publisher)) {
+                    throw new SecurityException(
+                            "ActorGroup membership revoked before event publication");
+                }
                 if (topics.get(topic.name) != topic) {
                     throw new IllegalStateException(
                             "ActorGroup event topic is no longer registered: " + topic.name);
                 }
 
-                long sequence = topic.sequence.incrementAndGet();
-                @SuppressWarnings("unchecked")
-                Event<Object> created = new Event<>(
-                        topic.name,
-                        sequence,
-                        publisher,
-                        System.nanoTime(),
-                        frozenPayload.value(),
-                        frozenPayload.reservation());
-                event = created;
-                // Commit only after the topic's admission/close fence, before readers
-                // can observe the notification. Reduction callers hold their state lock.
-                commitState.run();
-
                 List<Subscription<?>> snapshot =
                         List.copyOf(topic.subscriptions.values());
-                if (snapshot.isEmpty()) {
-                    topic.published.incrementAndGet();
-                    return new PublishReceipt(
-                            0, 0, 0, 0, OresFuture.completed(List.of()));
-                }
 
                 List<Subscription<?>> active =
                         new ArrayList<>(snapshot.size());
                 for (Subscription<?> subscription : snapshot) {
                     if (subscription.closed()
-                            || !group.isMember(subscription.subscriber)) {
-                        topic.subscriptions.remove(
-                                subscription.subscriber, subscription);
+                            || !group.isMember(subscription.subscriber)
+                            || (subscription.publisherScope != null
+                                    && (!group.isMember(
+                                            subscription.publisherScope.actorId())
+                                            || !runtime.isLiveActorAddress(
+                                                    subscription.publisherScope)))) {
+                        topic.subscriptions.remove(subscription.key, subscription);
                         subscription.closeChannelOnly();
-                    } else {
+                    } else if (subscription.publisherScope == null
+                            || subscription.publisherScope.actorId().equals(publisher)) {
+                        // Filter before reliable reservation and per-observer
+                        // credit accounting. A system event only reaches
+                        // legacy, unscoped topic subscriptions.
                         active.add(subscription);
                     }
                 }
+                // Reliable admission must reserve every participating credit
+                // BEFORE assigning a committed sequence, creating an event,
+                // or mutating reduction state. A rejected publication cannot
+                // create a phantom event or sequence gap.
+                List<Subscription<?>> reserved = null;
+                if (topic.policy == DeliveryPolicy.RELIABLE) {
+                    reserved = new ArrayList<>(active.size());
+                    try {
+                        for (Subscription<?> subscription : active) {
+                            if (!subscription.reserveReliableEvent()) {
+                                throw new EventBackpressureException(
+                                        topic.name,
+                                        subscription.subscriber,
+                                        subscription.reliableOutstandingLimit);
+                            }
+                            reserved.add(subscription);
+                        }
+                    } catch (Throwable failure) {
+                        for (Subscription<?> admitted : reserved) {
+                            admitted.releaseReliableEvent();
+                        }
+                        throw failure;
+                    }
+                }
+
+                final long sequence;
+                try {
+                    // Sequence assignment is serialized by topic.deliveryLock.
+                    // Overflow fails closed rather than allowing negative ids.
+                    sequence = Math.addExact(topic.sequence.get(), 1L);
+                    Event<Object> created = new Event<>(
+                            topic.name,
+                            sequence,
+                            publisher,
+                            System.nanoTime(),
+                            frozenPayload.value(),
+                            frozenPayload.reservation());
+                    event = created;
+                    // Reduction state and event sequence commit before fanout.
+                    commitState.run();
+                    topic.sequence.set(sequence);
+                } catch (Throwable failure) {
+                    // If event allocation or the commit hook fails after the
+                    // successful preflight, no write has started yet.
+                    if (reserved != null) {
+                        for (Subscription<?> admitted : reserved) {
+                            admitted.releaseReliableEvent();
+                        }
+                    }
+                    throw failure;
+                }
+
                 if (active.isEmpty()) {
+                    // State and sequence were committed once, above.
                     topic.published.incrementAndGet();
                     return new PublishReceipt(
-                            0, 0, 0, 0, OresFuture.completed(List.of()));
+                            0, 0, 0, 0, OresFuture.completed(List.of()), sequence);
                 }
 
                 if (topic.policy == DeliveryPolicy.RELIABLE) {
-                    List<Subscription<?>> reserved =
-                            new ArrayList<>(active.size());
-                    for (Subscription<?> subscription : active) {
-                        if (!subscription.reserveReliableEvent()) {
-                            for (Subscription<?> admitted : reserved) {
-                                admitted.releaseReliableEvent();
-                            }
-                            throw new EventBackpressureException(
-                                    topic.name,
-                                    subscription.subscriber,
-                                    subscription.reliableOutstandingLimit);
-                        }
-                        reserved.add(subscription);
-                    }
-
                     List<OresFuture<Void>> writes =
                             new ArrayList<>(reserved.size());
                     int started = 0;
@@ -508,9 +757,12 @@ public final class ActorEventBus implements AutoCloseable {
                             reserved.size(),
                             0,
                             0,
-                            combineReliableWrites(writes));
+                            combineReliableWrites(writes),
+                            sequence);
                 }
 
+                // LATEST/LOSSY admit without waiting for per-subscriber
+                // credits; state and sequence were committed once, above.
                 int accepted = 0;
                 int dropped = 0;
                 int coalesced = 0;
@@ -546,7 +798,8 @@ public final class ActorEventBus implements AutoCloseable {
                         accepted,
                         dropped,
                         coalesced,
-                        OresFuture.completed(List.of()));
+                        OresFuture.completed(List.of()),
+                        sequence);
             }
         } finally {
             if (event == null) {
@@ -561,14 +814,33 @@ public final class ActorEventBus implements AutoCloseable {
 
     private OresFuture<List<Void>> combineReliableWrites(
             List<OresFuture<Void>> writes) {
-        OresFuture<List<Void>> combined = OresFutures.<Void>all(writes);
-        combined.whenCompleteRuntime((ignored, failure) -> {
-            if (failure == null) return;
+        /*
+         * These write Futures are private children owned by this publication,
+         * not borrowed inputs. Cancelling the publication therefore revokes
+         * every still-pending channel admission. Already-committed writes are
+         * not retracted: cancellation is an admission fence, not a recall of
+         * events a subscriber can already observe.
+         *
+         * Do not use OresFutures.all() as the returned Future directly:
+         * general combinators intentionally do NOT cancel borrowed children.
+         */
+        OresFuture<List<Void>> observed = OresFutures.<Void>all(writes);
+        OresFuture<List<Void>> owned = new OresFuture<>(() -> {
             for (OresFuture<Void> write : writes) {
                 if (!write.isDone()) write.cancel(false);
             }
         });
-        return combined;
+        observed.whenCompleteRuntime((values, failure) -> {
+            if (owned.isDone()) return;
+            if (failure == null) {
+                owned.completeFromRuntime(values);
+            } else if (observed.isCancelled()) {
+                owned.cancel(false);
+            } else {
+                owned.failFromRuntime(OresFuture.unwrap(failure));
+            }
+        });
+        return owned;
     }
 
     private TopicState requireTopic(String name) {
@@ -617,12 +889,20 @@ public final class ActorEventBus implements AutoCloseable {
         }
     }
 
+    // Null publisher means an existing topic-wide subscription.
+    private record SubscriptionKey(
+            ActorRuntime.ActorId subscriber, ActorRuntime.ActorAddress publisher) {
+        private SubscriptionKey {
+            Objects.requireNonNull(subscriber, "subscriber");
+        }
+    }
+
     private final class TopicState {
         private final String name;
         private final DeliveryPolicy policy;
         private final int capacity;
         private final boolean reductionOwned;
-        private final Map<ActorRuntime.ActorId, Subscription<?>> subscriptions =
+        private final Map<SubscriptionKey, Subscription<?>> subscriptions =
                 new ConcurrentHashMap<>();
         private final Object deliveryLock = new Object();
         private final AtomicLong sequence = new AtomicLong();
@@ -694,7 +974,9 @@ public final class ActorEventBus implements AutoCloseable {
 
     public final class Subscription<T> implements AutoCloseable {
         private final TopicState topic;
+        private final SubscriptionKey key;
         private final ActorRuntime.ActorId subscriber;
+        private final ActorRuntime.ActorAddress publisherScope;
         private final ChannelRuntime.Channel<Event<T>> channel;
         private final Object latestLock = new Object();
         private final AtomicInteger reliableOutstanding = new AtomicInteger();
@@ -705,10 +987,12 @@ public final class ActorEventBus implements AutoCloseable {
 
         private Subscription(
                 TopicState topic,
-                ActorRuntime.ActorId subscriber,
+                SubscriptionKey key,
                 int capacity) {
             this.topic = topic;
-            this.subscriber = subscriber;
+            this.key = key;
+            this.subscriber = key.subscriber();
+            this.publisherScope = key.publisher();
             this.channel = new ChannelRuntime.Channel<>(capacity);
             this.pendingReadLimit = ActorRuntime.currentActorPolicy().maxMailboxMessages();
             long bounded = Math.max((long) capacity + 1L, (long) capacity * 2L);
@@ -721,6 +1005,11 @@ public final class ActorEventBus implements AutoCloseable {
 
         public ActorRuntime.ActorId subscriber() {
             return subscriber;
+        }
+
+        /** Null indicates a legacy subscription to every topic publisher. */
+        public Optional<ActorRuntime.ActorAddress> publisherScope() {
+            return Optional.ofNullable(publisherScope);
         }
 
         public DeliveryPolicy policy() {
@@ -895,7 +1184,7 @@ public final class ActorEventBus implements AutoCloseable {
                         "an actor may only close its own ActorGroup event subscription");
             }
             synchronized (topic.deliveryLock) {
-                if (topic.subscriptions.remove(subscriber, this)) {
+                if (topic.subscriptions.remove(key, this)) {
                     closeChannelOnly();
                 }
             }
@@ -903,22 +1192,23 @@ public final class ActorEventBus implements AutoCloseable {
 
         private void closeChannelOnly() {
             if (!subscriptionClosed.compareAndSet(false, true)) return;
-            channel.close();
+            try {
+                channel.close();
 
-            // Use the runtime-only drain primitive rather than re-entering the
-            // guest-visible tryRead() path while holding the channel monitor.
-            // That keeps closed-and-empty teardown terminal rather than
-            // exceptional and releases delivery/accounting callbacks outside
-            // the channel lock.
-            while (channel.drainOne(buffered -> {
-                if (topic.policy == DeliveryPolicy.RELIABLE) {
-                    releaseReliableEvent();
+                // Drain buffered deliveries without guest-visible read authority
+                // checks. Pending writers fail their own admission reservations.
+                while (channel.drainOne(buffered -> {
+                    if (topic.policy == DeliveryPolicy.RELIABLE) {
+                        releaseReliableEvent();
+                    }
+                    buffered.releaseDelivery();
+                })) {
+                    // Drain every already-buffered immutable event.
                 }
-                buffered.releaseDelivery();
-            })) {
-                // Drain every already-buffered immutable delivery. Pending
-                // writers were failed by channel.close() and release their own
-                // delivery/accounting reservations from completion callbacks.
+            } finally {
+                // Reclaimed even when channel completion invokes a failing
+                // callback; this credit is owned by the subscription lifetime.
+                releaseSubscriptionCredit(subscriber);
             }
         }
     }

@@ -1,22 +1,35 @@
-# Historical proposal: Option-valued `trap` (superseded)
+# `trap`: Result-valued non-throwing callables
 
-> **Not normative. Do not merge the old implementation as written.**
-> The merged [Atto decision #151](https://github.com/atto-lang/atto-spec/pull/151)
-> and [Java #1801](https://github.com/atto-lang/atto-source.java/pull/1801)
-> establish Result-valued trap semantics. This document and its legacy tests
-> describe the pre-reconciliation Option implementation, retained here to identify
-> code and test migrations, not to authorize a second dialect.
+> **Normative update (2026-11-17, owner decision): `trap` yields `Result`, not `Option`.**
+> - `trap e` with `e: T` has type `Result<T, Error>`. Success is `Ok(v)`. A caught ordinary
+>   failure is `Err(Error)`, a sanitized value: a bounded type name and message, with no host
+>   exception, cause chain or stack.
+> - A `Result` is never wrapped again. With `e: Result<T, E>`, `trap e` has type
+>   `Result<T, E | Error>`, or just `Result<T, E>` when `E` already accepts `Error`. The
+>   value's own `Err(E)` passes through, and a caught failure becomes `Err(Error)`.
+> - Calls to `trap fnc f(): T` have the same type. Async and suspending trap boundaries
+>   settle their Future with it: `Future<Result<T, Error>>`.
+> - `trap await f` spans the suspension. A completed or suspended Future that fails yields
+>   `Err(Error)` (the #2690 decision).
+> - `panic`, `raise`, cancellation, forced termination and VM-fatal failures still bypass
+>   `trap`. `unwrap()` on an `Err` is still a panic.
 >
-> Required replacement: ordinary values become `Ok(value)`; ordinary throws
-> become `Err(error)` preserving the original error; an existing Result passes
-> through, and an Option remains an Ok payload. The suspension-capable boundary
-> must produce `Future<Result<T, Error>>` (preserving an existing Result's
-> approved error type), with identical behavior before and after suspension.
-> Raise, panic, cancellation and termination bypass trap; cleanup occurs once.
-> The actual async code, typing and regression fixtures still need reconciliation
-> and exact-head JVM and Native Image execution. No async support is claimed.
+> Sections below that mention `Option`, `Some` or `None` describe the previous contract.
 
-## Historical text follows
+## Current-main async reconciliation candidate (2026-11-25)
+
+The old #579 Option implementation is superseded by the existing scheduler-owned
+Result completion path. The candidate admits top-level/module async trap declarations
+in the compatibility frontend, including the bang alias. It lifts Result **inside**
+Future for direct calls, module signatures and function values; existing Result
+payloads are not wrapped twice. Scheduler-owned cancellation and panic are never
+ordinary Err. Unlike the historical synchronous compatibility sanitizer, the async
+path captures only a directly typed GuestOrdinaryThrow after active cleanup has
+retired. The strict Atto frontend gate remains intact: canonical source throw,
+raise, panic and nominal trait lowering depend on the separate #1704 integration.
+Real pending-producer suspension, ownership retirement and native AOT need the
+shared #598 guest witnesses and executed evidence. These source and JUnit changes
+are not a claim of JVM execution or full async parity.
 
 This document defines the Oreslang contract for the `trap` callable modifier
 and its interaction with `throw`, `raise`, `panic`, async/Future execution,
@@ -25,7 +38,7 @@ select, actors, and runtime cancellation.
 The central rule is intentionally small:
 
 > A call to a `trap` callable never exposes an ordinary `throw` to its caller.
-> Success is `Some(value)`; an uncaught ordinary throw is `None`.
+> Success is `Ok(value)`; an uncaught ordinary throw is `Err(Error)`.
 
 `raise`, `panic`, runtime cancellation, forced termination, and fatal host
 failures are not ordinary throws and are not converted to `None`.
@@ -358,24 +371,3 @@ cancel -> runtime cancellation channel, never None
 
 That distinction is semantic and must not be erased by parsing, optimization,
 interop, actor transport, or backend lowering.
-
-
-## Current bootstrap implementation status
-
-The compiler/runtime implementation currently accepts `trap fnc`, `trap routine`,
-`async trap fnc`, and `async trap routine` at top level or in modules.
-Async calls have the call type `Future<Option<T>>`, and source-task completion
-produces `Some(T)` or `None` after the full awaited continuation finishes.
-
-The Java/Truffle bootstrap still lacks a dedicated source-language ordinary
-`throw` effect. Until it exists, the trapped recoverable runtime failures
-are explicitly limited to checked-cast errors, illegal argument errors,
-arithmetic errors, and bounds errors. This must not grow into blanket
-`RuntimeException` or `Throwable` swallowing. Panic, cancellation,
-VM/scheduler/security faults, and other nonrecoverable errors bypass the trap.
-
-Class and actor instance methods, actor callable forms, generator traps,
-and full interface/override effect contracts are still blocked pending
-effect-aware metadata and mailbox continuation semantics. In particular,
-an actor method that suspends at `readch` needs a precise Future/Option
-call contract before the example can be accepted end to end.

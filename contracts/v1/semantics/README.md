@@ -13,8 +13,12 @@ extend [the admission suite](../README.md) with stronger oracles.
   exact case inventory, diagnostic classes, runtime values and backend readiness.
 - A missing compiler, signal, timeout, linker failure, wrong result, or
   infrastructure error **always fails a required case**.
-- Pending indicates missing implementation or missing verification; it is
-  *not* conformance. Graal runtime-result support remains explicitly pending.
+- Graal native-result fixtures first pass Java/Graal `--check`, then run the
+  same source through real `OresMain` and verify its exit status and empty
+  stdout/stderr. The `--run-command` must be configured explicitly; missing
+  guest execution is a failure, never a pass.
+- Pending indicates missing implementation or verification, *not* conformance.
+  Ownership and actor/async feature parity remain separately gated.
 - TypeSpec defines portable interchange models; JSON Schema 2020-12 validates
   constrained cases. TypeSpec and schemas are both compiled/validated in CI.
 
@@ -40,6 +44,7 @@ mvn -B -ntp -DskipTests package
 mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
 python3 contracts/v1/semantics/run.py \
   --backend graal --command 'python3 contracts/v1/java_probe.py {source}' \
+  --run-command 'python3 contracts/v1/java_probe.py {source} --execute' \
   --revision "$(git rev-parse HEAD)" --report target/semantics-graal.json
 ```
 
@@ -51,14 +56,47 @@ python3 contracts/v1/semantics/compare.py \
 ```
 
 **Current limitations:** no shared runtime value ABI beyond a small native
-process exit code; no validated Java native result adapter; no LLVM borrow
-checker; no automatic actor/preemption conformance yet. Proposed functionality
+process exit code; the Graal native-exit adapter only covers bounded 0–125 process exit values; LLVM has only a
+restricted i64 ownership checker; no automatic source-level actor/preemption conformance yet. Proposed functionality
 is recorded as pending instead of turned into false passing tests.
 
 Follow-up work: integer width/overflow specification, stable diagnostic IDs
 rather than regular-expression mappings, canonical Oreslang JSON stdout,
 actor message event traces, cycle-safe reference/ownership cases, replay-fenced
 cancellation and fair preemption under strict resource budgets.
+
+
+## Exact-head, fail-closed fixture parity gate
+
+The default comparator is an **incremental conformance inventory check**. Its
+exit code is zero when required tests pass and declared pending tests remain
+pending; **it does not certify source, feature, runtime, or semantic parity**.
+Inspect `SUITE_COMPLETE=no` and `BACKEND_PENDING` in its summary.
+
+A release/merge job that intends to claim **full coverage of this fixture
+suite** must run the strict gate with independently verified commit hashes:
+
+```sh
+python3 contracts/v1/semantics/compare.py \
+  --llvm build/semantics-llvm.json \
+  --graal target/semantics-graal.json \
+  --llvm-revision "$LLVM_SOURCE_SHA" \
+  --graal-revision "$GRAAL_SOURCE_SHA" \
+  --require-suite-parity
+```
+
+The strict gate rejects any pending/failing/mismatched fixture, missing or
+fabricated diagnostic/native evidence, and reports for source commits other
+than the pinned heads. Both heads must be supplied; do not use arbitrary
+hard-coded revisions or presume the files correspond to a current branch.
+
+Even a passing **strict suite** covers only its enumerated fixtures. It must
+not be labeled *language-wide feature parity*, since actors, source-level
+supervision, asynchronous continuation frames, cancellation, select,
+untrusted-isolate boundaries, cyclic graphs and general heap ownership are
+not all represented by identical, end-to-end executable fixtures today.
+LLVM's small native i64 checker implements a subset of ownership operations,
+not general actor/heap/async borrow parity.
 
 ## Externally admitted actor messages
 
@@ -80,3 +118,38 @@ production tracing API. The sequence is reconstructed after join from real
 admission and callback evidence, not a timestamped total order. Java/Graal
 shares the schema and adversarial validator but does not yet emit native
 carrier traces.
+
+
+## Semantic producer checkout binding
+
+When executing a backend (not `--validate`), `run.py` now verifies that
+`--revision` equals the actual local `git rev-parse HEAD`, that the
+semantic suite lives at the root of that checkout, and that its tracked
+working tree has no staged or unstaged modifications. It prints the inspected
+Git tree SHA. Before writing a report it rechecks the revision, tracked
+status, Git tree and the complete fixture/schema suite digest, failing closed
+if any changed during execution. Build output in untracked `target/` remains
+permitted.
+
+This binds a producer's revision label to its observed local checkout; it is
+**not** independent GitHub Actions provenance, binary reproducibility,
+external report authentication, or a guest-parity certificate. Independently
+verify the workflow run, checkout tree and compiler artifact before using a
+report as evidence. A change-and-restore race between checks is outside this
+guard's threat model.
+
+
+## Proxy request / completion packed-i64 guest ABI checkpoint
+
+`fixtures/proxy-packed-receipt.ores` is a **shared, required, native-execution** fixture (`native.proxy-packed-receipt`, expected process exit 42) in both Java/GraalVM and LLVM semantics manifests. It verifies the same arithmetic used by host request tickets and receipt claims:
+
+- Request ticket: `incarnation * 4294967296 + row` (16-bit-bounded physical row).
+- Receipt: `serial * 4294967296 + (row * 8 + lane + 1)`, with up to 8 bounded receipt lanes per request.
+- The fixture uses serial values 33,554,433 and 67,108,865, so packed words exceed `2^53` but remain inside signed i64. It compares each packed value with its aligned 32-bit base and expects the exact 16-bit row / bounded receipt index to survive. IEEE-754 rounded arithmetic would produce process exit **48** rather than **42**.
+- Because the LLVM source frontend intentionally rejects integer `/` and `%` until their semantics are implemented, the fixture relies only on supported signed-i64 `+`, `-` and `*`. Decoding by division/remainder is a **separate pending language capability**, not silently interpreted by a test shim.
+
+**Scope:** this proves only arithmetic performed by actual compiled guest source *once the required conformance workflow executes*. It does **not** expose a guest `ProxyRequestSlab`, allocate actor arenas, send a callback, or establish owner-turn authorization. The host-level slab API and actual guest lowering require a second native-execution contract that admits, pins, retires, settles and recycles under real Java/GraalVM and native OresVM actor turns.
+
+The semantic suite's `cases.json`, normative schemas, TypeSpec manifest and all fixture Git blobs are now identical in the two branches; the three defer/finally cases that Java implements remain explicitly `llvm: pending`. The existing `contracts/v1/semantics/run.py` executors still differ by backend as intended.
+
+**Evidence limitation:** both source-organization conformance workflow runs on the new exact heads failed **before recording any steps**; a local Python arithmetic reference check passed, but **no checked-in Oreslang source was executed by a compiler** in this round. Do not mark this conformance case verified until the exact guest-result report is produced on an authorized runner.
