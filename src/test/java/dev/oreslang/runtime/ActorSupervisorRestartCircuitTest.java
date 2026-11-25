@@ -37,7 +37,7 @@ final class ActorSupervisorRestartCircuitTest {
         assertEquals(DecisionKind.STALE, duplicate.kind());
         assertEquals(1, c.snapshot(151).staleNotices());
 
-        c.admitGeneration(1, 11, 160);
+        c.admitGeneration(1, 11, 150 + first.delayNanos());
         assertEquals(11, c.generation(1));
         assertFalse(c.restartPending(1));
     }
@@ -85,15 +85,16 @@ final class ActorSupervisorRestartCircuitTest {
         assertTrue(c.acknowledgeQuiesced(0, 1, 11));
 
         // Replacements publish in declaration order.
-        for (int i = 0; i < 4; ++i) c.admitGeneration(i, 10 + i, 20);
+        long replacementTime = 10 + plan.delayNanos();
+        for (int i = 0; i < 4; ++i) c.admitGeneration(i, 10 + i, replacementTime);
 
         // A fresh episode cannot sneak past the full budget.
         var exhausted = c.onExit(
                 0, 10, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
-                Strategy.ONE_FOR_ONE, 21);
+                Strategy.ONE_FOR_ONE, replacementTime + 1);
         assertEquals(DecisionKind.ESCALATE, exhausted.kind());
         assertEquals(0, exhausted.chargedRestarts());
-        assertEquals(1, c.snapshot(21).escalations());
+        assertEquals(1, c.snapshot(replacementTime + 1).escalations());
     }
 
     @Test
@@ -127,17 +128,20 @@ final class ActorSupervisorRestartCircuitTest {
         assertEquals(1, first.attempt());
         assertTrue(first.delayNanos() >= 100);
 
-        c.admitGeneration(0, 2, 110);
+        long secondStart = 100 + first.delayNanos();
+        c.admitGeneration(0, 2, secondStart);
+        long secondExit = secondStart + 100;
         var second = c.onExit(
                 0, 2, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
-                Strategy.ONE_FOR_ONE, 210);
+                Strategy.ONE_FOR_ONE, secondExit);
         assertEquals(2, second.attempt());
         assertTrue(second.delayNanos() >= 200);
 
-        c.admitGeneration(0, 3, 220);
+        long thirdStart = secondExit + second.delayNanos();
+        c.admitGeneration(0, 3, thirdStart);
         var stable = c.onExit(
                 0, 3, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
-                Strategy.ONE_FOR_ONE, 1_500);
+                Strategy.ONE_FOR_ONE, thirdStart + 1_000);
         assertEquals(1, stable.attempt(),
                 "a generation stable for the reset period starts a new backoff episode");
         assertTrue(stable.delayNanos() >= 100);
@@ -163,13 +167,18 @@ final class ActorSupervisorRestartCircuitTest {
                 "same trace must produce the same dephasing");
         assertTrue(a.delayNanos() >= 1_000 && a.delayNanos() <= 1_125);
 
+        long now = 1;
+        long delay = a.delayNanos();
         for (long generation = 56; generation < 70; ++generation) {
-            left.admitGeneration(0, generation, generation);
+            now += delay;
+            left.admitGeneration(0, generation, now);
             var p = left.onExit(
                     0, generation, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
-                    Strategy.ONE_FOR_ONE, generation);
+                    Strategy.ONE_FOR_ONE, now);
+            assertEquals(DecisionKind.RESTART, p.kind());
             assertTrue(p.delayNanos() <= 8_000,
                     "backoff plus spread must never exceed the configured cap");
+            delay = p.delayNanos();
         }
     }
 
@@ -188,12 +197,12 @@ final class ActorSupervisorRestartCircuitTest {
                 Strategy.ONE_FOR_ONE, 110).kind(),
                 "restart exactly at the half-open cutoff still counts");
 
-        // The escalated generation is terminal. Start a new externally admitted
-        // generation only to prove the old budget entry expires after cutoff.
-        c.admitGeneration(0, 3, 111);
-        assertEquals(DecisionKind.RESTART, c.onExit(
-                0, 3, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
-                Strategy.ONE_FOR_ONE, 111).kind());
+        // History still expires, but expiry is not parent recovery authority.
+        assertEquals(0, c.snapshot(111).restartsInWindow());
+        assertTrue(c.escalated());
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(0, 3, 111));
+        assertEquals(2L, c.generation(0));
     }
 
     @Test
@@ -229,6 +238,10 @@ final class ActorSupervisorRestartCircuitTest {
         assertFalse(c.restartPending(0));
         assertFalse(c.restartPending(1));
         assertEquals(0, c.snapshot(1).acceptedReplacementRestarts());
+        assertTrue(c.escalated());
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(0, 2, 1_002));
+        assertEquals(0, c.snapshot(1_002).acceptedReplacementRestarts());
     }
 
     @Test
@@ -319,6 +332,20 @@ final class ActorSupervisorRestartCircuitTest {
                 "escalation must not erase the already-admitted restart episode");
         assertTrue(c.restartPending(3));
         assertTrue(c.restartPending(4));
+        assertTrue(c.escalated());
+        assertTrue(c.acknowledgeQuiesced(4, 5, 12));
+        // Even the formerly authorized younger episode cannot start after
+        // escalation. Keep its physical cleanup receipts for the parent.
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(3, 20, 12));
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(1, 20, 12));
+        var later = c.onExit(0, 1, RestartPolicy.PERMANENT,
+                ExitClass.ABNORMAL, Strategy.ONE_FOR_ONE, 13);
+        assertEquals(DecisionKind.ESCALATE, later.kind());
+        assertEquals(0, later.chargedRestarts());
+        assertEquals(2, c.snapshot(13).pendingReplacements());
+        assertEquals(2L, c.snapshot(13).acceptedReplacementRestarts());
     }
 
     @Test

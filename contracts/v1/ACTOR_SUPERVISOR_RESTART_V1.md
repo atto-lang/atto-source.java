@@ -23,7 +23,10 @@ separate from actor creation, timers and guest callback execution.
    count. Entries expire only after they are strictly older than the cutoff.
 6. **Exponential bounded delay.** Repeated unstable generations increase the
    delay exponentially up to the configured cap. Arithmetic must saturate
-   instead of overflowing.
+   instead of overflowing. The circuit itself rejects replacement admission
+   until the full admitted delay has elapsed since the restart decision.
+   The comparison uses modulo monotonic elapsed time, not a signed absolute
+   deadline. All selected children share the episode's minimum delay.
 7. **Deterministic dephasing.** A reproducible generation/child/attempt hash may
    add at most 12.5% spread without exceeding the cap. No RNG or ambient entropy
    is required, so traces are replayable while simultaneous supervisors are
@@ -55,7 +58,12 @@ separate from actor creation, timers and guest callback execution.
 14. **Escalation beats thrash.** Restart-intensity exhaustion or an overlapping
     restart episode escalates to the parent supervisor/root CONTROL plane. The
     runtime must not silently reset counters, evict old budget entries early,
-    or continue restarting.
+    or continue restarting. Escalation is sticky for this circuit instance:
+    reject every later generation admission, including previously pending
+    replacements, even if the intensity window expires. Physical quiescence
+    acknowledgements remain accepted for cleanup. Recovery requires a fresh
+    circuit under authenticated parent/root lifecycle authority; there is no
+    local reset method.
 15. **Bounded allocation-free history.** Child tables are bounded by the
     declared child count (maximum 4096). Restart timestamps live in a fixed
     primitive ring sized to the configured maximum restart count; a failure
@@ -80,7 +88,9 @@ code, or own a timer thread. A supervisor implementation must:
 3. if RESTART, stop selected old siblings in reverse declaration order;
 4. as each sibling physically finalizes, acknowledge its exact old generation
    to the circuit; never block an actor carrier while waiting;
-5. await the deterministic delay on the runtime scheduler;
+5. await any remaining deterministic delay on the runtime scheduler; the
+   minimum elapsed time is measured from the restart decision and enforced
+   by the circuit even when the caller attempts early admission;
 6. start replacements in declaration order; circuit admission rejects a start
    whose old generation lacks quiescence proof or whose earlier sibling in the
    same episode has not yet been replaced;

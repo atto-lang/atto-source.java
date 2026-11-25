@@ -106,12 +106,19 @@ final class ActorSupervisorRestartCircuit {
     private final boolean[] restartPending;
     private final boolean[] restartQuiesced;
     private final long[] restartEpisode;
+    // Store elapsed-time origin and duration, never a signed absolute
+    // deadline: nanoTime can wrap while the episode is pending.
+    private final long[] restartDecidedAtNanos;
+    private final long[] restartDelayNanos;
 
     /** Fixed-capacity primitive ring: no Long boxing during a restart storm. */
     private final long[] restartTimes;
     private int restartHead;
     private int restartSize;
 
+    // Escalation transfers authority to the parent/root. This circuit must
+    // never resume admission merely because time passes or a child retries.
+    private boolean escalated;
     private boolean hasNowNanos;
     private long lastNowNanos;
     private long nextDecisionSequence = 1L;
@@ -132,6 +139,8 @@ final class ActorSupervisorRestartCircuit {
         this.restartPending = new boolean[config.childCount()];
         this.restartQuiesced = new boolean[config.childCount()];
         this.restartEpisode = new long[config.childCount()];
+        this.restartDecidedAtNanos = new long[config.childCount()];
+        this.restartDelayNanos = new long[config.childCount()];
         this.restartTimes = new long[config.maxRestarts()];
     }
 
@@ -141,6 +150,9 @@ final class ActorSupervisorRestartCircuit {
             long nowNanos) {
         requireChild(childIndex);
         requireMonotonicTime(nowNanos);
+        if (escalated) {
+            throw new IllegalStateException("supervisor restart circuit escalated; parent recovery required");
+        }
         if (actorGeneration <= 0) {
             throw new IllegalArgumentException("actor generation must be positive");
         }
@@ -156,7 +168,22 @@ final class ActorSupervisorRestartCircuit {
                 throw new IllegalStateException(
                         "replacement cannot start before old generation physically quiesces");
             }
+            long elapsed = nonNegativeElapsed(nowNanos, restartDecidedAtNanos[childIndex]);
+            if (elapsed < restartDelayNanos[childIndex]) {
+                throw new IllegalStateException(
+                        "replacement cannot start before its admitted restart backoff elapses");
+            }
             long episode = restartEpisode[childIndex];
+            // Reverse-order retirement must finish for the ENTIRE episode
+            // before any replacement starts, including a failed first child
+            // whose terminal CONTROL already proves its own quiescence.
+            for (int i = 0; i < config.childCount(); ++i) {
+                if (restartPending[i] && restartEpisode[i] == episode
+                        && !restartQuiesced[i]) {
+                    throw new IllegalStateException(
+                            "all selected old generations must physically quiesce before replacement");
+                }
+            }
             for (int i = 0; i < childIndex; ++i) {
                 if (restartPending[i] && restartEpisode[i] == episode) {
                     throw new IllegalStateException(
@@ -235,6 +262,13 @@ final class ActorSupervisorRestartCircuit {
         // the failed generation itself is already quiesced at this boundary.
         live[childIndex] = false;
 
+        if (escalated) {
+            escalations = saturatingIncrement(escalations);
+            return new RestartPlan(
+                    DecisionKind.ESCALATE, childIndex, childIndex,
+                    0, 0, 0, decisionSequence, "supervisor-already-escalated");
+        }
+
         if (!shouldRestart(policy, exitClass)) {
             noRestartDecisions = saturatingIncrement(noRestartDecisions);
             consecutiveAttempts[childIndex] = 0;
@@ -267,6 +301,7 @@ final class ActorSupervisorRestartCircuit {
         // new budget/order proof; fail closed by escalating instead.
         for (int i = first; i < end; ++i) {
             if (restartPending[i]) {
+                escalated = true;
                 escalations = saturatingIncrement(escalations);
                 overlappingEpisodeEscalations =
                         saturatingIncrement(overlappingEpisodeEscalations);
@@ -285,6 +320,7 @@ final class ActorSupervisorRestartCircuit {
         pruneWindow(nowNanos);
         if (width > config.maxRestarts()
                 || restartSize > config.maxRestarts() - width) {
+            escalated = true;
             escalations = saturatingIncrement(escalations);
             return new RestartPlan(
                     DecisionKind.ESCALATE,
@@ -307,6 +343,7 @@ final class ActorSupervisorRestartCircuit {
             attempt = incrementAttempt(consecutiveAttempts[childIndex]);
         }
         consecutiveAttempts[childIndex] = attempt;
+        long delay = restartDelayNanos(childIndex, actorGeneration, attempt);
 
         // Fence the complete episode before returning the plan. The failed
         // child is already quiesced; siblings are not.
@@ -315,6 +352,8 @@ final class ActorSupervisorRestartCircuit {
             restartPending[i] = true;
             restartQuiesced[i] = i == childIndex;
             restartEpisode[i] = decisionSequence;
+            restartDecidedAtNanos[i] = nowNanos;
+            restartDelayNanos[i] = delay;
         }
 
         for (int i = 0; i < width; ++i) addRestartTime(nowNanos);
@@ -327,9 +366,13 @@ final class ActorSupervisorRestartCircuit {
                 end,
                 attempt,
                 width,
-                restartDelayNanos(childIndex, actorGeneration, attempt),
+                delay,
                 decisionSequence,
                 "restart-admitted");
+    }
+
+    synchronized boolean escalated() {
+        return escalated;
     }
 
     synchronized boolean restartPending(int childIndex) {
@@ -429,15 +472,24 @@ final class ActorSupervisorRestartCircuit {
     }
 
     private void pruneWindow(long nowNanos) {
-        long cutoff;
-        try {
-            cutoff = Math.subtractExact(nowNanos, config.windowNanos());
-        } catch (ArithmeticException underflow) {
-            cutoff = Long.MIN_VALUE;
-        }
-        // Half-open window [now-window, now]: a restart exactly at the cutoff
-        // still counts, avoiding boundary-dependent intensity oscillation.
-        while (restartSize != 0 && restartTimes[restartHead] < cutoff) {
+        /*
+         * Compare elapsed age, never absolute signed timestamps. System.nanoTime
+         * has an arbitrary signed origin and may cross Long.MAX_VALUE ->
+         * Long.MIN_VALUE while the VM is alive. Signed cutoff comparisons would
+         * retain stale restart entries across that boundary and can manufacture
+         * a false restart-storm escalation.
+         *
+         * requireMonotonicTime() already establishes forward modulo-long time
+         * for each observation. Exact-window entries still count; only ages
+         * strictly greater than windowNanos expire.
+         */
+        while (restartSize != 0) {
+            long age = nowNanos - restartTimes[restartHead];
+            if (age < 0) {
+                throw new IllegalStateException(
+                        "restart history age exceeded the supported monotonic interval");
+            }
+            if (age <= config.windowNanos()) break;
             restartHead = (restartHead + 1) % restartTimes.length;
             restartSize--;
         }
@@ -468,6 +520,8 @@ final class ActorSupervisorRestartCircuit {
         restartPending[childIndex] = false;
         restartQuiesced[childIndex] = false;
         restartEpisode[childIndex] = 0L;
+        restartDecidedAtNanos[childIndex] = 0L;
+        restartDelayNanos[childIndex] = 0L;
     }
 
     private static int incrementAttempt(int previous) {
