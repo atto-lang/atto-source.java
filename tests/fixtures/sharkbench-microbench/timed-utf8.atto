@@ -1,0 +1,27 @@
+// Strict UTF-8 round-trip, including multibyte scalars and chunk assembly.
+fnc workload(): int {
+  val string sample = "aé😀z";
+  let int checksum = 0;
+  for (let int i = 0; i < 1000; i = i + 1) {
+    val bytes = sample.utf8_bytes();
+    if bytes.utf8_string() == sample; then
+      checksum = checksum + bytes.size;
+    fi
+  }
+  return checksum;
+}
+
+pub fnc main(): void {
+  // Warm up within the same JVM, not separate short-lived processes.
+  for (let int i = 0; i < 5; i = i + 1) {
+    stdio.println(workload());
+  }
+  for (let int i = 0; i < 7; i = i + 1) {
+    val int start = process.monotonic_ns();
+    val int checksum = workload();
+    val int elapsed = process.monotonic_ns() - start;
+    stdio.println(checksum);
+    stdio.println(elapsed);
+  }
+  return;
+}
