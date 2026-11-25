@@ -48,6 +48,11 @@ public final class ActorLocalReference {
             Object value, Object domain,
             java.util.IdentityHashMap<Object, Boolean> visited,
             int depth, int[] nodes) {
+        // Every encountered slot costs work, even null, scalar, repeated
+        // or already-validated local handle edges.
+        if (depth > 96 || ++nodes[0] > 100_000) {
+            throw new IllegalArgumentException("actor-local Ref value graph exceeds traversal limits");
+        }
         if (value == null) return;
         if (value instanceof Strong<?> strong) {
             strong.checkedCell(domain);
@@ -60,11 +65,19 @@ public final class ActorLocalReference {
         if (value instanceof String || value instanceof Number
                 || value instanceof Boolean || value instanceof Character
                 || value instanceof Enum<?>) return;
-        if (depth > 96 || ++nodes[0] > 100_000) {
-            throw new IllegalArgumentException("actor-local Ref value graph exceeds traversal limits");
+        if (value instanceof java.util.concurrent.atomic.AtomicReference<?>
+                || value instanceof java.lang.ref.Reference<?>) {
+            throw new SecurityException("mutable host reference wrapper cannot enter an actor-local Ref");
         }
         if (visited.put(value, Boolean.TRUE) != null) return;
-        if (value instanceof java.util.Map<?, ?> map) {
+        if (value instanceof Optional<?> optional) {
+            if (optional.isPresent()) {
+                requireLocalGraph(optional.get(), domain, visited, depth + 1, nodes);
+            }
+        } else if (value instanceof java.util.Map.Entry<?, ?> entry) {
+            requireLocalGraph(entry.getKey(), domain, visited, depth + 1, nodes);
+            requireLocalGraph(entry.getValue(), domain, visited, depth + 1, nodes);
+        } else if (value instanceof java.util.Map<?, ?> map) {
             for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
                 requireLocalGraph(entry.getKey(), domain, visited, depth + 1, nodes);
                 requireLocalGraph(entry.getValue(), domain, visited, depth + 1, nodes);
