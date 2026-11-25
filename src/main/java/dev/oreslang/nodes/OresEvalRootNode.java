@@ -7869,7 +7869,7 @@ public final class OresEvalRootNode extends RootNode {
                 // The new explicit class plan guarantees a separate owned object,
                 // including nested class/Array fields. Trivial immutable Copy values
                 // preserve their existing value representation.
-                case "copy" -> copyOwnedValueV1(value);
+                case "copy", "copy_deep" -> copyOwnedValueV1(value);
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + operation + "'");
             };
