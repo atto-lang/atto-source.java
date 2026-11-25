@@ -15,6 +15,7 @@ public final class FrozenImportSnapshot {
     private static final int MAX_MANIFEST = 8192, MAX_LOCK = 32768, MAX_FILES = 64, MAX_SOURCE = 1048576;
     private final String name, version, lockDigest;
     private final Map<String,String> namespaces, exports, sources;
+    private StaticImportGraph.View checkedView;
     private FrozenImportSnapshot(String name,String version,String lockDigest,Map<String,String> namespaces,
             Map<String,String> exports,Map<String,String> sources) {
         this.name=name; this.version=version; this.lockDigest=lockDigest;
@@ -131,7 +132,8 @@ public final class FrozenImportSnapshot {
         return sources.get(namespaces.get(namespace));
     }
     /** Only the actual parser determines source visibility. No caller-supplied export inventory. */
-    public StaticImportGraph.View functionView() {
+    public synchronized StaticImportGraph.View functionView() {
+        if(checkedView!=null) return checkedView;
         var inventory=new ArrayList<StaticImportGraph.Export>();
         for(String namespace:new TreeSet<>(namespaces.keySet())) {
             var p=Parser.parse(providerSource(namespace));
@@ -149,7 +151,32 @@ public final class FrozenImportSnapshot {
                 }
             }
         }
-        return new StaticImportGraph.View(new StaticImportGraph.Origin(StaticImportGraph.Domain.PACKAGE,name,lockDigest),inventory);
+        checkedView = new StaticImportGraph.View(new StaticImportGraph.Origin(StaticImportGraph.Domain.PACKAGE,name,lockDigest),inventory);
+        return checkedView;
+    }
+    /** Explicit root selector or pinned public subpath; no physical-path fallback. */
+    public String selectNamespace(String source,String selector) {
+        if(!ns(selector)) throw fail("E_IMPORT_PATH","invalid namespace selector");
+        if(name.equals(source)) {
+            if(namespaces.containsKey(selector)) return selector;
+            int dot=selector.lastIndexOf('.');
+            if(dot>=0) {
+                String leaf=selector.substring(dot+1);
+                var matches=namespaces.keySet().stream().filter(k->k.equals(leaf)||k.endsWith("."+leaf)).sorted().toList();
+                if(matches.size()>1) throw fail("E_AMBIGUOUS","ambiguous namespace selector");
+                if(matches.size()==1) return matches.getFirst();
+            }
+            throw fail("E_UNBOUND","namespace not declared");
+        }
+        if(source==null||!source.startsWith(name+"/")) throw fail("E_IMPORT_PATH","wrong pinned package");
+        return namespaceForSubpath(source.substring(name.length()+1));
+    }
+    /** Explicit selected namespace view uses the parser-derived identity. */
+    public void bindNamespace(StaticImportGraph scope,String source,String selector,String binding,boolean explicitAlias) {
+        if(!explicitAlias&&!selector.equals(binding)) throw fail("E_IMPORT_PATH","rename requires explicit alias");
+        String selected=selectNamespace(source,selector);
+        var view=functionView();
+        scope.bindGroup(view.origin(),view,List.of(new StaticImportGraph.Selection(selected,binding,StaticImportGraph.Kind.NAMESPACE,explicitAlias)));
     }
     public String version() {return version;}
 }
