@@ -5538,6 +5538,24 @@ public final class ActorRuntime implements AutoCloseable {
     void sendSerializedI64(ActorRef<Long> ref, long epoch,
             dev.oreslang.types.PortableCodecRegistry.Format format,
             String schemaId, int version, String fingerprint, byte[] ownedWire) {
+        sendSerializedI64(ref, epoch, format, schemaId, version, fingerprint, ownedWire, null);
+    }
+
+    // Host test seam: the real decoder has returned but the final DATA
+    // permit has not been requested. No guest binding and no held runtime,
+    // actor, supervisor or budget monitor while the observer runs.
+    void sendSerializedI64ForTest(ActorRef<Long> ref, long epoch,
+            dev.oreslang.types.PortableCodecRegistry.Format format,
+            String schemaId, int version, String fingerprint, byte[] ownedWire,
+            Runnable afterDecode) {
+        sendSerializedI64(ref, epoch, format, schemaId, version, fingerprint,
+                ownedWire, Objects.requireNonNull(afterDecode));
+    }
+
+    private void sendSerializedI64(ActorRef<Long> ref, long epoch,
+            dev.oreslang.types.PortableCodecRegistry.Format format,
+            String schemaId, int version, String fingerprint, byte[] ownedWire,
+            Runnable afterDecode) {
         requireSupervisorShutdownAuthority("send serialized DATA");
         if (currentActorId().isPresent()) throw new SecurityException("host-only DATA ingress");
         Objects.requireNonNull(ref);
@@ -5568,6 +5586,7 @@ public final class ActorRuntime implements AutoCloseable {
                 sendPrepared(ref, () -> {
                     Long value = ingress.decodeForMailbox(ticket, ownedWire);
                     if (value == null) throw new IllegalArgumentException("invalid serialized scalar DATA");
+                    if (afterDecode != null) afterDecode.run();
                     return value;
                 });
             }
