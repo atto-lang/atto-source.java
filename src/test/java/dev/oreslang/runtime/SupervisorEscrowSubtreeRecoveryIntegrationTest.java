@@ -497,4 +497,116 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
         }
     }
 
+
+    @Test
+    void automaticReplacementClaimsPermitAndActivatesExactlyOneNewGeneration()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor();
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> true);
+            var clock = new java.util.concurrent.atomic.AtomicLong(1);
+            ActorRuntime.ActorRef<String> first = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { throw new IllegalStateException("fail"); });
+            long node = recovery.attachRestartManagedRoot(first,
+                    new ActorSupervisorRestartCircuit.Config(1, 1, 1_000, 100, 100, 0),
+                    clock::get);
+            first.send("fail");
+            assertThrows(ExecutionException.class, () -> first.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(node), () -> { }));
+            var permit = recovery.reserveRestart(node);
+            var entered = new CountDownLatch(1);
+            var gate = new CountDownLatch(1);
+            timer.execute(() -> {
+                entered.countDown();
+                try {
+                    if (!gate.await(5, TimeUnit.SECONDS)) throw new AssertionError("timer gate");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var cancelled = recovery.<String>scheduleRestartReplacement(
+                        permit, timer, context -> (message, turn) -> { });
+                assertThrows(IllegalStateException.class, () ->
+                        recovery.<String>scheduleRestartReplacement(
+                                permit, timer, context -> (message, turn) -> { }));
+                assertTrue(recovery.cancelRestartJob(cancelled));
+                assertFalse(recovery.cancelRestartJob(cancelled));
+                assertTrue(cancelled.completion().toCompletableFuture().isCompletedExceptionally());
+                assertEquals(2, bridge.snapshot().size(), "cancel must not allocate a successor");
+                clock.addAndGet(100);
+                var job = recovery.<String>scheduleRestartReplacement(
+                        permit, timer, context -> (message, turn) -> { });
+                assertThrows(IllegalStateException.class,
+                        () -> recovery.scheduleRestartWakeup(permit, timer));
+                ActorRuntime.ActorRef<String> competing = runtime.spawnPrivate(
+                        ignored -> (message, turn) -> { });
+                try {
+                    assertThrows(IllegalStateException.class,
+                            () -> recovery.attachReplacement(permit, competing, null));
+                } finally {
+                    runtime.cancel(competing);
+                }
+                gate.countDown();
+                var replacement = job.completion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                replacement.getReady().get(5, TimeUnit.SECONDS);
+                assertTrue(replacement.isAlive());
+                assertTrue(replacement.generation() > first.generation());
+                assertEquals(3, bridge.snapshot().size());
+                assertNotEquals(node, bridge.nodeId(replacement));
+                assertFalse(recovery.cancelRestartJob(job));
+                assertThrows(IllegalStateException.class, () ->
+                        recovery.<String>scheduleRestartReplacement(
+                                permit, timer, context -> (message, turn) -> { }));
+                assertNull(recovery.controlFault());
+            } finally {
+                gate.countDown();
+            }
+        }
+    }
+
+    @Test
+    void automaticReplacementRechecksPhysicalReleaseBeforeCreatingActor()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor();
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var physical = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> physical.get());
+            ActorRuntime.ActorRef<String> first = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { throw new IllegalStateException("fail"); });
+            long node = recovery.attachRestartManagedRoot(first,
+                    new ActorSupervisorRestartCircuit.Config(1, 1, 1_000, 0, 0, 0), () -> 1L);
+            first.send("fail");
+            assertThrows(ExecutionException.class, () -> first.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(node), () -> { }));
+            var permit = recovery.reserveRestart(node);
+            physical.set(false);
+            var denied = recovery.<String>scheduleRestartReplacement(
+                    permit, timer, context -> (message, turn) -> { });
+            var failure = assertThrows(ExecutionException.class,
+                    () -> denied.completion().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertEquals(2, bridge.snapshot().size());
+            assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.PHYSICAL_RELEASE_UNVERIFIED,
+                    recovery.restartBlocker(node));
+            assertFalse(recovery.cancelRestartJob(denied));
+            physical.set(true);
+            var retry = recovery.<String>scheduleRestartReplacement(
+                    permit, timer, context -> (message, turn) -> { });
+            var replacement = retry.completion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            replacement.getReady().get(5, TimeUnit.SECONDS);
+            assertEquals(3, bridge.snapshot().size());
+            assertTrue(replacement.isAlive());
+            assertNull(recovery.controlFault());
+        }
+    }
+
 }
