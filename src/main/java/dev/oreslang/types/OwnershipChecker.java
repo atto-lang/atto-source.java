@@ -1104,6 +1104,16 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    // An actor owns its state for the entire incarnation,
+                    // including a primitive Copy field. Explicit rt take is
+                    // a move/revocation operation; treating a copied value
+                    // as a movable field would bypass runtime-owned state
+                    // slot lifetime and compiler projection tracking.
+                    // A scalar snapshot is read via self.field, not rt take.
+                    if (isRootedAtActorSelf(argument, scope)) {
+                        throw error("rt take cannot transfer actor-owned state out of its mailbox turn; "
+                                + "read a Copy snapshot or delegate a scoped supervisor loan");
+                    }
                     if (argument instanceof Ast.IndexExpr) {
                         throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
                     }
@@ -2675,7 +2685,34 @@ public final class OwnershipChecker {
      * invocations, side-effecting indexes, or unresolved/dynamic field types.
      * Mutable projections stay fail-closed until path-exclusive loans land.
      */
-    private record BorrowPlace(VarState owner, Ast.TypeRef type) { }
+    /**
+     * Statically typed projection provenance. A segment identifies a concrete
+     * owned field or a compile-time stable index; never a guest pointer.
+     * All loans still conservatively charge the root owner until an actual
+     * per-path runtime region and projection lifetime proof exist.
+     */
+    private record StateProjection(String selector, Ast.TypeRef type) {
+        private StateProjection {
+            java.util.Objects.requireNonNull(selector, "projection selector");
+            java.util.Objects.requireNonNull(type, "projection type");
+            if (selector.isBlank() || type.name().equals("$infer$") || type.isBorrow()) {
+                throw new IllegalArgumentException("actor-state path must have an owned, known type");
+            }
+        }
+    }
+
+    private record BorrowPlace(
+            VarState owner, Ast.TypeRef type, List<StateProjection> path) {
+        private BorrowPlace(VarState owner, Ast.TypeRef type) {
+            this(owner, type, List.of());
+        }
+
+        private BorrowPlace projected(String selector, Ast.TypeRef nextType) {
+            List<StateProjection> next = new ArrayList<>(path);
+            next.add(new StateProjection(selector, nextType));
+            return new BorrowPlace(owner, nextType, List.copyOf(next));
+        }
+    }
 
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
         if (operand instanceof Ast.NameExpr name) {
@@ -2705,15 +2742,32 @@ public final class OwnershipChecker {
                 throw error("projected borrow requires a known owned field type for '"
                         + member.member() + "'");
             }
-            return new BorrowPlace(receiver.owner(), fieldType);
+            return receiver.projected("." + member.member(), fieldType);
         }
         if (operand instanceof Ast.IndexExpr indexed) {
             BorrowPlace receiver = borrowPlace(indexed.receiver(), scope);
             // A computed index may call a mutation/side-effect before a loan is
             // issued. Only lexical integer bindings/literals are admissible.
             if (!(indexed.index() instanceof Ast.NameExpr)
-                    && !(indexed.index() instanceof Ast.LiteralExpr)) {
+                    && !(indexed.index() instanceof Ast.LiteralExpr)
+                    && !(indexed.index() instanceof Ast.UnaryExpr signed
+                            && signed.operator().equals("-")
+                            && signed.operand() instanceof Ast.LiteralExpr)) {
                 throw error("projected borrow index must be a stable name or literal");
+            }
+            // Ordinary projected READ loans are conservatively pinned to
+            // their entire named root. Actor-owned indexed loans additionally
+            // need a single statically identifiable element path before they
+            // may be kept in a lexical borrow. A mutable index binding,
+            // parameter, negative index, or dynamic expression has no stable
+            // compile-time element identity across actor suspension/restart.
+            // Direct actor-owned element reads/writes remain type-checked by
+            // the ordinary expression and assignment paths.
+            Object indexConstant = computedIndexConstant(indexed.index(), scope);
+            if (isActorConfinedBorrow(receiver.owner())
+                    && (!(indexConstant instanceof Long position) || position < 0)) {
+                throw error("actor-state indexed borrow requires a nonnegative constant "
+                        + "integer index with proven field-path identity");
             }
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef type = receiver.type();
@@ -2726,7 +2780,10 @@ public final class OwnershipChecker {
             if (element.name().equals("$infer$") || element.isBorrow()) {
                 throw error("projected borrow index requires a known owned element type");
             }
-            return new BorrowPlace(receiver.owner(), element);
+            String selector = indexConstant instanceof Long stableIndex
+                    ? "[" + stableIndex + "]"
+                    : "[dynamic-root-conservative]";
+            return receiver.projected(selector, element);
         }
         throw error("borrow requires a named owner or stable field/index projection of one");
     }
@@ -2811,6 +2868,16 @@ public final class OwnershipChecker {
         VarState source = returned.borrowSource == null
                 ? null
                 : ownershipRoot(returned.borrowSource);
+        // Actor self is technically an incoming borrowed receiver, but its
+        // lifetime is strictly the mailbox execution lease. The general
+        // incoming-parameter rule MUST NOT allow an actor's field (or an
+        // alias/projection of that field) to escape via return. A stale
+        // returned borrow would outlive actor STOP/restart and bypass the
+        // supervisor's scoped, generation-fenced state loans.
+        if (source != null && isActorConfinedBorrow(source)) {
+            throw error("actor-owned state borrow cannot escape its mailbox turn "
+                    + "as a returned field or projected alias");
+        }
         if (source != null && isIncomingBorrow(source)) return;
 
         String name = source == null ? "<unknown>" : source.debugName;

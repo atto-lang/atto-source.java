@@ -1,4 +1,4 @@
-name: Actor-state RW ownership and physical retirement (Java exact head)
+name: Actor-state RW and .atto ownership compiler (Java exact head)
 
 on:
   pull_request:
@@ -6,11 +6,22 @@ on:
       - "src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java"
       - "src/main/java/dev/oreslang/runtime/ActorStateSupervisorLoans.java"
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/main/java/dev/oreslang/parser/Parser.java"
+      - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
+      - "src/test/java/dev/oreslang/ActorStateContainerOwnershipCompilerTest.java"
+      - "src/test/java/dev/oreslang/ActorStateBorrowReturnFenceTest.java"
+      - "src/test/java/dev/oreslang/ActorStateTypedProjectionOwnershipTest.java"
+      - "scripts/ci/actor_state_projection_negative_mutation.py"
+      - "docs/ACTOR_STATE_TYPED_PROJECTION_LOAN_V1.md"
+      - "scripts/ci/actor_state_return_borrow_negative_mutation.py"
+      - "src/test/resources/ownership/actor-state/**"
       - "src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorStateSupervisorLoansTest.java"
       - "docs/ACTOR_STATE_RW_ALLOCATION_BOUND_AUDIT.md"
       - "docs/ACTOR_SUPERVISOR_CONTROL_GUARDED_STATE_V1.md"
       - "docs/ACTOR_SUPERVISOR_SCOPED_CONTROL_LOANS_V1.md"
+      - "docs/ACTOR_STATE_CONTAINER_COMPILER_V1.md"
+      - "docs/ACTOR_STATE_RETURN_BORROW_FENCE_V1.md"
       - ".github/workflows/actor-state-rw-ownership.yml"
   workflow_dispatch:
 
@@ -51,8 +62,8 @@ jobs:
           set -euo pipefail
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
-            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest -DfailIfNoTests=true test
-      - name: Verify exact focused Surefire evidence (27 base and 32 integration tests)
+            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest,ActorStateBorrowReturnFenceTest,ActorStateTypedProjectionOwnershipTest -DfailIfNoTests=true test
+      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL, 12 state, 7 return, 9 projection)
         shell: bash
         run: |
           set -euo pipefail
@@ -61,11 +72,14 @@ jobs:
           from pathlib import Path
           base = Path("target/surefire-reports")
           cases = {
-              "ActorStateRwLoansTest": 27,
-              "ActorStateSupervisorLoansTest": 32,
+              "dev.oreslang.runtime.ActorStateRwLoansTest": 27,
+              "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 32,
+              "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 12,
+              "dev.oreslang.ActorStateBorrowReturnFenceTest": 7,
+              "dev.oreslang.ActorStateTypedProjectionOwnershipTest": 9,
           }
           for class_name, minimum in cases.items():
-              path = base / f"TEST-dev.oreslang.runtime.{class_name}.xml"
+              path = base / f"TEST-{class_name}.xml"
               if not path.is_file():
                   raise SystemExit(f"FAIL: mandatory Surefire XML absent: {path}")
               suite = ET.parse(path).getroot()
@@ -81,6 +95,14 @@ jobs:
                   f"RW_JUNIT_EXECUTED class={class_name} tests={total} "
                   f"failed={failed} errors={errors} skipped={skipped}")
           PY
+      - name: Require a real negative mutation to kill the returned-actor-borrow regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/actor_state_return_borrow_negative_mutation.py
+          python3 scripts/ci/actor_state_projection_negative_mutation.py
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git diff --quiet HEAD
       - name: Preserve machine-readable JUnit receipts for independent review
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -89,4 +111,11 @@ jobs:
           path: |
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateRwLoansTest.xml
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateSupervisorLoansTest.xml
+            target/surefire-reports/TEST-dev.oreslang.ActorStateContainerOwnershipCompilerTest.xml
+            target/surefire-reports/TEST-dev.oreslang.ActorStateBorrowReturnFenceTest.xml
+            target/surefire-reports/TEST-dev.oreslang.ActorStateTypedProjectionOwnershipTest.xml
+            target/actor-state-negative-mutation/TEST-MUTATION-ActorStateBorrowReturnFenceTest.xml
+            target/actor-state-negative-mutation/negative-mutation-receipt.json
+            target/actor-state-projection-negative-mutation/TEST-MUTATION-ActorStateTypedProjectionOwnershipTest.xml
+            target/actor-state-projection-negative-mutation/negative-mutation-receipt.json
           if-no-files-found: warn

@@ -1,0 +1,28 @@
+// AttoLang canonical .atto actor state syntax: private, actor-owned fields.
+define actor Counter as
+  state {
+    let int count;
+  }
+
+  on_start(): void {
+    self.count = 0;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    self.count = self.count + 1;
+    self.send(self.count);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val counter = spawn Counter();
+  await counter.get_ready();
+  counter.send("increment");
+  val output = (await counter.outputs.next()).value.unwrap();
+  stdio.stdout.write(output.value);
+  await counter.get_done();
+  return;
+}

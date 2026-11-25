@@ -79,7 +79,9 @@ public final class ActorStateSupervisorLoans {
      *
      * This host close is not yet a compiler-proven CONTROL unwind receipt.
      */
-    public final class Loan implements AutoCloseable {
+    // Trusted legacy host/test handle only. Never exposed to source guests.
+    // New compiler lowering uses a scoped CONTROL callback, not this type.
+    final class Loan implements AutoCloseable {
         private final ActorStateRwLoans.StateLoan delegate;
         private final ActorRuntime.ActorSupervisor target;
         private final ExecutionContext execution;

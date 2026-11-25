@@ -885,6 +885,9 @@ final class ActorStateSupervisorLoansTest {
     @Test
     void rawFutureLoanAdapterRemainsPackagePrivateNotGuestPublicApi()
             throws Exception {
+        assertFalse(java.lang.reflect.Modifier.isPublic(
+                        ActorStateSupervisorLoans.Loan.class.getModifiers()),
+                "unscoped Loan type must never be accessible to guest or external Java callers");
         var raw = ActorStateSupervisorLoans.class.getDeclaredMethod(
                 "redeem",
                 ActorStateSupervisorLoans.Grant.class,

@@ -1,0 +1,10 @@
+// A Copy primitive snapshot is not a loan into actor state.
+define actor Counter as
+  state { let int count; }
+  on_start(): void {
+    self.count = 9;
+    return;
+  }
+  peek(): int { return self.count; }
+  receive(ActorMail<String> mail): void { return; }
+end

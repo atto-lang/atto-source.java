@@ -905,6 +905,8 @@ public final class Parser {
         int messageConcurrency = 1;
         boolean declaredRequestConcurrency = false;
         boolean declaredMessageConcurrency = false;
+        boolean declaredStateContainer = false;
+        boolean declaredBareActorFields = false;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -956,14 +958,66 @@ public final class Parser {
                         "declarations cannot be nested inside actors; declare nested types at file or module scope");
             }
 
+            // Canonical .atto actor-local mutable state grouping. The group
+            // changes only source syntax: each member becomes a private,
+            // actor-owned FieldDecl subject to existing TypeChecker and
+            // OwnershipChecker rules. It does NOT create an ordinary class,
+            // independent allocation, or transferable state reference.
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                // A grouped state declaration must be the ONLY source of
+                // storage fields for this actor. Mixing legacy bare fields
+                // with grouped fields would let future ownership/lowering
+                // rules accidentally instrument only one representation.
+                if (declaredBareActorFields) {
+                    throw error(peek(),
+                            "actor cannot mix bare fields and a state container");
+                }
+                if (declaredStateContainer) {
+                    throw error(peek(), "actor may declare only one state container");
+                }
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.suspends || mods.generator || mods.isStatic
+                        || mods.isAbstract || mods.shared || mods.untrusted
+                        || mods.structural || mods.nonLexical || mods.trapped) {
+                    throw error(peek(), "actor state container does not accept modifiers or annotations");
+                }
+                declaredStateContainer = true;
+                advance(); // contextual 'state' marker
+                consume(LBRACE, "expected '{' after actor state");
+                while (!check(RBRACE) && !check(EOF)) {
+                    List<Ast.Annotation> fieldAnnotations = parseAnnotations();
+                    Modifiers fieldMods = parseModifiers();
+                    validateActorFieldModifiers(fieldMods);
+                    if (isBindingKind(peek().type())) {
+                        fields.add(parseField(fieldAnnotations, fieldMods.visibility));
+                    } else if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                        fields.add(parseFinalActorField(fieldAnnotations, fieldMods.visibility));
+                    } else {
+                        throw error(peek(),
+                                "actor state container accepts private fields only, not methods or nested declarations");
+                    }
+                }
+                consume(RBRACE, "expected '}' to close actor state container");
+                continue;
+            }
             if (isBindingKind(peek().type())) {
+                if (declaredStateContainer) {
+                    throw error(peek(),
+                            "actor cannot mix a state container and bare fields");
+                }
                 validateActorFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
+                declaredBareActorFields = true;
                 continue;
             }
             if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                if (declaredStateContainer) {
+                    throw error(peek(),
+                            "actor cannot mix a state container and bare fields");
+                }
                 validateActorFieldModifiers(mods);
                 fields.add(parseFinalActorField(annotations, mods.visibility));
+                declaredBareActorFields = true;
                 continue;
             }
 
