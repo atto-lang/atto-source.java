@@ -250,4 +250,69 @@ final class AttoRedisRecycledSessionsGuestTest {
         assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(blocking));
     }
+
+    @Test
+    void tcpResetRetiresSlotAndKeepsOtherClientRunning() throws Exception {
+        byte[] key = new byte[]{0, (byte)255, 13};
+        byte[] value = new byte[]{(byte)128, 0, 10};
+        execute(2, 5, (guest, port) -> {
+            try (Socket victim = connect(guest, port);
+                 Socket survivor = connect(guest, port)) {
+                survivor.getOutputStream().write(command("SET", key, value));
+                expect(survivor, ascii("+OK\r\n"));
+                victim.getOutputStream().write(command("PING"));
+                expect(victim, ascii("+PONG\r\n"));
+                // SO_LINGER=0 forces an RST instead of the normal FIN EOF path.
+                victim.setSoLinger(true, 0);
+                victim.close();
+                try (Socket replacement = connect(guest, port)) {
+                    replacement.getOutputStream().write(command("GET", key));
+                    expect(replacement, bulk(value));
+                    quit(replacement);
+                }
+                survivor.getOutputStream().write(command("GET", key));
+                expect(survivor, bulk(value));
+                quit(survivor);
+            }
+            for (int i = 0; i < 2; i++) {
+                try (Socket extraSession = connect(guest, port)) {
+                    extraSession.getOutputStream().write(command("PING"));
+                    expect(extraSession, ascii("+PONG\r\n"));
+                    quit(extraSession);
+                }
+            }
+        });
+        System.out.println("ATTO_REDIS_RESET_RETIREMENT_AND_REPLACEMENT=EXECUTED_PASS");
+    }
+
+    @Test
+    void idleClientDoesNotStarveThirtyNineReplacementSessions() throws Exception {
+        byte[] key = new byte[]{0, 13, (byte)255, 42};
+        byte[] value = new byte[]{(byte)128, 0, 10, 7};
+        execute(4, 40, (guest, port) -> {
+            try (Socket idle = connect(guest, port)) {
+                idle.getOutputStream().write(command("SET", key, value));
+                expect(idle, ascii("+OK\r\n"));
+                // An idle accepted client must not block a bounded cohort
+                // of independently scheduled clients or hold the KV actor.
+                for (int round = 0; round < 13; round++) {
+                    List<Socket> wave = new ArrayList<>();
+                    try {
+                        for (int i = 0; i < 3; i++) {
+                            wave.add(connect(guest, port));
+                        }
+                        for (Socket socket : wave) {
+                            socket.getOutputStream().write(command("GET", key));
+                        }
+                        for (Socket socket : wave) expect(socket, bulk(value));
+                        for (Socket socket : wave) quit(socket);
+                    } finally {
+                        for (Socket socket : wave) socket.close();
+                    }
+                }
+                quit(idle);
+            }
+        });
+        System.out.println("ATTO_REDIS_IDLE_PEER_39_REPLACEMENTS=EXECUTED_PASS");
+    }
 }

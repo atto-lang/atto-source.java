@@ -291,13 +291,18 @@ pub async fnc serve_redis_session(
 ): void {
   val reader = new RespReader();
   let int request_id = 0;
+  try {
   loop {
-    const Bytes chunk = await socket.read_buffer_async(1024);
+    // A transport reset is a normal session-retirement event. Catch only
+    // the NIO2 read completion, not actor replies or broker execution errors.
+    let Bytes chunk = Bytes.from_list([]);
+    try {
+      chunk = await socket.read_buffer_async(1024);
+    } catch (read_error) {
+      return;
+    }
     if chunk.size == 0; do
       await socket.close_async();
-      let List<int> stop_key = [];
-      let List<int> stop_value = [];
-      writech requests, (slot_id, generation, -1, -1, stop_key, stop_value, replies);
       return;
     fi
     let int i = 0;
@@ -307,9 +312,6 @@ pub async fnc serve_redis_session(
       if state == -1; do
         await socket.write_buffer_async(Bytes.from_list([45, 69, 82, 82, 32, 112, 114, 111, 116, 111, 99, 111, 108, 13, 10]));
         await socket.close_async();
-        let List<int> stop_key = [];
-        let List<int> stop_value = [];
-        writech requests, (slot_id, generation, -1, -1, stop_key, stop_value, replies);
         return;
       fi
       if state == 1; do
@@ -317,9 +319,6 @@ pub async fnc serve_redis_session(
         if kind == 5; do
           await socket.write_buffer_async(Bytes.from_list([43, 79, 75, 13, 10]));
           await socket.close_async();
-          let List<int> stop_key = [];
-          let List<int> stop_value = [];
-          writech requests, (slot_id, generation, -1, -1, stop_key, stop_value, replies);
           return;
         fi
         let List<int> key = [];
@@ -337,9 +336,6 @@ pub async fnc serve_redis_session(
         const Tuple[int, int, int, List[int]] reply = await (nb readch replies);
         if reply[0] != generation || reply[1] != request_id; do
           await socket.close_async();
-          let List<int> stop_key = [];
-          let List<int> stop_value = [];
-          writech requests, (slot_id, generation, -1, -1, stop_key, stop_value, replies);
           return;
         fi
         const Tuple[int, List[int]] reply_payload = (reply[2], reply[3]);
@@ -348,6 +344,10 @@ pub async fnc serve_redis_session(
       fi
       i = i + 1;
     }
+  }
+  } finally {
+    // The affine NIO2 socket owner closes on every normal/exceptional path.
+    await socket.close_async();
   }
 }
 
@@ -415,9 +415,16 @@ pub async routine main(): void {
       val Channel<Tuple[int, int, int, List[int]]> reply_port =
           Channel.new<Tuple[int, int, int, List[int]]>(2);
       let Future<void> session = task {
-        await serve_redis_session(socket, slot_id, generation, requests, reply_port);
-        // The next owner gets the slot only after this session has retired.
-        writech available_slots, (slot_id, generation + 1);
+        try {
+          await serve_redis_session(socket, slot_id, generation, requests, reply_port);
+        } finally {
+          // Exactly one retirement notice, including failed/aborted async I/O.
+          let List<int> stop_key = [];
+          let List<int> stop_value = [];
+          writech requests, (slot_id, generation, -1, -1, stop_key, stop_value, reply_port);
+          // Return the lease only after retirement was enqueued.
+          writech available_slots, (slot_id, generation + 1);
+        }
         return;
       };
     }
