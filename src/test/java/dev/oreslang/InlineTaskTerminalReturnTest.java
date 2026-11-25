@@ -6,6 +6,8 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Checked inline task slice; the separate .NET fixture gate must still run 4/4. */
@@ -368,5 +370,31 @@ final class InlineTaskTerminalReturnTest {
                 () -> Parser.parseStrictAtto(
                         "pub fnc main(): int { do sync task<int> { return 42; } return 0; }"))
                 .getMessage().contains("E_SYNC_TASK_VOID_RESULT"));
+    }
+
+    @Test void inlineTaskDefersExecuteOnceInLexicalOrderBeforeCallerContinues() throws Exception {
+        String source = """
+                pub fnc main(): int {
+                  do sync task<void> {
+                    defer stdio.stdout.write("outer|");
+                    val int result = sync task<int> {
+                      defer stdio.stdout.write("inner|");
+                      return 42;
+                    };
+                    stdio.stdout.write("joined|");
+                    return;
+                  }
+                  stdio.stdout.write("caller");
+                  return 42;
+                }
+                """;
+        OresCompiler.parseAndTypeCheckStrictAtto(source);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, source,
+                    "inline-task-cleanup.atto").mimeType(OresLanguage.MIME_TYPE).build()).asLong());
+        }
+        assertEquals("inner|joined|outer|caller", output.toString(StandardCharsets.UTF_8));
     }
 }
