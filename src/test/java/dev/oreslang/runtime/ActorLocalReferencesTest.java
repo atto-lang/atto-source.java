@@ -326,6 +326,29 @@ final class ActorLocalReferencesTest {
     }
 
     @Test
+    void bufferedGraphAdmissionChargesNullSlotsAndRepeatedEdges() {
+        // The root itself consumes one occurrence; null slots still cost work.
+        assertDoesNotThrow(() -> ActorLocalReferences.rejectBufferedChannelPayload(
+                java.util.Collections.nCopies(99_999, null)));
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorLocalReferences.rejectBufferedChannelPayload(
+                        java.util.Collections.nCopies(100_000, null)));
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorLocalReferences.rejectBufferedChannelPayload(
+                        new Object[100_000]));
+
+        // A small cyclic ordinary local collection must terminate; identity
+        // tracking prevents re-expansion but never exempts encountered edges.
+        java.util.ArrayList<Object> cycle = new java.util.ArrayList<>();
+        cycle.add(cycle);
+        cycle.add(null);
+        assertDoesNotThrow(() -> ActorLocalReferences.rejectBufferedChannelPayload(cycle));
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorLocalReferences.rejectBufferedChannelPayload(
+                        java.util.Collections.nCopies(100_000, cycle)));
+    }
+
+    @Test
     void actorCannotPublishReferencesThroughMailbox() throws Exception {
         CompletableFuture<Boolean> rejected = new CompletableFuture<>();
         try (ActorRuntime runtime = new ActorRuntime()) {
