@@ -368,7 +368,8 @@ public sealed interface OresJsonValue
 
     /**
      * Guest reads return an independent owned tree, never the live Map entry.
-     * Reuse the canonical bounded codec as a conservative first copy path.
+     * Count the canonical wire footprint without allocating a wire string, then
+     * copy containers directly. Retain the original parser admission limits.
      * The one graph lock covers selection and snapshot, including nested aliases.
      */
     public static java.util.Optional<OresJsonValue> getOwned(OresJsonValue root, String key) {
@@ -379,7 +380,7 @@ public sealed interface OresJsonValue
             validateTree(root, null);
             var selected = object.fields.lookup(key);
             if (!selected.present()) return java.util.Optional.empty();
-            return java.util.Optional.of(AllocJsonText.parse(stringify(selected.value())));
+            return java.util.Optional.of(copyOwned(selected.value()));
         });
     }
 
@@ -390,8 +391,55 @@ public sealed interface OresJsonValue
         return OresKeyedMap.withJsonGraphLock(() -> {
             validateTree(root, null);
             if (index < 0 || index >= array.values.size()) return java.util.Optional.empty();
-            return java.util.Optional.of(AllocJsonText.parse(stringify(array.values.get((int) index))));
+            return java.util.Optional.of(copyOwned(array.values.get((int) index)));
         });
+    }
+
+    /** Called only under the graph lock after complete-root validation. */
+    private static OresJsonValue copyOwned(OresJsonValue value) {
+        // Preserve the original stringify/parse 1 MiB wire quota, including
+        // punctuation, escaped control characters and multibyte UTF-8.
+        JsonStringifier counter = new JsonStringifier(DEFAULT_STRINGIFY_UTF8_BYTES, false);
+        counter.write(value);
+        return copyOwnedTree(value, 0);
+    }
+
+    private static OresJsonValue copyOwnedTree(OresJsonValue value, int depth) {
+        if (depth > AllocJsonText.MAX_DEPTH) {
+            throw new IllegalArgumentException("JSON snapshot exceeds parser nesting limit");
+        }
+        if (value instanceof ArrayValue array) {
+            if (array.values.size() > AllocJsonText.MAX_CONTAINER_ENTRIES) {
+                throw new IllegalArgumentException("JSON snapshot exceeds array entry limit");
+            }
+            var items = new ArrayList<OresJsonValue>(array.values.size());
+            for (OresJsonValue item : array.values) {
+                items.add(copyOwnedTree(item, depth + 1));
+            }
+            return new ArrayValue(List.copyOf(items));
+        }
+        if (value instanceof ObjectValue object) {
+            var entries = object.fields.entrySnapshot();
+            if (entries.size() > AllocJsonText.MAX_CONTAINER_ENTRIES) {
+                throw new IllegalArgumentException("JSON snapshot exceeds object entry limit");
+            }
+            var fields = objectMap();
+            for (var entry : entries) {
+                fields.put(entry.getKey(), copyOwnedTree(entry.getValue(), depth + 1));
+            }
+            return new ObjectValue(fields);
+        }
+        if (value instanceof NumberValue number) {
+            // Preserve the text parser's numeric token bound and exact decimal
+            // representation; never retain a host-supplied BigDecimal subclass.
+            String token = number.value.toString();
+            if (token.length() > AllocJsonText.MAX_NUMBER_CHARS) {
+                throw new IllegalArgumentException("JSON snapshot exceeds numeric token limit");
+            }
+            return of(new BigDecimal(token));
+        }
+        // The remaining sealed scalar variants hold only immutable final data.
+        return value;
     }
 
     private static int requireStringifyQuota(int maxUtf8Bytes) {
@@ -411,11 +459,16 @@ public sealed interface OresJsonValue
         private static final char[] HEX = "0123456789abcdef".toCharArray();
 
         private final int maxUtf8Bytes;
-        private final StringBuilder output = new StringBuilder();
+        private final StringBuilder output;
         private int utf8Bytes;
 
         private JsonStringifier(int maxUtf8Bytes) {
+            this(maxUtf8Bytes, true);
+        }
+
+        private JsonStringifier(int maxUtf8Bytes, boolean retainOutput) {
             this.maxUtf8Bytes = maxUtf8Bytes;
+            this.output = retainOutput ? new StringBuilder() : null;
         }
 
         private String result() {
@@ -547,7 +600,7 @@ public sealed interface OresJsonValue
 
         private void asciiChar(char value) {
             reserve(1);
-            output.append(value);
+            if (output != null) output.append(value);
         }
 
         private void unicodeScalar(int codePoint) {
@@ -557,7 +610,7 @@ public sealed interface OresJsonValue
             else if (codePoint <= 0xffff) bytes = 3;
             else bytes = 4;
             reserve(bytes);
-            output.appendCodePoint(codePoint);
+            if (output != null) output.appendCodePoint(codePoint);
         }
 
         private void reserve(int bytes) {

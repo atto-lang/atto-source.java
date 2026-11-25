@@ -16,11 +16,11 @@ import java.util.Set;
  */
 public final class AllocJsonText {
     private static final int MAX_INPUT_CHARS = 8 * 1024 * 1024;
-    private static final int MAX_DEPTH = 128;
+    static final int MAX_DEPTH = 128;
     private static final int MAX_NODES = OresJsonValue.MAX_GRAPH_NODES;
-    private static final int MAX_CONTAINER_ENTRIES =
+    static final int MAX_CONTAINER_ENTRIES =
             Math.min(OresKeyedMap.MAX_ENTRIES, OresJsonValue.MAX_ARRAY_ITEMS);
-    private static final int MAX_NUMBER_CHARS = OresJsonValue.MAX_NUMBER_PRECISION;
+    static final int MAX_NUMBER_CHARS = OresJsonValue.MAX_NUMBER_PRECISION;
 
     private AllocJsonText() { }
 

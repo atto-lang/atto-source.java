@@ -442,6 +442,44 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void directOwnedSnapshotMatchesPriorWireRoundTrip() {
+        var document = AllocJsonText.parse("{\"x\":{\"decimal\":1.2300,\"exact\":9007199254740993,\"unicode\":\"🚀\\n\",\"items\":[true,null,{}]}}");
+        var selected = ((OresJsonValue.ObjectValue) document).fields().lookup("x").value();
+        var expected = AllocJsonText.parse(OresJsonValue.stringify(selected));
+        var actual = OresJsonValue.getOwned(document, "x").orElseThrow();
+        assertEquals(OresJsonValue.stringify(expected), OresJsonValue.stringify(actual));
+        assertNotSame(selected, actual);
+        var name = OresJsonValue.of("immutable");
+        assertSame(name, OresJsonValue.atOwned(OresJsonValue.array(List.of(name)), 0).orElseThrow());
+    }
+
+    @Test
+    void directOwnedSnapshotRetainsParserDepthAndNumericTokenLimits() {
+        OresJsonValue nested = OresJsonValue.nullValue();
+        for (int i = 0; i <= AllocJsonText.MAX_DEPTH; i++) {
+            nested = OresJsonValue.array(List.of(nested));
+        }
+        var root = OresJsonValue.array(List.of(nested));
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.atOwned(root, 0));
+        var number = OresJsonValue.of(new BigDecimal("-" + "9".repeat(AllocJsonText.MAX_NUMBER_CHARS)));
+        var numbers = OresJsonValue.array(List.of(number));
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.atOwned(numbers, 0));
+    }
+
+    @Test
+    void directOwnedSnapshotCountsExactEscapedAndMultibyteWireFootprint() {
+        int quota = OresJsonValue.DEFAULT_STRINGIFY_UTF8_BYTES;
+        String exact = "🚀".repeat((quota - 2) / 4) + "aa";
+        var allowed = OresJsonValue.of(exact);
+        assertEquals(quota, OresJsonValue.stringify(allowed).getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        var values = OresJsonValue.array(List.of(allowed, OresJsonValue.of(exact + "a"),
+                OresJsonValue.of("\n".repeat(quota / 2))));
+        assertSame(allowed, OresJsonValue.atOwned(values, 0).orElseThrow());
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.atOwned(values, 1));
+        assertThrows(IllegalArgumentException.class, () -> OresJsonValue.atOwned(values, 2));
+    }
+
+    @Test
     void nestedObjectsRemainValidWhenAcyclic() {
         OresKeyedMap<String, OresJsonValue> address =
                 OresJsonValue.objectMap();
