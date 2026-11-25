@@ -42,11 +42,16 @@ public final class ActorLocalReferences {
      * Unlike mailbox transport this permits ordinary local-only objects.
      */
     static void rejectBufferedChannelPayload(Object value) {
-        if (value instanceof Ref<?> || value instanceof WeakRef<?>) {
-            throw new SecurityException(
-                    "actor-local Ref<T>/WeakRef<T> cannot enter a buffered channel or select case");
-        }
-        if (!(value instanceof OresMutex.SharedState)
+        validateGraph(value, null);
+    }
+
+    // Null permittedDomain is the transport-denial profile. A non-null domain
+    // permits only local reference edges, before a cell is allocated or changed.
+    private static void validateGraph(Object value, Object permittedDomain) {
+        if (value == null || isScalar(value)) return;
+        if (!(value instanceof Ref<?>)
+                && !(value instanceof WeakRef<?>)
+                && !(value instanceof OresMutex.SharedState)
                 && !(value instanceof java.util.Map<?, ?>)
                 && !(value instanceof Iterable<?>)
                 && !(value instanceof java.util.Optional<?>)
@@ -62,9 +67,17 @@ public final class ActorLocalReferences {
         budget.enqueue(pending, value);
         while (!pending.isEmpty()) {
             Object node = pending.removeLast();
-            if (node instanceof Ref<?> || node instanceof WeakRef<?>) {
-                throw new SecurityException(
-                        "actor-local Ref<T>/WeakRef<T> cannot enter a buffered channel or select case");
+            if (node instanceof Ref<?> strong) {
+                if (permittedDomain == null || strong.cell.ownerDomain != permittedDomain) {
+                    throw new SecurityException("actor-local strong reference cannot cross execution domains");
+                }
+                continue; // local cell edge, already admitted on publication
+            }
+            if (node instanceof WeakRef<?> weak) {
+                if (permittedDomain == null || weak.ownerDomain.get() != permittedDomain) {
+                    throw new SecurityException("actor-local weak reference cannot cross execution domains");
+                }
+                continue;
             }
             // Mutable/GC-managed host wrappers cannot be proven safe at the
             // time a deferred select write eventually commits. Reject rather
@@ -72,7 +85,7 @@ public final class ActorLocalReferences {
             if (node instanceof java.util.concurrent.atomic.AtomicReference<?>
                     || node instanceof java.lang.ref.Reference<?>) {
                 throw new SecurityException(
-                        "mutable host reference wrapper cannot enter a buffered channel or select case");
+                        "mutable host reference wrapper cannot enter an admitted graph");
             }
             if (seen.put(node, Boolean.TRUE) != null) continue;
             if (node instanceof OresMutex.SharedState state) {
@@ -130,8 +143,10 @@ public final class ActorLocalReferences {
     }
 
     public static <T> Ref<T> create(T initial) {
-        return new Ref<>(new Cell<>(requireActorDomain(),
-                Objects.requireNonNull(initial, "Ref.new requires an owned value")));
+        Object domain = requireActorDomain();
+        T next = Objects.requireNonNull(initial, "Ref.new requires an owned value");
+        validateGraph(next, domain);
+        return new Ref<>(new Cell<>(domain, next));
     }
 
     /** Allocate a cell without a value; initialize it using set() inside the actor. */
@@ -176,7 +191,9 @@ public final class ActorLocalReferences {
         /** Discards the prior value, moving a replacement into the cell. */
         public void set(T replacement) {
             cell.checkOwner();
-            cell.value = Objects.requireNonNull(replacement, "Ref.set requires owned data");
+            T next = Objects.requireNonNull(replacement, "Ref.set requires owned data");
+            validateGraph(next, cell.ownerDomain);
+            cell.value = next;
             cell.present = true;
         }
 
