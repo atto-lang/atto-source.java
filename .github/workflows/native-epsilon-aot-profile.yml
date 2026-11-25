@@ -1,0 +1,38 @@
+name: GraalVM strict AOT GC profile admission
+on:
+  pull_request:
+    paths:
+      - 'pom.xml'
+      - 'scripts/build-and-verify-native-image.sh'
+      - 'tests/test-build-and-verify-native-image.sh'
+      - 'tests/test-native-epsilon-pom.py'
+      - '.github/workflows/native-epsilon-aot-profile.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  strict-profile-source-free:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout reviewed exact PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head source
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+      - name: Check explicit Native Image collector profile and adversarial mutations
+        run: python3 tests/test-native-epsilon-pom.py -v
+      - name: Validate real native artifact gate decisions with compiled source-free mock
+        run: sh tests/test-build-and-verify-native-image.sh
+      - name: Evidence scope
+        run: |
+          echo 'STRUCTURAL_GC_PROFILE_ONLY: no Graal native image or AttoLang source was compiled'
+          echo 'Epsilon no-collection does not imply bounded managed Java heap allocation'

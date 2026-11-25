@@ -290,6 +290,18 @@ case "${MOCK_EXPECT_PROFILE_REFS:-}" in
       *) : ;;
     esac ;;
 esac
+case "${MOCK_EXPECT_GC:-serial}" in
+  epsilon)
+    case " $* " in
+      *native-epsilon*) : ;;
+      *) echo 'missing native-epsilon Maven profile' >&2; exit 25 ;;
+    esac ;;
+  serial)
+    case " $* " in
+      *native-epsilon*) echo 'unexpected native-epsilon Maven profile' >&2; exit 26 ;;
+      *) : ;;
+    esac ;;
+esac
 case "${MOCK_EXPECT_OFFLINE:-}" in
   yes)
     case " $* " in
@@ -383,6 +395,8 @@ assert_case() {
       'hangup during build-info cleans temporary files') expected_status=129 ;;
       'invalid offline mode denied') expected_status=2; expected_diagnostic='ORES_NATIVE_IMAGE_OFFLINE must be 0 or 1' ;;
       'invalid mode') expected_status=2; expected_diagnostic='invalid image mode: invalid' ;;
+      'invalid native GC mode') expected_status=2; expected_diagnostic='ORES_NATIVE_GC_MODE must be serial or epsilon' ;;
+      'Epsilon refused in hybrid Native Image') expected_status=2; expected_diagnostic='Epsilon GC is only admitted with full native AOT' ;;
       'invalid refs') expected_status=2; expected_diagnostic='invalid reference mode: invalid' ;;
       'Maven failure') expected_status=19 ;;
       'script wrapper rather than native binary') expected_diagnostic='artifact is not an OS-native executable' ;;
@@ -470,6 +484,10 @@ assert_case() {
 }
 
 assert_case 'AOT compressed32' success aot compressed32 MOCK_EMBEDDED_MODE=aot MOCK_EMBEDDED_REFS=compressed32 MOCK_EXPECT_PROFILE_REFS=compressed32
+assert_case 'Epsilon AOT compressed32 opt-in' success aot compressed32 ORES_NATIVE_GC_MODE=epsilon MOCK_EXPECT_GC=epsilon
+assert_case 'Epsilon AOT native64 opt-in' success aot native64 ORES_NATIVE_GC_MODE=epsilon MOCK_EXPECT_GC=epsilon MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
+assert_case 'Epsilon refused in hybrid Native Image' failure hybrid compressed32 ORES_NATIVE_GC_MODE=epsilon
+assert_case 'invalid native GC mode' failure aot compressed32 ORES_NATIVE_GC_MODE=epsilon,serial
 assert_case 'AOT native64' success aot native64 MOCK_EMBEDDED_MODE=aot MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
 assert_case 'hybrid compressed32' success hybrid compressed32 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=compressed32 MOCK_EXPECT_PROFILE_REFS=compressed32
 assert_case 'hybrid native64' success hybrid native64 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64

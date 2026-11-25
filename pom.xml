@@ -17,6 +17,8 @@
     <tomlj.version>1.1.1</tomlj.version>
     <!-- Override with -Pnative-size to favor executable size over throughput. -->
     <native.image.optimization>-O2</native.image.optimization>
+    <!-- Explicit GC mode for full Native Image AOT. Epsilon is opt-in only; it does NOT reclaim managed allocations. -->
+    <native.image.gc.args>--gc=serial</native.image.gc.args>
     <!-- Native Image uses 32-bit Java references by default in Oreslang.
          Combine a native build profile with -Pnative-ref64 for full-width refs. -->
     <native.image.reference.args>-H:+UseCompressedReferences -Dores.native.ref-mode=compressed32</native.image.reference.args>
@@ -192,7 +194,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>${native.image.optimization} ${native.image.reference.args} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dtruffle.UseFallbackRuntime=true --initialize-at-build-time=dev.oreslang.runtime.NativeBuildMode -Dores.native.build-mode=aot --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
+                  <commandlineArgs>${native.image.optimization} ${native.image.reference.args} ${native.image.gc.args} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dtruffle.UseFallbackRuntime=true --initialize-at-build-time=dev.oreslang.runtime.NativeBuildMode -Dores.native.build-mode=aot --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
@@ -224,6 +226,13 @@
           </plugin>
         </plugins>
       </build>
+    </profile>
+    <!-- Experimental full-AOT zero-collection mode. No Java heap reclamation: bounded RSS/heap evidence is mandatory. -->
+    <profile>
+      <id>native-epsilon</id>
+      <properties>
+        <native.image.gc.args>--gc=epsilon</native.image.gc.args>
+      </properties>
     </profile>
     <profile>
       <id>native-ref64</id>
