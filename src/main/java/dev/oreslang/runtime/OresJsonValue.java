@@ -184,7 +184,7 @@ public sealed interface OresJsonValue
     private static void validateTree(
             OresJsonValue root,
             OresKeyedMap<?, ?> forbiddenDestination) {
-        ValidationState state = new ValidationState(forbiddenDestination);
+        JsonGraphValidationState state = new JsonGraphValidationState(forbiddenDestination);
         state.visit(root, 0);
     }
 
@@ -299,73 +299,6 @@ public sealed interface OresJsonValue
         }
     }
 
-    private static final class ValidationState {
-        private final OresKeyedMap<?, ?> forbiddenDestination;
-        private final IdentityHashMap<Object, Boolean> active =
-                new IdentityHashMap<>();
-        private int nodes;
-
-        private ValidationState(OresKeyedMap<?, ?> forbiddenDestination) {
-            this.forbiddenDestination = forbiddenDestination;
-        }
-
-        private void visit(OresJsonValue value, int depth) {
-            Objects.requireNonNull(value, "JSON tree value");
-            if (depth > MAX_GRAPH_DEPTH) {
-                throw new IllegalArgumentException(
-                        "JSON graph exceeds maximum nesting depth");
-            }
-            if (++nodes > MAX_GRAPH_NODES) {
-                throw new IllegalArgumentException(
-                        "JSON graph exceeds validation work limit");
-            }
-
-            if (value instanceof ArrayValue array) {
-                enter(array);
-                try {
-                    for (OresJsonValue element : array.values) {
-                        visit(element, depth + 1);
-                    }
-                } finally {
-                    active.remove(array);
-                }
-                return;
-            }
-
-            if (value instanceof ObjectValue object) {
-                OresKeyedMap<String, OresJsonValue> fields = object.fields;
-                if (fields == forbiddenDestination) {
-                    throw new IllegalArgumentException(
-                            "JSON Map insertion would create a cyclic object graph");
-                }
-                enter(fields);
-                try {
-                    List<Map.Entry<String, OresJsonValue>> snapshot =
-                            fields.entrySnapshot();
-                    for (Map.Entry<String, OresJsonValue> field : snapshot) {
-                        // Key validity/type and key quotas are owned by the
-                        // String-keyed OresKeyedMap domain. Value traversal is
-                        // compiler-owned and never dispatches guest callbacks.
-                        visit(
-                                Objects.requireNonNull(
-                                        field.getValue(),
-                                        "JSON object field value"),
-                                depth + 1);
-                    }
-                } finally {
-                    active.remove(fields);
-                }
-            }
-        }
-
-        private void enter(Object container) {
-            if (active.put(container, Boolean.TRUE) != null) {
-                throw new IllegalArgumentException(
-                        "JSON values cannot contain cyclic object graphs");
-            }
-        }
-    }
-
     /**
      * Guest reads return an independent owned tree, never the live Map entry.
      * Reuse the canonical bounded codec as a conservative first copy path.
@@ -407,169 +340,6 @@ public sealed interface OresJsonValue
         return maxUtf8Bytes;
     }
 
-    private static final class JsonStringifier {
-        private static final char[] HEX = "0123456789abcdef".toCharArray();
-
-        private final int maxUtf8Bytes;
-        private final StringBuilder output = new StringBuilder();
-        private int utf8Bytes;
-
-        private JsonStringifier(int maxUtf8Bytes) {
-            this.maxUtf8Bytes = maxUtf8Bytes;
-        }
-
-        private String result() {
-            return output.toString();
-        }
-
-        private void write(OresJsonValue value) {
-            if (value instanceof NullValue) {
-                ascii("null");
-                return;
-            }
-            if (value instanceof BoolValue bool) {
-                ascii(bool.value ? "true" : "false");
-                return;
-            }
-            if (value instanceof NumberValue number) {
-                ascii(number.value.toString());
-                return;
-            }
-            if (value instanceof StringValue string) {
-                quoted(string.value);
-                return;
-            }
-            if (value instanceof ArrayValue array) {
-                ascii("[");
-                for (int index = 0; index < array.values.size(); index++) {
-                    if (index > 0) ascii(",");
-                    write(array.values.get(index));
-                }
-                ascii("]");
-                return;
-            }
-            if (value instanceof ObjectValue object) {
-                ascii("{");
-                List<Map.Entry<String, OresJsonValue>> entries =
-                        object.fields.entrySnapshot();
-                for (int index = 0; index < entries.size(); index++) {
-                    if (index > 0) ascii(",");
-                    Map.Entry<String, OresJsonValue> field = entries.get(index);
-                    quoted(field.getKey());
-                    ascii(":");
-                    write(Objects.requireNonNull(
-                            field.getValue(), "JSON object field value"));
-                }
-                ascii("}");
-                return;
-            }
-            throw new IllegalStateException(
-                    "unknown compiler-owned JSON runtime variant");
-        }
-
-        private void quoted(String value) {
-            Objects.requireNonNull(value, "JSON string");
-            ascii("\"");
-            for (int index = 0; index < value.length();) {
-                char current = value.charAt(index);
-                switch (current) {
-                    case '\"' -> {
-                        ascii("\\\"");
-                        index++;
-                    }
-                    case '\\' -> {
-                        ascii("\\\\");
-                        index++;
-                    }
-                    case '\b' -> {
-                        ascii("\\b");
-                        index++;
-                    }
-                    case '\f' -> {
-                        ascii("\\f");
-                        index++;
-                    }
-                    case '\n' -> {
-                        ascii("\\n");
-                        index++;
-                    }
-                    case '\r' -> {
-                        ascii("\\r");
-                        index++;
-                    }
-                    case '\t' -> {
-                        ascii("\\t");
-                        index++;
-                    }
-                    default -> {
-                        if (current <= 0x1f) {
-                            ascii("\\u00");
-                            asciiChar(HEX[(current >>> 4) & 0x0f]);
-                            asciiChar(HEX[current & 0x0f]);
-                            index++;
-                            continue;
-                        }
-                        if (Character.isHighSurrogate(current)) {
-                            if (index + 1 >= value.length()
-                                    || !Character.isLowSurrogate(
-                                            value.charAt(index + 1))) {
-                                throw new IllegalArgumentException(
-                                        "JSON string contains an unpaired high surrogate");
-                            }
-                            int codePoint = Character.toCodePoint(
-                                    current, value.charAt(index + 1));
-                            unicodeScalar(codePoint);
-                            index += 2;
-                            continue;
-                        }
-                        if (Character.isLowSurrogate(current)) {
-                            throw new IllegalArgumentException(
-                                    "JSON string contains an unpaired low surrogate");
-                        }
-                        unicodeScalar(current);
-                        index++;
-                    }
-                }
-            }
-            ascii("\"");
-        }
-
-        private void ascii(String value) {
-            for (int index = 0; index < value.length(); index++) {
-                char current = value.charAt(index);
-                if (current > 0x7f) {
-                    throw new IllegalStateException(
-                            "internal JSON encoder expected ASCII token");
-                }
-                asciiChar(current);
-            }
-        }
-
-        private void asciiChar(char value) {
-            reserve(1);
-            output.append(value);
-        }
-
-        private void unicodeScalar(int codePoint) {
-            int bytes;
-            if (codePoint <= 0x7f) bytes = 1;
-            else if (codePoint <= 0x7ff) bytes = 2;
-            else if (codePoint <= 0xffff) bytes = 3;
-            else bytes = 4;
-            reserve(bytes);
-            output.appendCodePoint(codePoint);
-        }
-
-        private void reserve(int bytes) {
-            if ((long) utf8Bytes + bytes > maxUtf8Bytes) {
-                throw new IllegalArgumentException(
-                        "JSON stringify exceeds UTF-8 output quota of "
-                                + maxUtf8Bytes + " bytes");
-            }
-            utf8Bytes += bytes;
-        }
-    }
-
     private static String requireUnicodeScalarString(String value) {
         for (int index = 0; index < value.length(); index++) {
             char current = value.charAt(index);
@@ -586,5 +356,236 @@ public sealed interface OresJsonValue
             }
         }
         return value;
+    }
+}
+
+// Package-private helpers: Java interface member types cannot be private.
+final class JsonGraphValidationState {
+    private final OresKeyedMap<?, ?> forbiddenDestination;
+    private final IdentityHashMap<Object, Boolean> active =
+            new IdentityHashMap<>();
+    private int nodes;
+
+    JsonGraphValidationState(OresKeyedMap<?, ?> forbiddenDestination) {
+        this.forbiddenDestination = forbiddenDestination;
+    }
+
+    void visit(OresJsonValue value, int depth) {
+        Objects.requireNonNull(value, "JSON tree value");
+        if (depth > OresJsonValue.MAX_GRAPH_DEPTH) {
+            throw new IllegalArgumentException(
+                    "JSON graph exceeds maximum nesting depth");
+        }
+        if (++nodes > OresJsonValue.MAX_GRAPH_NODES) {
+            throw new IllegalArgumentException(
+                    "JSON graph exceeds validation work limit");
+        }
+
+        if (value instanceof OresJsonValue.ArrayValue array) {
+            enter(array);
+            try {
+                for (OresJsonValue element : array.values()) {
+                    visit(element, depth + 1);
+                }
+            } finally {
+                active.remove(array);
+            }
+            return;
+        }
+
+        if (value instanceof OresJsonValue.ObjectValue object) {
+            OresKeyedMap<String, OresJsonValue> fields = object.fields();
+            if (fields == forbiddenDestination) {
+                throw new IllegalArgumentException(
+                        "JSON Map insertion would create a cyclic object graph");
+            }
+            enter(fields);
+            try {
+                List<Map.Entry<String, OresJsonValue>> snapshot =
+                        fields.entrySnapshot();
+                for (Map.Entry<String, OresJsonValue> field : snapshot) {
+                    // Key validity/type and key quotas are owned by the
+                    // String-keyed OresKeyedMap domain. Value traversal is
+                    // compiler-owned and never dispatches guest callbacks.
+                    visit(
+                            Objects.requireNonNull(
+                                    field.getValue(),
+                                    "JSON object field value"),
+                            depth + 1);
+                }
+            } finally {
+                active.remove(fields);
+            }
+        }
+    }
+
+    private void enter(Object container) {
+        if (active.put(container, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException(
+                    "JSON values cannot contain cyclic object graphs");
+        }
+    }
+}
+
+final class JsonStringifier {
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
+
+    private final int maxUtf8Bytes;
+    private final StringBuilder output = new StringBuilder();
+    private int utf8Bytes;
+
+    JsonStringifier(int maxUtf8Bytes) {
+        this.maxUtf8Bytes = maxUtf8Bytes;
+    }
+
+    String result() {
+        return output.toString();
+    }
+
+    void write(OresJsonValue value) {
+        if (value instanceof OresJsonValue.NullValue) {
+            ascii("null");
+            return;
+        }
+        if (value instanceof OresJsonValue.BoolValue bool) {
+            ascii(bool.value() ? "true" : "false");
+            return;
+        }
+        if (value instanceof OresJsonValue.NumberValue number) {
+            ascii(number.value().toString());
+            return;
+        }
+        if (value instanceof OresJsonValue.StringValue string) {
+            quoted(string.value());
+            return;
+        }
+        if (value instanceof OresJsonValue.ArrayValue array) {
+            ascii("[");
+            for (int index = 0; index < array.values().size(); index++) {
+                if (index > 0) ascii(",");
+                write(array.values().get(index));
+            }
+            ascii("]");
+            return;
+        }
+        if (value instanceof OresJsonValue.ObjectValue object) {
+            ascii("{");
+            List<Map.Entry<String, OresJsonValue>> entries =
+                    object.fields().entrySnapshot();
+            for (int index = 0; index < entries.size(); index++) {
+                if (index > 0) ascii(",");
+                Map.Entry<String, OresJsonValue> field = entries.get(index);
+                quoted(field.getKey());
+                ascii(":");
+                write(Objects.requireNonNull(
+                        field.getValue(), "JSON object field value"));
+            }
+            ascii("}");
+            return;
+        }
+        throw new IllegalStateException(
+                "unknown compiler-owned JSON runtime variant");
+    }
+
+    private void quoted(String value) {
+        Objects.requireNonNull(value, "JSON string");
+        ascii("\"");
+        for (int index = 0; index < value.length();) {
+            char current = value.charAt(index);
+            switch (current) {
+                case '\"' -> {
+                    ascii("\\\"");
+                    index++;
+                }
+                case '\\' -> {
+                    ascii("\\\\");
+                    index++;
+                }
+                case '\b' -> {
+                    ascii("\\b");
+                    index++;
+                }
+                case '\f' -> {
+                    ascii("\\f");
+                    index++;
+                }
+                case '\n' -> {
+                    ascii("\\n");
+                    index++;
+                }
+                case '\r' -> {
+                    ascii("\\r");
+                    index++;
+                }
+                case '\t' -> {
+                    ascii("\\t");
+                    index++;
+                }
+                default -> {
+                    if (current <= 0x1f) {
+                        ascii("\\u00");
+                        asciiChar(HEX[(current >>> 4) & 0x0f]);
+                        asciiChar(HEX[current & 0x0f]);
+                        index++;
+                        continue;
+                    }
+                    if (Character.isHighSurrogate(current)) {
+                        if (index + 1 >= value.length()
+                                || !Character.isLowSurrogate(
+                                        value.charAt(index + 1))) {
+                            throw new IllegalArgumentException(
+                                    "JSON string contains an unpaired high surrogate");
+                        }
+                        int codePoint = Character.toCodePoint(
+                                current, value.charAt(index + 1));
+                        unicodeScalar(codePoint);
+                        index += 2;
+                        continue;
+                    }
+                    if (Character.isLowSurrogate(current)) {
+                        throw new IllegalArgumentException(
+                                "JSON string contains an unpaired low surrogate");
+                    }
+                    unicodeScalar(current);
+                    index++;
+                }
+            }
+        }
+        ascii("\"");
+    }
+
+    private void ascii(String value) {
+        for (int index = 0; index < value.length(); index++) {
+            char current = value.charAt(index);
+            if (current > 0x7f) {
+                throw new IllegalStateException(
+                        "internal JSON encoder expected ASCII token");
+            }
+            asciiChar(current);
+        }
+    }
+
+    private void asciiChar(char value) {
+        reserve(1);
+        output.append(value);
+    }
+
+    private void unicodeScalar(int codePoint) {
+        int bytes;
+        if (codePoint <= 0x7f) bytes = 1;
+        else if (codePoint <= 0x7ff) bytes = 2;
+        else if (codePoint <= 0xffff) bytes = 3;
+        else bytes = 4;
+        reserve(bytes);
+        output.appendCodePoint(codePoint);
+    }
+
+    private void reserve(int bytes) {
+        if ((long) utf8Bytes + bytes > maxUtf8Bytes) {
+            throw new IllegalArgumentException(
+                    "JSON stringify exceeds UTF-8 output quota of "
+                            + maxUtf8Bytes + " bytes");
+        }
+        utf8Bytes += bytes;
     }
 }
