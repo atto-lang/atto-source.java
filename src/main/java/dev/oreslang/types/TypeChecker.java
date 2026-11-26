@@ -6896,6 +6896,12 @@ public final class TypeChecker {
                 actorClassForRef(actorRef);
                 return actorRef;
             }
+            // Immediate int values already use the non-suspending identity
+            // path in both guest evaluators. Keep std.await Future-only and
+            // reject unknown/affine operands rather than guessing at runtime.
+            if (!awaited.coreAdapter() && awaitedType == Primitive.INT) {
+                return awaitedType;
+            }
             throw new IllegalArgumentException(
                     "await requires Future<T>, HasFuture<T>, or ActorRef<T>; got " + awaitedType);
         }
@@ -9608,7 +9614,13 @@ public final class TypeChecker {
                             previous.pattern(), arm.pattern(), subject, generics, self);
                     boolean guardDisjoint = previous.guard() != null && arm.guard() != null
                             && guardsProvablyDisjoint(previous.guard(), arm.guard());
-                    if (!patternDisjoint && !guardDisjoint) {
+                    // A literal before a nominal type pattern is an ordered
+                    // specialization, regardless of whether its type arm used 'on is'.
+                    // Keep the general disjointness and dead-arm checks intact.
+                    boolean literalSpecialization = previous.pattern() instanceof Ast.LiteralPattern
+                            && arm.pattern() instanceof Ast.TypePattern typed
+                            && !typed.type().isComplement();
+                    if (!patternDisjoint && !guardDisjoint && !literalSpecialization) {
                         throw new IllegalArgumentException(
                                 "ordinary match requires provably disjoint explicit patterns "
                                         + (j + 1) + " and " + (i + 1)
@@ -9692,7 +9704,13 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.LiteralPattern literal) {
             Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), bindings, generics, self);
-            if (!assignable(literalType, subject) && !assignable(subject, literalType)) {
+            // Historical numeric match uses exact cross-width runtime equality,
+            // not numeric assignment or a lossy conversion. Strict source mode
+            // retains its separate admission fence.
+            boolean legacyMixedNumeric = !strictAttoEquality
+                    && (literalType == Primitive.INT && subject == Primitive.FLOAT
+                        || literalType == Primitive.FLOAT && subject == Primitive.INT);
+            if (!legacyMixedNumeric && !assignable(literalType, subject) && !assignable(subject, literalType)) {
                 throw new IllegalArgumentException("literal pattern type " + literalType + " is incompatible with " + subject);
             }
             return;
@@ -11584,6 +11602,18 @@ public final class TypeChecker {
                 default -> null;
             };
         }
+        if (expression instanceof Ast.TypeTestExpr test && test.binding() == null
+                && test.targetType().equals(Ast.TypeRef.simple("int"))) {
+            // Only an exact proven int constant can fold this type test.
+            Object value = evaluateScalarConstant(test.value(), env, depth + 1);
+            return value instanceof Long && "int".equals(strictNumericSource(test.value(), env))
+                    ? Boolean.TRUE : null;
+        }
+        if (expression instanceof Ast.AwaitExpr awaited && !awaited.coreAdapter()
+                && "int".equals(strictNumericSource(awaited.expression(), env))) {
+            Object value = evaluateScalarConstant(awaited.expression(), env, depth + 1);
+            return value instanceof Long ? value : null;
+        }
         if (expression instanceof Ast.ConditionalExpr conditional) {
             Object predicate = evaluateScalarConstant(conditional.condition(), env, depth + 1);
             if (!(predicate instanceof Boolean condition)) return null;
@@ -11758,20 +11788,55 @@ public final class TypeChecker {
                 && Set.of("+", "-", "~").contains(unary.operator())) {
             return strictNumericSource(unary.operand(), env);
         }
+        if (expr instanceof Ast.AwaitExpr awaited && !awaited.coreAdapter()) {
+            // Immediate int await is identity, but erased INT alone is not
+            // an exact width witness. Do not claim Future or projection width.
+            return "int".equals(strictNumericSource(awaited.expression(), env)) ? "int" : null;
+        }
         if (expr instanceof Ast.ConditionalExpr ternary) {
             String yes = strictNumericSource(ternary.whenTrue(), env);
             String no = strictNumericSource(ternary.whenFalse(), env);
             return yes != null && yes.equals(no) ? yes : null;
         }
-        // Conservative literal-only match join proof. Do not consult the outer
+        // Conservative literal and direct tagged-payload match join proof. Do not consult the outer
         // environment for a name declared or shadowed by an arm pattern/prefix.
         // Explicit result annotations alone cannot prove exact numeric width.
         if (expr instanceof Ast.MatchExpr match) {
             String common = null;
             for (Ast.MatchValueArm arm : match.arms()) {
-                if (!(arm.value() instanceof Ast.LiteralExpr literal)) return null;
-                String width = literal.value() instanceof Long ? "int"
-                        : literal.value() instanceof Double ? "float" : null;
+                // Signed literals are parsed as unary expressions. Prove
+                // their width using only literal operands, never outer names.
+                Ast.Expr value = arm.value();
+                while (value instanceof Ast.UnaryExpr unary
+                        && Set.of("+", "-").contains(unary.operator())) {
+                    value = unary.operand();
+                }
+                String width;
+                if (value instanceof Ast.LiteralExpr literal) {
+                    width = literal.value() instanceof Long ? "int"
+                            : literal.value() instanceof Double ? "float" : null;
+                } else if (arm.prefixStatements().isEmpty()
+                        && value instanceof Ast.NameExpr name
+                        && arm.pattern() instanceof Ast.ConstructorPattern constructor
+                        && constructor.arguments().size() == 1
+                        && constructor.arguments().getFirst() instanceof Ast.BindingPattern binding
+                        && name.name().equals(binding.name())) {
+                    // Only a direct payload binder from an explicitly typed
+                    // built-in Option/Result subject proves source width.
+                    // No erased primitive, outer name or arm-local shadowing.
+                    Ast.TypeRef source = strictSourceRef(match.subject(), env);
+                    if (source == null || source.isBorrow() || source.inferArguments()) return null;
+                    Ast.TypeRef payload = switch (constructor.constructor()) {
+                        case "Some" -> source.name().equals("Option") && source.arguments().size() == 1
+                                ? source.arguments().getFirst() : null;
+                        case "Ok" -> source.name().equals("Result") && source.arguments().size() == 2
+                                ? source.arguments().get(0) : null;
+                        case "Err" -> source.name().equals("Result") && source.arguments().size() == 2
+                                ? source.arguments().get(1) : null;
+                        default -> null;
+                    };
+                    width = strictNumericName(payload);
+                } else return null;
                 if (width == null || (common != null && !common.equals(width))) return null;
                 common = width;
             }
