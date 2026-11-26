@@ -65,6 +65,64 @@ final class BoundDeferFactoryExecutionTest {
     }
 
     @Test
+    void sharedPipelineFactoryBindsScalarChainAndTupleBeforeBody() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(true).out(out).build()) {
+            Value result = context.parse(fixture("pipeline-defer.atto")).execute(
+                    OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "main");
+            assertEquals(42, result.asInt());
+            assertEquals("seed\ntwice\nbody\ntuple\n7\n10\n",
+                    out.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void sharedPipelineArityFixtureRejectsBeforeGuestExecution() throws Exception {
+        String source = fixture("pipeline-reject-arity.atto").getCharacters().toString();
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("nullary braced cleanup"), failure::toString);
+    }
+
+    @Test
+    void pipelineFactoryRejectsWrongTypeAndNonNullaryCleanup() {
+        for (String registration : new String[] {
+                "defer \"wrong\" |> (|int x| -> || -> { stdio.println(x); });",
+                "defer 5 |> (|int x| -> |int other| -> { stdio.println(other); });",
+                "defer 5 |> (|int x| -> || -> { return 1; });",
+                "defer 5 |> (|int x| -> { stdio.println(x); });"
+        }) {
+            String source = "pub fnc main(): int { " + registration + " return 42; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), registration);
+        }
+    }
+
+    @Test
+    void pipelineRegistrationFailurePreservesOlderCleanup() throws Exception {
+        String guest = """
+                fnc seed(int divisor): int {
+                    stdio.println("factory");
+                    return 1 % divisor;
+                }
+                pub fnc main(): int {
+                    defer stdio.println("older");
+                    defer seed(0) |> (|int x| -> || -> { stdio.println("INVALID"); });
+                    stdio.println("INVALID-body");
+                    return 42;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(true).out(out).build()) {
+            var call = context.parse(Source.newBuilder(OresLanguage.ID, guest, "pipeline-failure.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            assertThrows(RuntimeException.class, () -> call.execute(
+                    OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "main"));
+            assertEquals("factory\nolder\n", out.toString(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
     void rejectsExternalCaptureBeforeExecution() {
         String source = """
                 pub fnc main(): int {
