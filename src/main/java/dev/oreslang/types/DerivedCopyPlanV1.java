@@ -86,25 +86,58 @@ public final class DerivedCopyPlanV1 {
     }
 
     /**
-     * Conservative phase-1 shallow capability: a fresh root whose immediate
-     * fields/elements are all proven immutable scalars. The existing bounded
-     * executor may execute this plan without recursively allocating a mutable
-     * child. Shared-child witnesses and inline ADTs are deliberately deferred.
-     * Not yet wired to legacy copy! syntax; edition migration is separate.
+     * A layout obligation, not an ownership witness. A retained edge names
+     * the immediate reference slot whose entire reachable graph needs a
+     * shared read loan. Independent inline scalar slots remain writable.
+     * Sequence elements use an indexed family rather than a fake field name.
+     */
+    public sealed interface RetainedEdge permits RetainedField, RetainedElements { }
+    public record RetainedField(String field, Plan target) implements RetainedEdge { }
+    public record RetainedElements(Plan target) implements RetainedEdge { }
+    public record ShallowLoanLayout(Plan root, List<RetainedEdge> retained) {
+        public ShallowLoanLayout { retained = List.copyOf(retained); }
+        public boolean requiresLoans() { return !retained.isEmpty(); }
+    }
+
+    /**
+     * Derive the bounded structural obligations for a future checked lexical
+     * copy-loan instruction. No mutable alias is authorized by this method.
+     * The caller must separately prove all paths, provenance, lifetimes,
+     * writes, moves, cleanup, and escape behavior before using these edges.
+     */
+    public static ShallowLoanLayout deriveShallowLoanLayout(
+            Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
+        Plan plan = derive(type, findClass);
+        List<RetainedEdge> edges = new ArrayList<>();
+        switch (plan) {
+            case Scalar scalar -> { }
+            case Sequence sequence -> {
+                if (!(sequence.element() instanceof Scalar)) {
+                    edges.add(new RetainedElements(sequence.element()));
+                }
+            }
+            case Instance instance -> {
+                for (Field field : instance.fields()) {
+                    if (!(field.plan() instanceof Scalar)) {
+                        edges.add(new RetainedField(field.name(), field.plan()));
+                    }
+                }
+            }
+        }
+        return new ShallowLoanLayout(plan, edges);
+    }
+
+    /**
+     * Until the ownership pass and evaluator can mint and consume a lexical
+     * loan proof, only layouts without retained mutable edges may execute.
      */
     public static Plan deriveShallow(Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
-        Plan plan = derive(type, findClass);
-        boolean safe = switch (plan) {
-            case Scalar scalar -> true;
-            case Sequence sequence -> sequence.element() instanceof Scalar;
-            case Instance instance -> instance.fields().stream()
-                    .allMatch(field -> field.plan() instanceof Scalar);
-        };
-        if (!safe) {
+        ShallowLoanLayout layout = deriveShallowLoanLayout(type, findClass);
+        if (layout.requiresLoans()) {
             throw fail("E_COPY_SHALLOW_ALIAS",
-                    "shallow root would duplicate an unproved owned child; use copy!!");
+                    "shallow root requires a verified scoped read loan for retained owned children");
         }
-        return plan;
+        return layout.root();
     }
 
     /** Exact expanded plan weight, bounded by admission's node ceiling. */
