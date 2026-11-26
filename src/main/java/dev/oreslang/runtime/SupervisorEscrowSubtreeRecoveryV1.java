@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -53,8 +52,9 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     private final PhysicalReleaseVerifier physicalRelease;
     private final Map<Long, ActorRuntime.ActorRef<?>> refs = new HashMap<>();
     private final Object lock = new Object();
-    private final ArrayDeque<Long> pendingRoots = new ArrayDeque<>();
-    private final Set<Long> queuedRoots = new HashSet<>();
+    private final SupervisorRecoveryQueueV1 pendingRoots =
+            new SupervisorRecoveryQueueV1(SupervisorFailureEscrowV1.MAX_NODES);
+    private final Runnable controlWake = this::runControlWake;
     private final Set<RestartPermit> issued = new HashSet<>();
     private final Map<Long, Long> successorIds = new HashMap<>();
     private final AtomicReference<Throwable> controlFault = new AtomicReference<>();
@@ -113,7 +113,10 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     void failedFromRuntime(long failedNode) {
         boolean submit = false;
         synchronized (lock) {
-            if (queuedRoots.add(failedNode)) pendingRoots.addLast(failedNode);
+            if (!pendingRoots.offer(failedNode)) {
+                controlFault.compareAndSet(null, pendingRoots.capacityFailure());
+                return;
+            }
             if (!scheduled && controlFault.get() == null) {
                 scheduled = true;
                 submit = true;
@@ -127,16 +130,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         // lifecycleLock is held by the failing actor. Fail closed instead.
         submitting.set(Boolean.TRUE);
         try {
-            control.execute(() -> {
-                if (Boolean.TRUE.equals(submitting.get())
-                        || ActorRuntime.inActorExecution()
-                        || ActorRuntime.inActorGroupMailmanExecution()) {
-                    controlFault.compareAndSet(null, new IllegalStateException(
-                            "supervision CONTROL executed inline or on an actor carrier"));
-                    return;
-                }
-                drain();
-            });
+            control.execute(controlWake);
         } catch (RuntimeException | Error rejected) {
             controlFault.compareAndSet(null, rejected);
         } finally {
@@ -144,17 +138,28 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         }
     }
 
+    private final IllegalStateException invalidCarrier = new IllegalStateException(
+            "supervision CONTROL executed inline or on an actor carrier");
+
+    private void runControlWake() {
+        if (Boolean.TRUE.equals(submitting.get())
+                || ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()) {
+            controlFault.compareAndSet(null, invalidCarrier);
+            return;
+        }
+        drain();
+    }
+
     private void drain() {
         while (controlFault.get() == null) {
             final long root;
             synchronized (lock) {
-                Long next = pendingRoots.pollFirst();
-                if (next == null) {
+                root = pendingRoots.poll();
+                if (root == 0) {
                     scheduled = false;
                     return;
                 }
-                root = next;
-                queuedRoots.remove(root);
             }
             try {
                 cancelRegisteredSubtree(root);
