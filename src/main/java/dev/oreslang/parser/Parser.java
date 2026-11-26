@@ -2011,7 +2011,9 @@ public final class Parser {
                 throw error(previous(), "duplicate @" + name
                         + " annotation; repeatable annotations require a registered schema");
             }
-            result.add(new Ast.Annotation(name, canonicalArgs));
+            // One canonical negative policy in the AST, including duplicate
+            // and placement checking. Never let an alternate spelling bypass it.
+            result.add(new Ast.Annotation(name.equals("NonCopyable") ? "NoCopy" : name, canonicalArgs));
         }
         return result;
     }
