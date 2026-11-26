@@ -424,6 +424,41 @@ final class TypedDefaultSelectGuestTest {
                 """));
     }
 
+    @Test void literalMixedZeroDoesNotCaptureOrConsumeAnySource() throws Exception {
+        assertEquals("false|0|20|22", run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 22;
+                  val Future<int> f = select<int> { default: -> { return 20; } };
+                  val Future<Array<int>> empty = select<int>(0) fair over
+                    when await f: int n -> { return n + 1; }
+                    when readch incoming: int n -> { return n * 2; }
+                    when await f: int n -> { return n; }
+                  end;
+                  stdio.stdout.write(empty.cancel()); stdio.stdout.write("|");
+                  val Array[int] values = await empty;
+                  stdio.stdout.write(values.size); stdio.stdout.write("|");
+                  stdio.stdout.write(await f); stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming);
+                  return;
+                }
+                """));
+    }
+
+    @Test void mixedZeroStillChecksEveryLexicalWitness() {
+        for (String arm : new String[]{
+                "when readch missing: int n -> { return n; }",
+                "when await incoming: int n -> { return n; }",
+                "when readch f: int n -> { return n; }",
+                "when readch wrong: int n -> { return n; }"
+        }) assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(1); "
+                + "val Channel<bool> wrong = Channel.new<bool>(1); "
+                + "val Future<int> f = select<int> { default: -> { return 20; } }; "
+                + "val Future<Array<int>> result = select<int>(0) { when readch incoming: int n -> { return n; } "
+                + arm + " }; return; }"), arm);
+    }
+
     private static String run(String program) throws Exception {
         var out=new ByteArrayOutputStream();
         try(var context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()){

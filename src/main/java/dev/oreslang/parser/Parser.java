@@ -7284,19 +7284,13 @@ public final class Parser {
                     false, false, true, null, dynamicCount);
         }
         if (count == 0) {
-            // The existing zero-count AST has only one Channel type witness.
-            // Multi-source literal zero remains fail-closed until all witnesses
-            // can be checked without capturing or evaluating any source.
-            if (selected.arms().size() != 1
-                    || selected.arms().getFirst().operation() != Ast.ChannelOperation.READ)
-                throw error(previous(), unsupported);
-            var source = (Ast.NameExpr) selected.arms().getFirst().channel();
-            // Retain only a static lexical type witness, never capture or
-            // evaluate the source and never materialize an executable arm.
+            // Type-check all lexical sources but never capture/evaluate them.
+            var witnesses = selected.arms().stream().map(arm ->
+                    new Ast.CountedZeroWitness(((Ast.NameExpr) arm.channel()).name(), arm.operation())).toList();
             var array = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
             return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
                     List.of(new Ast.ReturnStmt(new Ast.NewExpr(array, List.of()))),
-                    false, false, true, source.name());
+                    false, false, true, null, null, witnesses);
         }
         List<Ast.Stmt> taskBody = new ArrayList<>();
         List<Ast.Expr> values = new ArrayList<>();

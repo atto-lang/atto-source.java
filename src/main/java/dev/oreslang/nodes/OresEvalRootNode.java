@@ -2448,7 +2448,7 @@ public final class OresEvalRootNode extends RootNode {
                     return SourceTaskHandles.completedWithoutWork(new NativeAttoSequence("Array"));
                 admitted = otherCaptures;
             }
-            if (taskExpr.zeroCountSourceName() != null) {
+            if (!taskExpr.zeroCountWitnesses().isEmpty()) {
                 // Checked identity and empty capture admission are required
                 // before bypassing scheduler allocation. Never execute a
                 // retained body, look up the witness, or create a waiter.
