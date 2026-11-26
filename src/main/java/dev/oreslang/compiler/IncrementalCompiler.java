@@ -7,12 +7,9 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1144,12 +1141,7 @@ public final class IncrementalCompiler {
     }
 
     private static String digest(String source) {
-        try {
-            byte[] hash = MessageDigest.getInstance("SHA-256").digest(source.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash);
-        } catch (Exception impossible) {
-            throw new IllegalStateException(impossible);
-        }
+        return NamespaceArtifactIdentity.sourceDigest(source);
     }
 
     public record CompiledUnit(
@@ -1177,37 +1169,40 @@ public final class IncrementalCompiler {
          * digests in unit order. An importer of a namespace needs re-checking
          * only when this digest changes.
          */
+        public Map<NamespaceArtifactIdentity.Key, String> structuredNamespaceInterfaces() {
+            Map<NamespaceArtifactIdentity.Key, Map<String, String>> grouped = new java.util.TreeMap<>();
+            for (CompiledUnit unit : units.values()) {
+                var key = new NamespaceArtifactIdentity.Key(unit.packageId(), unit.namespace());
+                grouped.computeIfAbsent(key, ignored -> new java.util.TreeMap<>())
+                        .put(unit.unitId(), unit.abiDigest());
+            }
+            Map<NamespaceArtifactIdentity.Key, String> out = new LinkedHashMap<>();
+            grouped.forEach((key, members) -> out.put(key, NamespaceArtifactIdentity.namespaceInterface(key, members)));
+            return Map.copyOf(out);
+        }
+
         public Map<String, String> namespaceInterfaces() {
-            java.util.TreeMap<String, StringBuilder> grouped = new java.util.TreeMap<>();
-            for (CompiledUnit unit : new java.util.TreeMap<>(units).values()) {
-                String key = unit.packageId() + "#" + (unit.namespace() == null ? "" : unit.namespace());
-                grouped.computeIfAbsent(key, ignored -> new StringBuilder())
-                        .append(unit.unitId()).append('=').append(unit.abiDigest()).append('\n');
-            }
-            LinkedHashMap<String, String> out = new LinkedHashMap<>();
-            grouped.forEach((key, text) -> out.put(key, digest(text.toString())));
+            Map<String, String> out = new LinkedHashMap<>();
+            structuredNamespaceInterfaces().forEach((key, value) -> out.put(key.displayKey(), value));
             return Map.copyOf(out);
         }
 
-        /** Interface digest per package, over its namespaces' interface digests. */
+        /** Interface digest per package, over structured namespace identities. */
         public Map<String, String> packageInterfaces() {
-            java.util.TreeMap<String, StringBuilder> grouped = new java.util.TreeMap<>();
-            for (Map.Entry<String, String> ns : new java.util.TreeMap<>(namespaceInterfaces()).entrySet()) {
-                String pkg = ns.getKey().substring(0, ns.getKey().indexOf('#'));
-                grouped.computeIfAbsent(pkg, ignored -> new StringBuilder())
-                        .append(ns.getKey()).append('=').append(ns.getValue()).append('\n');
-            }
-            LinkedHashMap<String, String> out = new LinkedHashMap<>();
-            grouped.forEach((key, text) -> out.put(key, digest(text.toString())));
+            Map<String, Map<NamespaceArtifactIdentity.Key, String>> grouped = new java.util.TreeMap<>();
+            structuredNamespaceInterfaces().forEach((key, value) ->
+                    grouped.computeIfAbsent(key.packageId(), ignored -> new java.util.TreeMap<>()).put(key, value));
+            Map<String, String> out = new LinkedHashMap<>();
+            grouped.forEach((pkg, members) -> out.put(pkg, NamespaceArtifactIdentity.packageInterface(pkg, members)));
             return Map.copyOf(out);
         }
 
-        /** (package#namespace) groups that contain a re-checked unit. */
+        /** (package#namespace) display groups that contain a re-checked unit. */
         public Set<String> rebuiltNamespaces() {
             LinkedHashSet<String> out = new LinkedHashSet<>();
             for (String id : rebuiltUnits) {
                 CompiledUnit unit = units.get(id);
-                if (unit != null) out.add(unit.packageId() + "#" + (unit.namespace() == null ? "" : unit.namespace()));
+                if (unit != null) out.add(new NamespaceArtifactIdentity.Key(unit.packageId(), unit.namespace()).displayKey());
             }
             return Set.copyOf(out);
         }
