@@ -422,7 +422,17 @@ pipeline_stage  = IDENT [ call_suffix ]
                 | "nlex" pipe_lambda
                 | pipeline_match
                 | "await"
-                | "std" "." "await" ;
+                | "std" "." "await"
+                | pipeline_conditional
+                | pipeline_predicate [ pipeline_ternary ]
+                | pipeline_ternary ;
+pipeline_conditional = ( "if" | "ifnot" | "unless" )
+                       [ pipeline_predicate ] "then" expression
+                       "else" expression "fi" ;
+pipeline_predicate = "is" [ "type" ] type_atom
+                   | ( "<" | "<=" | ">" | ">=" ) shift
+                   | ( "eq" | "==" | "neq" | "!=" ) comparison ;
+pipeline_ternary = "?" expression ":" conditional ;
 pipeline_match  = "match" [ "first" ] [ "<" [ "ret" "=" ] type_ref ">" ]
                   "over" ( value_match_stage_arm { value_match_stage_arm } "end"
                          | "{" braced_value_match_stage_arm { braced_value_match_stage_arm } "}" ) ;
