@@ -7739,11 +7739,11 @@ public final class TypeChecker {
                     "untrusted actor task blocks require quota-aware tracked task admission");
         }
         if (task.typedCountedSelectI64()) {
-            // This first lowering snapshots exactly one lexical channel
-            // capability at task admission. Do not repeatedly resolve a
-            // global/imported value or admit a broader event payload.
-            String sourceName = task.zeroCountSourceName();
-            if (sourceName != null) {
+            // Every source must be a checked lexical scalar capability.
+            // Global/imported lookups and wider payloads remain fail-closed.
+            var witnesses = task.zeroCountWitnesses();
+            Ast.SelectStmt countedRound = null;
+            if (!witnesses.isEmpty()) {
                 if (task.body().size() != 1
                         || !(task.body().getFirst() instanceof Ast.ReturnStmt returned)
                         || !(returned.value() instanceof Ast.NewExpr empty)
@@ -7775,23 +7775,36 @@ public final class TypeChecker {
                         || !(task.body().get(2 + offset) instanceof Ast.LoopStmt loop)
                         || loop.body().size() != 2
                         || !(loop.body().get(1) instanceof Ast.SelectStmt selected)
-                        || selected.arms().size() != 1
-                        || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source)
+                        || selected.arms().isEmpty() || selected.arms().size() > 8
                         || findClass("Array") != null || importedValues.contains("Array"))
                     throw new IllegalArgumentException("invalid dynamic counted select lowering");
-                sourceName = source.name();
+                countedRound = selected;
             } else {
                 if (task.body().size() < 3
                         || !(task.body().get(1) instanceof Ast.SelectStmt selected)
-                        || selected.arms().size() != 1
-                        || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source))
+                        || selected.arms().isEmpty() || selected.arms().size() > 8)
                     throw new IllegalArgumentException("invalid restricted counted select lowering");
-                sourceName = source.name();
+                countedRound = selected;
             }
-            Env.Binding sourceBinding = env.lookup(sourceName);
-            if (sourceBinding == null
-                    || !new Named("Channel", List.of(Primitive.INT)).equals(sourceBinding.type()))
-                throw new IllegalArgumentException("restricted counted select requires lexical Channel<int>");
+            if (!witnesses.isEmpty()) {
+                for (var witness : witnesses) {
+                    String kind = witness.operation() == Ast.ChannelOperation.READ ? "Channel" : "Future";
+                    Env.Binding binding = env.lookup(witness.name());
+                    if (binding == null || !new Named(kind, List.of(Primitive.INT)).equals(binding.type()))
+                        throw new IllegalArgumentException("restricted counted select requires lexical " + kind + "<int>");
+                }
+            } else {
+                for (var arm : countedRound.arms()) {
+                    if (!(arm.channel() instanceof Ast.NameExpr source)
+                            || (arm.operation() != Ast.ChannelOperation.READ
+                                && arm.operation() != Ast.ChannelOperation.AWAIT))
+                        throw new IllegalArgumentException("invalid checked counted select arm");
+                    String kind = arm.operation() == Ast.ChannelOperation.READ ? "Channel" : "Future";
+                    Env.Binding binding = env.lookup(source.name());
+                    if (binding == null || !new Named(kind, List.of(Primitive.INT)).equals(binding.type()))
+                        throw new IllegalArgumentException("restricted counted select requires lexical " + kind + "<int>");
+                }
+            }
         }
         validateAsyncBoundaryType(result, true, "CPU task result");
 

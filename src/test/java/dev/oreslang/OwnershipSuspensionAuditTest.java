@@ -14,6 +14,7 @@ final class OwnershipSuspensionAuditTest {
     private static void check(String code) { OwnershipChecker.check(Parser.parse(code)); }
     private static void reject(String code, String message) {
         var error = assertThrows(IllegalArgumentException.class, () -> check(code));
+        assertTrue(error.getMessage().startsWith("Atto ownership error: "), error.getMessage());
         assertTrue(error.getMessage().contains(message), error.getMessage());
     }
     @Test void suspendingCallChecksItsTemporaryArgumentLoan() {
@@ -84,15 +85,15 @@ final class OwnershipSuspensionAuditTest {
                   val second = rt take holder.child;
                   return;
                 }
-                """, "projected");
+                """, "E_MOVE_UNPROVEN:");
     }
     @Test void collectionGetCannotTurnAnAliasedElementIntoAnOwner() {
-        reject(BOX + "fnc bad(): void { val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); val extracted = rt take boxes.get(0); return; }", "projected");
+        reject(BOX + "fnc bad(): void { val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); val extracted = rt take boxes.get(0); return; }", "E_MOVE_UNPROVEN:");
     }
 
     @Test void castsAndConditionalsCannotHideProjectedTake() {
         for (String projection : new String[]{"holder.child as Box", "true ? holder.child : holder.child"}) {
-            reject(BOX + "fnc bad(): void { val holder = struct{child: Box}{child: new Box()}; val first = rt take (" + projection + "); return; }", "projected");
+            reject(BOX + "fnc bad(): void { val holder = struct{child: Box}{child: new Box()}; val first = rt take (" + projection + "); return; }", "E_MOVE_UNPROVEN:");
         }
     }
 
@@ -134,14 +135,14 @@ final class OwnershipSuspensionAuditTest {
                   val apparentOwner = true ? (rt borrow target) : target;
                   return;
                 }
-                """, "conditional cannot merge borrowed values");
+                """, "E_LIFETIME: conditional cannot return a borrowed branch-local value");
         reject(BOX + """
                 fnc bad(): void {
                   let Box target = new Box();
                   val apparentOwner = true ? target : (rt borrow target);
                   return;
                 }
-                """, "conditional cannot merge borrowed values");
+                """, "E_LIFETIME: conditional cannot return a borrowed branch-local value");
     }
 
     @Test void genuineOwnedAndCopyableCastsStillWork() {
@@ -164,7 +165,7 @@ final class OwnershipSuspensionAuditTest {
                   yield* source;
                   return;
                 }
-                """, "cannot yield borrowed elements");
+                """, "E_LOAN_SUSPEND: cannot yield while a borrow is live");
     }
 
     @Test void delegatedGeneratorCannotHideBorrowInNestedElement() {
@@ -173,7 +174,7 @@ final class OwnershipSuspensionAuditTest {
                   yield* source;
                   return;
                 }
-                """, "cannot yield borrowed elements");
+                """, "E_LOAN_SUSPEND: cannot yield while a borrow is live");
     }
 
     @Test void delegatedOwnedScalarElementRemainsValid() {

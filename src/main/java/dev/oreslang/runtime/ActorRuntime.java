@@ -2916,8 +2916,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
-                    new OresFuture<>(() -> read.cancel(false));
+                    new OresFuture<>(() -> read.cancel(false), () -> { });
             read.whenCompleteRuntime((envelope, failure) -> {
+                // The private read's cancellation is initiated by result.cancel().
+                // Let that caller publish cancellation only after the channel
+                // arbitration wins. If a read was already committed, cancelling
+                // the outer Future must fail rather than discard its output.
+                if (read.isCancelled()) return;
                 final boolean shutdownWon;
                 synchronized (runtimeLifecycleLock) {
                     // Linearize output observation against admission sealing.
@@ -3256,6 +3261,19 @@ public final class ActorRuntime implements AutoCloseable {
     // The callback itself carries the receipt. Receipt listeners may run
     // out of order when added after notificationDrainComplete is published;
     // do not depend on one listener setting a flag before another enqueues.
+    void ownTrackedCountedRound(ContinuationTarget target, OresFuture<?> round) {
+        Objects.requireNonNull(round);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round lost its actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round denied by actor lifecycle");
+        }
+    }
+
     void enqueueCountedRoundRetirement(OresFuture<?> round,
             ContinuationTarget target, Runnable continuation) {
         Objects.requireNonNull(round);
