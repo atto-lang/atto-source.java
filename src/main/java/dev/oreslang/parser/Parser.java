@@ -2547,9 +2547,13 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
-        if (startsNamedAggregateBinding() && (checkNext(LT)
-                || (kind == Ast.BindingKind.CONST && !mutableReferent && annotations.isEmpty()))) {
-            return parseNamedAggregateBinding(kind, mutableReferent, annotations);
+        // Module fields have no inferred-type declaration metadata yet.
+        // Reject the new binder specifically, rather than returning a statement
+        // from this declaration parser or intercepting ordinary generic fields.
+        if (isAggregateWrapper(peek().lexeme()) && checkNext(LT)
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).lexeme().equals("infer")) {
+            throw error(peek(), "E_MODULE_AGGREGATE_INFER_UNSUPPORTED: named aggregate module binding requires module type registration");
         }
         Ast.TypeRef type = null;
         String name;
@@ -5196,6 +5200,10 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
+        if (startsNamedAggregateBinding() && (checkNext(LT)
+                || (kind == Ast.BindingKind.CONST && !mutableReferent && annotations.isEmpty()))) {
+            return parseNamedAggregateBinding(kind, mutableReferent, annotations);
+        }
         Ast.TypeRef type = null;
         String name;
         boolean functionShorthand = match(FNC);

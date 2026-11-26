@@ -119,4 +119,19 @@ final class NamedAggregateTypeBinderTest {
                     () -> TypeChecker.check(Parser.parse(MODULE_SHAPES + decl + "\nfnc main(): int { return 0; }")), decl);
         }
     }
+    @Test void moduleBinderFailsWithExplicitAdmissionDiagnosticUntilModuleRegistrationExists() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("const Record<infer T> r=(a=1); fnc main(): int { return 0; }"));
+        assertTrue(error.getMessage().contains("E_MODULE_AGGREGATE_INFER_UNSUPPORTED"), error.getMessage());
+    }
+
+    @Test void wrapperParserActuallyDispatchesInsideCallableBody() {
+        Ast.Program ast = Parser.parse("fnc main(): int { const Record<infer R> r=(a=1); "
+                + "const Record<R> other=(a=42); return other.a; }");
+        Ast.FunctionDecl fn = ast.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance).map(Ast.FunctionDecl.class::cast)
+                .findFirst().orElseThrow();
+        assertEquals("R", ((Ast.BindingStmt) fn.body().get(0)).inferredTypeName());
+        assertEquals("R", ((Ast.BindingStmt) fn.body().get(1)).declaredType().name());
+    }
 }
