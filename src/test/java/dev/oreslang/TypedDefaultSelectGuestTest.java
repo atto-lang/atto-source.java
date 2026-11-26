@@ -394,7 +394,7 @@ final class TypedDefaultSelectGuestTest {
     }
 
     @Test void portableMixedCountedExactBlobsReturn42() throws Exception {
-        for (String name : new String[]{"counted-mixed-future-alias", "counted-multi-channel-fair", "counted-mixed-zero"}) {
+        for (String name : new String[]{"counted-mixed-future-alias", "counted-multi-channel-fair", "counted-distinct-alias-projection", "counted-mixed-zero"}) {
             String code = java.nio.file.Files.readString(java.nio.file.Path.of(
                     "tests/fixtures/select-source-v2", name + ".atto"));
             try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
