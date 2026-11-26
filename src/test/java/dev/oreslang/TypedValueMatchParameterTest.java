@@ -39,7 +39,7 @@ final class TypedValueMatchParameterTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("7\\n42", output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("7\n42", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
     @Test
