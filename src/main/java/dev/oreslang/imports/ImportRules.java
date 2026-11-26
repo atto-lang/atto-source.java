@@ -74,21 +74,33 @@ public final class ImportRules {
         if (path == null) return false;
         String unix = path.replace('\\', '/');
         if (hasUnsafeSegments(unix)) return true;
-        String[] slash = unix.split("/", -1);
-        String[] head = slash[0].split("[.:]+");
-        boolean vendor = head.length > 0 && (head[0].equals("atto") || head[0].equals("ores"));
-        int rootDepth = head.length == 1 && head[0].equals("std") ? 1 :
-                vendor && head.length == 2 && head[1].equals("std") ? 1 :
-                vendor && head.length == 1 && slash.length > 1 && slash[1].equals("std") ? 2 : 0;
-        java.util.ArrayList<String> parts = new java.util.ArrayList<>();
-        for (String part : unix.split("/+")) {
-            if (part.isEmpty() || part.equals(".")) continue;
-            if (part.equals("..")) {
-                if (rootDepth != 0 && parts.size() <= rootDepth) return true;
-                if (!parts.isEmpty()) parts.removeLast();
-            } else parts.add(part);
+        // Track canonical prefixes before later traversal can erase them.
+        java.util.ArrayList<String> prefix = new java.util.ArrayList<>(3);
+        java.util.ArrayList<Integer> stack = new java.util.ArrayList<>();
+        int rootDepth = 0;
+        for (String component : unix.split("/")) {
+            if (component.isEmpty() || component.equals(".")) continue;
+            if (component.equals("..")) {
+                if (rootDepth != 0 && stack.size() <= rootDepth) return true;
+                if (!stack.isEmpty()) {
+                    int previous = stack.removeLast();
+                    prefix.subList(previous, prefix.size()).clear();
+                }
+                continue;
+            }
+            stack.add(prefix.size());
+            for (String segment : component.split("[.:]+")) {
+                if (prefix.size() == 3) break;
+                if (!segment.isEmpty()) prefix.add(segment);
+            }
+            int offset = !prefix.isEmpty() && (prefix.getFirst().equals("atto") ||
+                    prefix.getFirst().equals("ores")) ? 1 : 0;
+            if (prefix.size() > offset && prefix.get(offset).equals("std")) {
+                if (rootDepth == 0) rootDepth = stack.size();
+                if (prefix.size() > offset + 1 && prefix.get(offset + 1).equals("unsafe")) return true;
+            }
         }
-        return hasUnsafeSegments(String.join("/", parts));
+        return false;
     }
 
     private static boolean hasUnsafeSegments(String value) {

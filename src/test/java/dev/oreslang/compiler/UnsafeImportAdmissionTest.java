@@ -30,4 +30,16 @@ final class UnsafeImportAdmissionTest {
         for (String path : List.of("std/unsafe_tools", "atto.std:unsafe-math", "pkg/std/unsafe", "atto.std/safe"))
             assertFalse(ImportRules.isReservedUnsafeNativePath(path), path);
     }
+
+    @Test void intermediateCanonicalIdentityCannotBeErased() {
+        for (String path : List.of("std/other/../unsafe/../safe", "./std/other/../unsafe/../safe",
+                "pkg/../std/other/../unsafe/../safe", "atto//std/../safe", "atto/./std/../safe",
+                "./atto::std/../safe", "pkg/../ores.std/../safe", "atto/std/other/../unsafe/../safe",
+                "atto/:/std/../safe", "std/other/../unsafe::ffi/../safe"))
+            assertTrue(ImportRules.isReservedUnsafeNativePath(path), path);
+        for (String path : List.of("std/other/../safe", "./atto::std/other/../safe",
+                "pkg/../std/unsafe_tools/../safe", "pkg/atto.std/unsafe/../safe",
+                "atto/std/other/deeper/../../safe"))
+            assertFalse(ImportRules.isReservedUnsafeNativePath(path), path);
+    }
 }
