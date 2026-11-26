@@ -317,12 +317,16 @@ public final class TypeChecker {
      * objects without passing through Parser. Never allow such a forged
      * method to masquerade as the future compiler-owned state-loan intrinsic.
      */
+    private static boolean isStateAccessIntrinsic(String name) {
+        return Set.of("handle_state", "handle_state_ro", "handle_state_w", "state_ro", "state_w").contains(name);
+    }
+
     private static void rejectForgedActorStateIntrinsic(Ast.ClassDecl actor) {
         if (actor.actorKind() != Ast.ActorKind.NONE
-                && actor.methods().stream().anyMatch(m -> m.name().equals("handle_state"))) {
+                && actor.methods().stream().anyMatch(m -> isStateAccessIntrinsic(m.name()))) {
             throw new IllegalArgumentException(
                     "ACTOR_STATE_INTRINSIC_FORGED: actor '" + actor.name()
-                            + "' cannot define compiler-owned handle_state");
+                            + "' cannot define compiler-owned handle_state or state access aliases");
         }
         if (actor.methods().stream().anyMatch(Ast.MethodDecl::critical)) {
             throw new IllegalArgumentException(
@@ -1554,7 +1558,7 @@ public final class TypeChecker {
                                 "actor-local lifecycle contract hook '" + method.name()
                                         + "' must be private, zero-argument and return void");
                     }
-                } else if (Set.of("handle_state", "on_panic", "on_throw",
+                } else if (isStateAccessIntrinsic(method.name()) || Set.of("on_panic", "on_throw",
                         "on_throws", "on_raise", "on_recover",
                         "on_stop", "on_restart").contains(method.name())) {
                     throw new IllegalArgumentException(
@@ -4732,9 +4736,9 @@ public final class TypeChecker {
                     && currentInstanceMethodOwner != null
                     && currentInstanceMethodOwner.actorKind() != Ast.ActorKind.NONE
                     && call.callee() instanceof Ast.NameExpr reservedState
-                    && reservedState.name().equals("handle_state")) {
+                    && isStateAccessIntrinsic(reservedState.name())) {
                 throw new IllegalArgumentException(
-                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare handle_state "
+                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare " + reservedState.name() + " "
                                 + "requires the compiler-owned current-actor critical loan; "
                                 + "use imports::handle_state(...) for an imported ordinary fnc");
             }
