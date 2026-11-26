@@ -92,6 +92,42 @@ final class GuestOrdinaryThrowTest {
         assertFalse(TrapFailurePolicy.isGuestCatchable(signal, GuestPanic.class));
     }
 
+    private static final class OtherTaskTerminal extends RuntimeException
+            implements UntrappableTaskFailure { }
+
+    @Test
+    void directlySuppressedTypedCleanupPreservesPrimaryError() {
+        GuestErrorValue original = GuestErrorValue.resultUnwrap("primary");
+        GuestOrdinaryThrow primary = GuestOrdinaryThrow.signal(original);
+        GuestOrdinaryThrow cleanup = GuestOrdinaryThrow.signal(GuestErrorValue.optionUnwrap());
+        primary.addSuppressed(cleanup);
+        cleanup.addSuppressed(GuestOrdinaryThrow.signal(GuestErrorValue.resultUnwrap("nested")));
+        assertTrue(TrapFailurePolicy.isTrappable(primary, GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isGuestCatchable(primary, GuestPanic.class));
+        assertSame(original, primary.error());
+        cleanup.addSuppressed(new OtherTaskTerminal());
+        assertFalse(TrapFailurePolicy.isTrappable(primary, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(primary, GuestPanic.class));
+    }
+
+    @Test
+    void typedCleanupBehindHostWrapperCannotAuthenticateOrdinaryFailure() {
+        GuestOrdinaryThrow primary = GuestOrdinaryThrow.signal(GuestErrorValue.optionUnwrap());
+        primary.addSuppressed(new CompletionException(
+                GuestOrdinaryThrow.signal(GuestErrorValue.resultUnwrap("wrapped"))));
+        assertFalse(TrapFailurePolicy.isTrappable(primary, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(primary, GuestPanic.class));
+    }
+
+    @Test
+    void independentRuntimeTerminalMarkerCannotBeCaptured() {
+        OtherTaskTerminal terminal = new OtherTaskTerminal();
+        assertFalse(TrapFailurePolicy.isTrappable(terminal, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(terminal, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isTrappable(new CompletionException(terminal), GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(new CompletionException(terminal), GuestPanic.class));
+    }
+
     @Test
     void invalidPayloadCannotCreateTypedGuestSignal() {
         assertThrows(NullPointerException.class, () -> GuestErrorValue.baseError(null));
