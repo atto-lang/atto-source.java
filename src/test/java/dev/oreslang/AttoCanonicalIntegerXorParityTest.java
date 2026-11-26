@@ -65,12 +65,19 @@ final class AttoCanonicalIntegerXorParityTest {
 
     @Test
     void strictCompoundXorUpdatesMutableIntegerOnce() throws Exception {
-        assertEquals("rhs\n6\n", canonicalGuest("""
+        assertEquals("rhs\n6\n9223372036854775807\n-9223372036854775808\n0\n", canonicalGuest("""
                 fnc operand(): int { stdio.println("rhs"); return 10; }
                 pub fnc main(): void {
                     let int x = 12;
                     x ^^= operand();
                     stdio.println(x);
+                    let int edge = -9223372036854775807 - 1;
+                    edge ^^= -1;
+                    stdio.println(edge);
+                    edge ^^= -1;
+                    stdio.println(edge);
+                    edge ^^= edge;
+                    stdio.println(edge);
                     return;
                 }
                 """));
@@ -85,6 +92,8 @@ final class AttoCanonicalIntegerXorParityTest {
                 "let int x = 12; x ^ ^= 10; return x;",
                 "let int x = 12; x ^^ = 10; return x;",
                 "let int x = 12; x ^^= true; return x;",
+                "let int x = 12; x ^^= 1.5; return x;",
+                "let float x = 12.0; x ^^= 10; return 0;",
                 "let bool x = true; x ^^= false; return 0;",
                 "let int x = 12; (x + 1) ^^= 10; return x;",
         }) {
