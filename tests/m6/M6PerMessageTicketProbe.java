@@ -109,9 +109,9 @@ public final class M6PerMessageTicketProbe {
             var forged = runtime.try_send_ticket(forgedRef, 999, route(forgedRef, 999));
             require(forged.admission() == AttoM6Runtime.Admission.STALE &&
                 forged.ticket() == null, "forged record became mailbox authority");
-            try (var foreign = new AttoM6Runtime(1, 1)) {
+            try (var foreignRuntime = new AttoM6Runtime(1, 1)) {
                 boolean denied = false;
-                try { foreign.ticket_snapshot(first); }
+                try { foreignRuntime.ticket_snapshot(first); }
                 catch (IllegalArgumentException expected) { denied = true; }
                 require(denied, "foreign runtime read an alien ticket");
             }
