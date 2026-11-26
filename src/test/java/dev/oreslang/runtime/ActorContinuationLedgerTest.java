@@ -251,4 +251,49 @@ final class ActorContinuationLedgerTest {
         }
     }
 
+    @Test
+    void codeLeaseReleaseKeepsAdmissionCreditUntilPhysicalExit() throws Exception {
+        for (int mode = 0; mode < 3; mode++) {
+            var ledger = new ActorContinuationLedger(1);
+            var entered = new CountDownLatch(1);
+            var finish = new CountDownLatch(1);
+            var callbacks = new AtomicInteger();
+            var releases = new AtomicInteger();
+            var failure = new AtomicReference<Throwable>();
+            var receipt = ledger.admit(ActorContinuationLedger.Lane.ORDINARY,
+                    callbacks::incrementAndGet, () -> {
+                        releases.incrementAndGet();
+                        entered.countDown();
+                        if (!finish.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("release stranded");
+                    });
+            if (mode == 2) ledger.sealOrdinary();
+            final boolean discard = mode == 1;
+            Thread worker = Thread.ofPlatform().start(() -> {
+                try {
+                    if (discard) receipt.close(); else receipt.run();
+                } catch (Throwable error) { failure.set(error); }
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(1, ledger.snapshot().running());
+                assertEquals(0, ledger.snapshot().queued());
+                assertThrows(IllegalStateException.class, () ->
+                        ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}));
+                receipt.close();
+                assertEquals(1, releases.get());
+                assertThrows(IllegalStateException.class, receipt::run);
+            } finally {
+                finish.countDown();
+                worker.join(5_000);
+            }
+            assertFalse(worker.isAlive());
+            assertNull(failure.get());
+            assertEquals(0, ledger.snapshot().running());
+            assertEquals(mode == 0 ? 1 : 0, callbacks.get());
+            assertEquals(1, releases.get());
+            ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}).close();
+        }
+    }
+
 }
