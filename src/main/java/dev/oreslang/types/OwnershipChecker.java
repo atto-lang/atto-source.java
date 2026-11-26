@@ -1624,6 +1624,9 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    if (hasUnprovenCollectionRead(argument, scope, 0)) {
+                        throw error(E_MOVE_UNPROVEN, "rt take of projected move-only collection data requires invalidation proof");
+                    }
                     Ast.Expr transferPlace = unwrappedMoveProjection(argument);
                     if (transferPlace instanceof Ast.IndexExpr) {
                         throw error(E_MOVE_UNPROVEN, "rt take cannot move an indexed projection without an invalidation ledger; move the containing owner");
@@ -2472,7 +2475,7 @@ public final class OwnershipChecker {
                 checkSuspensionBorrows(scope, "suspends call pkg::" + qualified.member());
             }
             checkArguments(call.arguments(), signature.parameters(), scope,
-                    "function pkg::" + qualified.member());
+                    "function pkg::" + qualified.member(), fn.suspends() && !fn.generator());
             Ast.TypeRef result = callableResultType(
                     signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
             return new ValueInfo(result, kindOfType(result), null);
@@ -2747,7 +2750,7 @@ public final class OwnershipChecker {
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
-                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
+                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name(), fn.suspends() && !fn.generator());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -2767,7 +2770,7 @@ public final class OwnershipChecker {
                         call.arguments(),
                         signature.parameters(),
                         scope,
-                        "function " + namespace.name() + "." + qualified.member());
+                        "function " + namespace.name() + "." + qualified.member(), fn.suspends() && !fn.generator());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -2887,7 +2890,7 @@ public final class OwnershipChecker {
                             call.arguments(),
                             signature.parameters(),
                             scope,
-                            "static function " + staticClass.name() + "." + staticFunction.name());
+                            "static function " + staticClass.name() + "." + staticFunction.name(), staticFunction.suspends());
                     Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
                     return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
@@ -3217,7 +3220,7 @@ public final class OwnershipChecker {
                     VarState root = ownershipRoot(receiver);
                     receiverReadReservations.merge(root, 1, Integer::sum);
                     try {
-                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                     } finally {
                         int left = receiverReadReservations.get(root) - 1;
                         if (left == 0) receiverReadReservations.remove(root);
@@ -3239,11 +3242,11 @@ public final class OwnershipChecker {
                         // root. Nested read-only receiver calls are permitted
                         // while building an argument, but no write or new
                         // exclusive loan may occur before outer activation.
-                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                     } else {
                         beginPersistentBorrow(receiver, false);
                         try {
-                            checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                            checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                         } finally {
                             if (root.immutableBorrows <= 0)
                                 throw new IllegalStateException("missing shared method receiver loan");
@@ -3263,13 +3266,13 @@ public final class OwnershipChecker {
                     beginPersistentBorrow(place.owner(), exclusive);
                     VarState root = ownershipRoot(place.owner());
                     try {
-                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                     } finally {
                         if (exclusive) root.mutableBorrowed = false;
                         else root.immutableBorrows--;
                     }
                 } else {
-                    checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                    checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                 }
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
@@ -3841,7 +3844,7 @@ public final class OwnershipChecker {
     // Argument-root comparison alone does not protect f(&mut q, q.method()).
     private record CallArgumentLoan(VarState root, boolean mutable) { }
 
-    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
+    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable, boolean suspends) {
         int parameterIndex = 0;
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
@@ -3916,6 +3919,15 @@ public final class OwnershipChecker {
                     invocationLoans.put(loanOwner, mutable);
                 }
                 parameterIndex++;
+            }
+            // The earlier suspension check precedes argument evaluation.
+            // Explicit argument loans must not survive entry into a suspending
+            // callable, including local retained and forwarded loans. Leave
+            // the separate implicit receiver/actor continuation policy intact.
+            if (suspends && (!invocationLoans.isEmpty()
+                    || params.stream().anyMatch(p -> p.type().isBorrow()))) {
+                throw error(E_LOAN_SUSPEND, callable
+                        + " cannot suspend while an invocation argument borrow is live");
             }
         } finally {
             // Restore the parent scope on every path: successful call,
@@ -6852,6 +6864,24 @@ public final class OwnershipChecker {
         Ast.ClassDecl actorTarget = findClass(target.name());
         return actorTarget != null
                 && actorTarget.actorKind() != Ast.ActorKind.NONE;
+    }
+
+    // Forward-port the missing collection-read part of #644. A get()
+    // does not invalidate its containing slot; wrapping it in a cast or a
+    // value-dispatch expression cannot establish unique ownership.
+    private boolean hasUnprovenCollectionRead(Ast.Expr expression, Scope scope, int depth) {
+        if (depth > 64) return true;
+        if (expression instanceof Ast.CastExpr cast)
+            return hasUnprovenCollectionRead(cast.value(), scope, depth + 1);
+        if (expression instanceof Ast.SpreadExpr spread)
+            return hasUnprovenCollectionRead(spread.expression(), scope, depth + 1);
+        if (expression instanceof Ast.ConditionalExpr conditional)
+            return hasUnprovenCollectionRead(conditional.whenTrue(), scope, depth + 1)
+                    || hasUnprovenCollectionRead(conditional.whenFalse(), scope, depth + 1);
+        if (expression instanceof Ast.MatchExpr match)
+            return match.arms().stream().anyMatch(arm -> hasUnprovenCollectionRead(arm.value(), scope, depth + 1));
+        Ast.TypeRef element = formattingCollectionElement(expression, scope);
+        return element != null && !isCopyType(element);
     }
 
     private Ast.Expr unwrappedMoveProjection(Ast.Expr expression) {
