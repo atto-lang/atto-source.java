@@ -72,9 +72,41 @@ final class SourceTaskCleanupHardeningTest {
     }
 
     @Test
-    void lexicalScopeReleasesAllIndependentMutexGuardsBeforeNextAcquisition()
+    void independentLexicalScopesReleaseBothMutexGuardsBeforeReacquisition()
             throws Exception {
         assertEquals("3|4", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val first = Mutex.new(new Counter());
+                  val second = Mutex.new(new Counter());
+                  block {
+                    val one = first.lock();
+                    one.value = 3;
+                  }
+                  block {
+                    val two = second.lock();
+                    two.value = 4;
+                  }
+                  block {
+                    val oneAgain = first.lock();
+                    stdio.stdout.write(oneAgain.value);
+                  }
+                  stdio.stdout.write("|");
+                  block {
+                    val twoAgain = second.lock();
+                    stdio.stdout.write(twoAgain.value);
+                  }
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void independentMutexesDoNotAuthorizeUnprovenNestedLockOrder() {
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
                 define class Counter as
                   pub let int value = 0;
                 end
@@ -87,16 +119,10 @@ final class SourceTaskCleanupHardeningTest {
                     one.value = 3;
                     two.value = 4;
                   }
-                  val oneAgain = first.lock();
-                  val twoAgain = second.lock();
-                  stdio.stdout.write(oneAgain.value);
-                  stdio.stdout.write("|");
-                  stdio.stdout.write(twoAgain.value);
-                  twoAgain.release();
-                  oneAgain.release();
                   return;
                 }
                 """));
+        assertTrue(failure.getMessage().contains("nested mutex acquisition"), failure::getMessage);
     }
 
     @Test

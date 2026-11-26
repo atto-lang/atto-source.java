@@ -321,6 +321,7 @@ public final class CoreTypeRegistry {
      * programs that declare classes with those names.
      */
     public static boolean protectedIdentity(String name) {
+        if ("ArithmeticOverflowError".equals(name) || "DivisionByZeroError".equals(name)) return true;
         TypeInfo info = TYPES.get(name);
         if (info == null) return false;
         if (info.kind() == Kind.CONSTRUCTOR) return true;
