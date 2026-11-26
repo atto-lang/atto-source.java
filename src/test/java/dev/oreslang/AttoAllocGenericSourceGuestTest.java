@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.stdlib.CoreLibrarySources;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
@@ -11,6 +12,16 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class AttoAllocGenericSourceGuestTest {
+    @Test
+    void canonicalGenericModulesPackageExactAttoBytes() throws Exception {
+        for (String name : new String[] {"box", "vec", "string"}) {
+            String canonical = "atto.alloc/" + name;
+            assertEquals(Files.readString(Path.of("stdlib", "alloc", name + ".atto")),
+                    CoreLibrarySources.allocSource(canonical));
+            assertEquals(CoreLibrarySources.allocUnitId(canonical), CoreLibrarySources.allocUnitId("alloc/" + name));
+        }
+    }
+
     @Test
     void originalGenericCollectionGuestMustLinkAndExecute() throws Exception {
         Path entry = Path.of("tests", "fixtures", "alloc-collections-source", "positive.atto");
