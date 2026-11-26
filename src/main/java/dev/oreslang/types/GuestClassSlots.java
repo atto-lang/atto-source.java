@@ -151,6 +151,19 @@ public final class GuestClassSlots {
         public void replace(String key, Object value) {
             synchronized (copy.domain) {
                 requireOpen();
+                // This class-only snapshot never accepts a foreign, unpublished
+                // or opaque replacement root. The caller still proves transitive
+                // ownership and lifetime; this check cannot mint write authority.
+                if (value instanceof GuestClassSlots child) {
+                    if (child.domain != copy.domain) {
+                        throw new IllegalArgumentException("E_COPY_DOMAIN: foreign replacement store");
+                    }
+                    if (child.initializing) {
+                        throw new IllegalStateException("E_COPY_LAYOUT: unpublished replacement store");
+                    }
+                } else if (value != null && !CopyScalarAdmission.isImmutableScalar(value)) {
+                    throw new IllegalArgumentException("E_COPY_UNPROVEN: unsupported replacement payload");
+                }
                 copy.replace(key, value);
             }
         }
