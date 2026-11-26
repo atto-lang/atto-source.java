@@ -218,4 +218,60 @@ final class NamedPartialGenericCallsTest {
                         """)));
         assertTrue(hole.getMessage().contains("positional concrete payload type"));
     }
+    @Test
+    void bracketShapeCannotBindANominalGenericSlot() {
+        for (String type : java.util.List.of("Box[int]", "Box[int, bool]")) {
+            String source = """
+                    define class Box<T> as
+                      pub val T value;
+                    end
+                    fnc consume(%s value): void { return; }
+                    """.formatted(type);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), type);
+            assertTrue(failure.getMessage().contains("sequence shape"), failure.getMessage());
+        }
+    }
+
+    @Test
+    void nestedDesignatedCollectionShapeRemainsATypeArgument() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box<T> as
+                  pub val T value;
+                end
+                fnc consume(Box<Array[int]> value): void { return; }
+                """)));
+    }
+
+    @Test
+    void integerNamedGenericValueCannotBindATypeFormal() {
+        String source = """
+                fnc fixed<T>(): int { return 42; }
+                fnc use(): int { return fixed<T=3>(); }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("const value"), failure.getMessage());
+    }
+
+    @Test
+    void squareGenericDeclarationsAndNamedCallsAreRejected() {
+        for (String source : java.util.List.of(
+                "fnc identity[T](T value): T { return value; }",
+                "define class Box[T] as pub val T value; end",
+                "fnc identity<T>(T value): T { return value; } "
+                        + "fnc use(): int { return identity[T=int](42); }")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
+    @Test
+    void mismatchedCollectionDelimitersAreRejected() {
+        for (String type : java.util.List.of("Map<string, int]", "Map[string, int>")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc consume(" + type + " value): void { return; }"), type);
+        }
+    }
+
 }
