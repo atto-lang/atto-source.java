@@ -12,7 +12,7 @@ The test proves *bounded host-runtime order controllability*, not end-to-end det
 
 ## Safety and fail-closed contract
 
-- The injected factory is package-private, never a public language/runtime capability. Adversarial runtime construction rejects injection, and the untrusted dispatcher is never replaced. Normal constructors are unchanged.
+- The injected factory is package-private, never a public language/runtime capability. Adversarial runtime construction rejects injection before the factory can run, and the untrusted dispatcher is never replaced. A dedicated negative JUnit test checks zero factory invocations; the controlled dispatcher also rejects any untrusted-kind callback. Normal constructors are unchanged.
 - A controlled executor enqueues, never runs work inline from `execute()`. The test driver selects one eligible runnable at a time; a selected runnable passes through the real physical actor turn lease and is never recursively re-entered.
 - The test driver bounds per-kind queued callbacks, total steps and runs all pending turns to completion before closing the runtime. The underlying production startup checks are not claimed for this test-only executor.
 - Trace decisions record the **complete enabled ticket set**, selected ticket and observed actor-message prefix. Replay rejects mutated enabled sets, nonexistent choices, missing/excess decisions and changed effects rather than silently falling back to a random scheduler.
@@ -26,7 +26,7 @@ mvn -B -ntp -Dtest=DeterministicActorDispatchTest \
   -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
 ```
 
-An exact-head CI job must execute all four tests without skips, failures or errors. No `compiled_atto_guest` badge can be given to these tests: the receivers are Java host callbacks, not a compiled `.atto` module.
+An exact-head CI job must execute all five tests without skips, failures or errors. No `compiled_atto_guest` badge can be given to these tests: the receivers are Java host callbacks, not a compiled `.atto` module.
 
 ## Successive gates
 

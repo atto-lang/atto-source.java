@@ -45,6 +45,8 @@ final class DeterministicActorDispatchTest {
         @Override
         public ExecutorService create(
                 ActorRuntime.ActorKind kind, int parallelism, int capacity) {
+            assertNotEquals(ActorRuntime.ActorKind.UNTRUSTED, kind,
+                    "test dispatcher injection must never reach the untrusted carrier");
             assertTrue(parallelism > 0 && capacity > 0);
             assertFalse(pools.containsKey(kind), "one controlled queue per isolation kind");
             var pool = new StepExecutor(kind, Math.min(64, capacity));
@@ -176,6 +178,21 @@ final class DeterministicActorDispatchTest {
     // Allows an exhaustive replay length check without a synthetic decision.
     private static Decision throwMismatch(String reason) {
         throw new IllegalStateException(reason);
+    }
+
+    @Test
+    void adversarialPolicyRejectsControlledDispatcherBeforeFactoryInvocation() {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 1, 8);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var failure = assertThrows(SecurityException.class, () ->
+                new ActorRuntime(IsolatePolicy.strictFaas(), config, Runnable::run,
+                        ActorRuntime.ControlDispatcher.unavailable(), null,
+                        (kind, parallelism, capacity) -> {
+                            calls.incrementAndGet();
+                            throw new AssertionError("test factory must not be invoked");
+                        }));
+        assertTrue(failure.getMessage().contains("controlled dispatcher"));
+        assertEquals(0, calls.get());
     }
 
     @Test

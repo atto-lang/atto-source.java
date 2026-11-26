@@ -46,7 +46,7 @@ jobs:
           timeout --signal=TERM --kill-after=10s 900s mvn -B -ntp \
             -Dtest=DeterministicActorDispatchTest \
             -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
-      - name: Require four executed JVM host-runtime tests
+      - name: Require five executed JVM host-runtime tests
         shell: bash
         run: |
           set -euo pipefail
@@ -63,13 +63,13 @@ jobs:
                   f.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
                   var root = f.newDocumentBuilder().parse(Path.of(args[0]).toFile()).getDocumentElement();
                   if (!root.getTagName().equals("testsuite")
-                      || !root.getAttribute("tests").equals("4")
+                      || !root.getAttribute("tests").equals("5")
                       || !root.getAttribute("failures").equals("0")
                       || !root.getAttribute("errors").equals("0")
                       || !root.getAttribute("skipped").equals("0")) {
                       throw new IllegalStateException("INCOMPLETE_JVM_TEST_RECEIPT");
                   }
-                  System.out.println("FOUR_REAL_ACTOR_RUNTIME_JVM_TESTS_PASSED (HOST ONLY)");
+                  System.out.println("FIVE_REAL_ACTOR_RUNTIME_JVM_TESTS_PASSED (HOST ONLY)");
                   System.out.println("COMPILED_ATTO_GUEST_NOT_EXECUTED");
                   System.out.println("GRAALVM_NATIVE_IMAGE_NOT_EXECUTED");
               }
