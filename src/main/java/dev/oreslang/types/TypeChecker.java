@@ -1811,26 +1811,31 @@ public final class TypeChecker {
                     + klass.name() + "' requires compiler-sealed state ownership "
                     + "and handle_state lowering; not yet enabled");
         Ast.ActorMessageContract messageContract = klass.actorMessageContract();
-        if (messageContract.sends() != null) {
-            // Transitive sends include callbacks, inherited methods and dynamic
-            // dispatch. Never accept a declared effect without those proofs.
-            throw new IllegalArgumentException(
-                    "ACTOR_SENDS_EFFECT_UNSUPPORTED: actor '" + klass.name()
-                    + "' requires a complete transitive outbound DATA effect checker");
-        }
         if (messageContract.receives() != null) {
             if (messageContract.receives().name().equals("never"))
                 throw new IllegalArgumentException(
                         "ACTOR_RECEIVES_NEVER_UNSUPPORTED: CONTROL-only mailbox requires "
                         + "verified separate supervisor CONTROL routing");
-            Type declared = resolve(messageContract.receives(),
-                    Set.copyOf(klass.genericParameters()), nominalClassType(klass));
-            Type handler = actorMailboxPayloadType(
-                    new Named("ActorRef", List.of(nominalClassType(klass))));
-            requireAssignable(handler, declared,
-                    "receives contract of actor '" + klass.name() + "'");
-            requireAssignable(declared, handler,
-                    "receive(ActorMail<T>) of actor '" + klass.name() + "'");
+            try {
+                Type declared = resolve(messageContract.receives(),
+                        Set.copyOf(klass.genericParameters()), nominalClassType(klass));
+                Type handler = actorMailboxPayloadType(
+                        new Named("ActorRef", List.of(nominalClassType(klass))));
+                requireAssignable(handler, declared,
+                        "receives contract of actor '" + klass.name() + "'");
+                requireAssignable(declared, handler,
+                        "receive(ActorMail<T>) of actor '" + klass.name() + "'");
+            } catch (IllegalArgumentException failure) {
+                throw new IllegalArgumentException("E_ACTOR_RECEIVES: " + failure.getMessage(), failure);
+            }
+        }
+        if (messageContract.sends() != null) {
+            // Ingress errors take precedence over the unimplemented effect gate.
+            // Transitive sends include callbacks, inherited methods and dynamic
+            // dispatch. Never accept a declared effect without those proofs.
+            throw new IllegalArgumentException(
+                    "ACTOR_SENDS_EFFECT_UNSUPPORTED: actor '" + klass.name()
+                    + "' requires a complete transitive outbound DATA effect checker");
         }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;

@@ -160,4 +160,25 @@ final class ActorMessageContractV1Test {
                 failure::getMessage);
     }
 
+    @Test void canonicalBoolActorNegativeFixturesHaveStableDiagnostics() {
+        String[][] cases = {
+            {"02-receives-handler-mismatch.atto", "E_ACTOR_RECEIVES", "fe76f70ef141b7bba74254ecaf7708f881144f32"},
+            {"03-sends-void-invalid.atto", "E_ACTOR_SEND_CONTRACT", "0f1637268858eeac654cccc7f0c925e4f9c88572"},
+            {"04-duplicate-sends-clause.atto", "E_ACTOR_CONTRACT", "df6aa49bd474e95d7df5092cea4ff41236c286a6"}
+        };
+        for (String[] item : cases) {
+            String source = fixture(item[0]);
+            byte[] bytes = source.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            try {
+                var digest = java.security.MessageDigest.getInstance("SHA-1");
+                digest.update(("blob " + bytes.length + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                assertEquals(item[2], java.util.HexFormat.of().formatHex(digest.digest(bytes)));
+            } catch (java.security.NoSuchAlgorithmException failure) {
+                throw new AssertionError(failure);
+            }
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains(item[1]), failure::getMessage);
+        }
+    }
 }
