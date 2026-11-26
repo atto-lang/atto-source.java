@@ -152,6 +152,31 @@ final class StrictI64ArithmeticProofTest {
         System.out.println("JAVA_ANNOTATION_GUEST_VERIFIED "+count+" values; 16 denials");
     }
 
+    @Test void boundedExclusionsPreserveProofsAndRejectContradictions() throws Exception {
+        String pre="type Bounded = int where self >= 1 and self <= 42; ";
+        String header="@requires(b != 0)\nfnc divide(int a, int b) -> int requires b != -1";
+        int count=0;
+        for(String body:new String[]{" { return a/b; }","\nbegin return a/b; end"," :: return a/b; end","\n:: return a/b; end"}){
+            for(long arg:new long[]{2,-2}){
+                String text=pre+header+body+" pub fnc main() -> int { return divide(84,"+arg+"); }";
+                String name="exclusion-guest-"+count++ +".atto";
+                var ast=dev.oreslang.compiler.OresCompiler.analyze(Parser.parseVerifiedStrictI64(text));
+                var source=org.graalvm.polyglot.Source.newBuilder(dev.oreslang.OresLanguage.ID,text,name).cached(false).build();
+                try(var context=org.graalvm.polyglot.Context.newBuilder(dev.oreslang.OresLanguage.ID).allowExperimentalOptions(true).option("engine.WarnInterpreterOnly","false").build();
+                    var lease=dev.oreslang.OresLanguage.openPrecheckedProgram(name,text,ast)){
+                    assertEquals(84/arg,context.eval(source).asLong(),name);
+                }
+            }
+            for(String h:new String[]{header,header+" requires b >= -2 requires b <= 2"})
+                for(long arg:new long[]{0,-1})
+                    assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+h+body+" pub fnc main() -> int { return divide(84,"+arg+"); }"));
+            for(String h:new String[]{header+" requires b eq 0",header+" requires b eq -1",header+" requires b != 3",header.replace("requires b != -1","")})
+                assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+h+body+" pub fnc main() -> int { return divide(84,2); }"));
+        }
+        assertEquals(8,count);
+        System.out.println("JAVA_EXCLUSION_GUEST_VERIFIED "+count+" values; 32 denials");
+    }
+
     @Test void rejectStaleOrUnsafeLoopProofs() {
         String pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42; ";
         String[] bodies={
