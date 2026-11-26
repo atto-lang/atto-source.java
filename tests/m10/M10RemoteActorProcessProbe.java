@@ -8,6 +8,7 @@ import java.net.StandardProtocolFamily;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
 import java.util.Arrays;
@@ -43,7 +44,15 @@ public final class M10RemoteActorProcessProbe {
                     Thread.sleep(1);
                 require(gateway.is_live(), "gateway reactor never became ready");
                 Path ready = Path.of(socket.toString() + ".ready");
-                Files.writeString(ready, Long.toString(ProcessHandle.current().pid()));
+                // Publish readiness only after the entire PID is written. The
+                // parent must never observe a newly created but empty marker.
+                Path staged = Files.createTempFile(ready.getParent(), ".ready-", ".tmp");
+                try {
+                    Files.writeString(staged, Long.toString(ProcessHandle.current().pid()));
+                    Files.move(staged, ready, StandardCopyOption.ATOMIC_MOVE);
+                } finally {
+                    Files.deleteIfExists(staged);
+                }
                 try {
                     require("stop".equals(stdin.readLine()),
                             "server did not receive stop command");
@@ -75,23 +84,40 @@ public final class M10RemoteActorProcessProbe {
                 "server", socket.toString(), Long.toString(incarnation))
                 .redirectError(ProcessBuilder.Redirect.INHERIT)
                 .redirectOutput(ProcessBuilder.Redirect.INHERIT).start();
-            process.getOutputStream().write(
-                (HexFormat.of().formatHex(key) + "\n").getBytes(StandardCharsets.UTF_8));
-            process.getOutputStream().flush();
-            Path ready = Path.of(socket.toString() + ".ready");
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(7);
-            while (!Files.exists(ready)) {
-                if (!process.isAlive() || System.nanoTime() >= deadline)
-                    throw new AssertionError("second JVM failed to start its gateway reactor");
-                try { Thread.sleep(5); }
-                catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IOException("interrupted waiting for server", e);
+            boolean admitted = false;
+            try {
+                process.getOutputStream().write(
+                    (HexFormat.of().formatHex(key) + "\n").getBytes(StandardCharsets.UTF_8));
+                process.getOutputStream().flush();
+                Path ready = Path.of(socket.toString() + ".ready");
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(7);
+                while (!Files.exists(ready)) {
+                    if (!process.isAlive() || System.nanoTime() >= deadline)
+                        throw new AssertionError("second JVM failed to start its gateway reactor");
+                    try { Thread.sleep(5); }
+                    catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("interrupted waiting for server", e);
+                    }
+                }
+                require(Files.exists(socket) &&
+                        Long.toString(process.pid()).equals(Files.readString(ready)),
+                        "untrusted or stale gateway readiness file");
+                admitted = true;
+            } finally {
+                if (!admitted) {
+                    // A constructor failure cannot reach try-with-resources close.
+                    // Retire this exact failed child before propagating the error.
+                    process.destroyForcibly();
+                    try {
+                        process.waitFor(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    try { process.getOutputStream().close(); }
+                    catch (IOException ignored) { }
                 }
             }
-            require(Files.exists(socket) &&
-                    Long.toString(process.pid()).equals(Files.readString(ready)),
-                    "untrusted or stale gateway readiness file");
         }
         @Override public void close() throws Exception {
             try {
