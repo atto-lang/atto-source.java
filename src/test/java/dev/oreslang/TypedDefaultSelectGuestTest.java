@@ -12,6 +12,35 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Restricted executable typed-default and checked scalar counted selection. */
 @Timeout(20)
 final class TypedDefaultSelectGuestTest {
+    @Test void localRawFutureBindingKeepsInferredResultType() throws Exception {
+        assertEquals("42|43|44",run("""
+                pub async fnc main(): void {
+                  const Future selection = select { default: -> { return 42; } };
+                  val Future typed = select<int> over default: -> { return 43; } end;
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 44;
+                  const Future counted = select(1) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  val Array[int] values = await counted;
+                  stdio.stdout.write(await selection); stdio.stdout.write("|");
+                  stdio.stdout.write(await typed); stdio.stdout.write("|");
+                  stdio.stdout.write(values[0]);
+                  return;
+                }
+                """));
+    }
+
+    @Test void localRawFutureBindingCannotEraseAnUnrelatedType() {
+        for (String body : new String[]{
+            "const Future selection = 42;",
+            "const Future selection = select { default: -> { return 42; } }; val bool wrong = await selection;",
+            "const Future selection = select<int> { default: -> { return true; } };",
+            "const Future selection = select(1) { when readch incoming: int n -> { return n; } }; val int wrong = await selection;"
+        }) assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck("pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(1); "+body+" return; }"),body);
+    }
+
     @Test void exactSharedFutureDefaultGuestAndDenials() throws Exception {
         var fixtures = java.nio.file.Path.of("tests/fixtures/select-source-v2");
         String code = java.nio.file.Files.readString(fixtures.resolve("future-default.atto"));
