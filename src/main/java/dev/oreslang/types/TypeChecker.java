@@ -9641,7 +9641,13 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.LiteralPattern literal) {
             Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), bindings, generics, self);
-            if (!assignable(literalType, subject) && !assignable(subject, literalType)) {
+            // Historical numeric match uses exact cross-width runtime equality,
+            // not numeric assignment or a lossy conversion. Strict source mode
+            // retains its separate admission fence.
+            boolean legacyMixedNumeric = !strictAttoEquality
+                    && (literalType == Primitive.INT && subject == Primitive.FLOAT
+                        || literalType == Primitive.FLOAT && subject == Primitive.INT);
+            if (!legacyMixedNumeric && !assignable(literalType, subject) && !assignable(subject, literalType)) {
                 throw new IllegalArgumentException("literal pattern type " + literalType + " is incompatible with " + subject);
             }
             return;
