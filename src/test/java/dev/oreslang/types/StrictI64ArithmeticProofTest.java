@@ -49,6 +49,25 @@ final class StrictI64ArithmeticProofTest {
         assertTrue(i32.getMessage().contains("E_VERIFY_UNSUPPORTED:"));
     }
 
+    @Test void strictReturningConditionals() {
+        String pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42; ";
+        for(String source:new String[]{"fnc f(int x) -> int { if x != 0 { return 42/x; } return 0; } pub fnc main() -> int { return f(1); }",
+            "fnc f(int x) -> int { if x != 0 && 42/x > 0 { return 1; } return 42; } pub fnc main() -> int { return f(0); }",
+            "fnc f(int x) -> int { if x == 0 || 42/x > 0 { return 42; } return 0; } pub fnc main() -> int { return f(0); }",
+            "fnc f(int x) -> int { if x != 0 && x != -1 { return -9223372036854775808/x; } return 0; } pub fnc main() -> int { return f(2); }",
+            "fnc f(int x) -> int { if !(x == 0) { return 42/x; } else { return 42; } } pub fnc main() -> int { return f(0); }",
+            "fnc f(int x) -> int { if x < 0 || x > 0 { return 42/x; } return 0; } pub fnc main() -> int { return f(-1); }"})
+            assertNotNull(TypeChecker.check(Parser.parseVerifiedStrictI64(pre+source)));
+        for(String source:new String[]{"fnc f(int x) -> int { if 42/x > 0 && x != 0 { return 42; } return 0; } pub fnc main() -> int { return f(1); }",
+            "fnc f(int x) -> int { if x != 0 { return -9223372036854775808/x; } return 0; } pub fnc main() -> int { return f(2); }",
+            "fnc f(int x) -> int { if x != 0 || 42/x > 0 { return 42; } return 0; } pub fnc main() -> int { return f(0); }",
+            "fnc f(int x, int y) -> int { if x != 0 { return 42/y; } return 0; } pub fnc main() -> int { return f(1,1); }",
+            "fnc f(int x) -> int { if x != 0 || x == 0 { return 42/x; } return 0; } pub fnc main() -> int { return f(1); }"}){
+            var error=assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+source));
+            assertTrue(error.getMessage().contains("E_VERIFY_UNPROVEN:"),error.getMessage());
+        }
+    }
+
     @Test void compareToConcreteCheckedOperations() {
         for (long lo=-4; lo<=4; lo++) for (long hi=lo; hi<=4; hi++)
             for (long rlo=-4; rlo<=4; rlo++) for(long rhi=rlo; rhi<=4; rhi++)
