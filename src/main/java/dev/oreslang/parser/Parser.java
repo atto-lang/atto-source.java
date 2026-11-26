@@ -7682,6 +7682,7 @@ public final class Parser {
 
     private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType) {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+        java.util.Set<String> constantStringKeys = new java.util.HashSet<>();
         do {
             if (check(ELLIPSIS)) {
                 throw error(peek(), "map spreads require explicit source-ownership "
@@ -7709,6 +7710,13 @@ public final class Parser {
                 key = parseExpression();
                 consume(FAT_ARROW, "map literals require '=>' between key and value");
                 value = parseExpression();
+            }
+            // Compare decoded literal string keys across arrow, Pair and Entry
+            // forms before constructing the aggregate. Dynamic keys still
+            // require checked runtime Hash/Eq and duplicate-key semantics.
+            if (key instanceof Ast.LiteralExpr literal && literal.value() instanceof String stringKey
+                    && !constantStringKeys.add(stringKey)) {
+                throw error(previous(), "duplicate constant key in Map.of");
             }
             entries.add(new Ast.MapLiteralEntry(key, value));
             if (entries.size() > 4096) {
@@ -7744,7 +7752,7 @@ public final class Parser {
                     Token fieldToken = peek();
                     name = consumeStaticObjectKeyName("expected static Record.of field name");
                     if (check(FAT_ARROW)) {
-                        throw error(peek(), "Record.of does not accept Entry arrows");
+                        throw error(peek(), "mixed record and map entries are forbidden: Record.of does not accept Entry arrows");
                     }
                     // Retain existing colon spelling for compatibility.
                     if (match(EQUAL)) {
