@@ -338,6 +338,17 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
+        // Keep contextual bare identifiers and inequality tokens unchanged.
+        if (java.util.Set.of("trap", "throw", "raise", "panic", "copy", "take", "move",
+                "borrow", "share", "pin", "drop", "pipe", "rpipe", "stop", "expand").contains(text)
+                && peek() == '!' && peekNext() != '='
+                && !(source.startsWith("!eq", current)
+                    && (current + 3 == source.length() || !isIdentPart(source.charAt(current + 3))))) {
+            int after = current + (text.equals("copy") && peekNext() == '!' ? 2 : 1);
+            if (after >= source.length() || " \t\r\n\u000b\f".indexOf(source.charAt(after)) < 0) {
+                throw error("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword");
+            }
+        }
 
         // Both 'nb' and 'select' are already reserved, so this spelling cannot
         // change the meaning of a legal subtraction expression. Critical and
