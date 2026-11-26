@@ -3,8 +3,6 @@ name: Current-main physical shutdown barriers
 on:
   workflow_dispatch:
   pull_request:
-    branches:
-      - main
     paths:
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
       - "src/main/java/dev/oreslang/runtime/AsyncRuntime.java"
@@ -14,6 +12,13 @@ on:
       - "src/test/java/dev/oreslang/runtime/AsyncRuntimeTest.java"
       - "src/test/java/dev/oreslang/runtime/AsyncNativeIoTest.java"
       - "src/test/java/dev/oreslang/runtime/OresVMTest.java"
+      - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
+      - "src/main/java/dev/oreslang/runtime/OresContext.java"
+      - "src/main/java/dev/oreslang/runtime/ActorArena.java"
+      - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - "src/test/java/dev/oreslang/runtime/OresContextCloseOrderingTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorFfmArenaCurrentIntegrationTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorArenaCarrierContinuationIntegrationTest.java"
       - ".github/workflows/current-main-physical-shutdown.yml"
 
 permissions:
@@ -25,7 +30,7 @@ concurrency:
 
 jobs:
   focused-and-full-jdk25:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -49,7 +54,15 @@ jobs:
           cache: maven
       - name: Focused physical shutdown regressions
         run: |
-          mvn -B -ntp -Dores.runtime.carriers=native             -Dtest=ActorReadinessLifecycleTest,AsyncRuntimeTest,AsyncNativeIoTest,OresVMTest             test
+          mvn -B -ntp -Dores.runtime.carriers=native             -Dtest=ActorReadinessLifecycleTest,AsyncRuntimeTest,AsyncNativeIoTest,OresVMTest,NativeHttpTest,OresContextCloseOrderingTest,ActorFfmArenaCurrentIntegrationTest,ActorArenaCarrierContinuationIntegrationTest             test
+      - name: Repeat actor-arena off-carrier lifetime races
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Actor arena lifetime retry/race $attempt/3"
+            mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=ActorFfmArenaCurrentIntegrationTest#failedExternalLeaseAccountingCanBeRetriedAfterPhysicalRelease+concurrentExternalCompletionCarriersRetireBothRegionsExactlyOnce" test
+          done
       - name: Full Maven regression suite
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Archive JUnit evidence

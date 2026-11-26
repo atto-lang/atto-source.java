@@ -5465,14 +5465,14 @@ public final class ActorRuntime implements AutoCloseable {
             // close every affected source scheduler before dropping the fence.
             // Also seal descendants of a previously stopped root: its
             // original STOP may have finished before they were observed here.
-            for (ActorCell<?> cell : attempt.cells) {
-                if (cell != attempt.root) {
-                    cell.cancel(new ActorCancelledException(
-                            cell.ref.id(),
-                            "actor " + cell.ref.id()
+            for (ActorCell<?> affectedCell : attempt.cells) {
+                if (affectedCell != attempt.root) {
+                    affectedCell.cancel(new ActorCancelledException(
+                            affectedCell.ref.id(),
+                            "actor " + affectedCell.ref.id()
                                     + " was force-cancelled with ancestor " + ref.id()));
                 }
-                cell.revokeStoppedCleanupAfterForce();
+                affectedCell.revokeStoppedCleanupAfterForce();
             }
             return true;
         } finally {

@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -319,6 +321,116 @@ final class ActorFfmArenaCurrentIntegrationTest {
                     "late producer completion cannot replay source after STOP");
         }
     }
+
+    @Test
+    void failedExternalLeaseAccountingCanBeRetriedAfterPhysicalRelease() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+        var arenaRef = new AtomicReference<ActorArena>();
+        var leaseRef = new AtomicReference<ActorArena.ExternalLease>();
+        var registered = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var arena = turn.localMemory().orElseThrow().newActorArena(1, 1);
+                arenaRef.set(arena);
+                leaseRef.set(arena.acquireExternalLease());
+                registered.countDown();
+                turn.self().stop();
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("pin");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, arenaRef.get().outstandingExternalLeases());
+
+            // The two FFM pins can retire successfully while the actor-level
+            // accounting step fails. Reusing that same completion token must
+            // remain possible; never set accounted before decrement succeeds.
+            var count = ActorArena.class.getDeclaredField("externalLeases");
+            count.setAccessible(true);
+            count.setInt(arenaRef.get(), 0);
+            try {
+                assertThrows(IllegalStateException.class, leaseRef.get()::close);
+            } finally {
+                count.setInt(arenaRef.get(), 1);
+            }
+            leaseRef.get().close();
+            leaseRef.get().close();
+            assertEquals(0, arenaRef.get().outstandingExternalLeases());
+            assertTrue(arenaRef.get().physicallyClosed());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+
+    @Test
+    void concurrentExternalCompletionCarriersRetireBothRegionsExactlyOnce() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        final int carriers = 8;
+        final int leasesPerCarrier = 8;
+        var arenaRef = new AtomicReference<ActorArena>();
+        var sliceRef = new AtomicReference<ActorRuntime.ActorMemorySlice>();
+        var leasesRef = new AtomicReference<List<ActorArena.ExternalLease>>();
+        var registered = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var memory = turn.localMemory().orElseThrow();
+                var arena = memory.newActorArena(2, 2);
+                arenaRef.set(arena);
+                sliceRef.set(memory);
+                var issued = new ArrayList<ActorArena.ExternalLease>();
+                for (int i = 0; i < carriers * leasesPerCarrier; i++) {
+                    issued.add(arena.acquireExternalLease());
+                }
+                leasesRef.set(List.copyOf(issued));
+                registered.countDown();
+                turn.self().stop();
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("suspend-io");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
+            assertEquals(carriers * leasesPerCarrier,
+                    arenaRef.get().outstandingExternalLeases());
+            assertFalse(arenaRef.get().physicallyClosed());
+            assertEquals(32L, sliceRef.get().usedBytes());
+
+            var start = new CountDownLatch(1);
+            var done = new CountDownLatch(carriers);
+            var firstError = new AtomicReference<Throwable>();
+            var workers = new ArrayList<Thread>();
+            for (int carrier = 0; carrier < carriers; carrier++) {
+                final int offset = carrier * leasesPerCarrier;
+                Thread worker = new Thread(() -> {
+                    try {
+                        start.await();
+                        for (int index = offset; index < offset + leasesPerCarrier; index++) {
+                            var token = leasesRef.get().get(index);
+                            token.close();
+                            token.close(); // Duplicate callback must not double-refund.
+                        }
+                    } catch (Throwable failure) {
+                        firstError.compareAndSet(null, failure);
+                    } finally {
+                        done.countDown();
+                    }
+                }, "actor-arena-completion-" + carrier);
+                workers.add(worker);
+                worker.start();
+            }
+            start.countDown();
+            assertTrue(done.await(10, TimeUnit.SECONDS), "off-carrier cleanup stalled");
+            for (Thread worker : workers) worker.join(1000);
+            assertNull(firstError.get(), () -> "external completion failed: " + firstError.get());
+            assertEquals(0, arenaRef.get().outstandingExternalLeases());
+            assertTrue(arenaRef.get().physicallyClosed());
+            assertEquals(0L, sliceRef.get().usedBytes());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
 
     @Test
     void scratchScopeCannotEscapeMailboxBoundary() throws Exception {

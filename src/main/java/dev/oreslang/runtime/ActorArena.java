@@ -118,7 +118,10 @@ public final class ActorArena implements AutoCloseable {
             this.scratchPin = scratchPin;
         }
 
-        @Override public void close() {
+        @Override public synchronized void close() {
+            // A native-region close may fail after logical pin release. Keep
+            // this token retryable and charged until BOTH physical regions
+            // and the enclosing actor lease counter settle successfully.
             Throwable failure = null;
             try { scratchPin.close(); }
             catch (RuntimeException | Error error) { failure = error; }
@@ -127,16 +130,17 @@ public final class ActorArena implements AutoCloseable {
                 if (failure == null) failure = error;
                 else if (failure != error) failure.addSuppressed(error);
             }
-            if (accounted.compareAndSet(false, true)) {
-                synchronized (ActorArena.this) {
+            if (failure instanceof RuntimeException error) throw error;
+            if (failure instanceof Error error) throw error;
+            synchronized (ActorArena.this) {
+                if (!accounted.get()) {
                     if (externalLeases <= 0) {
                         throw new IllegalStateException("actor arena external lease accounting underflow");
                     }
                     externalLeases--;
+                    accounted.set(true);
                 }
             }
-            if (failure instanceof RuntimeException error) throw error;
-            if (failure instanceof Error error) throw error;
         }
     }
 
@@ -171,7 +175,18 @@ public final class ActorArena implements AutoCloseable {
         public synchronized ExplicitNativeI64Region.Slot allocate(long value) {
             requireActive();
             var slot = scratch.allocate(value);
-            slots.push(slot);
+            try {
+                slots.push(slot);
+            } catch (RuntimeException | Error failure) {
+                // If ArrayDeque must grow and its allocation fails, the native
+                // slot must not remain live but absent from the scratch ledger.
+                try {
+                    scratch.drop(slot);
+                } catch (RuntimeException | Error cleanup) {
+                    if (cleanup != failure) failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
             return slot;
         }
 
