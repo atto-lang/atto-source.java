@@ -2310,6 +2310,70 @@ public final class OresEvalRootNode extends RootNode {
                         "checked Task capture admission execution domain does not match TaskExpr");
             }
 
+            Long dynamicCount = null;
+            List<Ast.Stmt> taskBody = taskExpr.body();
+            if (taskExpr.dynamicCountName() != null) {
+                String name = taskExpr.dynamicCountName();
+                if (!taskExpr.typedCountedSelectI64())
+                    throw new IllegalStateException("invalid checked dynamic count admission");
+                var otherCaptures = new LinkedHashMap<>(admitted);
+                long number;
+                if (name.equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
+                    if (taskBody.size() != 5
+                            || !(taskBody.getFirst() instanceof Ast.BindingStmt snapshot)
+                            || snapshot.kind() != Ast.BindingKind.VAL || snapshot.mutableReferent()
+                            || !snapshot.name().equals(name)
+                            || !Ast.TypeRef.simple("int").equals(snapshot.declaredType()))
+                        throw new IllegalStateException("invalid checked count snapshot");
+                    var names = dev.oreslang.ast.CountedSelectCount.names(snapshot.initializer());
+                    taskBody = List.copyOf(taskBody.subList(1, taskBody.size()));
+                    var bodyReferences = dev.oreslang.ast.TaskCaptureNames.referencedIn(taskBody);
+                    for (String operand : names) {
+                        if (otherCaptures.get(operand) != Ast.TaskCaptureTransfer.COPY
+                                || bodyReferences.contains(operand))
+                            throw new IllegalStateException("invalid checked count operand admission");
+                    }
+                    try {
+                        number = dev.oreslang.ast.CountedSelectCount.evaluate(snapshot.initializer(), operand -> {
+                            Object value = env.lookup(operand);
+                            if (!(value instanceof Long scalar))
+                                throw new IllegalArgumentException("SelectCountInvalid");
+                            return scalar;
+                        });
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalArgumentException("SelectCountInvalid", overflow);
+                    }
+                    names.forEach(otherCaptures::remove);
+                } else {
+                    if (otherCaptures.remove(name) != Ast.TaskCaptureTransfer.COPY)
+                        throw new IllegalStateException("invalid checked dynamic count admission");
+                    Object countValue = env.lookup(name);
+                    if (!(countValue instanceof Long scalar))
+                        throw new IllegalArgumentException("SelectCountInvalid");
+                    number = scalar;
+                }
+                if (number < 0 || number > 16)
+                    throw new IllegalArgumentException("SelectCountInvalid");
+                dynamicCount = number;
+                if (number == 0L)
+                    return SourceTaskHandles.completedWithoutWork(new NativeAttoSequence("Array"));
+                admitted = otherCaptures;
+            }
+            if (taskExpr.zeroCountSourceName() != null) {
+                // Checked identity and empty capture admission are required
+                // before bypassing scheduler allocation. Never execute a
+                // retained body, look up the witness, or create a waiter.
+                if (!taskExpr.typedCountedSelectI64() || !admitted.isEmpty()
+                        || !syntactic.isEmpty() || taskExpr.body().size() != 1
+                        || !(taskExpr.body().getFirst() instanceof Ast.ReturnStmt ret)
+                        || !(ret.value() instanceof Ast.NewExpr empty)
+                        || !empty.type().equals(new Ast.TypeRef(
+                                "Array", List.of(Ast.TypeRef.simple("int")), false))
+                        || !empty.arguments().isEmpty())
+                    throw new IllegalStateException("invalid checked zero-count selection");
+                return SourceTaskHandles.completedWithoutWork(new NativeAttoSequence("Array"));
+            }
+
             TaskLaunchAuthority launchAuthority =
                     new TaskLaunchAuthority(
                             allocateTaskLaunchId(),
@@ -2318,7 +2382,7 @@ public final class OresEvalRootNode extends RootNode {
                             admission.domain());
             SourceTask task =
                     new SourceTask(
-                            taskExpr.body(),
+                            taskBody,
                             true,
                             launchAuthority);
             Env.DetachedTaskSnapshot transfer =
@@ -2327,6 +2391,8 @@ public final class OresEvalRootNode extends RootNode {
                             launchAuthority.parentScopeEpoch());
             task.initialBlockEnv = transfer.environment();
             try {
+                if (dynamicCount != null)
+                    task.initialBlockEnv.define(taskExpr.dynamicCountName(), dynamicCount, Ast.BindingKind.CONST);
                 TaskScope structuredScope = env.structuredTaskScope();
                 // An actor Task must use the actor's mailbox-backed scheduler;
                 // selecting the VM root scheduler here would place ordinary

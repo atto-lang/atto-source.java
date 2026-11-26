@@ -6860,6 +6860,10 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.TaskExpr task) {
+            if (task.typedCountedSelectI64())
+                return checkTaskExpression(task, new ListType(Primitive.INT), env, generics, self);
+            if (task.typedDefaultSelectI64())
+                return checkTaskExpression(task, Primitive.INT, env, generics, self);
             // A value-producing task needs contextual Future<T> information so
             // every return path can be checked without guessing a result type.
             // A no-value task is unambiguously Future<void>.
@@ -7741,6 +7745,61 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "untrusted actor task blocks require quota-aware tracked task admission");
         }
+        if (task.typedCountedSelectI64()) {
+            // This first lowering snapshots exactly one lexical channel
+            // capability at task admission. Do not repeatedly resolve a
+            // global/imported value or admit a broader event payload.
+            String sourceName = task.zeroCountSourceName();
+            if (sourceName != null) {
+                if (task.body().size() != 1
+                        || !(task.body().getFirst() instanceof Ast.ReturnStmt returned)
+                        || !(returned.value() instanceof Ast.NewExpr empty)
+                        || !empty.type().equals(new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false))
+                        || !empty.arguments().isEmpty()
+                        || findClass("Array") != null || importedValues.contains("Array"))
+                    throw new IllegalArgumentException("invalid zero-count select lowering");
+            } else if (task.dynamicCountName() != null) {
+                int offset = 0;
+                if (task.dynamicCountName().equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
+                    if (task.body().size() != 5
+                            || !(task.body().getFirst() instanceof Ast.BindingStmt snapshot)
+                            || snapshot.kind() != Ast.BindingKind.VAL || snapshot.mutableReferent()
+                            || !snapshot.name().equals(task.dynamicCountName())
+                            || !Ast.TypeRef.simple("int").equals(snapshot.declaredType()))
+                        throw new IllegalArgumentException("invalid counted select count snapshot");
+                    for (String name : dev.oreslang.ast.CountedSelectCount.names(snapshot.initializer())) {
+                        Env.Binding binding = env.lookup(name);
+                        if (binding == null || binding.type() != Primitive.INT)
+                            throw new IllegalArgumentException("counted select requires lexical int count operands");
+                    }
+                    offset = 1;
+                } else {
+                    Env.Binding countBinding = env.lookup(task.dynamicCountName());
+                    if (countBinding == null || countBinding.type() != Primitive.INT)
+                        throw new IllegalArgumentException("counted select requires lexical int count");
+                }
+                if (task.body().size() != 4 + offset
+                        || !(task.body().get(2 + offset) instanceof Ast.LoopStmt loop)
+                        || loop.body().size() != 2
+                        || !(loop.body().get(1) instanceof Ast.SelectStmt selected)
+                        || selected.arms().size() != 1
+                        || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source)
+                        || findClass("Array") != null || importedValues.contains("Array"))
+                    throw new IllegalArgumentException("invalid dynamic counted select lowering");
+                sourceName = source.name();
+            } else {
+                if (task.body().size() < 3
+                        || !(task.body().get(1) instanceof Ast.SelectStmt selected)
+                        || selected.arms().size() != 1
+                        || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source))
+                    throw new IllegalArgumentException("invalid restricted counted select lowering");
+                sourceName = source.name();
+            }
+            Env.Binding sourceBinding = env.lookup(sourceName);
+            if (sourceBinding == null
+                    || !new Named("Channel", List.of(Primitive.INT)).equals(sourceBinding.type()))
+                throw new IllegalArgumentException("restricted counted select requires lexical Channel<int>");
+        }
         validateAsyncBoundaryType(result, true, "CPU task result");
 
         Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
@@ -7826,6 +7885,10 @@ public final class TypeChecker {
                 && future.name().equals("Future")
                 && future.arguments().size() == 1) {
             Type result = future.arguments().getFirst();
+            if (task.typedDefaultSelectI64() && result != Primitive.INT)
+                throw new IllegalArgumentException("select<int> has result Future<int>; contextual result cannot change it");
+            if (task.typedCountedSelectI64() && !new ListType(Primitive.INT).equals(result))
+                throw new IllegalArgumentException("counted select<int> has result Future<Array<int>>; contextual result cannot change it");
             checkTaskExpression(task, result, env, generics, self);
             return future;
         }
