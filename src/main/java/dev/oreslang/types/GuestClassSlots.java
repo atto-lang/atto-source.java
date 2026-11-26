@@ -94,6 +94,13 @@ public final class GuestClassSlots {
             throw new IllegalArgumentException("E_COPY_BUDGET: invalid graph limits");
         }
         synchronized (domain) {
+            GraphLease lease = prepareDescendants(maxNodes, maxEdges);
+            activate(lease);
+            return lease;
+        }
+    }
+
+    private GraphLease prepareDescendants(int maxNodes, int maxEdges) {
             if (initializing) throw new IllegalStateException("E_COPY_LAYOUT: unpublished root");
             var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
             var pending = new ArrayDeque<GuestClassSlots>();
@@ -109,9 +116,74 @@ public final class GuestClassSlots {
                 edges = enqueueChildren(store, pending, edges, maxEdges);
             }
             // Allocate every piece of the token before modifying any counters.
-            GraphLease lease = new GraphLease(domain, List.copyOf(ordered));
-            for (GuestClassSlots store : ordered) store.readOnlyLoans++;
-            return lease;
+            return new GraphLease(domain, List.copyOf(ordered));
+    }
+
+    private static void activate(GraphLease lease) {
+        // No callback or allocation between the first counter change and publication.
+        for (int i = 0; i < lease.protectedStores.size(); i++) {
+            lease.protectedStores.get(i).readOnlyLoans++;
+        }
+    }
+
+    /** Scoped root snapshot for trusted runtime callers. The parent and
+     * copy slots are independent, while retained descendants stay protected.
+     * This first profile holds the complete lease until close; it does not
+     * yet detach individual graph edges or admit guest escapes.
+     */
+    public static final class ShallowSnapshot implements AutoCloseable {
+        private final GuestClassSlots copy;
+        private final GraphLease lease;
+        private boolean closed;
+        private ShallowSnapshot(GuestClassSlots copy, GraphLease lease) {
+            this.copy = copy;
+            this.lease = lease;
+        }
+        private void requireOpen() {
+            if (closed) throw stale();
+        }
+        public Object get(String key) {
+            synchronized (copy.domain) {
+                requireOpen();
+                return copy.get(key);
+            }
+        }
+        public void replace(String key, Object value) {
+            synchronized (copy.domain) {
+                requireOpen();
+                copy.replace(key, value);
+            }
+        }
+        public int protectedCount() {
+            synchronized (copy.domain) {
+                requireOpen();
+                return lease.protectedCount();
+            }
+        }
+        @Override public void close() {
+            synchronized (copy.domain) {
+                requireOpen();
+                lease.close();
+                closed = true;
+            }
+        }
+    }
+
+    /** Capture a fresh root and the exact retained descendants atomically.
+     * The caller still must prove type/ownership policy, no escaping handles
+     * or outstanding exclusive loans, and correct lexical cleanup.
+     */
+    public ShallowSnapshot shallowSnapshot(int maxNodes, int maxEdges) {
+        if (maxNodes < 0 || maxNodes > 65536 || maxEdges < 0 || maxEdges > 262144) {
+            throw new IllegalArgumentException("E_COPY_BUDGET: invalid graph limits");
+        }
+        synchronized (domain) {
+            GraphLease lease = prepareDescendants(maxNodes, maxEdges);
+            GuestClassSlots copy = new GuestClassSlots(domain, slots);
+            copy.finishInitialization();
+            ShallowSnapshot result = new ShallowSnapshot(copy, lease);
+            activate(lease);
+            return result;
         }
     }
 
