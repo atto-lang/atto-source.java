@@ -11,6 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -23,6 +25,55 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class AttoLibrariesV1Test {
     private static final Path CORPUS = Path.of("tests", "atto_libraries");
+    private static final Set<String> REQUIRED_CASES = Set.of(
+            "core_num.atto", "core_cmp.atto", "core_option_result.atto", "core_mem.atto",
+            "alloc_arena.atto", "std_io.atto", "std_path_posix.atto", "std_path_windows.atto",
+            "aliases.atto", "neg_unknown_core.atto", "neg_unknown_std.atto", "neg_traversal.atto",
+            "neg_nested.atto", "neg_private.atto", "neg_dotted_selector.atto", "neg_ores_selector.atto");
+
+    private static void requireCorpus(List<Path> cases) {
+        Set<String> names = cases.stream().map(p -> p.getFileName().toString()).collect(Collectors.toSet());
+        assertTrue(names.containsAll(REQUIRED_CASES), () -> "missing required library cases: "
+                + REQUIRED_CASES.stream().filter(n -> !names.contains(n)).sorted().toList());
+    }
+
+    private static void requireExpectation(String name, boolean reject, Integer exit) {
+        if (REQUIRED_CASES.contains(name)) {
+            assertEquals(name.startsWith("neg_"), reject, "unexpected fixture polarity: " + name);
+        }
+        if (!reject) assertNotNull(exit, "missing explicit expected exit: " + name);
+    }
+
+    private static void requireRejection(int exit, String output, List<String> errors) {
+        assertTrue(exit > 0 && exit < 128, "expected ordinary nonzero rejection, exit: " + exit);
+        assertFalse(output.isBlank(), "rejection lacked a diagnostic");
+        for (String error : errors) assertTrue(output.contains(error), output);
+    }
+
+    @Test
+    void corpusGuardRejectsEveryMissingCaseAndInvalidOutcome() {
+        List<Path> complete = REQUIRED_CASES.stream().map(Path::of).toList();
+        requireCorpus(complete);
+        var extra = new ArrayList<>(complete);
+        extra.add(Path.of("extra.atto"));
+        requireCorpus(extra);
+        assertThrows(AssertionError.class, () -> requireCorpus(List.of()));
+        for (Path missing : complete) {
+            assertThrows(AssertionError.class, () -> requireCorpus(
+                    complete.stream().filter(p -> !p.equals(missing)).toList()));
+        }
+        requireExpectation("core_num.atto", false, 42);
+        requireExpectation("neg_private.atto", true, null);
+        assertThrows(AssertionError.class, () -> requireExpectation("core_num.atto", true, null));
+        assertThrows(AssertionError.class, () -> requireExpectation("neg_private.atto", false, 0));
+        assertThrows(AssertionError.class, () -> requireExpectation("extra.atto", false, null));
+        requireRejection(1, "type error", List.of("type"));
+        for (int invalid : List.of(0, 137, 139)) {
+            assertThrows(AssertionError.class, () -> requireRejection(invalid, "type error", List.of("type")));
+        }
+        assertThrows(AssertionError.class, () -> requireRejection(1, "", List.of()));
+        assertThrows(AssertionError.class, () -> requireRejection(1, "wrong", List.of("type")));
+    }
 
     @Test
     void registryResolvesCanonicalAliasAndPlatformSelectors() {
@@ -59,7 +110,7 @@ class AttoLibrariesV1Test {
         try (Stream<Path> files = Files.list(CORPUS)) {
             cases = files.filter(p -> p.toString().endsWith(".atto")).sorted().toList();
         }
-        assertFalse(cases.isEmpty(), "shared library corpus is missing");
+        requireCorpus(cases);
         return cases.stream().map(path -> DynamicTest.dynamicTest(
                 path.getFileName().toString(), () -> run(path)));
     }
@@ -80,6 +131,7 @@ class AttoLibrariesV1Test {
             else if (body.startsWith("expect-error:")) errors.add(body.substring(13).strip());
             else if (body.startsWith("expect-error-java:")) errors.add(body.substring(18).strip());
         }
+        requireExpectation(path.getFileName().toString(), reject, exit);
         List<String> command = new ArrayList<>(List.of(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "--enable-native-access=ALL-UNNAMED", "-Dpolyglot.engine.WarnInterpreterOnly=false",
@@ -93,11 +145,10 @@ class AttoLibrariesV1Test {
         String err = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
         assertTrue(process.waitFor(120, TimeUnit.SECONDS), "guest timed out");
         if (reject) {
-            assertNotEquals(0, process.exitValue(), "expected rejection");
-            for (String error : errors) assertTrue((err + out).contains(error), err);
+            requireRejection(process.exitValue(), err + out, errors);
             return;
         }
-        assertEquals(exit == null ? 0 : exit, process.exitValue(), err);
+        assertEquals(exit.intValue(), process.exitValue(), err);
         if (stdout != null) assertEquals(stdout, out);
     }
 
