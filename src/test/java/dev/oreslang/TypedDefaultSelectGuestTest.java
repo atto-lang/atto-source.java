@@ -12,6 +12,36 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Restricted executable typed-default and checked scalar counted selection. */
 @Timeout(20)
 final class TypedDefaultSelectGuestTest {
+    @Test void inferredDefaultSelectProducesSameTrackedFutureAsTypedForm() throws Exception {
+        assertEquals("42|43|44",run("""
+                pub async fnc main(): void {
+                  val Future<int> first = select { default: -> { return 40 + 2; } };
+                  val Future<int> second = nb select over
+                    default: -> { return 43; }
+                  end;
+                  val int third = await select { default: -> { return 44; } };
+                  stdio.stdout.write(await first); stdio.stdout.write("|");
+                  stdio.stdout.write(await second); stdio.stdout.write("|");
+                  stdio.stdout.write(third);
+                  return;
+                }
+                """));
+    }
+
+    @Test void inferredDefaultSelectDoesNotBroadenUnsupportedProfiles() {
+        for (String body : new String[]{
+            "val int result = select { default: -> { return 42; } };",
+            "val Future<bool> result = select { default: -> { return 42; } };",
+            "val Future<int> result = try select { default: -> { return 42; } };",
+            "val Future<int> result = select { default: -> { return true; } };",
+            "val Future<int> result = select { default: -> { return missing; } };",
+            "val Future<int> result = select { default: -> {} };",
+            "val Future<int> result = select { when readch incoming: int n -> { return n; } };",
+            "val Future<int> result = select { default: -> { return 1"+ " + 1".repeat(64)+"; } };"
+        }) assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck("pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(1); "+body+" return; }"),body);
+    }
+
     @Test void bareTypedSelectAndLegacyAliasReturnTrackedFuture() throws Exception {
         assertEquals("42|42",run("""
                 pub async fnc main(): void {
