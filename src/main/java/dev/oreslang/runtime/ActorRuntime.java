@@ -3236,6 +3236,52 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    // Runtime-only owner proof for state that survives carrier migration.
+    // The cell identity, code generation and active lease all must match.
+    boolean ownsCountedCursorTurn(ContinuationTarget target) {
+        ActorCell<?> cell = target.currentCell(this);
+        if (target.originatingRuntime.get() != this || cell == null
+                || currentActor.get() != cell) return false;
+        synchronized (cell.lifecycleLock) {
+            return !cell.stopped.get() && !cell.finalized
+                    && cell.codeGeneration == target.codeGeneration
+                    && cell.carrierActive && cell.scheduled.get()
+                    && cell.carrierOwnerThread == Thread.currentThread()
+                    && cell.activeTurns == 1;
+        }
+    }
+
+    // Register the active round as an actor-owned Future and queue a
+    // continuation only after its physical notification-drain receipt.
+    // The callback itself carries the receipt. Receipt listeners may run
+    // out of order when added after notificationDrainComplete is published;
+    // do not depend on one listener setting a flag before another enqueues.
+    void ownTrackedCountedRound(ContinuationTarget target, OresFuture<?> round) {
+        Objects.requireNonNull(round);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round lost its actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round denied by actor lifecycle");
+        }
+    }
+
+    void enqueueCountedRoundRetirement(OresFuture<?> round,
+            ContinuationTarget target, Runnable continuation) {
+        Objects.requireNonNull(round);
+        Objects.requireNonNull(continuation);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("counted cursor requires its owning actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) return;
+        round.whenNotificationsDrainedRuntime(() -> target.enqueue(continuation));
+    }
+
     public ContinuationTarget captureCurrentContinuationTarget() {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {

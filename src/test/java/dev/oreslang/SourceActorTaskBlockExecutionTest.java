@@ -43,6 +43,43 @@ final class SourceActorTaskBlockExecutionTest {
     }
 
     @Test
+    void trustedActorCountedGuestUsesAggregateAndPublishesResult() throws Exception {
+        assertEquals("42|99", run("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val Channel<int> incoming = Channel.new<int>(3);
+                    writech incoming, 10;
+                    writech incoming, 11;
+                    writech incoming, 99;
+                    val Future<Array<int>> pending = select<int>(2) {
+                      when readch incoming: int n -> { return n * 2; }
+                    };
+                    nb select over
+                      when await pending: Array[int] values -> {
+                        self.send(values[0] + values[1]);
+                        self.send(readch incoming);
+                      }
+                    end
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("go");
+                  val first = (await worker.outputs.next()).value.unwrap();
+                  val remaining = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(first.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(remaining.value);
+                  worker.stop();
+                  await worker.get_done();
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void actorStateCannotEscapeThroughTaskCapture() {
         PolyglotException error = assertThrows(PolyglotException.class, () -> run("""
                 define actor Worker as

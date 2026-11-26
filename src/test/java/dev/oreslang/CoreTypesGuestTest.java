@@ -44,7 +44,7 @@ final class CoreTypesGuestTest {
 
     @Test
     void sourceImportedByRealGuestExecutesBoundaries() throws Exception {
-        for (String fixture : new String[] { "edge-positive.atto", "edge-matrix-positive.atto" }) {
+        for (String fixture : new String[] { "edge-positive.atto", "edge-matrix-positive.atto", "bool-call-composition-positive.atto" }) {
             Path guest = FIXTURES.resolve(fixture);
             assertTrue(Files.isRegularFile(guest), fixture);
             assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), fixture);
