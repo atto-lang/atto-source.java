@@ -44,7 +44,7 @@ public final class AttoM6ProxyUdsV1Probe {
              var listener = AttoM6ProxyUdsV1.bind_private(path)) {
             Object socketKey = Files.readAttributes(path, BasicFileAttributes.class,
                 LinkOption.NOFOLLOW_LINKS).fileKey();
-            var target = runtime.spawn_with_result("counter", 2, amount -> {
+            var target = runtime.spawn_scoped_with_result("counter", 2, 11, 17, amount -> {
                 handlerThread.set(Thread.currentThread().getName());
                 long after = receiver.applyAsLong(amount);
                 counter.set(after);
