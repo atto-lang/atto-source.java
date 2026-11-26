@@ -1075,6 +1075,10 @@ public final class OwnershipChecker {
                     continue;
                 }
                 ValueInfo source = checkExpr(arm.channel(), scope, false);
+                if (selected.mode() != Ast.WaitMode.IMMEDIATE) {
+                    rejectRetainedOperandLoan(source, arm.operation() == Ast.ChannelOperation.AWAIT
+                            ? "borrowed Future operand" : "borrowed channel operand");
+                }
                 Ast.TypeRef element;
                 if (arm.operation() == Ast.ChannelOperation.AWAIT) {
                     if (!source.type.name().equals("Future")
@@ -2156,6 +2160,12 @@ public final class OwnershipChecker {
             return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            Ast.TypeRef awaitWitness = syntacticType(awaited.expression(), scope);
+            if (awaitWitness != null && awaitWitness.name().equals("Future")
+                    && awaitWitness.arguments().size() == 1
+                    && containsBorrowType(awaitWitness.arguments().getFirst())) {
+                throw error(E_LOAN_SUSPEND, "cannot await Future containing borrowed data");
+            }
             checkSuspensionBorrows(scope, "await");
             // HasFuture.get_future() is a synchronous immutable receiver loan,
             // not an implicit ownership transfer of the capability object.
@@ -2166,6 +2176,7 @@ public final class OwnershipChecker {
                     operandType, new LinkedHashSet<>()) != null;
             ValueInfo awaitedValue = checkExpr(
                     awaited.expression(), scope, borrowCapability ? false : consuming);
+            rejectRetainedOperandLoan(awaitedValue, "cannot await a borrowed operand");
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -2184,6 +2195,9 @@ public final class OwnershipChecker {
                 throw error(E_LOAN_SUSPEND, "cannot register a channel waiter while holding a MutexGuard");
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
+            if (channelOp.mode() != Ast.WaitMode.IMMEDIATE) {
+                rejectRetainedOperandLoan(channel, "borrowed channel operand");
+            }
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
@@ -2246,7 +2260,10 @@ public final class OwnershipChecker {
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
                 throw error(E_LOAN_SUSPEND, "cannot register dynamic select while holding a MutexGuard");
             }
-            checkExpr(selected.cases(), scope, false);
+            ValueInfo cases = checkExpr(selected.cases(), scope, false);
+            if (selected.mode() != Ast.WaitMode.IMMEDIATE) {
+                rejectRetainedOperandLoan(cases, "borrowed case-set operand");
+            }
             Ast.TypeRef selectedResult = Ast.TypeRef.simple("SelectResult");
             Ast.TypeRef result = switch (selected.mode()) {
                 case BLOCKING -> selectedResult;
@@ -4424,6 +4441,15 @@ public final class OwnershipChecker {
         if (isBorrowValue(receiver) && receiver.borrowSource == null) {
             throw error(E_LIFETIME, "receiver borrow has unknown lifetime provenance; "
                     + "use a named owner/borrow until return-lifetime summaries are supported");
+        }
+    }
+
+    // Evaluate the operand once, then prove it contains no retained lexical
+    // loan. A pre-expression scope check alone misses temporary rt borrow
+    // operands. Immediate probes do not use this registration fence.
+    private void rejectRetainedOperandLoan(ValueInfo value, String operation) {
+        if (isBorrowValue(value) || containsBorrowType(value.type)) {
+            throw error(E_LOAN_SUSPEND, operation + "; retained suspension operand requires owned authority");
         }
     }
 
