@@ -373,17 +373,31 @@ final class ActorOutputStreamTest {
         }
     }
 
+    // Host-only instrumentation for the deterministic arbitration race.
+    // Keep the production BehaviorFactory capture boundary intact; never
+    // send a latch or Thread through the actor mailbox.
+    private static final class OutputArbitrationProbe {
+        static final java.util.concurrent.Semaphore exclusive = new java.util.concurrent.Semaphore(1);
+        static volatile java.util.concurrent.CountDownLatch entered;
+        static volatile java.util.concurrent.CountDownLatch release;
+        static volatile java.util.concurrent.atomic.AtomicReference<Thread> carrier;
+    }
+
     @Test
     void cancellationCannotStealCommittedOutputDuringShutdownArbitration() throws Exception {
+        assertTrue(OutputArbitrationProbe.exclusive.tryAcquire(5, java.util.concurrent.TimeUnit.SECONDS));
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var carrier = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        OutputArbitrationProbe.entered = entered;
+        OutputArbitrationProbe.release = release;
+        OutputArbitrationProbe.carrier = carrier;
         try (ActorRuntime runtime = new ActorRuntime()) {
-            var entered = new java.util.concurrent.CountDownLatch(1);
-            var release = new java.util.concurrent.CountDownLatch(1);
-            var carrier = new java.util.concurrent.atomic.AtomicReference<Thread>();
             ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
                     context -> (message, turn) -> {
-                        carrier.set(Thread.currentThread());
-                        entered.countDown();
-                        if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        OutputArbitrationProbe.carrier.set(Thread.currentThread());
+                        OutputArbitrationProbe.entered.countDown();
+                        if (!OutputArbitrationProbe.release.await(5, java.util.concurrent.TimeUnit.SECONDS))
                             throw new AssertionError("test release deadline");
                         turn.runtime().emitCurrentActorOutput("committed");
                         turn.runtime().endCurrentActor();
@@ -418,8 +432,14 @@ final class ActorOutputStreamTest {
             var delivered = pending.get(5, java.util.concurrent.TimeUnit.SECONDS);
             assertFalse(delivered.done());
             assertEquals("committed", delivered.value().value());
-            ref.done().join();
-            assertTrue(ref.outputs().next().join().done());
+            ref.done().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(ref.outputs().next().get(5, java.util.concurrent.TimeUnit.SECONDS).done());
+        } finally {
+            release.countDown();
+            OutputArbitrationProbe.entered = null;
+            OutputArbitrationProbe.release = null;
+            OutputArbitrationProbe.carrier = null;
+            OutputArbitrationProbe.exclusive.release();
         }
     }
 
