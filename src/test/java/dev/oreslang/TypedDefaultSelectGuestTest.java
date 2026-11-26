@@ -137,7 +137,11 @@ final class TypedDefaultSelectGuestTest {
         for (String expression : new String[]{
           "select<int>(-1) { when readch incoming: int n -> { return n; } }",
           "select<int>(17) { when readch incoming: int n -> { return n; } }",
-          "select<int>(1+2) { when readch incoming: int n -> { return n; } }",
+          "select<int>(other+2) { when readch incoming: int n -> { return n; } }",
+          "select<int>(9223372036854775807+1) { when readch incoming: int n -> { return n; } }",
+          "select<int>(0-1) { when readch incoming: int n -> { return n; } }",
+          "select<int>(8+9) { when readch incoming: int n -> { return n; } }",
+          "select<int>(1/0) { when readch incoming: int n -> { return n; } }",
           "select<int>(1) { when readch incoming: int n -> { return n; } default: -> { return 0; } }",
           "select<int>(1) { when readch incoming: int n -> { return n + other; } }"
         }) assertThrows(IllegalArgumentException.class, () ->
@@ -279,6 +283,36 @@ final class TypedDefaultSelectGuestTest {
                   return;
                 }
                 """));
+    }
+
+    @Test void constantCountExpressionGuestAndZeroExecute() throws Exception {
+        assertEquals("6|10|26|99|0|42",run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(4);
+                  writech incoming, 3; writech incoming, 5;
+                  writech incoming, 13; writech incoming, 99;
+                  val Array[int] result = await select<int>(1+2*1) {
+                    when readch incoming: int n -> { return n * 2; }
+                  };
+                  stdio.stdout.write(result[0]); stdio.stdout.write("|");
+                  stdio.stdout.write(result[1]); stdio.stdout.write("|");
+                  stdio.stdout.write(result[2]); stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming); stdio.stdout.write("|");
+                  writech incoming, 42;
+                  val Array[int] empty = await select((2+3)-5) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  stdio.stdout.write(empty.size); stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming);
+                  return;
+                }
+                """));
+    }
+
+    @Test void constantCountExpressionBudgetRejectsBeforeExecution() {
+        String count = "1" + " + 0".repeat(64);
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(4); val Future<Array<int>> result = select<int>("+count+") { when readch incoming: int n -> { return n; } }; return; }"));
     }
 
     private static String run(String program) throws Exception {
