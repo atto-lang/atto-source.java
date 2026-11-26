@@ -111,6 +111,16 @@ public final class ActorScalarCallMachine {
         ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
         if (arena == null) throw new SecurityException(
                 "scalar iterative dispatch requires an admitted actor turn");
+        // When invoked inside an actor SourceTask, use its one scheduler-owned
+        // continuation chain. This removes the duplicate machine activation
+        // stack on that path. Ordinary synchronous actor turns without a
+        // SourceTask retain the explicitly synchronous legacy frame path.
+        ActorSourceTaskFrame sourceTask = OresScheduler.currentActorSourceTaskFrame();
+        if (sourceTask != null) {
+            return executeOnSourceTaskContinuation(
+                    program, entry, arguments, safepoint, sourceTask.callContinuation(), arena);
+        }
+
         ExecutionContext execution = arena.newSynchronousExecution();
         ArrayDeque<Activation> activations = new ArrayDeque<>();
         long ticks = 0L;
@@ -197,6 +207,124 @@ public final class ActorScalarCallMachine {
             // execution. The actor arena remains poisoned on hard limits.
             arena.cancel(execution);
             activations.clear();
+        }
+    }
+
+    /**
+     * Executes the same verified synchronous scalar bytecode using the
+     * SourceTask-owned continuation chain. No Java activation deque or second
+     * logical ExecutionContext is created on this path.
+     *
+     * <p>The machine remains synchronous-only: there is no AWAIT opcode yet.
+     * The frame chain is nevertheless scheduler-owned and can be retained by
+     * the SourceTask lifecycle when its surrounding task yields after this
+     * call has returned. Actual suspension from inside a callee requires a
+     * future compiler state-machine integration, not a blocking operation.
+     */
+    private static long executeOnSourceTaskContinuation(
+            Program program, int entry, List<Long> arguments, Runnable safepoint,
+            ActorCallContinuation chain, ActorFrameArena arena) {
+        if (chain.depth() != 0) {
+            throw new IllegalStateException(
+                    "scalar dispatcher requires an empty SourceTask call chain at entry");
+        }
+        Function root = program.functions().get(entry);
+        if (arguments.size() != root.parameters()) {
+            throw new IllegalArgumentException("scalar entry arity mismatch");
+        }
+        for (Long argument : arguments) Objects.requireNonNull(argument, "scalar argument");
+
+        long ticks = 0L;
+        boolean completed = false;
+        try {
+            chain.pushFrame(entry, 0, root.locals(), root.maxStack());
+            for (int i = 0; i < arguments.size(); i++) chain.writeLocal(i, arguments.get(i));
+
+            while (true) {
+                if ((++ticks & CHECKPOINT_MASK) == 0L) safepoint.run();
+                int functionId = chain.functionId();
+                Function fn = program.functions().get(functionId);
+                int pc = chain.programCounter();
+                if (pc < 0 || pc >= fn.code().size()) {
+                    throw invalid(arena, "scalar continuation PC outside compiled code");
+                }
+                Instruction step = fn.code().get(pc);
+                chain.setProgramCounter(pc + 1);
+
+                switch (step.op()) {
+                    case CONST -> chain.pushOperand(step.value());
+                    case CONST_BOOL -> chain.pushOperand(step.value() != 0L);
+                    case LOAD -> chain.pushOperand(chain.readLocal(step.argument()));
+                    case STORE -> chain.writeLocal(step.argument(), chain.popOperand());
+                    case POP -> chain.popOperand();
+                    case ADD, SUB, MUL, LT, LE, EQ -> {
+                        Object right = chain.popOperand();
+                        Object left = chain.popOperand();
+                        Object result = switch (step.op()) {
+                            case ADD -> asLong(left) + asLong(right);
+                            case SUB -> asLong(left) - asLong(right);
+                            case MUL -> asLong(left) * asLong(right);
+                            case LT -> asLong(left) < asLong(right);
+                            case LE -> asLong(left) <= asLong(right);
+                            case EQ -> Objects.equals(left, right);
+                            default -> throw new AssertionError();
+                        };
+                        chain.pushOperand(result);
+                    }
+                    case JUMP -> chain.setProgramCounter(step.argument());
+                    case JUMP_IF_FALSE -> {
+                        Object predicate = chain.popOperand();
+                        if (!(predicate instanceof Boolean value)) {
+                            throw invalid(arena, "scalar branch condition is not bool");
+                        }
+                        if (!value) chain.setProgramCounter(step.argument());
+                    }
+                    case CALL, TAIL_CALL -> {
+                        int calleeId = step.argument();
+                        Function callee = program.functions().get(calleeId);
+                        ArrayList<Long> values = new ArrayList<>(callee.parameters());
+                        for (int i = 0; i < callee.parameters(); i++) {
+                            values.add(0, asLong(chain.popOperand()));
+                        }
+                        int returnPc = chain.returnProgramCounter();
+                        if (step.op() == Op.CALL) {
+                            returnPc = pc + 1;
+                        } else {
+                            chain.popFrame();
+                        }
+                        chain.pushFrame(calleeId, returnPc, callee.locals(), callee.maxStack());
+                        for (int i = 0; i < values.size(); i++) {
+                            chain.writeLocal(i, values.get(i));
+                        }
+                    }
+                    case RET -> {
+                        Object result = chain.popOperand();
+                        if (!(result instanceof Long value)) {
+                            throw invalid(arena, "scalar function must return int");
+                        }
+                        int returnPc = chain.returnProgramCounter();
+                        chain.popFrame();
+                        if (chain.depth() == 0) {
+                            completed = true;
+                            return value;
+                        }
+                        chain.setProgramCounter(returnPc);
+                        chain.pushOperand(value);
+                    }
+                    case TRAP -> throw invalid(arena,
+                            "scalar function fell through without return");
+                }
+            }
+        } finally {
+            // On successful completion every guest activation has been popped.
+            // On exceptional/cancelled execution, leave still-live frames
+            // rooted for SourceTask terminal cleanup/quiescence; never free
+            // them from an arbitrary instruction failure path.
+            if (completed && chain.depth() != 0) {
+                arena.poisonFromGuestGuard();
+                throw new IllegalStateException(
+                        "completed scalar dispatcher retained continuation frames");
+            }
         }
     }
 
