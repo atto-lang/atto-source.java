@@ -640,7 +640,7 @@ public final class OwnershipChecker {
                         || slots.stream().anyMatch(t -> !isPrimitiveCopyType(t))
                         || destructure.kind() != Ast.DestructureKind.SEQUENCE
                         || destructure.bindings().stream().anyMatch(b -> b.rest() || b.mutableReferent()
-                                || (!b.isDiscard() && b.kind() != Ast.BindingKind.VAL))) {
+                                || (!b.isDiscard() && b.kind() != Ast.BindingKind.VAL && b.kind() != Ast.BindingKind.LET))) {
                     throw error(E_UNSUPPORTED, "callable tuple pattern requires an exact tuple of proven Copy scalars");
                 }
             }
@@ -1230,7 +1230,7 @@ public final class OwnershipChecker {
                 && dev.oreslang.parser.Parser.isCallablePatternRoot(member.receiver())
                 && (value.kind != ValueKind.COPY || !isPrimitiveCopyType(value.type)
                     || isBorrowValue(value) || binding.mutableReferent()
-                    || binding.kind() != Ast.BindingKind.VAL || binding.declaredType() != null)) {
+                    || (binding.kind() != Ast.BindingKind.VAL && binding.kind() != Ast.BindingKind.LET) || binding.declaredType() != null)) {
             throw error(E_UNSUPPORTED, "callable field pattern requires a proven immutable Copy scalar projection");
         }
         boolean readonlyRecord = value.type.isReadonlyRecordType();
