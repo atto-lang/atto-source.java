@@ -1,0 +1,33 @@
+// Real linked Atto guest: original boundary vectors, independent failure exits.
+import fnc default_order from "atto.core/atomic";
+import fnc valid_load_order from "atto.core/atomic";
+import fnc valid_store_order from "atto.core/atomic";
+import fnc valid_rmw_order from "atto.core/atomic";
+import fnc valid_fence_order from "atto.core/atomic";
+import fnc valid_compare_exchange_orders from "atto.core/atomic";
+pub fnc main(): int {
+  if imports::default_order() != 4 then return 1; fi
+  if !imports::valid_load_order(0) then return 2; fi
+  if !imports::valid_load_order(1) then return 3; fi
+  if !imports::valid_load_order(4) then return 4; fi
+  if imports::valid_load_order(2) then return 5; fi
+  if imports::valid_load_order(3) then return 6; fi
+  if !imports::valid_store_order(2) then return 7; fi
+  if !imports::valid_store_order(4) then return 8; fi
+  if imports::valid_store_order(1) then return 9; fi
+  if !imports::valid_rmw_order(3) then return 10; fi
+  if imports::valid_rmw_order(5) then return 11; fi
+  if imports::valid_fence_order(0) then return 12; fi
+  if !imports::valid_fence_order(4) then return 13; fi
+  if !imports::valid_compare_exchange_orders(0, 0) then return 14; fi
+  if imports::valid_compare_exchange_orders(0, 1) then return 15; fi
+  if !imports::valid_compare_exchange_orders(1, 1) then return 16; fi
+  if imports::valid_compare_exchange_orders(2, 1) then return 17; fi
+  if !imports::valid_compare_exchange_orders(3, 1) then return 18; fi
+  if !imports::valid_compare_exchange_orders(4, 4) then return 19; fi
+  if imports::valid_compare_exchange_orders(4, 2) then return 20; fi
+  if imports::valid_compare_exchange_orders(4, 3) then return 21; fi
+  if imports::valid_compare_exchange_orders(5, 0) then return 22; fi
+  if imports::valid_compare_exchange_orders(1, 4) then return 23; fi
+  return 42;
+}
