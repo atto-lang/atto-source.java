@@ -4314,6 +4314,36 @@ public final class Parser {
         // Procedural dispatch returns from its enclosing callable. Keep this
         // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
+            // The void inline task owns a lexical block, not a scheduler task.
+            // An optional terminal bare return is local to the block.
+            // Bounded conditional exits use the same lexical ARM_RESULT
+            // lowering as value tasks; the internal bool is discarded.
+            if (isContextualIdentifier("sync") && checkNext(IDENT)
+                    && tokens.get(current + 1).lexeme().equals("task")) {
+                advance();
+                advance();
+                consume(LT, "do sync task requires <void>");
+                Ast.TypeRef payload = parseTypeRef();
+                consume(GT, "expected '>' after do sync task result type");
+                if (!payload.name().equals("void") || !payload.arguments().isEmpty()
+                        || payload.inferArguments() || payload.isBorrow()) {
+                    throw error(previous(), "E_SYNC_TASK_VOID_RESULT: do sync task requires <void>");
+                }
+                List<Ast.Stmt> body = parseBlock();
+                if (!body.isEmpty() && body.getLast() instanceof Ast.ReturnStmt returned
+                        && returned.value() == null) {
+                    body = List.copyOf(body.subList(0, body.size() - 1));
+                }
+                if (inlineTaskHasEscapingTransfer(body, 0)) {
+                    throw error(previous(), "E_SYNC_TASK_CONTROL_TRANSFER: inline break/continue must target a task-local loop; yield requires dedicated lowering");
+                }
+                Ast.Stmt lowered = valueArmPrefixContainsReturn(body)
+                        ? new Ast.ExprStmt(lowerInlineConditionalReturns(body, new Ast.LiteralExpr(true),
+                                Ast.TypeRef.simple("bool"), 0, false, true))
+                        : new Ast.BlockStmt(body);
+                match(SEMICOLON);
+                return lowered;
+            }
             if (match(MATCH)) return parseMatch(true);
             if (match(SWITCH)) return parseSwitch();
             // Explicitly discard a channel read result (or write's unit result)
@@ -5964,6 +5994,134 @@ public final class Parser {
      * Nested lambda/task expression bodies are not walked here because their
      * returns belong to their own callable/task control-flow domain.
      */
+    // Match-arm lowering shares the enclosing callable's loop/generator
+    // context. A sync task must not accidentally inherit a nonlocal target.
+    /**
+     * Bounded structured lowering, not a general task-return CFG. Each
+     * condition is evaluated once as the subject of a typed boolean match.
+     * Preserve the original task scope and never move declarations or cleanup
+     * into a synthetic fallthrough scope.
+     */
+    private Ast.Expr lowerInlineConditionalReturns(List<Ast.Stmt> prefix, Ast.Expr terminal,
+            Ast.TypeRef payload, int depth, boolean fallthrough, boolean voidTask) {
+        String unsupported = voidTask ? "E_SYNC_TASK_VOID_RETURN_UNSUPPORTED" : "E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED";
+        if (depth > 16) {
+            throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_BUDGET: conditional return nesting exceeds 16");
+        }
+        int split = 0;
+        while (split < prefix.size()
+                && !valueArmPrefixContainsReturn(List.of(prefix.get(split)))) split++;
+        List<Ast.Stmt> before = prefix.subList(0, split);
+        if (fallthrough && before.stream().anyMatch(stmt -> !(stmt instanceof Ast.ExprStmt))) {
+            throw error(previous(), unsupported + ": fallthrough must contain only expressions");
+        }
+        Ast.Expr result = terminal;
+        if (split < prefix.size()) {
+            if (!(prefix.get(split) instanceof Ast.IfStmt conditional)
+                    || !conditional.elseBody().isEmpty()) {
+                throw error(previous(), unsupported + ": inline branch returns require dedicated CFG lowering");
+            }
+            if (conditional.branches().size() > 16 - depth) {
+                throw error(previous(), "E_SYNC_TASK_EARLY_RETURN_BUDGET: conditional return nesting exceeds 16");
+            }
+            // The false path is evaluated only after all earlier branches fail.
+            result = lowerInlineConditionalReturns(prefix.subList(split + 1, prefix.size()),
+                    terminal, payload, depth + conditional.branches().size(), true, voidTask);
+            for (int i = conditional.branches().size() - 1; i >= 0; i--) {
+                Ast.IfBranch branch = conditional.branches().get(i);
+                Ast.Expr condition = branch.condition();
+                if (!inlineReturnPredicate(condition, 0)) {
+                    throw error(previous(), unsupported + ": conditional return predicate requires capture-free scalar syntax");
+                }
+                List<Ast.Stmt> yes = branch.body();
+                if (yes.isEmpty() || !(yes.getLast() instanceof Ast.ReturnStmt early)
+                        || (voidTask ? early.value() != null : early.value() == null)) {
+                    throw error(previous(), unsupported + ": each early branch must end in a matching return");
+                }
+                // Keep a branch-local lexical cleanup region, including nested
+                // conditional returns; no early return can target the caller.
+                Ast.Expr branchResult = lowerInlineConditionalReturns(yes.subList(0, yes.size() - 1),
+                        voidTask ? new Ast.LiteralExpr(true) : early.value(), payload,
+                        depth + conditional.branches().size(), false, voidTask);
+                // Double negation enforces bool without truthiness or a cast.
+                result = new Ast.MatchExpr(
+                        new Ast.UnaryExpr("!", new Ast.UnaryExpr("!", condition)),
+                        List.of(new Ast.MatchValueArm(new Ast.LiteralPattern(true), null,
+                                        List.of(), branchResult),
+                                new Ast.MatchValueArm(new Ast.LiteralPattern(false), null, result)),
+                        payload);
+            }
+        }
+        if (fallthrough && before.isEmpty()) return result;
+        return new Ast.MatchExpr(new Ast.LiteralExpr(true),
+                List.of(new Ast.MatchValueArm(new Ast.WildcardPattern(), null, before, result)),
+                payload);
+    }
+
+    // Do not erase pattern/type refinements, captures, ownership operations,
+    // or arbitrary expression blocks when changing the condition's AST shape.
+    private boolean inlineReturnPredicate(Ast.Expr expr, int depth) {
+        if (depth > 32) return false;
+        if (expr instanceof Ast.NameExpr || expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary) {
+            return java.util.Set.of("!", "+", "-").contains(unary.operator())
+                    && inlineReturnPredicate(unary.operand(), depth + 1);
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return java.util.Set.of("&&", "||", "^^", "eq", "neq", "==", "!=",
+                            "<", "<=", ">", ">=", "+", "-", "*", "/", "%").contains(binary.operator())
+                    && inlineReturnPredicate(binary.left(), depth + 1)
+                    && inlineReturnPredicate(binary.right(), depth + 1);
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            return call.origin() == Ast.CallOrigin.DIRECT && call.callee() instanceof Ast.NameExpr
+                    && call.arguments().stream().allMatch(arg -> inlineReturnPredicate(arg, depth + 1));
+        }
+        return false;
+    }
+
+    private boolean inlineTaskHasEscapingTransfer(List<Ast.Stmt> body, int loopDepth) {
+        for (Ast.Stmt stmt : body) {
+            boolean escapes = switch (stmt) {
+                case Ast.BreakStmt ignored -> loopDepth == 0;
+                case Ast.ContinueStmt ignored -> loopDepth == 0;
+                case Ast.YieldStmt ignored -> true;
+                case Ast.BlockStmt block -> inlineTaskHasEscapingTransfer(block.body(), loopDepth);
+                case Ast.TaskScopeStmt scope -> inlineTaskHasEscapingTransfer(scope.body(), loopDepth);
+                case Ast.UsingBorrowStmt loan -> inlineTaskHasEscapingTransfer(loan.body(), loopDepth);
+                case Ast.UsingTelemetrySpanStmt span -> inlineTaskHasEscapingTransfer(span.body(), loopDepth);
+                case Ast.IfStmt conditional -> conditional.branches().stream().anyMatch(
+                        branch -> inlineTaskHasEscapingTransfer(branch.body(), loopDepth))
+                        || inlineTaskHasEscapingTransfer(conditional.elseBody(), loopDepth);
+                case Ast.MatchStmt matched -> matched.arms().stream().anyMatch(
+                        arm -> inlineTaskHasEscapingTransfer(arm.body(), loopDepth));
+                case Ast.SwitchStmt switched -> switched.cases().stream().anyMatch(
+                        arm -> inlineTaskHasEscapingTransfer(arm.body(), loopDepth))
+                        || inlineTaskHasEscapingTransfer(switched.defaultBody(), loopDepth);
+                case Ast.TryStmt attempted -> inlineTaskHasEscapingTransfer(attempted.body(), loopDepth)
+                        || inlineTaskHasEscapingTransfer(attempted.catchBody(), loopDepth)
+                        || inlineTaskHasEscapingTransfer(attempted.finallyBody(), loopDepth);
+                case Ast.SelectStmt selected -> selected.arms().stream().anyMatch(
+                        arm -> inlineTaskHasEscapingTransfer(arm.body(), loopDepth));
+                case Ast.ForStmt loop -> (loop.initializer() != null
+                        && inlineTaskHasEscapingTransfer(List.of(loop.initializer()), loopDepth))
+                        || inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.ForOfStmt loop -> inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.ForOfDestructureStmt loop -> inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.DoWhileStmt loop -> inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.LoopStmt loop -> inlineTaskHasEscapingTransfer(loop.body(), loopDepth + 1);
+                case Ast.BindingStmt ignored -> false;
+                case Ast.DestructureStmt ignored -> false;
+                case Ast.ExprStmt ignored -> false;
+                case Ast.DeferStmt ignored -> false;
+                case Ast.LocalTypeDeclStmt ignored -> false;
+                case Ast.ReturnStmt ignored -> false; // separately checked by the return gate
+            };
+            if (escapes) return true;
+        }
+        return false;
+    }
+
     private boolean valueArmPrefixContainsReturn(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
@@ -6937,6 +7095,32 @@ public final class Parser {
                     "Oreslang does not use '&' for borrowing (unary pointer syntax is not supported); use 'rt borrow value'");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+
+        // A synchronous task is a caller-owned lexical value block, not a
+        // scheduled child. Lower the admitted terminal-return slice through
+        // the existing checked ARM_RESULT path (ownership, defer and resumable
+        // caller control flow). Never create a TaskExpr or wrap it in Future.
+        if (isContextualIdentifier("sync") && checkNext(IDENT)
+                && tokens.get(current + 1).lexeme().equals("task")) {
+            advance();
+            advance();
+            consume(LT, "sync task requires an explicit result type");
+            Ast.TypeRef payload = parseTypeRef();
+            consume(GT, "expected '>' after sync task result type");
+            if (payload.name().equals("void")) {
+                throw error(previous(), "E_SYNC_TASK_VOID_UNSUPPORTED: inline void task control flow is not yet admitted");
+            }
+            List<Ast.Stmt> body = parseBlock();
+            if (body.isEmpty() || !(body.getLast() instanceof Ast.ReturnStmt returned)
+                    || returned.value() == null) {
+                throw error(previous(), "E_SYNC_TASK_RESULT: sync task requires a terminal return value");
+            }
+            List<Ast.Stmt> prefix = body.subList(0, body.size() - 1);
+            if (inlineTaskHasEscapingTransfer(prefix, 0)) {
+                throw error(previous(), "E_SYNC_TASK_CONTROL_TRANSFER: inline break/continue must target a task-local loop; yield requires dedicated lowering");
+            }
+            return lowerInlineConditionalReturns(prefix, returned.value(), payload, 0, false, false);
+        }
 
         // task is contextual: task(...) and identifiers named task remain legal.
         if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {

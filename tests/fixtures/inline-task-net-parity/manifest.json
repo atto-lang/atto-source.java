@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "sourceRepository": "atto-lang/atto-source.net",
+  "sourceHead": "c32044d37d8ecdfbff460937dce7250cea3e19be",
+  "sourceTree": "fae9e891bba42025130b1426feafa26285fc16b3",
+  "nativeReceipt": "https://github.com/atto-lang/atto-source.net/actions/runs/45674578323/job/139418575996",
+  "cases": [
+    {
+      "name": "inline-value",
+      "path": "tests/fixtures/inline-task-net-parity/inline-value.atto",
+      "blob": "7136c973a255f3b97d41420ed83d4c231c850400",
+      "expected": "42"
+    },
+    {
+      "name": "inline-cooperate",
+      "path": "tests/fixtures/inline-task-net-parity/inline-cooperate.atto",
+      "blob": "f0b0e1e4d27a24a43fd72b4936a4661968e607af",
+      "expected": "42"
+    },
+    {
+      "name": "inline-local-loops",
+      "path": "tests/fixtures/inline-task-net-parity/inline-local-loops.atto",
+      "blob": "1dad36b38c4d34aba8c11cc55b5aa4504ffe6690",
+      "expected": "42"
+    },
+    {
+      "name": "inline-assignment-writeback",
+      "path": "tests/fixtures/inline-task-net-parity/inline-assignment-writeback.atto",
+      "blob": "22f78a5070db129397ec250f2779167a5179a73c",
+      "expected": "42"
+    }
+  ]
+}

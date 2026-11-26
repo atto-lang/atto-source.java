@@ -2693,7 +2693,11 @@ public final class OresEvalRootNode extends RootNode {
                     if (arm.guard() != null
                             && expressionContainsPotentialSuspension(arm.guard(), seen)) return true;
                     for (Ast.Stmt statement : arm.prefixStatements()) {
-                        if (statementContainsPotentialSuspension(statement, seen)) return true;
+                        // Inline expression blocks with CPU backedges must
+                        // select the caller's resumable path, just like a
+                        // top-level loop, even without an explicit await.
+                        if (containsSourceLoop(statement)
+                                || statementContainsPotentialSuspension(statement, seen)) return true;
                     }
                     if (expressionContainsPotentialSuspension(arm.value(), seen)) return true;
                 }
