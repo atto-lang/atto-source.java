@@ -296,4 +296,50 @@ final class ActorContinuationLedgerTest {
         }
     }
 
+    @Test
+    void failedExternalReleaseQuarantinesCreditAndNeverRetries() {
+        for (int mode = 0; mode < 3; mode++) {
+            var ledger = new ActorContinuationLedger(3);
+            var releases = new AtomicInteger();
+            var calls = new AtomicInteger();
+            var cleanupCalls = new AtomicInteger();
+            var releaseFailure = new IllegalStateException("ambiguous code pin close");
+            var guestFailure = new IllegalArgumentException("guest failed");
+            final boolean failGuest = mode == 0;
+            var receipt = ledger.admit(ActorContinuationLedger.Lane.ORDINARY,
+                    () -> { if (failGuest) throw guestFailure; },
+                    () -> { releases.incrementAndGet(); throw releaseFailure; });
+            var ordinary = ledger.admit(ActorContinuationLedger.Lane.ORDINARY,
+                    calls::incrementAndGet);
+            var cleanup = ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK,
+                    cleanupCalls::incrementAndGet);
+            if (mode == 2) ledger.sealOrdinary();
+            if (mode == 0) {
+                assertSame(guestFailure, assertThrows(IllegalArgumentException.class, receipt::run));
+                assertArrayEquals(new Throwable[] {releaseFailure}, guestFailure.getSuppressed());
+            } else if (mode == 1) {
+                assertSame(releaseFailure, assertThrows(IllegalStateException.class, receipt::close));
+            } else {
+                assertSame(releaseFailure, assertThrows(IllegalStateException.class, receipt::run));
+            }
+            assertTrue(ledger.hasReleaseFailure());
+            assertEquals(1, ledger.snapshot().running());
+            receipt.close();
+            assertEquals(1, releases.get());
+            assertThrows(IllegalStateException.class, receipt::run);
+            assertThrows(IllegalStateException.class, () ->
+                    ledger.admit(ActorContinuationLedger.Lane.ORDINARY, () -> {}));
+            assertThrows(IllegalStateException.class, () ->
+                    ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}));
+            ordinary.run();
+            cleanup.run();
+            assertEquals(0, calls.get());
+            assertEquals(1, cleanupCalls.get());
+            assertEquals(0, ledger.snapshot().queued());
+            assertEquals(1, ledger.snapshot().running());
+            ledger.sealAll();
+            assertEquals(1, ledger.snapshot().running());
+        }
+    }
+
 }
