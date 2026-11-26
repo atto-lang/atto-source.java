@@ -20,6 +20,20 @@ import subprocess
 import sys
 
 
+REQUIRED_CASES = frozenset(["core_num.atto","core_cmp.atto","core_option_result.atto","core_mem.atto","alloc_arena.atto","std_io.atto","std_path_posix.atto","std_path_windows.atto","aliases.atto","neg_unknown_core.atto","neg_unknown_std.atto","neg_traversal.atto","neg_nested.atto","neg_private.atto","neg_dotted_selector.atto","neg_ores_selector.atto"])
+
+
+def validate_corpus(cases):
+    missing = REQUIRED_CASES - {case.name for case in cases}
+    if missing:
+        raise ValueError("missing required library cases: " + ", ".join(sorted(missing)))
+
+
+def check_rejection(run, errors):
+    output = run.stderr + run.stdout
+    return run.returncode > 0 and bool(output.strip()) and all(e in output for e in errors)
+
+
 def headers(path, backend):
     meta = {"flags": [], "errors": [], "reject": False}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -49,14 +63,18 @@ def main():
     launcher = shlex.split(args.launcher)
     corpus = pathlib.Path(__file__).resolve().parent / "atto_libraries"
     cases = sorted(corpus.glob("*.atto"))
+    validate_corpus(cases)
     failures = []
     for case in cases:
         meta = headers(case, args.backend)
         run = subprocess.run([*launcher, *meta["flags"], case.name], cwd=corpus,
                              capture_output=True, text=True, timeout=300)
+        if not meta["reject"] and "exit" not in meta:
+            failures.append(f"{case.name}: missing explicit expected exit")
+            continue
         if meta["reject"]:
             missing = [e for e in meta["errors"] if e not in run.stderr + run.stdout]
-            if run.returncode == 0 or missing:
+            if not check_rejection(run, meta["errors"]):
                 failures.append(f"{case.name}: expected rejection {missing}, rc={run.returncode} "
                                 f"{run.stderr.strip()[-400:]}")
             else:
