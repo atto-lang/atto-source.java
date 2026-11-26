@@ -2,7 +2,6 @@ package dev.oreslang;
 
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
-import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -44,12 +43,11 @@ final class BoundDeferFactoryExecutionTest {
     void sourceTaskBindsAndInvokesCallbackBeforeCompletion() throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(true).out(out).build()) {
-            Value value = context.parse(fixture("bound_factory_task.atto")).execute(
-                    OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work");
-            assertTrue(value.isHostObject());
-            OresFuture<?> task = assertInstanceOf(OresFuture.class, value.asHostObject());
-            assertEquals(42, ((Number) task.get(5, TimeUnit.SECONDS)).intValue());
-            assertEquals("factory\nbody\n5\n", out.toString(StandardCharsets.UTF_8));
+            // Observe completion inside the guest: exposing the raw OresFuture
+            // as a Polyglot return value violates its host interop contract.
+            // This test covers source-task cleanup, not host Future projection.
+            context.eval(fixture("bound_factory_task.atto"));
+            assertEquals("factory\nbody\n5\n42\n", out.toString(StandardCharsets.UTF_8));
         }
     }
 
@@ -103,7 +101,7 @@ final class BoundDeferFactoryExecutionTest {
         String guest = """
                 fnc seed(int divisor): int {
                     stdio.println("factory");
-                    return 1 % divisor;
+                    return Integer.rem(1, divisor);
                 }
                 pub fnc main(): int {
                     defer stdio.println("older");
