@@ -52,7 +52,7 @@ final class RealtimeExecutionContractTest {
         assertTrue(admission.failures().stream()
                 .anyMatch(s -> s.contains("workers")));
         assertTrue(admission.failures().stream()
-                .anyMatch(s -> s.contains("timing")));
+                .anyMatch(s -> s.equals("WCET/response-time evidence is missing")));
     }
 
     @Test
