@@ -3656,6 +3656,14 @@ public final class ActorRuntime implements AutoCloseable {
             ActorCell<?> cell,
             OresFuture<?> future,
             boolean allowSourceCleanup) {
+        return ownFuture(cell, future, allowSourceCleanup, 0L);
+    }
+
+    private boolean ownFuture(
+            ActorCell<?> cell,
+            OresFuture<?> future,
+            boolean allowSourceCleanup,
+            long expectedGeneration) {
         // Only an executing scheduler-minted cleanup continuation may create
         // bounded post-STOP resource-close Futures. Captured generic Future
         // callbacks never gain this authority, even for the same ActorId.
@@ -3665,6 +3673,10 @@ public final class ActorRuntime implements AutoCloseable {
         boolean accepted = false;
         boolean cleanupOwned = false;
         synchronized (cell.lifecycleLock) {
+            // A stale continuation target has no authority to transfer or
+            // cancel a Future on behalf of a successor code generation.
+            if (expectedGeneration != 0L && cell.codeGeneration != expectedGeneration)
+                return false;
             // Re-registering the same owned Future must not cancel it or
             // charge the bounded cleanup receipts a second time.
             if (cell.pendingOperations.contains(future)) return true;
@@ -3751,7 +3763,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<?> cell = target.currentCell();
-        if (cell == null || !ownFuture(cell, future, false)) return;
+        if (cell == null || !ownFuture(cell, future, false, target.codeGeneration)) return;
 
         future.whenCompleteRuntime(
                 (value, failure) ->
@@ -3830,7 +3842,12 @@ public final class ActorRuntime implements AutoCloseable {
                         || actors.get(actorId) != cell
                         || cell.codeGeneration != expectedGeneration) return false;
                 ActorContinuationLedger.Admission receipt = cell.continuationLedger.admit(
-                        ActorContinuationLedger.Lane.ORDINARY, continuation);
+                        ActorContinuationLedger.Lane.ORDINARY, () -> {
+                            // Migration can finish after queue publication. Only
+                            // the owning carrier may invoke captured guest code.
+                            if (cell.codeGeneration == expectedGeneration)
+                                continuation.run();
+                        });
                 boolean published = false;
                 try {
                     if (!cell.continuationMailbox.tryWrite(
