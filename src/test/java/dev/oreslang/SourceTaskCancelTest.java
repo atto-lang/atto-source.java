@@ -421,15 +421,20 @@ final class SourceTaskCancelTest {
                 pub async fnc main(): void {
                   let mut int winner = 0;
                   task scope {
-                    let Future<int> fast = task {
-                      return 1;
-                    };
+                    val Channel<int> ready = Channel.new<int>(1);
                     let Future<int> slow = task {
                       defer stdio.stdout.write("|slow-cleanup");
+                      writech ready, 1;
                       loop {
                         rt cooperate;
                       }
                       return 2;
+                    };
+                    // The loser must have registered cleanup before racing.
+                    // Cancellation before task entry has nothing to unwind.
+                    val int armed = readch ready;
+                    let Future<int> fast = task {
+                      return armed;
                     };
                     winner = await Future.first([fast, slow]);
                   }

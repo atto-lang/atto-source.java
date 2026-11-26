@@ -320,7 +320,8 @@ match_stmt      = [ "do" ] "match" [ "first" ] expression
                     | canonical_match_arm { canonical_match_arm } "end" )
                   | [ ";" ] match_arm { match_arm } "end" ) ;
 canonical_match_arm
-                = "on" pattern [ "when" expression ] [ "->" ] block ;
+                = match_arm_head [ "when" expression ] [ "->" ] block ;
+match_arm_head  = "on" pattern | type_test_pattern ;
 match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
 (* "over" is reserved. "on" and "when" remain contextual arm words.
    "structural" remains contextual and is consumed only where grammar requires it.
@@ -331,7 +332,8 @@ pattern         = "_"
                 | structural_match_pattern
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
-                | "is" type_ref [ "as" IDENT | IDENT ] ;
+                | type_test_pattern ;
+type_test_pattern = "is" type_ref [ "as" IDENT | IDENT ] ;
 structural_match_pattern
                 = ( "~" | "structural" ) type_ref [ "as" IDENT ] ;
 (* 'structural TypeName name' remains an accepted legacy binding form, but
@@ -358,6 +360,11 @@ catch_header    = "(" [ IDENT | "Error" IDENT ] ")" ;
    admit the built-in Error; subclass matching must be explicitly lowered.
    Braced tries do not use end; arm styles cannot mix within one try. *)
 
+(* Implemented legacy admission below; canonical static expression target is
+   [ "nb" ] "select" [ "<" type_ref ">" ] [ "(" expression ")" ] [ select_policy ] select_static_body,
+   producing Future<T>, or Future<Array<T>> with an explicit count.
+   Unary await consumes that Future; nb is deprecated.
+   Not currently lowered; see contracts/v1/static-select-result-and-return.md. *)
 select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
                   "select" [ select_policy ] select_static_body ;
 select_static_body
@@ -419,8 +426,40 @@ pipeline        = conditional { "|>" pipeline_stage } ;
 pipeline_stage  = IDENT [ call_suffix ]
                 | ( "Option" | "Result" ) "." IDENT call_suffix
                 | pipe_lambda
-                | "nlex" pipe_lambda ;
-(* Stages are existing callables, including existing |x| -> expr lambdas.
+                | "nlex" pipe_lambda
+                | pipeline_match
+                | "await"
+                | "std" "." "await"
+                | pipeline_conditional
+                | pipeline_predicate [ pipeline_ternary ]
+                | pipeline_ternary ;
+pipeline_conditional = ( "if" | "ifnot" | "unless" )
+                       [ pipeline_predicate ] "then" expression
+                       "else" expression "fi" ;
+pipeline_predicate = "is" [ "type" ] type_atom
+                   | ( "<" | "<=" | ">" | ">=" ) shift
+                   | ( "eq" | "==" | "neq" | "!=" ) comparison ;
+pipeline_ternary = "?" expression ":" conditional ;
+pipeline_match  = "match" [ "first" ] [ "<" [ "ret" "=" ] type_ref ">" ]
+                  "over" ( value_match_stage_arm { value_match_stage_arm } "end"
+                         | "{" braced_value_match_stage_arm { braced_value_match_stage_arm } "}" ) ;
+value_match_stage_arm
+                = value_match_stage_pattern "->" value_match_stage_result ;
+braced_value_match_stage_arm
+                = value_match_stage_arm | value_match_stage_pattern block [ "," ] ;
+value_match_stage_pattern
+                = match_arm_head [ "when" expression ] | "default" ;
+value_match_stage_result
+                = expression [ "," | ";" ] | block [ "," ]
+                | "::" { statement } "end" [ "," ] ;
+(* A forward match stage supplies its subject from the preceding expression.
+   Its result is the next pipeline value; existing match typing, exhaustiveness,
+   ownership and arm-result restrictions apply. No implicit closure or copy.
+   Both over/end and over/braces accept expression and block arms, with optional
+   trailing commas, in standalone matches and forward pipeline stages.
+   Bare await is ordinary prefix await supplied with the left-hand value;
+   immediate int returns unchanged. std.await remains a Future-only adapter.
+   Other stages are existing callables, including existing |x| -> expr lambdas.
    No separate |> (name) binding syntax. A single lambda parameter receives
    the entire upstream value, including Tuple[T1,...,TN]. Two or more lambda
    parameters destructure ONE statically typed, exact-arity Tuple of the same
@@ -619,15 +658,16 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    an expression is accepted.
 
    Semantic restrictions:
-   - Channel/select waiting has three distinct modes. Plain readch/writech/select
+   - Legacy implemented channel/select waiting has three distinct modes. Plain readch/writech/select
      is suspending; nb registers and returns a Future or arms a legacy detached
      static continuation; try probes once without leaving a waiter.
      Blocking "do select" is procedural: a selected arm's return exits the
      containing callable and a valid break/continue targets its outer loop.
      Legacy "do nb select" instead runs in a detached continuation scope:
      arm returns cannot escape the caller, which has already continued.
-     Static result-producing select and Future<T> lowering remain distinct
-     unimplemented milestones. Dynamic "select from" remains an Option-valued
+     Canonical static expression target is Future<T> by default, select<T>
+     checks the arm result, await explicitly suspends, nb select is deprecated.
+     Tracked static expression lowering remains unimplemented. Dynamic "select from" remains an Option-valued
      expression, and dynamic "nb select from" returns Future<Option<SelectResult>>.
      "cb select" and "nb cb select" are rejected; nb cb writech retains
      its separate literal callback syntax. Static select defaults to deterministic
