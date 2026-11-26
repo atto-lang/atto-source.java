@@ -532,4 +532,37 @@ final class InlineTaskTerminalReturnTest {
         }
         assertEquals("started|inline|outer|#cancelled", output.toString(StandardCharsets.UTF_8));
     }
+
+    @Test void inlineTaskNumericProvenanceIsCheckedAtEveryTypedBoundary() {
+        String good = """
+                pub fnc main(): int {
+                    val int value = sync task<int> { return 42; };
+                    return value;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(good));
+        String wrongArm = """
+                pub fnc main(): int {
+                    val i32 small = 42;
+                    return sync task<int> { return small; };
+                }
+                """;
+        String wrongDestination = """
+                pub fnc main(): int {
+                    val int result = sync task<i32> { return 42; };
+                    return result;
+                }
+                """;
+        String overflowArm = """
+                pub fnc main(): int {
+                    val i32 result = sync task<i32> { return 2147483648; };
+                    return 42;
+                }
+                """;
+        for (String source : new String[] { wrongArm, wrongDestination, overflowArm }) {
+            assertDoesNotThrow(() -> Parser.parseStrictAtto(source));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheckStrictAtto(source));
+        }
+    }
 }

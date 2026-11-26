@@ -6974,6 +6974,13 @@ public final class TypeChecker {
                                 ? typeOf(arm.value(), armEnv, generics, self)
                                 : typeOfAgainstExpected(
                                         arm.value(), declaredResult, armEnv, generics, self);
+                        // Typed value matches also carry the inline sync-task
+                        // result. Check each selected value in its own lexical
+                        // scope before treating the declared width as provenance.
+                        if (declaredResult != null) {
+                            requireStrictNumericSourceAssignment(valueMatch.resultType(),
+                                    arm.value(), armEnv, "value match arm");
+                        }
                     } finally {
                         currentTypeScope = previousTypeScope;
                         loopDepth = previousLoopDepth;
@@ -11658,6 +11665,11 @@ public final class TypeChecker {
         if (expr instanceof Ast.UnaryExpr unary
                 && Set.of("+", "-", "~").contains(unary.operator())) {
             return strictNumericSource(unary.operand(), env);
+        }
+        if (expr instanceof Ast.MatchExpr match && match.resultType() != null) {
+            // typeOf(MatchExpr) checks every arm against this exact source type;
+            // never infer width from the erased result or an untyped match.
+            return strictNumericName(match.resultType());
         }
         if (expr instanceof Ast.ConditionalExpr ternary) {
             String yes = strictNumericSource(ternary.whenTrue(), env);

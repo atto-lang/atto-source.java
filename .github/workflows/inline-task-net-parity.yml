@@ -214,6 +214,7 @@ jobs:
               "nestedValueReturnsKeepBothBranchScopesAndSkipSuffixes",
               "nestedEarlyReturnsUnwindBothDefersOnce",
               "cancellationUnwindsInlineAndScheduledTaskDefersBeforeDone",
+              "inlineTaskNumericProvenanceIsCheckedAtEveryTypedBoundary",
           }
           cases = result.findall("testcase")
           assert result.tag == "testsuite", result.tag
