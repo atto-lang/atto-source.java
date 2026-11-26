@@ -162,4 +162,37 @@ final class CountedSelectTaskCursorTest {
         }
     }
 
+    @Test void projectionFailureRetiresLosersAndNeverConsumesNextPayload() throws Exception {
+        var channel = new ChannelRuntime.Channel<Long>(2);
+        assertTrue(channel.tryWrite(10L)); assertTrue(channel.tryWrite(20L));
+        var producer = new OresFuture<Long>();
+        var selected = new AtomicReference<CountedSelectReadCursor>();
+        var error = new AssertionError("projection failure");
+        try (var scheduler = new OresScheduler(2)) {
+            var task = scheduler.startTracked(resume -> {
+                if (resume.initial()) {
+                    var cursor = CountedSelectReadCursor.taskOwnedOrdered(2,
+                            List.of(ChannelRuntime.read(channel), ChannelRuntime.await(producer)),
+                            ChannelRuntime.SelectPolicy.PRIORITY);
+                    cursor.setTaskArmProjections(List.of(v -> { throw error; }, v -> v));
+                    selected.set(cursor);
+                    return OresScheduler.await(cursor.beginTaskRound());
+                }
+                var cursor = selected.get();
+                assertTrue(cursor.retireRound());
+                assertEquals(CountedSelectReadCursor.State.FAILED, cursor.state());
+                assertSame(error, cursor.failure());
+                assertThrows(IllegalStateException.class, cursor::result);
+                assertThrows(IllegalStateException.class, cursor::beginTaskRound);
+                return OresScheduler.done(42);
+            });
+            assertEquals(42, task.result().get(5, TimeUnit.SECONDS));
+            assertEquals(0, channel.pendingRegistrations());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertFalse(producer.isDone());
+            assertEquals(20L, channel.tryRead().orElseThrow());
+            assertTrue(producer.completeFromRuntime(22L));
+        }
+    }
+
 }
