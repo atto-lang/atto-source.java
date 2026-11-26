@@ -4036,6 +4036,32 @@ public final class Parser {
         }
     }
 
+    /** Return-position comma sequencing uses the existing procedural block IR.
+     * Prefix expressions remain real expression statements, with ordinary
+     * checker/runtime effects and ownership processing, and only the tail
+     * participates in the callable return type. No tuple is constructed.
+     * General expression-position seq is deliberately outside this slice. */
+    private Ast.Stmt parseSequenceReturn() {
+        boolean grouped = match(LPAREN);
+        List<Ast.Stmt> body = new ArrayList<>();
+        if (check(SEMICOLON) || check(RPAREN) || check(COMMA)) {
+            throw error(peek(), "E_SEQ_EMPTY: sequence requires an expression");
+        }
+        Ast.Expr tail = parseExpression();
+        while (match(COMMA)) {
+            if (body.size() >= 127) throw error(previous(), "E_SEQ_LIMIT: at most 128 items");
+            if (check(SEMICOLON) || check(RPAREN) || check(COMMA)) {
+                throw error(peek(), "E_SEQ_COMMA: missing sequence expression");
+            }
+            body.add(new Ast.ExprStmt(tail));
+            tail = parseExpression();
+        }
+        if (grouped) consume(RPAREN, "expected ')' after return seq");
+        consume(SEMICOLON, "return seq requires ';'");
+        body.add(new Ast.ReturnStmt(tail));
+        return new Ast.BlockStmt(body);
+    }
+
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
         if (check(STOP) && (checkNext(IDENT) || checkNext(SELF) || checkNext(BANG))) {
@@ -4234,6 +4260,7 @@ public final class Parser {
             return new Ast.ReturnStmt(value);
         }
         if (match(RETURN)) {
+            if (matchContextualKeyword("seq")) return parseSequenceReturn();
             // Contextual return-maybe: its inner return statements are true
             // FUNCTION_RETURN. It is NOT the value-match ARM_RESULT construct.
             // No synthetic outer ReturnStmt is emitted for diverging arms.

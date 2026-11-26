@@ -168,4 +168,43 @@ final class NamedAggregateTypeBinderTest {
         assertEquals("R", ((Ast.BindingStmt) fn.body().get(0)).inferredTypeName());
         assertEquals("R", ((Ast.BindingStmt) fn.body().get(1)).declaredType().name());
     }
+
+    @Test void sequenceReturnLowersBothSpellingsToProceduralAst() {
+        Ast.FunctionDecl grouped = (Ast.FunctionDecl) Parser.parse(
+                "fnc f(int n): int { return seq (true,\"abc\",n); }")
+                .modules().getFirst().declarations().getFirst();
+        Ast.FunctionDecl bare = (Ast.FunctionDecl) Parser.parse(
+                "fnc f(int n): int { return seq true,\"abc\",n; }")
+                .modules().getFirst().declarations().getFirst();
+        assertEquals(grouped.body(), bare.body());
+        Ast.BlockStmt block = assertInstanceOf(Ast.BlockStmt.class, bare.body().getFirst());
+        assertEquals(3, block.body().size());
+        assertInstanceOf(Ast.ExprStmt.class, block.body().get(0));
+        assertInstanceOf(Ast.ExprStmt.class, block.body().get(1));
+        assertInstanceOf(Ast.ReturnStmt.class, block.body().get(2));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc f(int n): int { return seq true,\"abc\",n; }")));
+    }
+
+    @Test void sequencePrefixesExecuteOnceInSourceOrderInRealGuest() throws Exception {
+        for (String form : new String[]{"seq (prefix(1),prefix(2),42)", "seq prefix(1),prefix(2),42"}) {
+            String source = "fnc prefix(int n): int { stdio.println(n); return n; } "
+                    + "fnc f(): int { return " + form + "; } "
+                    + "pub fnc main(): void { stdio.println(f()); return; }";
+            TypeChecker.check(Parser.parse(source));
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
+                context.eval(Source.newBuilder(OresLanguage.ID, source, "seq-prefix-order.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).build());
+            }
+            assertEquals("1\n2\n42", out.toString(StandardCharsets.UTF_8).trim().replace("\r\n","\n"));
+        }
+    }
+
+    @Test void malformedReturnSequencesFailBeforeLowering() {
+        for (String form : new String[]{"seq", "seq ()", "seq 1,", "seq (1,)", "seq ,42"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc f(): int { return " + form + "; }"), form);
+        }
+    }
 }
