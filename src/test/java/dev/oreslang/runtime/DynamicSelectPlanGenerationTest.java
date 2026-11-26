@@ -103,6 +103,27 @@ final class DynamicSelectPlanGenerationTest {
     }
 
     @Test
+    void reusableWritesRejectSubclassPayloadsBeforeGenerationPublication() {
+        var channel = new ChannelRuntime.Channel<java.math.BigInteger>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("write", ChannelRuntime.write(channel, java.math.BigInteger.ONE));
+        var original = plan.selectSetSnapshot();
+        var hostile = new java.math.BigInteger("7") {
+            @Override public int hashCode() {
+                throw new AssertionError("subclass callback executed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.put("write", ChannelRuntime.write(channel, hostile)));
+        assertThrows(IllegalArgumentException.class,
+                () -> ChannelRuntime.SelectPlan.of(ChannelRuntime.write(channel, hostile)));
+        assertEquals(1L, plan.version());
+        assertSame(original, plan.selectSetSnapshot());
+        assertTrue(plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).isPresent());
+        assertEquals(java.math.BigInteger.ONE, channel.tryRead().orElseThrow());
+    }
+
+    @Test
     void repeatedLoopSelectionsReuseTheDescriptorButNotWinnerOrWaiters() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
