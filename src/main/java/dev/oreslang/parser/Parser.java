@@ -3279,6 +3279,21 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            // The parameter-specific structural sigil must not bypass
+            // the retired lowercase collection type alias rejection.
+            if (check(TILDE) && current + 2 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT) {
+                String kind = tokens.get(current + 1).lexeme();
+                Token.Type suffix = tokens.get(current + 2).type();
+                if ((suffix == LT || suffix == LBRACKET || suffix == LPAREN)
+                        && switch (kind) {
+                            case "array", "tuple", "vector", "fixed_array", "fixed_list",
+                                    "list", "slice", "set", "map", "entry", "pair", "record" -> true;
+                            default -> false;
+                        }) {
+                    throw error(peek(), "removed collection alias; '~' denotes structural typing");
+                }
+            }
             boolean structural = matchContextualKeyword("structural") || match(TILDE);
 
             // Canonical type-first structural spelling: structural Foo y
@@ -6962,7 +6977,7 @@ public final class Parser {
                 case "fixed_list" -> "FixedList";
                 default -> Character.toUpperCase(kind.charAt(0)) + kind.substring(1);
             };
-            throw error(peek(), "'~' is reserved for structural typing; use "
+            throw error(peek(), "removed collection constructor; '~' is reserved for structural typing; use "
                     + canonical + ".of(...) to construct collections");
         }
         if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
@@ -7395,9 +7410,11 @@ public final class Parser {
      */
     private String builtinOfFactory(Ast.Expr callee) {
         if (!(callee instanceof Ast.MemberExpr member)
-                || !member.member().equals("of")
                 || !(member.receiver() instanceof Ast.NameExpr owner)) return null;
         String name = owner.name();
+        if (member.member().equals("of_entries") && name.equals("Map")
+                && !shadowedOfTypes.contains(name)) return "Map.of_entries";
+        if (!member.member().equals("of")) return null;
         if (!BUILTIN_OF_TYPES.contains(name) || shadowedOfTypes.contains(name))
             return null;
         return name;
@@ -7412,7 +7429,8 @@ public final class Parser {
     }
 
     private Ast.Expr parseFactoryOf(String kind, List<Ast.TypeRef> explicitTypes) {
-        if (kind.equals("Map")) {
+        if (kind.equals("Map") || kind.equals("Map.of_entries")) {
+            boolean entryOnly = kind.equals("Map.of_entries");
             Ast.TypeRef witness = null;
             if (explicitTypes != null) {
                 if (explicitTypes.size() != 2
@@ -7426,7 +7444,7 @@ public final class Parser {
                         ? new Ast.ContextualEmptyMapExpr()
                         : new Ast.TypedEmptyAggregateExpr(witness);
             }
-            return parseMapOfEntries(witness);
+            return parseMapOfEntries(witness, entryOnly);
         }
         if (explicitTypes != null) {
             throw error(previous(), kind + ".of<T>(...) requires independently checked typed factory lowering");
@@ -7465,7 +7483,7 @@ public final class Parser {
             if (factory != null && check(LT) && adjacent(previous(), peek())
                     && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> types = parseCallTypeArguments();
-                consume(LPAREN, "expected '(' after " + factory + ".of type arguments");
+                consume(LPAREN, "expected '(' after " + (factory.equals("Map.of_entries") ? factory : factory + ".of") + " type arguments");
                 if (factory.equals("Record")) {
                     throw error(previous(), "Record.of does not admit explicit generic arguments");
                 }
@@ -7481,7 +7499,8 @@ public final class Parser {
                 // Do not allow a bare compiler-owned factory to escape as
                 // a first-class dynamic/host member until it has a typed
                 // function-value representation with ownership and AOT proof.
-                throw error(peek(), factory + ".of must be invoked as a checked collection factory");
+                throw error(peek(), (factory.equals("Map.of_entries") ? factory : factory + ".of")
+                        + " must be invoked as a checked collection factory");
             } else if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
@@ -7886,16 +7905,93 @@ public final class Parser {
      * Map value becomes visible. Mixed record ':' syntax is not accepted.
      * The '=>' token is consumed outside parseExpression's pipeline grammar.
      */
-    private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType) {
+    // Only the unqualified, non-shadowed inline factory spelling is admitted
+    // here. Standalone Pair/Entry values and arbitrary constructor aliases
+    // require the resolved-symbol typed aggregate implementation.
+    private boolean inlineProductFactory(String name) {
+        return !shadowedOfTypes.contains(name) && current + 3 < tokens.size()
+                && check(IDENT) && peek().lexeme().equals(name)
+                && tokens.get(current + 1).type() == DOT
+                && tokens.get(current + 2).lexeme().equals("of")
+                && tokens.get(current + 3).type() == LPAREN;
+    }
+
+    private String readInlinePairString() {
+        Token key = consume(STRING, "Pair.of requires a string literal key in this bounded factory profile");
+        return key.lexeme();
+    }
+
+    private String readInlineRecordPairName() {
+        String name = readInlinePairString();
+        // Use the same lexer as parameter declarations, and require exact
+        // spelling, not merely one token after trivia/comment removal.
+        List<Token> parts = new Lexer(name).scan();
+        if (parts.size() != 2 || parts.getFirst().type() != IDENT
+                || !parts.getFirst().lexeme().equals(name)) {
+            throw error(previous(), "Record.of Pair key must be a valid static parameter identifier");
+        }
+        return name;
+    }
+
+    private void openInlineProductFactory() {
+        advance(); advance(); advance();
+        consume(LPAREN, "expected '(' after inline product factory");
+    }
+
+    private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType, boolean entryOnly) {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+        java.util.Map<String, Integer> constantStringKeyKinds = new java.util.HashMap<>();
         do {
             if (check(ELLIPSIS)) {
                 throw error(peek(), "map spreads require explicit source-ownership "
                         + "and transactional batch proofs");
             }
-            Ast.Expr key = parseExpression();
-            consume(FAT_ARROW, "map literals require '=>' between key and value");
-            Ast.Expr value = parseExpression();
+            Ast.Expr key;
+            Ast.Expr value;
+            int itemKind = 0; // legacy arrow entry
+            if (inlineProductFactory("Pair") || inlineProductFactory("Entry")) {
+                boolean pair = inlineProductFactory("Pair");
+                if (entryOnly && pair)
+                    throw error(peek(), "Map.of_entries accepts Entry items only, not Pair");
+                itemKind = pair ? 1 : 2;
+                openInlineProductFactory();
+                // Dynamic Pair keys are admitted only with an explicit,
+                // concrete string Map witness. The existing Map type gate
+                // independently checks the key expression against that witness.
+                // Contextual/union witnesses still use the literal-only path
+                // until nominal Pair provenance survives into typed HIR.
+                boolean explicitStringKey = mapType != null
+                        && mapType.arguments().size() == 2
+                        && java.util.Set.of("string", "String").contains(mapType.arguments().getFirst().name())
+                        && mapType.arguments().getFirst().arguments().isEmpty()
+                        && !mapType.arguments().getFirst().inferArguments();
+                if (pair && !explicitStringKey) {
+                    if (!check(STRING)) throw error(peek(), "Pair.of requires a string key");
+                    key = parsePrimary();
+                    if (!(key instanceof Ast.LiteralExpr))
+                        throw error(previous(), "Pair.of requires a pure string literal key");
+                } else {
+                    key = parseExpression();
+                    if (pair && key instanceof Ast.LiteralExpr literal
+                            && !(literal.value() instanceof String))
+                        throw error(previous(), "Pair.of requires a string key");
+                }
+                consume(COMMA, "product factory requires key and value");
+                value = parseExpression();
+                consume(RPAREN, "product factory requires exactly two arguments");
+            } else {
+                key = parseExpression();
+                consume(FAT_ARROW, "map literals require '=>' between key and value");
+                value = parseExpression();
+            }
+            // Reject mixed-kind constant duplicates in the new factory syntax.
+            // Preserve legacy homogeneous arrow duplicate detection at runtime.
+            if (key instanceof Ast.LiteralExpr literal && literal.value() instanceof String stringKey) {
+                Integer previousKind = constantStringKeyKinds.putIfAbsent(stringKey, itemKind);
+                if (previousKind != null && (previousKind != 0 || itemKind != 0)) {
+                    throw error(previous(), "duplicate constant key in Map.of");
+                }
+            }
             entries.add(new Ast.MapLiteralEntry(key, value));
             if (entries.size() > 4096) {
                 throw error(peek(), "map literal exceeds 4096 entries");
@@ -7910,21 +8006,40 @@ public final class Parser {
         consume(LPAREN, "expected '(' after Record.of");
         List<Ast.ObjectField> fields = new ArrayList<>();
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        Boolean pairStyle = null;
         while (!check(RPAREN)) {
             if (match(ELLIPSIS)) {
                 // The existing type/ownership checker rejects spreads until
                 // their lifetime and partial-move proof is implemented.
                 fields.add(Ast.ObjectField.spreading(parseExpression()));
             } else {
-                String name = consumeStaticObjectKeyName("expected static Record.of field name");
+                boolean pair = inlineProductFactory("Pair");
+                if (pairStyle != null && pairStyle != pair)
+                    throw error(peek(), "Record.of cannot mix named fields and Pair items in this profile");
+                pairStyle = pair;
+                String name;
+                if (pair) {
+                    openInlineProductFactory();
+                    name = readInlineRecordPairName();
+                    consume(COMMA, "Pair.of requires exactly two arguments");
+                } else {
+                    Token fieldToken = peek();
+                    name = consumeStaticObjectKeyName("expected static Record.of field name");
+                    if (check(FAT_ARROW)) {
+                        throw error(peek(), "mixed record and map entries are forbidden: Record.of does not accept Entry arrows");
+                    }
+                    // Retain existing colon spelling for compatibility.
+                    if (match(EQUAL)) {
+                        if (fieldToken.type() != IDENT)
+                            throw error(fieldToken, "Record.of equals field must be a parameter identifier");
+                    } else consume(COLON, "Record.of requires '=' or legacy ':' after a field name");
+                }
                 if (!names.add(name)) {
                     throw error(previous(), "duplicate named field in Record.of: '" + name + "'");
                 }
-                if (check(FAT_ARROW)) {
-                    throw error(peek(), "mixed record ':' and map '=>' entries are forbidden");
-                }
-                consume(COLON, "Record.of fields use ':' after a static field name; Map.of keys use '=>'");
-                fields.add(Ast.ObjectField.named(name, parseExpression()));
+                Ast.Expr value = parseExpression();
+                if (pair) consume(RPAREN, "Pair.of requires exactly two arguments");
+                fields.add(Ast.ObjectField.named(name, value));
             }
             if (!match(COMMA)) break;
             if (check(RPAREN)) break; // an optional trailing comma
