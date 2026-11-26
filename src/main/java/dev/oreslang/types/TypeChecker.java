@@ -110,6 +110,9 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.TypeAliasDecl, String> typeAliasOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    // The slot arity inventory depends only on declarations, not specialization.
+    // Cache successful results by declaration identity for this checker instance.
+    private final IdentityHashMap<Ast.InterfaceDecl, Map<Ast.MethodArity, Integer>> interfaceArityCache = new IdentityHashMap<>();
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -1972,7 +1975,10 @@ public final class TypeChecker {
 
     private Map<Ast.MethodArity, Integer> validateInterfaceAritySlots(
             Ast.InterfaceDecl iface, Set<Ast.InterfaceDecl> stack) {
-        if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
+        if (stack.contains(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
+        Map<Ast.MethodArity, Integer> cached = interfaceArityCache.get(iface);
+        if (cached != null) return cached;
+        stack.add(iface);
         try {
             Map<Ast.MethodArity, Integer> slots = new LinkedHashMap<>();
             for (Ast.TypeRef parentRef : iface.parents()) {
@@ -2000,7 +2006,9 @@ public final class TypeChecker {
                             + iface.name() + "." + fn.name() + "'");
                 }
             }
-            return slots;
+            Map<Ast.MethodArity, Integer> result = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(slots));
+            interfaceArityCache.put(iface, result);
+            return result;
         } finally {
             stack.remove(iface);
         }
@@ -12473,7 +12481,7 @@ public final class TypeChecker {
                 collectModuleContractActorNames(parent, names, seen);
             }
         }
-        seen.remove(iface);
+        // Keep completed ancestors visited: this traversal accumulates a set of names.
     }
 
     private void collectInterfaceFieldNames(
@@ -12488,7 +12496,7 @@ public final class TypeChecker {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent != null) collectInterfaceFieldNames(parent, names, seen);
         }
-        seen.remove(iface);
+        // Keep completed ancestors visited: this traversal accumulates a set of names.
     }
 
     private void collectInterfaceMethodNames(
@@ -12503,7 +12511,7 @@ public final class TypeChecker {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent != null) collectInterfaceMethodNames(parent, names, seen);
         }
-        seen.remove(iface);
+        // Keep completed ancestors visited: this traversal accumulates a set of names.
     }
 
     private void requireClassMemberVisible(
