@@ -278,6 +278,19 @@ final class ActorSourceTaskFrameTest {
                         chainRef.set(chain);
                         identityBefore.set(OresScheduler.currentExecutionContext());
                         dispatchBefore.set(OresScheduler.currentDispatchId());
+                        int bytesBefore = owner.usedBytes();
+                        int framesBefore = owner.liveFrames();
+                        assertThrows(IllegalArgumentException.class,
+                                () -> chain.pushFrame(100, 7, Integer.MAX_VALUE, Integer.MAX_VALUE));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> chain.pushFrame(100, 7, Integer.MAX_VALUE, 1));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> chain.pushFrame(100, 7, 4096, 1));
+                        assertEquals(bytesBefore, owner.usedBytes());
+                        assertEquals(framesBefore, owner.liveFrames());
+                        assertEquals(0, chain.depth());
+                        assertFalse(owner.isPoisoned(),
+                                "invalid layout must fail before arena mutation");
                         chain.pushFrame(100, 7, 1, 2);
                         chain.writeLocal(0, 41L);
                         chain.setProgramCounter(11);
