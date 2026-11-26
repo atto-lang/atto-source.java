@@ -121,4 +121,18 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isGuestCatchable(ordinary, GuestPanic.class));
     }
 
+
+    @Test void reservedBudgetFailuresRemainTerminalAndDoNotGainTraceMarkers() {
+        var failure = new ActorFrameArena.BudgetExceeded("reserved quota failure");
+        assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(failure, GuestPanic.class));
+        assertSame(failure, SourceBoundaryTrace.record(failure, "worker.atto", "receive", "call"));
+        assertEquals(0, failure.getSuppressed().length);
+        assertFalse(TrapFailurePolicy.isTrappable(new CompletionException(failure), GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(new CompletionException(failure), GuestPanic.class));
+        var depth = new GuestCallDepthExceededException(64);
+        assertFalse(TrapFailurePolicy.isTrappable(depth, GuestPanic.class));
+        assertSame(depth, SourceBoundaryTrace.record(depth, "worker.atto", "receive", "call"));
+        assertEquals(0, depth.getSuppressed().length);
+    }
 }
