@@ -697,7 +697,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env initializerEnv =
                         new Env(null, false, fieldOwner, object);
                 initializerEnv.define("self", object, Ast.BindingKind.VAL, fieldOwner);
-                fields.put(
+                object.fields.initialize(
                         field.name(),
                         eval(field.initializer(), initializerEnv));
             }
@@ -714,7 +714,7 @@ public final class OresEvalRootNode extends RootNode {
                 executeActorStartup(object, startup);
             }
 
-            for (Map.Entry<String, Object> field : fields.entrySet()) {
+            for (Map.Entry<String, Object> field : object.fields.view().entrySet()) {
                 if (field.getValue() == UNINITIALIZED_FIELD) {
                     throw new IllegalStateException(
                             "actor '" + klass.name()
@@ -723,6 +723,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            object.fields.finishInitialization();
             return new SourceActorState(
                     actorContext.self().id(),
                     actorTypeName,
@@ -5993,7 +5994,7 @@ public final class OresEvalRootNode extends RootNode {
                                     + " does not contain statically admitted field "
                                     + staticClass.name() + "." + fieldName);
                 }
-                object.fields.put(fieldName, value);
+                object.fields.replace(fieldName, value);
                 return value;
             }
             if (receiver instanceof MutableStructValue rawStruct) {
@@ -6056,7 +6057,10 @@ public final class OresEvalRootNode extends RootNode {
                                         + "." + member.member()
                                         + "' is immutable");
                     }
-                    object.fields.put(member.member(), value);
+                    object.owner.requireClassMemberVisible(
+                            targetField.field().visibility(), targetField.owner(),
+                            env.accessClass(), "field", member.member());
+                    object.fields.replace(member.member(), value);
                     return value;
                 }
                 if (receiver instanceof MutableStructValue rawRecord) {
@@ -6365,10 +6369,12 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 if (value instanceof OresObject object) {
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                    for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                    for (Map.Entry<String, Object> entry : object.fields.view().entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
-                    return new OresObject(object.owner, object.klass, fields);
+                    OresObject detached = new OresObject(object.owner, object.klass, fields);
+                    detached.fields.finishInitialization();
+                    return detached;
                 }
                 if (value instanceof ReadonlyRecordValue readonly) {
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
@@ -8004,7 +8010,9 @@ public final class OresEvalRootNode extends RootNode {
                     fields.put(field.name(), copyScalarV1(
                             (dev.oreslang.types.DerivedCopyPlanV1.Scalar) field.plan(), payload));
                 }
-                return new OresObject(this, source.klass, fields);
+                OresObject result = new OresObject(this, source.klass, fields);
+                result.fields.finishInitialization();
+                return result;
             }
             return executeDerivedCopyV1(plan, value, new java.util.IdentityHashMap<>(),
                     new java.util.IdentityHashMap<>(), new int[]{0}, 0);
@@ -8094,10 +8102,11 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "E_COPY_TYPE: missing/uninitialized field " + field.name());
                     }
-                    copiedFields.put(field.name(), executeDerivedCopyV1(
+                    result.fields.initialize(field.name(), executeDerivedCopyV1(
                             field.plan(), source.fields.get(field.name()),
                             copied, copyTypes, visited, depth + 1));
                 }
+                result.fields.finishInitialization();
                 return result;
             }
             throw new IllegalArgumentException("E_COPY_UNPROVEN: unknown copy plan");
@@ -8285,7 +8294,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                     + target.member() + "' is immutable");
                         }
-                        object.fields.put(target.member(), value);
+                        object.fields.replace(target.member(), value);
                         return value;
                     }
                     // Concrete inferred/explicit structs use this mutable owned-map path.
@@ -10626,8 +10635,9 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "missing constructor field " + klass.name() + "." + field.name());
                     }
-                    fields.put(field.name(), value);
+                    object.fields.initialize(field.name(), value);
                 }
+                object.fields.finishInitialization();
                 return object;
             }
 
@@ -10695,7 +10705,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env initializerEnv = new Env(
                         fieldOwner == klass ? scalarInitializerArgs : null,
                         false, fieldOwner, null);
-                fields.put(field.name(), eval(field.initializer(), initializerEnv));
+                object.fields.initialize(field.name(), eval(field.initializer(), initializerEnv));
             }
 
             try {
@@ -10710,13 +10720,14 @@ public final class OresEvalRootNode extends RootNode {
                         "loop control cannot cross a constructor boundary", signal);
             }
 
-            for (Map.Entry<String, Object> field : fields.entrySet()) {
+            for (Map.Entry<String, Object> field : object.fields.view().entrySet()) {
                 if (field.getValue() == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException(
                             "constructor for " + klass.name()
                                     + " did not initialize field '" + field.getKey() + "'");
                 }
             }
+            object.fields.finishInitialization();
             return object;
         }
 
@@ -12241,7 +12252,7 @@ public final class OresEvalRootNode extends RootNode {
                         && containsLiveMutexGuard(future.getNow(null), seen);
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fields.view().values()) {
                     if (containsLiveMutexGuard(field, seen)) return true;
                 }
                 return false;
@@ -12353,7 +12364,7 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fields.view().values()) {
                     releaseMutexGuardsInValue(
                             field, failed, seen, releaseErrors);
                 }
@@ -12505,13 +12516,13 @@ public final class OresEvalRootNode extends RootNode {
     private static final class OresObject implements OresMutex.SharedState {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
-        private final Map<String,Object> fields;
+        private final dev.oreslang.types.GuestClassSlots fields;
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;
-            this.fields = fields;
+            this.fields = new dev.oreslang.types.GuestClassSlots(fields);
         }
-        @Override public Iterable<?> sharedStateChildren(){return fields.values();}
+        @Override public Iterable<?> sharedStateChildren(){return fields.view().values();}
         @Override public String toString() { return CycleSafeDisplay.render(this); }
     }
 
@@ -12572,7 +12583,7 @@ public final class OresEvalRootNode extends RootNode {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
-                        for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                        for (Map.Entry<String, Object> entry : object.fields.view().entrySet()) {
                             if (!first) write(", ");
                             first = false;
                             write(entry.getKey());
@@ -12825,7 +12836,7 @@ public final class OresEvalRootNode extends RootNode {
                 return runtimeSharedSafe(readonly.value(), seen);
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fields.view().values()) {
                     if (!runtimeSharedSafe(field, seen)) return false;
                 }
                 return true;
