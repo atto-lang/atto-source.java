@@ -31,6 +31,9 @@ public final class ShallowSlotDomain {
     private final Map<Loan, Set<Node>> loans = new IdentityHashMap<>();
     private final Map<Node, Integer> holders = new IdentityHashMap<>();
     private final Map<Node, Integer> readers = new IdentityHashMap<>();
+    private record Exclusive(Owner owner, Set<Node> reach) { }
+    private final Map<Loan, Exclusive> exclusive = new IdentityHashMap<>();
+    private final Map<Node, Loan> writers = new IdentityHashMap<>();
     private final int maxRoots, maxLoans, maxWork;
 
     public ShallowSlotDomain(int maxRoots, int maxLoans, int maxWork) {
@@ -57,7 +60,7 @@ public final class ShallowSlotDomain {
     private void writable(Root root, Node node) {
         reachable(root, node);
         if (holders.getOrDefault(node, 0) != 1) throw error("E_COPY_READONLY");
-        if (readers.containsKey(node)) throw error("E_COPY_LOAN");
+        if (readers.containsKey(node) || writers.containsKey(node)) throw error("E_COPY_LOAN");
     }
     private static void adjust(Map<Node, Integer> counts, Set<Node> nodes, int delta) {
         for (Node node : nodes) {
@@ -75,8 +78,8 @@ public final class ShallowSlotDomain {
             if (++work > maxWork) throw error("E_COPY_BUDGET");
             if (!seen.add(node)) continue;
             for (var entry : node.slots.entrySet()) {
-                if (++work > maxWork) throw error("E_COPY_BUDGET");
                 if (edit != null && node == edit.node() && entry.getKey().equals(edit.key())) continue;
+                if (++work > maxWork) throw error("E_COPY_BUDGET");
                 if (entry.getValue().value() instanceof Node child) pending.add(child);
             }
             if (edit != null && node == edit.node() && edit.next() != null) {
@@ -107,12 +110,16 @@ public final class ShallowSlotDomain {
     public synchronized Node node(Owner owner) { return root(owner).node(); }
     public synchronized Object read(Owner owner, Node node, String key) {
         reachable(root(owner), node);
+        if (writers.containsKey(node)) throw error("E_COPY_LOAN");
         Slot slot = node.slots.get(key);
         return slot == null ? null : slot.value();
     }
     public synchronized Owner shallowCopy(Owner owner) {
         Root source = root(owner);
-        for (Node node : source.reach()) if (node.noCopy) throw error("E_COPY_FORBIDDEN");
+        for (Node node : source.reach()) {
+            if (node.noCopy) throw error("E_COPY_FORBIDDEN");
+            if (writers.containsKey(node)) throw error("E_COPY_LOAN");
+        }
         Node clone = new Node(source.node().dynamic, false, new LinkedHashMap<>(source.node().slots));
         return publish(clone, walk(clone, null));
     }
@@ -125,6 +132,10 @@ public final class ShallowSlotDomain {
         return new Slot(value, true);
     }
     private void commit(Owner owner, Root root, Edit edit, Set<Node> after) {
+        // An exclusive loan must not lose its owning path during a slot edit.
+        for (Node node : root.reach()) {
+            if (writers.containsKey(node) && !after.contains(node)) throw error("E_COPY_LOAN");
+        }
         // All semantic checks and bounded traversal precede the first write.
         if (edit.next() == null) edit.node().slots.remove(edit.key());
         else edit.node().slots.put(edit.key(), edit.next());
@@ -138,7 +149,16 @@ public final class ShallowSlotDomain {
     }
     public synchronized void setScalar(Owner owner, Node node, String key, Object value) {
         scalar(value);
-        replace(owner, root(owner), node, key, value);
+        Root root = root(owner);
+        Slot next = replacement(root, node, key, value);
+        Slot old = node.slots.get(key);
+        if (old != null && !(old.value() instanceof Node)) {
+            // Same slot, no edge added/removed and no reachability charge change.
+            node.slots.put(key, next);
+            return;
+        }
+        Edit edit = new Edit(node, key, next);
+        commit(owner, root, edit, walk(root.node(), edit));
     }
     public synchronized void linkWithin(Owner owner, Node node, String key, Node value) {
         Root root = root(owner);
@@ -165,25 +185,64 @@ public final class ShallowSlotDomain {
     }
     public synchronized Loan readLoan(Owner owner, Node node) {
         reachable(root(owner), node);
-        if (loans.size() >= maxLoans) throw error("E_COPY_BUDGET");
+        if (loans.size() + exclusive.size() >= maxLoans) throw error("E_COPY_BUDGET");
         Set<Node> reach = walk(node, null);
+        for (Node child : reach) if (writers.containsKey(child)) throw error("E_COPY_LOAN");
         Loan loan = new Loan();
         loans.put(loan, reach);
         adjust(readers, reach, 1);
         return loan;
     }
+    public synchronized Loan exclusiveLoan(Owner owner, Node node) {
+        Root root = root(owner);
+        reachable(root, node);
+        if (loans.size() + exclusive.size() >= maxLoans) throw error("E_COPY_BUDGET");
+        Set<Node> reach = walk(node, null);
+        for (Node child : reach) writable(root, child);
+        Loan loan = new Loan();
+        exclusive.put(loan, new Exclusive(owner, reach));
+        for (Node child : reach) writers.put(child, loan);
+        return loan;
+    }
+    private void requireWriter(Loan loan, Node node) {
+        Exclusive proof = exclusive.get(loan);
+        if (proof == null) throw error("E_COPY_STALE");
+        if (writers.get(node) != loan || !root(proof.owner()).reach().contains(node)) {
+            throw error("E_COPY_DOMAIN");
+        }
+    }
+    public synchronized Object readExclusive(Loan loan, Node node, String key) {
+        requireWriter(loan, node);
+        Slot slot = node.slots.get(key);
+        return slot == null ? null : slot.value();
+    }
+    // Initial exclusive-loan mutation profile: existing scalar slots only.
+    public synchronized void setExclusiveScalar(Loan loan, Node node, String key, Object value) {
+        requireWriter(loan, node);
+        scalar(value);
+        Slot old = node.slots.get(key);
+        if (old == null || old.value() instanceof Node) throw error("E_COPY_LAYOUT");
+        if (!old.writable()) throw error("E_COPY_READONLY_SLOT");
+        node.slots.put(key, new Slot(value, true));
+    }
     public synchronized void release(Loan loan) {
+        Exclusive proof = exclusive.remove(loan);
+        if (proof != null) {
+            for (Node node : proof.reach()) writers.remove(node);
+            return;
+        }
         Set<Node> reach = loans.remove(loan);
         if (reach == null) throw error("E_COPY_STALE");
         adjust(readers, reach, -1);
     }
     public synchronized void drop(Owner owner) {
         Root root = root(owner);
+        for (Node node : root.reach()) if (writers.containsKey(node)) throw error("E_COPY_LOAN");
         roots.remove(owner);
         adjust(holders, root.reach(), -1);
     }
     public synchronized boolean canWrite(Owner owner, Node node) {
         Root root = root(owner);
-        return root.reach().contains(node) && holders.getOrDefault(node, 0) == 1 && !readers.containsKey(node);
+        return root.reach().contains(node) && holders.getOrDefault(node, 0) == 1 && !readers.containsKey(node) && !writers.containsKey(node);
     }
 }
