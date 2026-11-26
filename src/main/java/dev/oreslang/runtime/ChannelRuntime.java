@@ -1159,7 +1159,7 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        /** Captured under COORDINATOR at admission, after preceding FAIR commits. */
+        /** Registration ticket order and fixed RANDOM/PRIORITY scan order. */
         private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
@@ -1588,6 +1588,21 @@ public final class ChannelRuntime {
         } while (progressed);
     }
 
+    // COORDINATOR guards commits and each preference scan. FAIR must read
+    // the generation's current cursor on every scan, including rendezvous
+    // peer checks. RANDOM retains its original per-invocation permutation.
+    private static int fairStartLocked(SelectRegistration selection) {
+        return selection.policy == SelectPolicy.FAIR
+                ? Math.floorMod(selection.set.fairCursor.get(), selection.order.length)
+                : 0;
+    }
+
+    private static int scanIndex(SelectRegistration selection, int start, int offset) {
+        return selection.policy == SelectPolicy.FAIR
+                ? (start + offset) % selection.order.length
+                : selection.order[offset];
+    }
+
     private static CaseRegistration preferredCommittableCaseLocked(
             SelectRegistration selection) {
         if (selection.decided) return null;
@@ -1601,7 +1616,9 @@ public final class ChannelRuntime {
         // completion authorities, even when their values compare equal.
         // IdentityHashMap accepts null values so PENDING is cached too.
         java.util.IdentityHashMap<OresFuture<?>, Object> observedFutureStates = null;
-        for (int index : selection.order) {
+        int start = fairStartLocked(selection);
+        for (int offset = 0; offset < selection.order.length; offset++) {
+            int index = scanIndex(selection, start, offset);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -1661,7 +1678,9 @@ public final class ChannelRuntime {
         java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
                 new java.util.IdentityHashMap<>();
 
-        for (int index : selection.order) {
+        int start = fairStartLocked(selection);
+        for (int offset = 0; offset < selection.order.length; offset++) {
+            int index = scanIndex(selection, start, offset);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
