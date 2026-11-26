@@ -5791,8 +5791,7 @@ public final class Parser {
                     : "pipeline match requires 'over' and takes its subject from the left-hand value");
         }
 
-        // Preserve the historical braced outer match as compatibility syntax.
-        // Canonical syntax is match value over ... end.
+        // Both outer delimiter styles are equivalent value matches.
         boolean braced = match(LBRACE);
         List<Ast.MatchValueArm> valueArms = new ArrayList<>();
         boolean seenDefault = false;
@@ -5839,25 +5838,11 @@ public final class Parser {
                         "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
 
-            if (braced) {
-                // Historical outer-brace value matches remain one-return arms.
-                match(ARROW);
-                List<Ast.Stmt> body = parseBlock();
-                if (canonicalAttoSource) {
-                    valueArms.add(canonicalBracedValueMatchArm(pattern, guard, body));
-                } else {
-                    if (body.size() != 1
-                            || !(body.getFirst() instanceof Ast.ReturnStmt returned)
-                            || returned.value() == null) {
-                        throw error(previous(),
-                                "legacy braced value match arms require exactly one 'return expression;'");
-                    }
-                    valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
-                }
-                continue;
+            // Both outer delimiter styles use the same expression and block
+            // arms. Retain the historical arrow-less braced block spelling.
+            if (!match(ARROW) && !(braced && check(LBRACE))) {
+                throw error(peek(), "value match arms use the slim arrow '->'");
             }
-
-            consume(ARROW, "value match arms use the slim arrow '->'");
 
             if (match(DOUBLE_COLON)) {
                 List<Ast.Stmt> body = parseUntil(END);
@@ -5880,7 +5865,7 @@ public final class Parser {
             }
 
             if (check(LBRACE)) {
-                // Compatibility with prior over/end braced arms.
+                // A block arm is independent of the outer match delimiter.
                 List<Ast.Stmt> body = parseBlock();
                 if (canonicalAttoSource) {
                     valueArms.add(canonicalBracedValueMatchArm(pattern, guard, body));
@@ -5904,10 +5889,9 @@ public final class Parser {
             // Do not let arbitrary expressions substitute for an arm terminator.
             if (!match(SEMICOLON, COMMA)
                     && !check(DEFAULT)
-                    && !check(END)
-                    && !(braced && check(RBRACE))
+                    && !(braced ? check(RBRACE) : check(END))
                     && !(check(IDENT) && peek().lexeme().equals("on"))) {
-                throw error(peek(), "value match arm requires ',', ';', 'on', 'default' or 'end' boundary");
+                throw error(peek(), "value match arm requires ',', ';', 'on', 'default' or the match closing delimiter");
             }
             valueArms.add(new Ast.MatchValueArm(pattern, guard, value));
         }
