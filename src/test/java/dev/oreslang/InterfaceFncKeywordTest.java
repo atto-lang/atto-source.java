@@ -28,6 +28,8 @@ final class InterfaceFncKeywordTest {
     @Test
     void genericFieldsRemainFieldsAndReceiverSyntaxDoesNotEscapeModuleContracts() {
         assertDoesNotThrow(() -> Parser.parse("define interface Api as List<int> values; end"));
+        assertDoesNotThrow(() -> Parser.parse("define interface Api as mtd value; end"));
+        assertDoesNotThrow(() -> Parser.parse("define interface Api as method value; end"));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
                 "define interface Api as mtd run(Actor self)(): int; end"));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(

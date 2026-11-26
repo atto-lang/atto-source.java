@@ -2383,7 +2383,8 @@ public final class Parser {
             // A nominal signature has exactly one optional method introducer;
             // an actor receiver followed by a second argument list is not one.
             boolean explicitFnc = match(FNC);
-            boolean explicitMethod = !moduleContract && !explicitFnc && matchExplicitMethodMarker();
+            boolean explicitMethod = !moduleContract && !explicitFnc
+                    && matchInterfaceMethodMarker();
             if (explicitFnc || explicitMethod || looksLikeBareInterfaceSignature()) {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
                 validateInterfaceCallableModifiers(memberModifiers);
@@ -2444,6 +2445,20 @@ public final class Parser {
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
         return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+    }
+
+    /** A contextual prefix needs a callable head, not a type/field pair. */
+    private boolean matchInterfaceMethodMarker() {
+        if (current + 2 >= tokens.size()) return false;
+        Token.Type afterName = tokens.get(current + 2).type();
+        if (afterName != LPAREN && afterName != LT) return false;
+        // NEW is an admitted interface member name but not a general identifier.
+        if ((isContextualIdentifier("mtd") || isContextualIdentifier("method"))
+                && tokens.get(current + 1).type() == NEW) {
+            advance();
+            return true;
+        }
+        return matchExplicitMethodMarker();
     }
 
     /** Distinguish name<T>(...) from type<T> field without consuming tokens. */
