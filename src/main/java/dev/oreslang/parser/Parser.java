@@ -5748,6 +5748,11 @@ public final class Parser {
      * MatchExpr rather than the enclosing callable's control flow.
      */
     private Ast.MatchExpr parseValueMatch() {
+        return parseValueMatch(null);
+    }
+
+    /** A forward pipeline supplies the subject directly, without a synthetic call or lambda. */
+    private Ast.MatchExpr parseValueMatch(Ast.Expr injectedSubject) {
         // A single result type is an expression constraint, not the subject type.
         // Preserve the historical <ret=T> spelling while preferring <T>.
         boolean canonicalFirst = matchContextualIdentifier("first");
@@ -5769,17 +5774,21 @@ public final class Parser {
         // Unlike ordinary match, the first form authorizes ordered overlaps.
         boolean legacyFirst = !canonicalFirst && matchContextualIdentifier("first");
 
-        boolean previousSuppression = suppressRefinementOperators;
-        suppressRefinementOperators = true;
-        Ast.Expr subject;
-        try {
-            subject = parseExpression();
-        } finally {
-            suppressRefinementOperators = previousSuppression;
+        Ast.Expr subject = injectedSubject;
+        if (subject == null) {
+            boolean previousSuppression = suppressRefinementOperators;
+            suppressRefinementOperators = true;
+            try {
+                subject = parseExpression();
+            } finally {
+                suppressRefinementOperators = previousSuppression;
+            }
         }
 
         if (!(match(OVER) || matchContextualIdentifier("over"))) {
-            throw error(peek(), "value match requires 'over' before its arms");
+            throw error(peek(), injectedSubject == null
+                    ? "value match requires 'over' before its arms"
+                    : "pipeline match requires 'over' and takes its subject from the left-hand value");
         }
 
         // Preserve the historical braced outer match as compatibility syntax.
@@ -5866,6 +5875,7 @@ public final class Parser {
                 }
                 valueArms.add(new Ast.MatchValueArm(
                         pattern, guard, List.copyOf(prefix), returned.value()));
+                match(COMMA);
                 continue;
             }
 
@@ -5883,6 +5893,7 @@ public final class Parser {
                     }
                     valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
                 }
+                match(COMMA);
                 continue;
             }
 
@@ -5891,12 +5902,12 @@ public final class Parser {
             // Retain ';' for compatibility, but the canonical over/on/default/end
             // grammar also allows adjacent arms without redundant punctuation.
             // Do not let arbitrary expressions substitute for an arm terminator.
-            if (!match(SEMICOLON)
+            if (!match(SEMICOLON, COMMA)
                     && !check(DEFAULT)
                     && !check(END)
                     && !(braced && check(RBRACE))
                     && !(check(IDENT) && peek().lexeme().equals("on"))) {
-                throw error(peek(), "value match arm requires ';', 'on', 'default' or 'end' boundary");
+                throw error(peek(), "value match arm requires ',', ';', 'on', 'default' or 'end' boundary");
             }
             valueArms.add(new Ast.MatchValueArm(pattern, guard, value));
         }
@@ -6402,6 +6413,12 @@ public final class Parser {
             Token operator = previous();
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
+            }
+            // A match stage consumes the accumulated expression as its subject.
+            // Reuse the normal match AST, including its type and ownership checks.
+            if (match(MATCH)) {
+                value = parseValueMatch(value);
+                continue;
             }
             // std.await is a *unary*, compiler-owned suspension stage, not a
             // callable value, factory, or Future.map/flat_map. Reuse the same
