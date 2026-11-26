@@ -8730,10 +8730,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new GuestCallDepthExceededException(
                             GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
                 }
-                if (frameArena.isPoisoned()) {
-                    throw new ActorFrameArena.BudgetExceeded(
-                            "actor-owned frame byte quota exhausted");
-                }
+                frameArena.checkTerminalBudgetFailure();
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput()
@@ -8854,10 +8851,7 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new GuestCallDepthExceededException(
                                 GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
                     }
-                    if (frameArena.isPoisoned()) {
-                        throw new ActorFrameArena.BudgetExceeded(
-                                "actor-owned frame byte quota exhausted");
-                    }
+                    frameArena.checkTerminalBudgetFailure();
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.
                     if (!envelope.isContinuation() && !sourceReceiveSuspended) {
