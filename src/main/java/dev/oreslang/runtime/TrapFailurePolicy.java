@@ -27,6 +27,8 @@ public final class TrapFailurePolicy {
 
     private TrapFailurePolicy() { }
 
+    private record Visit(Throwable failure, boolean typedSuppression) { }
+
     public static boolean isTrappable(
             RuntimeException failure, Class<? extends Throwable> panicType) {
         return permits(failure, panicType, false);
@@ -43,23 +45,25 @@ public final class TrapFailurePolicy {
         Objects.requireNonNull(failure, "failure");
         Objects.requireNonNull(panicType, "panicType");
 
-        ArrayDeque<Throwable> pending = new ArrayDeque<>();
+        ArrayDeque<Visit> pending = new ArrayDeque<>();
         IdentityHashMap<Throwable, Boolean> visited = new IdentityHashMap<>();
-        pending.addLast(failure);
+        pending.addLast(new Visit(failure, false));
         while (!pending.isEmpty()) {
             if (visited.size() >= MAX_FAILURE_NODES) return false;
-            Throwable current = pending.removeFirst();
+            Visit visit = pending.removeFirst();
+            Throwable current = visit.failure();
             if (visited.put(current, Boolean.TRUE) != null) return false;
-            // Only a directly thrown typed guest signal can preserve its
-            // original Error identity at a synchronous catch/trap boundary.
-            // A host/async wrapper around it is not an authentic typed
-            // source throw and must not be converted to a sanitized Err.
-            if (current instanceof GuestOrdinaryThrow && current != failure) return false;
+            // A typed primary preserves its own Error identity. A second
+            // directly suppressed typed cleanup error is ordinary too, but a
+            // typed signal hidden behind any cause/host wrapper is not admitted.
+            if (current instanceof GuestOrdinaryThrow && current != failure
+                    && !visit.typedSuppression()) return false;
             // These are JVM/engine implementation faults, not typed Atto
             // `throw Error(...)` values. Never turn them into a guest Err,
             // even if an async wrapper or cleanup suppression hides the cause.
             // Checked integer overflow is terminal, not an ordinary throw.
             if (panicType.isInstance(current)
+                    || current instanceof UntrappableTaskFailure
                     || current instanceof Error
                     || current instanceof NullPointerException
                     || current instanceof ClassCastException
@@ -81,14 +85,17 @@ public final class TrapFailurePolicy {
                 return false;
             }
             Throwable cause = current.getCause();
-            if (cause != null) pending.addLast(cause);
+            if (cause != null) pending.addLast(new Visit(cause, false));
             for (Throwable suppressed : current.getSuppressed()) {
                 // Trusted source-boundary markers are stackless diagnostics, not
                 // additional throwable causes or exceptional control effects.
                 // Counting them could turn an ordinary throw into a non-trappable
                 // failure merely because source tracing was enabled.
                 if (suppressed instanceof SourceBoundaryTrace) continue;
-                pending.addLast(suppressed);
+                pending.addLast(new Visit(suppressed,
+                        current instanceof GuestOrdinaryThrow
+                                && (current == failure || visit.typedSuppression())
+                                && suppressed instanceof GuestOrdinaryThrow));
                 if (pending.size() + visited.size() > MAX_FAILURE_NODES) return false;
             }
             if (pending.size() + visited.size() > MAX_FAILURE_NODES) return false;
