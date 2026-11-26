@@ -52,7 +52,7 @@ final class PinnedNamespaceInventoryTest {
         assertEquals("1",out.toString(StandardCharsets.UTF_8).strip());
         assertEquals(1,warm.inventoryParsed());assertEquals(2,warm.inventoryReused());
         assertEquals(0,warm.consumerParsed());
-        assertTrue(warm.build().rebuilt().isEmpty());
+        assertTrue(warm.build().rebuiltUnits().isEmpty());
         assertEquals(cold.build().units().keySet(),warm.build().units().keySet());
         System.out.println("JAVA_PINNED_BOUND_CHECK|fresh-pins|local-edit|zero-rebuilt-units|actual-guest");
     }
@@ -62,11 +62,11 @@ final class PinnedNamespaceInventoryTest {
         var edited=Map.of("main.ores","pub fnc main(): int { return 43; }");
         accepted.compile(initial);
         var candidate=accepted.fork();
-        assertFalse(candidate.compile(edited).rebuilt().isEmpty());
-        assertTrue(accepted.compile(initial).rebuilt().isEmpty());
-        assertTrue(candidate.compile(edited).rebuilt().isEmpty());
+        assertFalse(candidate.compile(edited).rebuiltUnits().isEmpty());
+        assertTrue(accepted.compile(initial).rebuiltUnits().isEmpty());
+        assertTrue(candidate.compile(edited).rebuiltUnits().isEmpty());
         candidate.compile(Map.of());
-        assertTrue(accepted.compile(initial).rebuilt().isEmpty());
+        assertTrue(accepted.compile(initial).rebuiltUnits().isEmpty());
         System.out.println("JAVA_CHECK_TRANSACTION|fork-isolation|discard|deletion-isolation");
     }
 }
