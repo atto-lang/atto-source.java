@@ -95,12 +95,23 @@ final class SupervisorFailureEscrowV1 {
             Collections.newSetFromMap(new IdentityHashMap<>());
     private long nextReservation = 1;
     private long rootId;
+    private final SupervisorReclamationGuardV1 reclamation;
+
+    SupervisorFailureEscrowV1() { this(false); }
+
+    // Opt-in only: bridge must issue identities in ledger publication order
+    // and independently drain every external reference before reclamation.
+    SupervisorFailureEscrowV1(boolean recyclable) {
+        reclamation = new SupervisorReclamationGuardV1(recyclable);
+    }
 
     /** Admission reserves exactly one terminal notice identity before publish. */
     synchronized void registerRoot(long id, long generation) {
         if (!nodes.isEmpty()) throw new IllegalStateException("root already registered");
         requireIdentity(id, generation);
+        reclamation.requireFresh(id);
         Cell root = new Cell(id, 0, generation, reserve(), 1, null);
+        reclamation.issued(id);
         nodes.put(id, root);
         terminalIndex[terminalIndexSize++] = root;
         rootId = id;
@@ -115,7 +126,9 @@ final class SupervisorFailureEscrowV1 {
         if (!parent.alive || parent.fenced || parent.depth >= MAX_DEPTH) {
             throw new IllegalStateException("supervisor cannot admit a child");
         }
+        reclamation.requireFresh(id);
         Cell child = new Cell(id, parentId, generation, reserve(), parent.depth + 1, parent);
+        reclamation.issued(id);
         nodes.put(id, child);
         terminalIndex[terminalIndexSize++] = child;
     }
@@ -286,6 +299,24 @@ final class SupervisorFailureEscrowV1 {
         Cell cell = requireNode(id);
         return new DataAdmissionStatus(
                 cell.dataInFlight, cell.dataCommitted, cell.dataAborted);
+    }
+
+    /** Host-only leaf reclamation. External observations must be authenticated,
+     * stable and coordinated with the runtime bridge; this method itself does
+     * not establish physical release or drain external references. Disabled
+     * for the existing runtime bridge until those conditions are enforced. */
+    synchronized boolean reclaimRetiredLeaf(long id, long generation,
+            boolean physicalReleased, boolean recoveryDrained,
+            boolean decisionsDrained, boolean restartDispositionResolved) {
+        Cell cell = findTerminalNode(id);
+        if (cell == null || cell.generation != generation) return false;
+        if (!reclamation.canReclaim(id == rootId, cell.alive, cell.fenced,
+                cell.pending, cell.delivery != null, cell.dataInFlight,
+                hasDescendants(cell), physicalReleased, recoveryDrained,
+                decisionsDrained, restartDispositionResolved)) return false;
+        if (nodes.remove(id) != cell) throw new IllegalStateException("missing CONTROL registry cell");
+        removeTerminalIndex(cell);
+        return true;
     }
 
     synchronized int pendingCount() {

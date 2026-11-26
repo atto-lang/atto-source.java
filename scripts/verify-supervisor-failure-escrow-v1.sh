@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source_path='src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java'
 test_path='src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowV1Standalone.java'
-source_blob='1286b22fcd65da3c6546d5c4c9eb87149dcc5d39'
+source_blob='46b0ccdc670f9644b39aac7f5d1ec27c300f32a7'
 test_blob='b0b752af617fb29663977221e61a6a8c6f3e13c9'
 race_path='src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java'
 race_blob='4f44466d69b4440400d1d5de533917d1b7257521'
@@ -16,9 +16,12 @@ atomic_blob='284532af34835a01fca70cf682c0206c39b5af69'
 workspace_path='src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java'
 workspace_blob='11b998eda8b2a235b594c2cdd0e94da2818b0200'
 [[ "$(git hash-object "$workspace_path")" == "$workspace_blob" ]] || { echo 'WORKSPACE_BLOB_MISMATCH' >&2; exit 2; }
+guard_path='src/main/java/dev/oreslang/runtime/SupervisorReclamationGuardV1.java'
+guard_blob='69b3e0750fa359c1cd2e1ba8ce30bb3bdaa1eec1'
+[[ "$(git hash-object "$guard_path")" == "$guard_blob" ]] || { echo 'GUARD_BLOB_MISMATCH' >&2; exit 2; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-javac -Xlint:all -Werror -d "$work" "$workspace_path" "$source_path" "$test_path" "$race_path" "$atomic_path"
+javac -Xlint:all -Werror -d "$work" "$guard_path" "$workspace_path" "$source_path" "$test_path" "$race_path" "$atomic_path"
 java -cp "$work" dev.oreslang.runtime.SupervisorFailureEscrowV1Standalone | tee "$work/result.txt"
 grep -Fxq 'PASS SupervisorFailureEscrowV1Standalone assertions=74304' "$work/result.txt"
 grep -Fxq 'SATURATED_CONTROL_NODES=4096 DATA_PERMITS=65536 FAILURE_PUBLICATION_ALLOCATED_BYTES=0' "$work/result.txt"

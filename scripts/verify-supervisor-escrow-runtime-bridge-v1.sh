@@ -10,7 +10,7 @@ verify_blob() {
     exit 2
   fi
 }
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 1286b22fcd65da3c6546d5c4c9eb87149dcc5d39
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 46b0ccdc670f9644b39aac7f5d1ec27c300f32a7
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java bebf5585ff9e242814b9b4f6c4a8109ca58a437a
 verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java b307f5cbd8c9a460aedd5fd2fbe162784d2fcfbd
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java a5bab48360f8c6adb4c727d820dccb7e722d53d9
@@ -30,11 +30,15 @@ verify_blob src/test/java/dev/oreslang/runtime/SupervisorEmergencyControlShutdow
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java 11b998eda8b2a235b594c2cdd0e94da2818b0200
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1Standalone.java 51b007499474875be6a94b5837a420cf4074c00b
 
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorReclamationGuardV1.java 69b3e0750fa359c1cd2e1ba8ce30bb3bdaa1eec1
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorReclamationGuardV1Standalone.java 47904058d84dfe945c1c6ef5d9a59de1a61d611e
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowReclamationV1Standalone.java b8705cddb1c509017b2b6b5f3a53f3399310fe74
+
 # The existing dependency-free saturated-allocation host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java src/main/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1.java src/test/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1Standalone.java
+javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorReclamationGuardV1.java src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java src/main/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1.java src/test/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1Standalone.java
 java -cp "$work" dev.oreslang.runtime.SupervisorRecoveryQueueV1Standalone
 javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorEmergencyControlV1.java src/test/java/dev/oreslang/runtime/SupervisorEmergencyControlV1Standalone.java
 java -cp "$work" dev.oreslang.runtime.SupervisorEmergencyControlV1Standalone
@@ -42,6 +46,9 @@ javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/Superviso
 java -cp "$work" dev.oreslang.runtime.SupervisorEmergencyControlShutdownStandalone
 javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java src/test/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1Standalone.java
 java -cp "$work" dev.oreslang.runtime.SupervisorRecoveryWorkspaceV1Standalone
+javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorReclamationGuardV1.java src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java src/test/java/dev/oreslang/runtime/SupervisorReclamationGuardV1Standalone.java src/test/java/dev/oreslang/runtime/SupervisorEscrowReclamationV1Standalone.java
+java -cp "$work" dev.oreslang.runtime.SupervisorReclamationGuardV1Standalone
+java -cp "$work" dev.oreslang.runtime.SupervisorEscrowReclamationV1Standalone
 
 # Compile the actual full ActorRuntime source tree and run real JUnit tests.
 mvn -B -q -Dtest=SupervisorFailureEscrowRuntimeIntegrationTest,SupervisorEscrowSubtreeRecoveryIntegrationTest,SupervisorEscrowAdmissionLinearizationIntegrationTest -DfailIfNoTests=true test
