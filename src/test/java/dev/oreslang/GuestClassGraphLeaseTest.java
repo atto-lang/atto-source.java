@@ -92,6 +92,66 @@ final class GuestClassGraphLeaseTest {
         assertFalse(b.isReadOnly());
     }
 
+    @Test void snapshotRootReplacementAndLexicalRelease() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("n", 10));
+        var original = store(d, Map.of("data", child, "count", 1));
+        var fresh = store(d, Map.of("n", 20));
+        var snapshot = original.shallowSnapshot(1,3);
+        assertSame(child, snapshot.get("data"));
+        assertEquals(1, snapshot.protectedCount());
+        snapshot.replace("count",2);
+        original.replace("count",3);
+        assertEquals(2,snapshot.get("count"));
+        assertEquals(3,original.get("count"));
+        deny("E_COPY_READONLY",()->child.replace("n",11));
+        snapshot.replace("data",fresh);
+        fresh.replace("n",21);
+        assertSame(child,original.get("data"));
+        assertSame(fresh,snapshot.get("data"));
+        // Conservative scope lease: per-edge detachment is a separate gate.
+        deny("E_COPY_READONLY",()->child.replace("n",12));
+        snapshot.close();
+        child.replace("n",12);
+        assertEquals(12,child.get("n"));
+        assertThrows(IllegalStateException.class,()->snapshot.get("data"));
+        assertThrows(IllegalStateException.class,()->snapshot.replace("count",4));
+        assertThrows(IllegalStateException.class,snapshot::close);
+        deny("E_COPY_BUDGET",()->original.shallowSnapshot(0,3));
+        assertFalse(child.isReadOnly());
+    }
+
+    @Test void snapshotRootAndLeaseObserveSameConcurrentReplacement() throws Exception {
+        var d = new GuestClassSlots.Domain();
+        try(var pool=Executors.newFixedThreadPool(2)){
+            for(int i=0;i<1000;i++){
+                var old=store(d,Map.of("n",1));
+                var fresh=store(d,Map.of("n",2));
+                var original=store(d,Map.of("data",old));
+                var barrier=new CyclicBarrier(2);
+                var copy=pool.submit(()->{
+                    barrier.await(5,TimeUnit.SECONDS);
+                    return original.shallowSnapshot(1,2);
+                });
+                var update=pool.submit(()->{
+                    barrier.await(5,TimeUnit.SECONDS);
+                    original.replace("data",fresh);
+                    return true;
+                });
+                try(var snapshot=copy.get(10,TimeUnit.SECONDS)){
+                    assertTrue(update.get(10,TimeUnit.SECONDS));
+                    Object held=snapshot.get("data");
+                    assertTrue(held==old||held==fresh);
+                    assertEquals(held==old,old.isReadOnly());
+                    assertEquals(held==fresh,fresh.isReadOnly());
+                    assertSame(fresh,original.get("data"));
+                }
+                assertFalse(old.isReadOnly());
+                assertFalse(fresh.isReadOnly());
+            }
+        }
+    }
+
     @Test void graphFreezeAndConcurrentEdgeReplacementLinearize() throws Exception {
         var d = new GuestClassSlots.Domain();
         try (var pool = Executors.newFixedThreadPool(2)) {
