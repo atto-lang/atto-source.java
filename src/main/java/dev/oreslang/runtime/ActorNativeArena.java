@@ -464,6 +464,49 @@ public final class ActorNativeArena implements AutoCloseable {
         }
 
         /**
+         * Restricted lexical reference move into a preallocated empty cell.
+         * This is a storage operation, not proof of guest ownership or loan
+         * retirement. Callers must separately prove exclusive guest access.
+         * Registry accounting stays unchanged: one reference slot is replaced
+         * by another under the same arena monitor. No payload allocation,
+         * facade reconstruction, or registry insertion is needed.
+         */
+        void moveReferenceTo(ValueCell target) {
+            synchronized (ActorNativeArena.this) {
+                checkLive();
+                if (target == null || target.nativeArena() != ActorNativeArena.this) {
+                    throw new IllegalArgumentException("move requires a same-arena destination");
+                }
+                target.checkLive();
+                if (target == this) throw new IllegalArgumentException("cannot move to same cell");
+                if (read(target.slot, 0) != NULL || read(target.slot, 8) != 0
+                        || read(target.slot, 16) != 0) {
+                    throw new IllegalStateException("move requires an empty destination");
+                }
+                if (read(slot, 0) != REFERENCE || read(slot, 16) != 0) {
+                    throw new IllegalStateException("move requires a native reference");
+                }
+                long bits = read(slot, 8);
+                long address = ActorCompressed32Reference.decodeStored(bits);
+                NativeValue payload = referencesByOffset.get(address);
+                if (!(payload instanceof NativeList)
+                        || !Integer.valueOf(1).equals(referenceRefCounts.get(address))) {
+                    throw new IllegalStateException("move requires one registered native list reference");
+                }
+                // Validate all locations before publication. Cell storage is
+                // immutable in location and the arena is owner-locked and live.
+                // Do not call guest or facade code after this point.
+                write(target.slot, 8, bits);
+                write(target.slot, 16, 0);
+                write(target.slot, 0, REFERENCE);
+                write(slot, 8, 0);
+                write(slot, 16, 0);
+                write(slot, 0, NULL);
+                retired = true;
+            }
+        }
+
+        /**
          * Explicit owner-authorized lexical slot retirement. Clears existing
          * reference/capability accounting through the current-main store path.
          * The physical slab remains actor-lifetime; no per-slot byte refund.
