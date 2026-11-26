@@ -195,8 +195,45 @@ public final class M6PerMessageTicketProbe {
             System.out.println("M6_TICKET_PANIC_ABANDON_CONTROL_REINCARNATION=PASS");
         }
     }
+    private static void immutable_route_scope() throws Exception {
+        try (var runtime = new AttoM6Runtime(2, 5)) {
+            var a = runtime.spawn_scoped_with_result("slow", 1, 11, 17, v -> v);
+            var b = runtime.spawn_scoped_with_result("fast", 1, 22, 17, v -> v);
+            var local = runtime.spawn_with_result("local", 1, v -> v);
+            var wrongTenant = new AttoM6Runtime.ReceiptRoute(1, 22, 77, 17,
+                a.generation(), 31, 6, 101, 1);
+            var wrongTarget = new AttoM6Runtime.ReceiptRoute(1, 11, 77, 18,
+                a.generation(), 31, 6, 101, 1);
+            for (var wrong : List.of(wrongTenant, wrongTarget)) {
+                var denied = runtime.try_send_ticket(a, 1, wrong);
+                require(denied.admission() == AttoM6Runtime.Admission.STALE &&
+                    denied.ticket() == null, "wrong route minted ticket in empty mailbox");
+            }
+            require(runtime.snapshot(a).accepted() == 0, "wrong route consumed credit");
+            require(runtime.try_send_ticket(local, 1, route(a, 1)).ticket() == null,
+                "local actor acquired proxy authority");
+            require(runtime.try_send(local, 1) == AttoM6Runtime.Admission.ACCEPTED,
+                "local ABI changed");
+            require(await(runtime, accept(runtime, a, 1)).result() == 1, "valid retry failed");
+            var other = runtime.try_send_ticket(b, 2, wrongTenant);
+            require(other.admission() == AttoM6Runtime.Admission.ACCEPTED &&
+                await(runtime, other.ticket()).result() == 2, "same numeric target in sibling tenant denied");
+            require(runtime.request_stop(a) && runtime.await_terminal(a, 10_000),
+                "scope owner did not retire");
+            boolean duplicate = false;
+            try { runtime.spawn_scoped_with_result("alias", 1, 11, 17, v -> v); }
+            catch (IllegalStateException expected) { duplicate = true; }
+            require(duplicate, "retired route reassigned with fresh generation");
+            var replacement = runtime.spawn_scoped_with_result("slow", 1, 11, 17, v -> v);
+            require(replacement.generation() == a.generation() + 1, "replacement generation reused");
+            require(runtime.try_send_ticket(a, 1, route(a, 1)).ticket() == null, "stale reference admitted");
+            require(await(runtime, accept(runtime, replacement, 3)).result() == 3, "replacement failed");
+            System.out.println("M6_PROXY_TENANT_TARGET_SCOPE_FENCE=PASS");
+        }
+    }
     public static void main(String[] args) throws Exception {
         require(args.length == 0, "host probe does not accept guest source");
+        immutable_route_scope();
         separate_actors_and_mailbox_capacity();
         concurrent_exact_results();
         failure_abandon_and_restart();
