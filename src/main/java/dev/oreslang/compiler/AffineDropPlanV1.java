@@ -27,11 +27,12 @@ public final class AffineDropPlanV1 {
                          Instruction whenFalse) implements Instruction { }
     public record Finish() implements Instruction { }
     public record Plan(List<Parameter> owners, List<String> booleanParameters,
-                       boolean returnsOwner, Instruction entry) {
+                       String returnElementType, Instruction entry) {
         public Plan {
             owners = List.copyOf(owners);
             booleanParameters = List.copyOf(booleanParameters);
         }
+        public boolean returnsOwner() { return returnElementType != null; }
     }
 
     private record Slot(int id, String name, Ast.TypeRef type, int scope, boolean owned) {
@@ -98,7 +99,8 @@ public final class AffineDropPlanV1 {
             if (builder.returnsOwner) throw denied("owned return missing on a reachable path");
             return builder.dropAll(remaining, new Finish());
         });
-        Plan plan = new Plan(owners, booleans, builder.returnsOwner, entry);
+        Plan plan = new Plan(owners, booleans, builder.returnsOwner
+                ? builder.returnType.arguments().getFirst().name() : null, entry);
         AffineDropPlanVerifierV1.verify(plan);
         return plan;
     }
