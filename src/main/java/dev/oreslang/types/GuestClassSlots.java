@@ -20,6 +20,7 @@ public final class GuestClassSlots {
     private boolean initializing = true;
     private static final int MAX_READ_ONLY_LOANS = 65536;
     private int readOnlyLoans;
+    private int activeSnapshots;
 
     /** Monitor shared by an explicitly admitted group of slot stores.
      * No evaluator-global monitor: unrelated default stores remain independent.
@@ -133,11 +134,12 @@ public final class GuestClassSlots {
      * mutation may be admitted by the trusted caller.
      */
     public static final class ShallowSnapshot implements AutoCloseable {
-        private final GuestClassSlots copy;
+        private final GuestClassSlots original, copy;
         private final GraphLease lease;
         private boolean closed;
         private final int maxNodes, maxEdges;
-        private ShallowSnapshot(GuestClassSlots copy, GraphLease lease, int maxNodes, int maxEdges) {
+        private ShallowSnapshot(GuestClassSlots original, GuestClassSlots copy, GraphLease lease, int maxNodes, int maxEdges) {
+            this.original = original;
             this.copy = copy;
             this.lease = lease;
             this.maxNodes = maxNodes;
@@ -160,7 +162,7 @@ public final class GuestClassSlots {
                 Object old = copy.slots.get(key);
                 if (value != old && value != null && !CopyScalarAdmission.isImmutableScalar(value))
                     throw new IllegalArgumentException("E_COPY_UNPROVEN: use fresh owned replacement");
-                if (old instanceof GuestClassSlots && value != old) detach(key, value);
+                if (old instanceof GuestClassSlots && value != old) detach(copy, key, value, true);
                 else copy.replace(key, value);
             }
         }
@@ -170,6 +172,19 @@ public final class GuestClassSlots {
          * Caller must have proved slot type, mutability, and no escaped loans.
          */
         public GuestClassSlots replaceWithFresh(String key, Map<String,Object> values) {
+            return replaceWithFreshOn(copy, key, values);
+        }
+
+        /** Explicit original-side detachment. With more than one live snapshot,
+         * retain all remaining leases conservatively: siblings may still share
+         * the old identity even after the original loses its last path.
+         * Trusted caller must prove no escaped handles or untracked reattachment.
+         */
+        public GuestClassSlots replaceOriginalWithFresh(String key, Map<String,Object> values) {
+            return replaceWithFreshOn(original, key, values);
+        }
+
+        private GuestClassSlots replaceWithFreshOn(GuestClassSlots root, String key, Map<String,Object> values) {
             // Trusted callers supply a stable, ordinary scalar map.
             if (values.size() > maxEdges) throw new IllegalArgumentException("E_COPY_BUDGET: fresh fields");
             var initial = new LinkedHashMap<>(values);
@@ -182,19 +197,19 @@ public final class GuestClassSlots {
                 requireOpen();
                 GuestClassSlots fresh = new GuestClassSlots(copy.domain, initial);
                 fresh.finishInitialization();
-                detach(key, fresh);
+                detach(root, key, fresh, root == copy || original.activeSnapshots == 1);
                 return fresh;
             }
         }
 
-        private void detach(String key, Object replacement) {
-            if (copy.readOnlyLoans != 0) throw new IllegalArgumentException("E_COPY_READONLY: shared class referent");
-            if (!copy.slots.containsKey(key)) throw new IllegalArgumentException("E_COPY_LAYOUT: unknown class slot");
-            // Compute exact prospective copy reachability before any mutation.
+        private void detach(GuestClassSlots root, String key, Object replacement, boolean releaseUnreachable) {
+            if (root.readOnlyLoans != 0) throw new IllegalArgumentException("E_COPY_READONLY: shared class referent");
+            if (!root.slots.containsKey(key)) throw new IllegalArgumentException("E_COPY_LAYOUT: unknown class slot");
+            // Compute exact prospective root reachability before any mutation.
             var seen = new IdentityHashMap<GuestClassSlots,Boolean>();
             var queue = new ArrayDeque<GuestClassSlots>();
             int edges = 0;
-            for (var e : copy.slots.entrySet()) {
+            for (var e : root.slots.entrySet()) {
                 if (++edges > maxEdges) throw new IllegalArgumentException("E_COPY_BUDGET: graph edge limit");
                 Object value = e.getKey().equals(key) ? replacement : e.getValue();
                 if (value instanceof GuestClassSlots child) queue.add(child);
@@ -212,14 +227,16 @@ public final class GuestClassSlots {
             var kept = new ArrayList<GuestClassSlots>();
             var removed = new ArrayList<GuestClassSlots>();
             for (GuestClassSlots store : lease.protectedStores) {
-                if (seen.containsKey(store)) kept.add(store);
+                if (!releaseUnreachable || seen.containsKey(store)) kept.add(store);
                 else {
                     if (store.readOnlyLoans <= 0) throw stale();
                     removed.add(store);
                 }
             }
             List<GuestClassSlots> next = List.copyOf(kept);
-            copy.replace(key, replacement);
+            // Existing slot only, no new map entry. The graph checks above
+            // precede both the field write and the counter updates.
+            root.slots.put(key, replacement);
             for (int i=0; i<removed.size(); i++) removed.get(i).readOnlyLoans--;
             lease.protectedStores = next;
         }
@@ -233,6 +250,7 @@ public final class GuestClassSlots {
             synchronized (copy.domain) {
                 requireOpen();
                 lease.close();
+                original.activeSnapshots--;
                 closed = true;
             }
         }
@@ -247,11 +265,13 @@ public final class GuestClassSlots {
             throw new IllegalArgumentException("E_COPY_BUDGET: invalid graph limits");
         }
         synchronized (domain) {
+            if (activeSnapshots >= MAX_READ_ONLY_LOANS) throw new IllegalArgumentException("E_COPY_BUDGET: snapshot limit");
             GraphLease lease = prepareDescendants(maxNodes, maxEdges);
             GuestClassSlots copy = new GuestClassSlots(domain, slots);
             copy.finishInitialization();
-            ShallowSnapshot result = new ShallowSnapshot(copy, lease, maxNodes, maxEdges);
+            ShallowSnapshot result = new ShallowSnapshot(this, copy, lease, maxNodes, maxEdges);
             activate(lease);
+            activeSnapshots++;
             return result;
         }
     }
@@ -313,6 +333,9 @@ public final class GuestClassSlots {
         synchronized (domain) {
             if (readOnlyLoans != 0) throw new IllegalArgumentException("E_COPY_READONLY: shared class referent");
             if (!slots.containsKey(key)) throw new IllegalArgumentException("E_COPY_LAYOUT: unknown class slot " + key);
+            Object old = slots.get(key);
+            if (activeSnapshots != 0 && old != value && value instanceof GuestClassSlots)
+                throw new IllegalArgumentException("E_COPY_UNPROVEN: use checked fresh replacement while snapshots live");
             slots.put(key, value);
         }
     }
