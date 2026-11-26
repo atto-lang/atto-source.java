@@ -7843,6 +7843,7 @@ public final class Parser {
             if (isMain && (!parameters.isEmpty() || !result.equals(RefinedQuantity.SCALAR))) {
                 throw error(name, "E_REFINEMENT_EXPORT: main must have signature () -> int");
             }
+            int contractStart = current;
             while (isContextualIdentifier("requires")) {
                 if (isMain) throw error(peek(), "E_REFINEMENT_EXPORT: main cannot require caller facts");
                 advance();
@@ -7870,11 +7871,21 @@ public final class Parser {
                 }
             }
 
-            consume(LBRACE, "expected '{' after verified signature");
+            boolean contracted = current != contractStart;
+            boolean endDelimited = false;
+            if (!match(LBRACE)) {
+                if (match(DOUBLE_COLON)) endDelimited = true;
+                else if (matchContextualKeyword("begin")) {
+                    if (contracted && tokens.get(current - 2).line() >= previous().line())
+                        throw error(previous(), "E_SYNTAX: contracted begin must start on a later line");
+                    endDelimited = true;
+                } else throw error(peek(), "E_SYNTAX: expected verified callable body opener");
+            }
             if (isMain && !actorNames.isEmpty() && check(VAL) && current + 3 < tokens.size()
                     && tokens.get(current + 2).type() == EQUAL && tokens.get(current + 3).type() == SPAWN) {
                 if (!verifiedFunctions.isEmpty() || !result.equals(returnType) || !upperParameters.isEmpty())
                     throw error(name, "E_PROTOCOL_GUEST: actor main requires a standalone uncontracted entrypoint");
+                if (endDelimited) throw error(peek(), "E_PROTOCOL_GUEST: protocol guest still requires braces");
                 declarations.add(parseProtocolGuest(declarations));
                 return declarations;
             }
@@ -7918,7 +7929,7 @@ public final class Parser {
                 body.add(new Ast.ReturnStmt(term.expression()));
 
             }
-            consume(RBRACE, "expected '}' after verified return");
+            consume(endDelimited ? END : RBRACE, "E_SYNTAX: mismatched verified callable closer");
 
             String lowered = isMain ? "main" : "$verified$" + name.lexeme();
             declarations.add(new Ast.FunctionDecl(lowered, Ast.CallableKind.FNC,
