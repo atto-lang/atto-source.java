@@ -442,7 +442,15 @@ public final class CapabilityChecker {
                 for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
                 return;
             }
-            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
+            // Both internal copy modes are emitted by the checked parser.
+            // Admission here does not authorize graph allocation: the ownership
+            // checker and evaluator still enforce the mode-specific witness,
+            // exact layout and actor allocation-domain restrictions.
+            if (Set.of("copy", "copy_shallow", "copy_deep").contains(runtime.operation())
+                    && runtime.arguments().size() != 1) {
+                throw new SecurityException("runtime copy intrinsic requires exactly one operand");
+            }
+            if (!Set.of("copy", "copy_shallow", "copy_deep", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
             }
