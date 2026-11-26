@@ -14,7 +14,12 @@ import java.util.Optional;
  */
 public record TraceParent(String traceId, String spanId, int flags) {
     private static final int HEADER_LENGTH = 55;
-    private static final SecureRandom RANDOM = new SecureRandom();
+    // Entropy must be obtained in the running process, never captured in a
+    // Native Image build heap. All native profiles explicitly defer this
+    // holder's initialization; header parsing itself never needs entropy.
+    private static final class RuntimeEntropy {
+        private static final SecureRandom RANDOM = new SecureRandom();
+    }
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     public TraceParent {
@@ -73,7 +78,7 @@ public record TraceParent(String traceId, String spanId, int flags) {
     private static String randomHex(int bytes) {
         byte[] entropy = new byte[bytes];
         for (int attempt = 0; attempt < 16; attempt++) {
-            RANDOM.nextBytes(entropy);
+            RuntimeEntropy.RANDOM.nextBytes(entropy);
             boolean anyNonzero = false;
             for (byte b : entropy) anyNonzero |= b != 0;
             if (!anyNonzero) continue;
