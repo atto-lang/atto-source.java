@@ -113,7 +113,11 @@ public final class IncrementalCompiler {
         boolean sameLayout = layout.equals(strictAtto ? strictLayout : legacyLayout);
         // Layout changes cannot reuse old ASTs or checked units, but retain the
         // committed snapshot until the new layout passes all admission checks.
+        Map<String, Map<String, String>> normalizedImportResolutions =
+                normalizeImportResolutions(importResolutions);
         if (sources.isEmpty()) {
+            if (!normalizedImportResolutions.isEmpty())
+                throw new IllegalArgumentException("import resolutions require a nonempty source inventory");
             // The input map is a complete source snapshot, including removals.
             // A later re-add must not reuse a checked result for deleted files.
             selectedCache.clear();
@@ -126,6 +130,8 @@ public final class IncrementalCompiler {
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
             String id = normalizeUnitId(entry.getKey());
+            if (entry.getValue() == null)
+                throw new IllegalArgumentException("source unit cannot be null: '" + id + "'");
             if (normalized.putIfAbsent(id, entry.getValue()) != null) {
                 throw new IllegalArgumentException("duplicate source unit '" + id + "'");
             }
@@ -168,8 +174,6 @@ public final class IncrementalCompiler {
             abiHashes.put(id, unit.abiDigest());
         }
 
-        Map<String, Map<String, String>> normalizedImportResolutions =
-                normalizeImportResolutions(importResolutions);
         if (strictAtto) {
             for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
                 String unitId = entry.getKey();
@@ -1108,7 +1112,8 @@ public final class IncrementalCompiler {
                             "conflicting resolved import '" + resolution.getKey() + "' for '" + importerId + "'");
                 }
             }
-            normalized.put(importerId, Map.copyOf(imports));
+            if (normalized.putIfAbsent(importerId, Map.copyOf(imports)) != null)
+                throw new IllegalArgumentException("duplicate normalized importer '" + importerId + "'");
         }
         return Map.copyOf(normalized);
     }
