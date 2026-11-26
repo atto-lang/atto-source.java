@@ -652,7 +652,10 @@ public final class OwnershipChecker {
     // provenance and the entire remaining suffix before releasing.
     private boolean isNonescapingScalarRead(Ast.BindingStmt read,
                                             Ast.BindingStmt prior, Scope scope) {
-        if (read.declaredType() != null || read.mutableReferent()
+        // Java val is const mut. A proven primitive COPY result has no
+        // referent to alias, so its syntactic referent flag is irrelevant.
+        // Keep the fixed-slot, provenance and primitive checks below.
+        if (read.declaredType() != null
                 || read.inferredTypeName() != null
                 || !(read.initializer() instanceof Ast.MemberExpr field)
                 || !(field.receiver() instanceof Ast.NameExpr name)
