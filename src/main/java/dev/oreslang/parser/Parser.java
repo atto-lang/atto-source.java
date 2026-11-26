@@ -40,6 +40,7 @@ public final class Parser {
     private final Map<String, RefinedQuantity> verifiedLocals = new HashMap<>();
     private final Map<String, Set<String>> verifiedUpperBounds = new HashMap<>();
     private boolean verifiedCallable;
+    private boolean strictVerifiedI64;
     private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
     private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
@@ -193,6 +194,13 @@ public final class Parser {
 
     public static Ast.Program parse(String source) {
         return new Parser(new Lexer(source).scan()).parseProgram();
+    }
+
+    /** Explicit standalone strict proof profile, with no ordinary parser fallback. */
+    public static Ast.Program parseVerifiedStrictI64(String source) {
+        Parser parser = new Parser(new Lexer(source).scan());
+        parser.strictVerifiedI64 = true;
+        return parser.parseProgram();
     }
 
     /** Closed-file protocol actor compilation may omit the enclosing scalar entry point. */
@@ -454,6 +462,8 @@ public final class Parser {
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
         parseQuantityDeclarations();
+        if (strictVerifiedI64 && !atRefinedQuantityAlias())
+            throw error(peek(), "E_VERIFY_UNSUPPORTED: strict signed-i64 refinement source required");
         if (atRefinedQuantityAlias() || atProtocolDeclaration()) {
             if (namespace != null || !imports.isEmpty() || !exports.isEmpty()) {
                 throw error(peek(), "E_REFINEMENT_SCOPE: Verified Core requires a standalone source file");
@@ -7775,6 +7785,8 @@ public final class Parser {
 
     private List<Ast.Decl> parseVerifiedFunctions(boolean protocolActorsRequired) {
         while (atRefinedQuantityAlias()) parseRefinedQuantityAlias();
+        if (strictVerifiedI64 && (atProtocolDeclaration() || atProtocolActor()))
+            throw error(peek(), "E_VERIFY_UNSUPPORTED: strict actor proof not implemented");
         List<Ast.Decl> declarations = new ArrayList<>();
         Map<String, Ast.ProtocolDecl> protocols = new HashMap<>();
         Set<String> names = new HashSet<>();
@@ -7975,6 +7987,8 @@ public final class Parser {
         if (target.unit().equals(VerifiedQuantityUnit.SCALAR) && !term.unit().equals(VerifiedQuantityUnit.SCALAR))
             throw error(name, "E_UNIT_ERASURE: scalar cast cannot erase units");
         target.unit().requireCompatible(term.unit());
+        if (strictVerifiedI64 && !term.type().range().entails(target.range()))
+            throw error(name, "E_VERIFY_UNPROVEN: refinement cast may fail");
         if (term.depth() >= MAX_UNARY_NESTING)
             throw error(name, "E_UNIT_LIMIT: quantity expression is too deep");
         var range = term.type().range().onNormalResultWithin(target.range());
@@ -8012,7 +8026,7 @@ public final class Parser {
             Token op = previous();
             var right = parseQuantityAtom(depth);
             boolean divide = op.type() == SLASH;
-            if (divide && !left.type().i32() && !right.type().i32()
+            if (!strictVerifiedI64 && divide && !left.type().i32() && !right.type().i32()
                     && left.unit().equals(VerifiedQuantityUnit.SCALAR)
                     && right.unit().equals(VerifiedQuantityUnit.SCALAR)) {
                 throw error(op, "E_UNIT_SCALAR_DIVISION: two plain int operands use ordinary division");
@@ -8030,6 +8044,26 @@ public final class Parser {
         var leftRange = left.type().range();
         var rightRange = right.type().range();
         boolean i32 = left.type().i32() || right.type().i32();
+        if (strictVerifiedI64) {
+            if (i32) throw error(peek(), "E_VERIFY_UNSUPPORTED: strict i32 arithmetic not implemented");
+            // Checked interval operations throw when any endpoint is outside
+            // i64. Do not confuse normal-result clipping with totality.
+            try {
+                switch (operator) {
+                    case Ast.VerifiedI64.ADD -> leftRange.plus(rightRange);
+                    case Ast.VerifiedI64.SUBTRACT -> leftRange.minus(rightRange);
+                    case Ast.VerifiedI64.MULTIPLY -> leftRange.times(rightRange);
+                    case Ast.VerifiedI64.DIVIDE -> {
+                        if ((rightRange.minimum() <= 0 && rightRange.maximum() >= 0)
+                            || (leftRange.minimum() == Long.MIN_VALUE && rightRange.minimum() <= -1 && rightRange.maximum() >= -1))
+                            throw new IllegalArgumentException("unproved division");
+                    }
+                    default -> throw new IllegalArgumentException("unproved operator");
+                }
+            } catch (IllegalArgumentException denied) {
+                throw error(peek(), "E_VERIFY_UNPROVEN: signed arithmetic may overflow or divide by zero");
+            }
+        }
         if (i32 && (!leftRange.entails(SIGNED_I32) || !rightRange.entails(SIGNED_I32))) {
             throw error(peek(), "E_I32_RANGE: checked i32 arithmetic requires both operands to fit i32");
         }
