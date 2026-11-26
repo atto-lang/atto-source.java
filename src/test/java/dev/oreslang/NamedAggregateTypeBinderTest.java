@@ -81,4 +81,42 @@ final class NamedAggregateTypeBinderTest {
         }
         assertEquals("42",out.toString(StandardCharsets.UTF_8).trim());
     }
+
+    private static final String MODULE_SHAPES = """
+            const Record<infer T1> r = (a=true, b="xyz", c=5);
+            const Tuple<infer T2> t = (true, "xyz", 5);
+            """;
+
+    @Test void namedAggregateCallableAndProjectedSequenceGuests() throws Exception {
+        for (String[] variant : new String[][]{
+                {"Tuple<T2>", "(input.a, input.b, input.c)", "const Tuple<T2> out = process(arg); stdio.println(out[2]);"},
+                {"typeof input.c", "seq (input.a, input.b, input.c)", "stdio.println(process(arg));"},
+                {"typeof input.c", "seq input.a, input.b, input.c", "stdio.println(process(arg));"}
+        }) {
+            String source = MODULE_SHAPES + "fnc process(Record<T1> input) -> " + variant[0]
+                    + " { return " + variant[1] + "; }\n"
+                    + "pub fnc main(): void { const Record<T1> arg=(a=false,b=\"abc\",c=42); "
+                    + variant[2] + " return; }";
+            TypeChecker.check(Parser.parse(source));
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
+                context.eval(Source.newBuilder(OresLanguage.ID, source, "aggregate-call.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).build());
+            }
+            assertEquals("42", out.toString(StandardCharsets.UTF_8).trim(), variant[1]);
+        }
+    }
+
+    @Test void callableShapeAndSequenceTypeErrorsReject() {
+        for (String decl : new String[]{
+                "fnc process(Record<T1> input) -> Tuple<T2> { return (input.b,input.a,input.c); }",
+                "fnc process(Record<T1> input) -> typeof input.missing { return input.c; }",
+                "fnc process(Record<T1> input) -> typeof input.c { return seq (input.c,input.a,input.b); }",
+                "fnc process(Record<T1> input) -> typeof input.c { return seq input.c,input.a,input.b; }",
+                "fnc process(Record<T1> input) -> typeof input.c { return seq input.a,input.b,input.c,; }"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(MODULE_SHAPES + decl + "\nfnc main(): int { return 0; }")), decl);
+        }
+    }
 }
