@@ -68,6 +68,32 @@ final class DeclarativeExportsParserTest {
         assertEquals(Ast.ExportScope.PACKAGE, pkg.exports().getFirst().scope());
     }
 
+    @Test void writtenPrivateCannotBePromotedButOmittedVisibilityCan() {
+        for (String decl : java.util.List.of(
+                "private define class Foo as end", "define private class Foo as end",
+                "class private Foo as end", "private fnc Foo(): int { return 42; }",
+                "fnc private Foo(): int { return 42; }", "define private type Foo = int;")) {
+            for (String directive : java.util.List.of("export pub Foo;", "export pub[pkg] Foo;")) {
+                for (String source : java.util.List.of(directive + "\n" + decl, decl + "\n" + directive)) {
+                    var error = assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+                    assertTrue(error.getMessage().contains("explicit private"), error.getMessage());
+                }
+            }
+        }
+        for (String decl : java.util.List.of("define class Foo as end", "fnc Foo(): int { return 42; }", "define type Foo = int;")) {
+            for (String directive : java.util.List.of("export pub Foo;", "export pub[pkg] Foo;"))
+                assertEquals(1, Parser.parse(directive + "\n" + decl).exports().size());
+        }
+    }
+
+    @Test void privateOverloadCannotBeDisclosedByFamilyExport() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                export pub fnc calculate;
+                fnc calculate(int x): int { return x; }
+                private fnc calculate(int x, int y): int { return x+y; }
+                """));
+    }
+
     @Test void methodBodiesCannotContainExportDeclarations() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc main(): int {
