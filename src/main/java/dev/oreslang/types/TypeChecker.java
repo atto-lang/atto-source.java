@@ -9551,7 +9551,13 @@ public final class TypeChecker {
                             previous.pattern(), arm.pattern(), subject, generics, self);
                     boolean guardDisjoint = previous.guard() != null && arm.guard() != null
                             && guardsProvablyDisjoint(previous.guard(), arm.guard());
-                    if (!patternDisjoint && !guardDisjoint) {
+                    // A literal before a nominal type pattern is an ordered
+                    // specialization, regardless of whether its type arm used 'on is'.
+                    // Keep the general disjointness and dead-arm checks intact.
+                    boolean literalSpecialization = previous.pattern() instanceof Ast.LiteralPattern
+                            && arm.pattern() instanceof Ast.TypePattern typed
+                            && !typed.type().isComplement();
+                    if (!patternDisjoint && !guardDisjoint && !literalSpecialization) {
                         throw new IllegalArgumentException(
                                 "ordinary match requires provably disjoint explicit patterns "
                                         + (j + 1) + " and " + (i + 1)
