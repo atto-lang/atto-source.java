@@ -3279,6 +3279,21 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            // The parameter-specific structural sigil must not bypass
+            // the retired lowercase collection type alias rejection.
+            if (check(TILDE) && current + 2 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT) {
+                String kind = tokens.get(current + 1).lexeme();
+                Token.Type suffix = tokens.get(current + 2).type();
+                if ((suffix == LT || suffix == LBRACKET || suffix == LPAREN)
+                        && switch (kind) {
+                            case "array", "tuple", "vector", "fixed_array", "fixed_list",
+                                    "list", "slice", "set", "map", "entry", "pair", "record" -> true;
+                            default -> false;
+                        }) {
+                    throw error(peek(), "removed collection alias; '~' denotes structural typing");
+                }
+            }
             boolean structural = matchContextualKeyword("structural") || match(TILDE);
 
             // Canonical type-first structural spelling: structural Foo y
@@ -6903,7 +6918,7 @@ public final class Parser {
                 case "fixed_list" -> "FixedList";
                 default -> Character.toUpperCase(kind.charAt(0)) + kind.substring(1);
             };
-            throw error(peek(), "'~' is reserved for structural typing; use "
+            throw error(peek(), "removed collection constructor; '~' is reserved for structural typing; use "
                     + canonical + ".of(...) to construct collections");
         }
         if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
