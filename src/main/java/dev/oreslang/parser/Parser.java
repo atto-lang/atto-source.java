@@ -6398,6 +6398,28 @@ public final class Parser {
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
             }
+            // Subject-elided conditional stages share the ordinary checked
+            // expression nodes. Do not substitute or repeat the receiver.
+            if (canonicalAttoSource && match(IF, IFNOT, UNLESS)) {
+                Token.Type introducer = previous().type();
+                Ast.Expr predicate = parsePipelinePredicate(value);
+                if (introducer != IF) predicate = new Ast.UnaryExpr("!", predicate);
+                consume(THEN, "pipeline if requires 'then' after its receiver predicate");
+                value = parseValueIfElse(predicate, parseConditionalValueArm());
+                continue;
+            }
+            if (canonicalAttoSource && (check(QUESTION) || pipelinePredicateStarts())) {
+                value = parsePipelinePredicate(value);
+                if (match(QUESTION)) {
+                    Ast.Expr yes = check(LBRACE)
+                            ? parseSingleResultTernaryBlock() : parseAssignment();
+                    consume(COLON, "expected ':' in pipeline ternary");
+                    Ast.Expr no = check(LBRACE)
+                            ? parseSingleResultTernaryBlock() : parseConditional();
+                    value = new Ast.ConditionalExpr(value, yes, no);
+                }
+                continue;
+            }
             // A match stage consumes the accumulated expression as its subject.
             // Reuse the normal match AST, including its type and ownership checks.
             if (match(MATCH)) {
@@ -6545,6 +6567,29 @@ public final class Parser {
                         + "!' requires a token boundary");
             }
         }
+    }
+
+    private boolean pipelinePredicateStarts() {
+        return check(IS) || check(LT) || check(LTE) || check(GT) || check(GTE)
+                || check(EQ) || check(EQUAL_EQUAL) || check(NEQ) || check(BANG_EQUAL);
+    }
+
+    private Ast.Expr parsePipelinePredicate(Ast.Expr receiver) {
+        if (match(IS)) {
+            // In receiver position only, 'is int' is short for 'is type int'.
+            // Parse a type atom, not a postfix optional type: the next '?' is
+            // the ternary operator. Compound types can be parenthesized.
+            match(TYPE);
+            Ast.TypeRef target = parseTypeAtom();
+            return new Ast.TypeTestExpr(receiver, target, null);
+        }
+        if (match(LT, LTE, GT, GTE)) {
+            String op = previous().lexeme();
+            return new Ast.BinaryExpr(op, receiver, parseShift());
+        }
+        if (match(EQ, EQUAL_EQUAL)) return new Ast.BinaryExpr("eq", receiver, parseComparison());
+        if (match(NEQ, BANG_EQUAL)) return new Ast.BinaryExpr("neq", receiver, parseComparison());
+        return receiver;
     }
 
     private static boolean isPipelineCallable(Ast.Expr stage) {
