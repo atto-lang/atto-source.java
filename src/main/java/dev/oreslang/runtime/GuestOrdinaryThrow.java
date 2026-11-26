@@ -16,7 +16,7 @@ public final class GuestOrdinaryThrow extends RuntimeException {
     private GuestOrdinaryThrow(GuestErrorValue error) {
         // Suppression permits bounded guest source-boundary trace markers.
         // Host stack traces/cause and the guest message stay out of the signal.
-        super("ordinary guest throw", null, true, false);
+        super(Objects.requireNonNull(error, "error").diagnostic(), null, true, false);
         this.error = Objects.requireNonNull(error, "error");
     }
 

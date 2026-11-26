@@ -62,6 +62,9 @@ public final class TypeChecker {
 
     /** Strict source-profile flag is local to this checker; never process-global. */
     private boolean strictAttoEquality;
+    private boolean checkedI64Arithmetic;
+    /** Selected lexical prelude profile; defaults to hosted Java for compatibility. */
+    private AutomaticPrelude.Profile preludeProfile = AutomaticPrelude.Profile.HOSTED;
     /** Exact return spelling scoped to the checked source callable. */
     private Ast.TypeRef strictCallableReturnSource;
 
@@ -113,8 +116,13 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** Imported module aliases whose concrete public functions are typed. */
+    private final Set<String> partiallyLinkedModules = new HashSet<>();
     /** Explicit local import fnc aliases only, never wildcard imports. */
     private final Map<String, Ast.ImportDecl> importedFunctions = new HashMap<>();
+    // import fnc bindings whose checked signature is linked; imports::f(...)
+    // then types as a call into the synthetic $imports$ module.
+    private final Set<String> linkedImportCallables = new HashSet<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -400,6 +408,26 @@ public final class TypeChecker {
      * unchanged; strict callers must not bypass this path after parsing.
      */
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program, boolean strictAttoEquality) {
+        return checkTypesWithDiagnostics(program, strictAttoEquality, AutomaticPrelude.Profile.HOSTED);
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, AutomaticPrelude.Profile preludeProfile) {
+        return checkTypesWithDiagnostics(program, false, preludeProfile);
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, boolean strictAttoEquality,
+            AutomaticPrelude.Profile preludeProfile) {
+        return checkTypesWithDiagnostics(program, strictAttoEquality, preludeProfile, strictAttoEquality);
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, boolean strictAttoEquality,
+            AutomaticPrelude.Profile preludeProfile, boolean checkedI64Arithmetic) {
+        if (preludeProfile == null) {
+            throw new IllegalArgumentException("prelude profile cannot be null");
+        }
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -410,6 +438,8 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
+        checker.checkedI64Arithmetic = checkedI64Arithmetic || strictAttoEquality;
+        checker.preludeProfile = preludeProfile;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -596,6 +626,55 @@ public final class TypeChecker {
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts,
             boolean strictAttoEquality) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(program, linkedClasses,
+                linkedAliases, linkedContracts, Map.of(), strictAttoEquality);
+    }
+
+    /**
+     * As above, plus checked public signatures of explicitly imported source
+     * modules (`import module m from ...`), keyed by local module alias. Their
+     * public functions type `m.f(...)` calls exactly like same-file modules;
+     * bodies stay in their own unit and private functions stay invisible.
+     */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Ast.ModuleDecl> linkedModules,
+            boolean strictAttoEquality) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(program, linkedClasses, linkedAliases,
+                linkedContracts, linkedModules, Map.of(), strictAttoEquality);
+    }
+
+    /**
+     * As above, plus the checked declarations behind explicit
+     * {@code import fnc f from ...} bindings, keyed by local name. A linkable
+     * signature types {@code imports::f(...)} exactly; others stay opaque.
+     */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Ast.ModuleDecl> linkedModules,
+            Map<String, Ast.FunctionDecl> linkedImportFunctions,
+            boolean strictAttoEquality) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(program, linkedClasses, linkedAliases,
+                linkedContracts, linkedModules, linkedImportFunctions, strictAttoEquality, strictAttoEquality);
+    }
+
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Ast.ModuleDecl> linkedModules,
+            Map<String, Ast.FunctionDecl> linkedImportFunctions,
+            boolean strictAttoEquality, boolean checkedI64Arithmetic) {
+        if (linkedImportFunctions == null) {
+            throw new IllegalArgumentException("linked import functions cannot be null");
+        }
+        if (linkedModules == null) {
+            throw new IllegalArgumentException("linked modules cannot be null");
+        }
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -613,6 +692,10 @@ public final class TypeChecker {
             rejectUnloweredCheckedClassEffects(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
+            if (CoreTypeRegistry.protectedIdentity(linked.name())) {
+                throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked contract/trait cannot "
+                        + "replace compiler-owned core identity " + linked.name());
+            }
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
         program = AnnotationExpander.expand(program);
@@ -624,8 +707,88 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
+        checker.checkedI64Arithmetic = checkedI64Arithmetic || strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            String alias = entry.getKey();
+            Ast.ModuleDecl module = entry.getValue();
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    (use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                            && use.names().stream().anyMatch(name ->
+                                    ImportRules.localName(use, name).equals(alias)))
+                            // `import * as alias from "./file.atto"` links the
+                            // file-root public declarations under the alias.
+                            || (use.wildcard() && alias.equals(use.namespace())));
+            if (!imported || module == null || checker.modules.containsKey(alias)) {
+                throw new IllegalArgumentException(
+                        "linked module was not uniquely imported: " + alias);
+            }
+            // Only concrete, effect-free signatures are linked. Anything else
+            // (Any/generic/async/annotated callables, e.g. std/assert) keeps the
+            // legacy opaque import behavior instead of a nominal mis-typing.
+            Set<String> linkedNominals = linkedClasses.keySet();
+            boolean allConcrete = module.declarations().stream()
+                    .allMatch(d -> (d instanceof Ast.FunctionDecl fn
+                            && (fn.visibility() != Ast.Visibility.PUBLIC
+                                || linkableSignature(fn, linkedNominals)))
+                            // Public module classes are linked as alias.X by
+                            // the incremental compiler; private helpers and
+                            // aliases are invisible to the importer.
+                            || (d instanceof Ast.ClassDecl klass
+                                && klass.actorKind() == Ast.ActorKind.NONE
+                                && (klass.visibility() != Ast.Visibility.PUBLIC
+                                    || linkedNominals.contains(alias + "." + klass.name())))
+                            || d instanceof Ast.TypeAliasDecl);
+            if (!allConcrete) {
+                // Mixed modules (classes, generic or Any signatures) keep the
+                // opaque import binding, but their concrete public functions
+                // still type `alias.f(...)` calls.
+                // Overloaded names stay opaque: a partial view could not
+                // select among slots it does not fully know.
+                Map<String, Integer> publicArity = new HashMap<>();
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && fn.visibility() == Ast.Visibility.PUBLIC) {
+                        publicArity.merge(fn.name(), 1, Integer::sum);
+                    }
+                }
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && fn.visibility() == Ast.Visibility.PUBLIC
+                            && publicArity.get(fn.name()) == 1
+                            && linkableSignature(fn, linkedNominals)) {
+                        checker.putFunctionSlot(alias + "." + fn.name(), fn);
+                        checker.partiallyLinkedModules.add(alias);
+                    }
+                }
+                continue;
+            }
+            checker.importedValues.remove(alias);
+            checker.modules.put(alias, module);
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    checker.putFunctionSlot(alias + "." + fn.name(), fn);
+                }
+            }
+        }
+        List<Ast.Decl> importCallables = new ArrayList<>();
+        for (Map.Entry<String, Ast.FunctionDecl> entry : linkedImportFunctions.entrySet()) {
+            String local = entry.getKey();
+            Ast.FunctionDecl fn = entry.getValue();
+            if (fn == null || !local.equals(fn.name())
+                    || !checker.importedFunctions.containsKey(local)
+                    || fn.visibility() != Ast.Visibility.PUBLIC
+                    || !linkableSignature(fn, linkedClasses.keySet())) continue;
+            checker.putFunctionSlot(Parser.IMPORTS_NAMESPACE + "." + local, fn);
+            checker.linkedImportCallables.add(local);
+            importCallables.add(fn);
+        }
+        if (!importCallables.isEmpty()) {
+            checker.modules.put(Parser.IMPORTS_NAMESPACE, new Ast.ModuleDecl(
+                    Parser.IMPORTS_NAMESPACE, List.of(), List.of(), importCallables));
+        }
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
@@ -671,6 +834,14 @@ public final class TypeChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
+            // Check both the import spelling and authenticated source origin;
+            // a harmless local alias must not cloak a forged builtin identity.
+            if (CoreTypeRegistry.protectedIdentity(name)
+                    || CoreTypeRegistry.protectedIdentity(declaration.name())) {
+                throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked class identity '"
+                        + name + "' / '" + declaration.name()
+                        + "' cannot replace a compiler-owned core type");
+            }
 
             String linkedModuleAlias = null;
             boolean importedDirectly = declaration.actorKind() == Ast.ActorKind.NONE
@@ -685,9 +856,10 @@ public final class TypeChecker {
                         && name.substring(separator + 1).equals(declaration.name())) {
                     String prefix = name.substring(0, separator);
                     boolean importedModule = program.imports().stream().anyMatch(use ->
-                            use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                            (use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
                                     && use.names().stream().anyMatch(sourceName ->
-                                            ImportRules.localName(use, sourceName).equals(prefix)));
+                                            ImportRules.localName(use, sourceName).equals(prefix)))
+                                    || (use.wildcard() && prefix.equals(use.namespace())));
                     if (importedModule) linkedModuleAlias = prefix;
                 }
             }
@@ -711,7 +883,11 @@ public final class TypeChecker {
             }
             checker.classes.put(name, declaration);
             String previousName = checker.linkedClassNames.putIfAbsent(declaration, name);
-            if (previousName != null && !previousName.equals(name)) {
+            // One physical module imported under two module aliases (e.g.
+            // canonical and legacy selectors) names one nominal type; a direct
+            // class import under a second spelling is still rejected.
+            if (previousName != null && !previousName.equals(name)
+                    && !(linkedModuleAlias != null && previousName.endsWith("." + declaration.name()))) {
                 throw new IllegalArgumentException(
                         "the same linked class cannot be imported through multiple names: "
                                 + declaration.name());
@@ -722,6 +898,10 @@ public final class TypeChecker {
                 if (alias.getKey() == null || alias.getValue() == null
                         || !alias.getKey().equals(alias.getValue().name())) {
                     throw new IllegalArgumentException("invalid private linked field type alias");
+                }
+                if (CoreTypeRegistry.protectedIdentity(alias.getKey())) {
+                    throw new IllegalArgumentException("E_PRELUDE_SPOOF: linked private alias cannot "
+                            + "replace compiler-owned core type " + alias.getKey());
                 }
             }
             checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
@@ -734,6 +914,8 @@ public final class TypeChecker {
         CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
+
+    private final Set<String> opaqueJsonBindings = new HashSet<>();
 
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
@@ -807,7 +989,22 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (imported.kind() == Ast.ImportKind.CLASS && !imported.wildcard()
+                    && Set.of("alloc/json", "alloc/json.atto", "atto.alloc/json", "atto.alloc/json.atto")
+                            .contains(imported.path())) {
+                for (String selected : imported.names()) {
+                    if (selected.equals("Json") || selected.equals("JsonValue")) {
+                        opaqueJsonBindings.add(ImportRules.localName(imported, selected));
+                    }
+                }
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
+                // An explicit import alias may not redirect a compiler-owned
+                // ADT constructor/type to a user package or host interop symbol.
+                if (CoreTypeRegistry.protectedIdentity(name)) {
+                    throw new IllegalArgumentException("E_PRELUDE_SPOOF: explicit import cannot "
+                            + "rebind compiler-owned prelude identity '" + name + "'");
+                }
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
                 if (localNames.contains(name)
@@ -859,6 +1056,10 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
+        if (CoreTypeRegistry.protectedIdentity(name)) {
+            throw new IllegalArgumentException("E_PRELUDE_SPOOF: compiler-owned prelude identity '"
+                    + name + "' cannot be declared as " + declarationKind);
+        }
         if ("Symbol".equals(name) || "Newable".equals(name)
                 || "Atomic".equals(name) || "AtomicCompareExchange".equals(name)) {
             throw new IllegalArgumentException(name
@@ -868,6 +1069,10 @@ public final class TypeChecker {
     }
 
     private void putFunction(String module, Ast.FunctionDecl fn) {
+        if (CoreTypeRegistry.protectedIdentity(fn.name())) {
+            throw new IllegalArgumentException("E_PRELUDE_SPOOF: compiler-owned prelude identity '"
+                    + fn.name() + "' cannot be declared as a function");
+        }
         String qualified = module + "." + fn.name();
         putFunctionSlot(qualified, fn);
 
@@ -1906,6 +2111,107 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
+    /**
+     * Cross-file callable signatures the importer can type exactly (typed
+     * linked IR v1): concrete or generic, sync, async or suspends, with owned
+     * or borrowed parameters over built-in, collection and linked nominal
+     * types. Nominals must already be qualified to their linked alias.X name.
+     * Anything else stays an opaque import, never a guessed type.
+     */
+    private static boolean linkableSignature(Ast.FunctionDecl fn, Set<String> linkedNominals) {
+        if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
+                || fn.generator() || fn.structural() || fn.nonLexical() || fn.trapped()
+                || !fn.annotations().isEmpty()) {
+            return false;
+        }
+        Set<String> generics = Set.copyOf(fn.genericParameters());
+        if (!linkableType(fn.returnType(), generics, linkedNominals, true)) return false;
+        for (Ast.Param param : fn.parameters()) {
+            if (param == null || param.structural()
+                    || !linkableType(param.type(), generics, linkedNominals, false)) return false;
+        }
+        return true;
+    }
+
+    private static boolean linkableType(Ast.TypeRef ref, Set<String> generics,
+                                        Set<String> linkedNominals, boolean allowVoid) {
+        if (ref == null || ref.name() == null || ref.inferArguments()) return false;
+        if (ref.isBorrow()) {
+            return linkableType(ref.borrowedTarget(), generics, linkedNominals, false);
+        }
+        List<Ast.TypeRef> args = ref.arguments();
+        if (args.stream().anyMatch(arg -> arg.isSequenceShape() || arg.isNamedParameter())) return false;
+        java.util.function.IntPredicate arity = n -> args.size() == n
+                && args.stream().allMatch(arg -> linkableType(arg, generics, linkedNominals, false));
+        if (generics.contains(ref.name())) return args.isEmpty();
+        return switch (ref.name()) {
+            case "int", "float", "bool", "String", "string" -> args.isEmpty();
+            case "void" -> allowVoid && args.isEmpty();
+            // Future<void> is the result of an awaited side effect.
+            case "Future" -> args.size() == 1 && linkableType(args.get(0), generics, linkedNominals, true);
+            case "Option", "Array", "List", "Set" -> arity.test(1);
+            case "Result", "Map" -> arity.test(2);
+            default -> args.stream().allMatch(arg -> linkableType(arg, generics, linkedNominals, false))
+                    && (linkedNominals.contains(ref.name()) || builtinNominal(ref));
+        };
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, Boolean> BUILTIN_NOMINALS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * A compiler-provided nominal (ChildProcess, Channel<T>, Duration, ...):
+     * it resolves in a checker that has no user declarations at all, so the
+     * importer's own declarations can never be what it names.
+     */
+    private static boolean builtinNominal(Ast.TypeRef ref) {
+        // Dynamic top types keep the legacy opaque import (e.g. std/assert's
+        // Any parameters accept every value through runtime equality).
+        if (Set.of("Any", "Object", "Unknown", "Dynamic").contains(ref.name())) return false;
+        Ast.TypeRef probe = new Ast.TypeRef(ref.name(),
+                ref.arguments().stream().map(ignored -> Ast.TypeRef.simple("int")).toList(), false);
+        return BUILTIN_NOMINALS.computeIfAbsent(probe.toString(), ignored -> {
+            try {
+                Type resolved = new TypeChecker().resolve(probe, Set.of(), null);
+                return resolved != null && resolved != Unknown.INSTANCE;
+            } catch (RuntimeException unresolved) {
+                return false;
+            }
+        });
+    }
+
+    private static boolean concreteLinkedSignature(Ast.FunctionDecl fn) {
+        if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE
+                || fn.async() || fn.suspends() || fn.generator() || fn.structural()
+                || fn.nonLexical() || fn.trapped() || !fn.genericParameters().isEmpty()
+                || !fn.annotations().isEmpty() || !concreteLinkedType(fn.returnType(), true)) {
+            return false;
+        }
+        for (Ast.Param param : fn.parameters()) {
+            if (param == null || param.structural() || param.mutable()
+                    || !concreteLinkedType(param.type(), false)) return false;
+        }
+        return true;
+    }
+
+    private static boolean concreteLinkedType(Ast.TypeRef ref, boolean allowVoid) {
+        if (ref == null || ref.name() == null || ref.inferArguments()) return false;
+        List<Ast.TypeRef> args = ref.arguments();
+        return switch (ref.name()) {
+            case "int", "float", "bool", "String", "string" -> args.isEmpty();
+            case "void" -> allowVoid && args.isEmpty();
+            case "Option" -> args.size() == 1 && concreteLinkedType(args.get(0), false);
+            case "Result" -> args.size() == 2 && concreteLinkedType(args.get(0), false)
+                    && concreteLinkedType(args.get(1), false);
+            default -> false;
+        };
+    }
+
+    /** `with` changes have no constructor-argument scope. */
+    private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
+        return fieldInitializerMaySuspend(expr, new Env(null));
+    }
+
     private boolean fieldInitializerMaySuspend(Ast.Expr expr, Env scalarInitializerArgs) {
         if (expr instanceof Ast.AwaitExpr
                 || expr instanceof Ast.TaskExpr
@@ -2774,6 +3080,10 @@ public final class TypeChecker {
 
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
         if (!insideActorLexicalBoundary() || lexicalClassOrigin == target) return;
+        // The linker admits a class identity only after checking a unique
+        // explicit cross-unit import. Never infer authority from its spelling.
+        if (target.actorKind() == Ast.ActorKind.NONE
+                && linkedClassNames.containsKey(target)) return;
         throw new IllegalArgumentException(
                 "actor '" + lexicalClassOrigin.name()
                         + "' cannot implicitly access sibling "
@@ -2788,6 +3098,8 @@ public final class TypeChecker {
         Ast.ClassDecl localClass = findClass(name);
         if (localClass != null) {
             if (localClass == lexicalClassOrigin || isExplicitActorParent(localClass)) return;
+            if (localClass.actorKind() == Ast.ActorKind.NONE
+                    && linkedClassNames.containsKey(localClass)) return;
             throw new IllegalArgumentException(
                     "actor '" + lexicalClassOrigin.name()
                             + "' cannot use same-file type '" + name
@@ -2952,7 +3264,7 @@ public final class TypeChecker {
         }
         String name = ref.name();
         if (generics.contains(name) || GENERIC_DEFAULT_BUILTINS.contains(name)
-                || Set.of("Object", "Any", "Unknown", "Error", "Symbol",
+                || Set.of("Object", "Any", "Unknown", "Error", "ArithmeticOverflowError", "DivisionByZeroError", "Symbol",
                         "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
                 || findClass(name) != null || findInterface(name) != null
                 || findTypeAlias(name) != null || modules.containsKey(name)
@@ -4058,13 +4370,6 @@ public final class TypeChecker {
                     : narrowed;
         }
         if (expr instanceof Ast.TrapExpr trapped) {
-            // The legacy trap expression produces Option<T>. The canonical
-            // trap! must produce Result<T,Error> with ordinary-error identity
-            // and cleanup; reusing legacy Option lowering is unsound.
-            if (trapped.canonicalBangResult()) {
-                throw new IllegalArgumentException(
-                        "TRAP_BANG_RESULT_LOWERING_UNVERIFIED: trap! requires checked Result<T,Error> and guest unwind; legacy trap Option<T> is not equivalent");
-            }
             // A trap expression cannot safely unwind a suspending or unknown
             // callback without continuation-owned cleanup.
             if (hasSuspendingSumCallbackSyntax(trapped.expression())) {
@@ -4188,12 +4493,10 @@ public final class TypeChecker {
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
                 case "-", "*", "%" -> numericJoin(left, right, binary.operator());
                 case "/" -> {
-                    // OresEvalRootNode.numeric evaluates real division as a Double,
-                    // even for int/int. The result cannot be assigned to int without
-                    // an explicit conversion. Complex/decimal joins retain their
-                    // existing representation pending dedicated numeric contracts.
                     Type result = numericJoin(left, right, "/");
-                    yield result == Primitive.INT ? Primitive.FLOAT : result;
+                    // Preserve historical .ores real division; canonical checked
+                    // i64 uses signed truncation and the same integral carrier.
+                    yield result == Primitive.INT && !checkedI64Arithmetic ? Primitive.FLOAT : result;
                 }
                 default -> Unknown.INSTANCE;
             };
@@ -4285,6 +4588,14 @@ public final class TypeChecker {
                 case "borrow" -> operand instanceof Borrow existing
                         ? new Borrow(existing.target(), false) : new Borrow(operand, false);
                 case "take" -> operand;
+                case "copy!!" -> {
+                    if (operand != Primitive.INT && operand != Primitive.BOOL
+                            && !(operand instanceof Types.BoolLiteral)) {
+                        throw new IllegalArgumentException(
+                                "E_COPY_GRAPH_UNPROVEN: copy!! requires an int or bool value");
+                    }
+                    yield operand;
+                }
                 case "copy", "share" -> {
                     if (containsUnprovenAtomicCell(operand, 0)) {
                         throw new IllegalArgumentException(
@@ -4570,7 +4881,8 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr importedCall
                     && importedCall.receiver() instanceof Ast.NameExpr namespace
-                    && namespace.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                    && namespace.name().equals(Parser.IMPORTS_NAMESPACE)
+                    && !linkedImportCallables.contains(importedCall.member())) {
                 if (!importedFunctions.containsKey(importedCall.member())) {
                     throw new IllegalArgumentException(
                             "imports::" + importedCall.member()
@@ -4596,8 +4908,14 @@ public final class TypeChecker {
                 if (pkgRoot && qualifiedCall.member().equals("init")) {
                     throw new IllegalArgumentException("pkg::init is a lifecycle hook, not a callable");
                 }
-                // pkg:: is not an actor capability: same-file dependencies remain forbidden.
-                rejectUnimportedModuleNamespace(moduleName);
+                // Only a linker-checked named function in the synthetic import
+                // namespace is an explicit cross-unit dependency. pkg:: and
+                // all ambient same-file namespaces remain forbidden.
+                if (!(moduleName.equals(Parser.IMPORTS_NAMESPACE)
+                        && linkedImportCallables.contains(qualifiedCall.member())
+                        && importedFunctions.containsKey(qualifiedCall.member()))) {
+                    rejectUnimportedModuleNamespace(moduleName);
+                }
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + (pkgRoot ? "pkg::" : moduleName + ".") + qualifiedCall.member());
@@ -6103,6 +6421,7 @@ public final class TypeChecker {
                     case "to_string" -> new Function(List.of(), Primitive.STRING);
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
                     case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+                    case "utf8_bytes" -> new Function(List.of(), new ListType(Primitive.INT));
                     case "trim" -> new Function(List.of(), Primitive.STRING);
                     case "is_identifier", "is_route_segment" -> new Function(List.of(), Primitive.BOOL);
                     case "codepoints" -> new Function(List.of(), new ListType(Primitive.INT));
@@ -6190,7 +6509,14 @@ public final class TypeChecker {
                         || name.name().equals("net")
                         || name.name().equals("http")
                         || name.name().equals("env"))) return Unknown.INSTANCE;
-            if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
+            if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) {
+                if (partiallyLinkedModules.contains(name.name())) {
+                    Ast.FunctionDecl linked =
+                            findSingleQualifiedFunction(name.name() + "." + member.member());
+                    if (linked != null) return trapFunctionType(linked, Set.of(), null);
+                }
+                return Unknown.INSTANCE;
+            }
 
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
@@ -6396,6 +6722,9 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (opaqueJsonBindings.contains(created.type().name())) {
+                throw new IllegalArgumentException("canonical Json and JsonValue are opaque; use Json.parse");
+            }
             if (created.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
                 throw new IllegalArgumentException(
                         "NAMED_CONSTRUCTOR_BINDING_UNSUPPORTED: named constructor arguments require "
@@ -6518,6 +6847,10 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.TaskExpr task) {
+            if (task.typedCountedSelectI64())
+                return checkTaskExpression(task, new ListType(Primitive.INT), env, generics, self);
+            if (task.typedDefaultSelectI64())
+                return checkTaskExpression(task, Primitive.INT, env, generics, self);
             // A value-producing task needs contextual Future<T> information so
             // every return path can be checked without guessing a result type.
             // A no-value task is unambiguously Future<void>.
@@ -6580,6 +6913,12 @@ public final class TypeChecker {
                 // barrier. The expression retains its ActorRef<T> type.
                 actorClassForRef(actorRef);
                 return actorRef;
+            }
+            // Immediate int values already use the non-suspending identity
+            // path in both guest evaluators. Keep std.await Future-only and
+            // reject unknown/affine operands rather than guessing at runtime.
+            if (!awaited.coreAdapter() && awaitedType == Primitive.INT) {
+                return awaitedType;
             }
             throw new IllegalArgumentException(
                     "await requires Future<T>, HasFuture<T>, or ActorRef<T>; got " + awaitedType);
@@ -7399,6 +7738,61 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "untrusted actor task blocks require quota-aware tracked task admission");
         }
+        if (task.typedCountedSelectI64()) {
+            // This first lowering snapshots exactly one lexical channel
+            // capability at task admission. Do not repeatedly resolve a
+            // global/imported value or admit a broader event payload.
+            String sourceName = task.zeroCountSourceName();
+            if (sourceName != null) {
+                if (task.body().size() != 1
+                        || !(task.body().getFirst() instanceof Ast.ReturnStmt returned)
+                        || !(returned.value() instanceof Ast.NewExpr empty)
+                        || !empty.type().equals(new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false))
+                        || !empty.arguments().isEmpty()
+                        || findClass("Array") != null || importedValues.contains("Array"))
+                    throw new IllegalArgumentException("invalid zero-count select lowering");
+            } else if (task.dynamicCountName() != null) {
+                int offset = 0;
+                if (task.dynamicCountName().equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
+                    if (task.body().size() != 5
+                            || !(task.body().getFirst() instanceof Ast.BindingStmt snapshot)
+                            || snapshot.kind() != Ast.BindingKind.VAL || snapshot.mutableReferent()
+                            || !snapshot.name().equals(task.dynamicCountName())
+                            || !Ast.TypeRef.simple("int").equals(snapshot.declaredType()))
+                        throw new IllegalArgumentException("invalid counted select count snapshot");
+                    for (String name : dev.oreslang.ast.CountedSelectCount.names(snapshot.initializer())) {
+                        Env.Binding binding = env.lookup(name);
+                        if (binding == null || binding.type() != Primitive.INT)
+                            throw new IllegalArgumentException("counted select requires lexical int count operands");
+                    }
+                    offset = 1;
+                } else {
+                    Env.Binding countBinding = env.lookup(task.dynamicCountName());
+                    if (countBinding == null || countBinding.type() != Primitive.INT)
+                        throw new IllegalArgumentException("counted select requires lexical int count");
+                }
+                if (task.body().size() != 4 + offset
+                        || !(task.body().get(2 + offset) instanceof Ast.LoopStmt loop)
+                        || loop.body().size() != 2
+                        || !(loop.body().get(1) instanceof Ast.SelectStmt selected)
+                        || selected.arms().size() != 1
+                        || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source)
+                        || findClass("Array") != null || importedValues.contains("Array"))
+                    throw new IllegalArgumentException("invalid dynamic counted select lowering");
+                sourceName = source.name();
+            } else {
+                if (task.body().size() < 3
+                        || !(task.body().get(1) instanceof Ast.SelectStmt selected)
+                        || selected.arms().size() != 1
+                        || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source))
+                    throw new IllegalArgumentException("invalid restricted counted select lowering");
+                sourceName = source.name();
+            }
+            Env.Binding sourceBinding = env.lookup(sourceName);
+            if (sourceBinding == null
+                    || !new Named("Channel", List.of(Primitive.INT)).equals(sourceBinding.type()))
+                throw new IllegalArgumentException("restricted counted select requires lexical Channel<int>");
+        }
         validateAsyncBoundaryType(result, true, "CPU task result");
 
         Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
@@ -7484,6 +7878,10 @@ public final class TypeChecker {
                 && future.name().equals("Future")
                 && future.arguments().size() == 1) {
             Type result = future.arguments().getFirst();
+            if (task.typedDefaultSelectI64() && result != Primitive.INT)
+                throw new IllegalArgumentException("select<int> has result Future<int>; contextual result cannot change it");
+            if (task.typedCountedSelectI64() && !new ListType(Primitive.INT).equals(result))
+                throw new IllegalArgumentException("counted select<int> has result Future<Array<int>>; contextual result cannot change it");
             checkTaskExpression(task, result, env, generics, self);
             return future;
         }
@@ -7496,6 +7894,28 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list && !list.explicitArrayConstructor()) {
+            // A fresh literal can be constructed directly at its expected
+            // string-tuple element type. Do not widen existing mutable lists
+            // or grant variance to arbitrary tuple/collection payloads.
+            if (expected instanceof ListType sequence
+                    && sequence.element() instanceof Tuple header
+                    && header.kind() == TupleKind.TUPLE
+                    && !header.elements().isEmpty()
+                    && header.elements().stream().allMatch(t -> t == Primitive.STRING)) {
+                for (Ast.Expr item : list.elements()) {
+                    Type actual = typeOf(item, env, generics, self);
+                    if (!(actual instanceof Tuple tuple)
+                            || tuple.kind() != TupleKind.TUPLE
+                            || tuple.elements().size() != header.elements().size()
+                            || !tuple.elements().stream().allMatch(t ->
+                                    t == Primitive.STRING || t instanceof StringLiteral)) {
+                        throw new IllegalArgumentException(
+                                "string tuple list literal element must match " + header
+                                        + "; got " + actual);
+                    }
+                }
+                return expected;
+            }
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
@@ -8571,6 +8991,8 @@ public final class TypeChecker {
             };
             case "HttpClientBody" -> switch (name) {
                 case "closed" -> Primitive.BOOL;
+                case "read_owned_bytes" -> new Function(List.of(Primitive.INT),
+                        new Named("Future", List.of(new Named("Bytes", List.of()))));
                 case "read_chunk" ->
                         new Function(
                                 List.of(Primitive.INT),
@@ -9210,7 +9632,13 @@ public final class TypeChecker {
                             previous.pattern(), arm.pattern(), subject, generics, self);
                     boolean guardDisjoint = previous.guard() != null && arm.guard() != null
                             && guardsProvablyDisjoint(previous.guard(), arm.guard());
-                    if (!patternDisjoint && !guardDisjoint) {
+                    // A literal before a nominal type pattern is an ordered
+                    // specialization, regardless of whether its type arm used 'on is'.
+                    // Keep the general disjointness and dead-arm checks intact.
+                    boolean literalSpecialization = previous.pattern() instanceof Ast.LiteralPattern
+                            && arm.pattern() instanceof Ast.TypePattern typed
+                            && !typed.type().isComplement();
+                    if (!patternDisjoint && !guardDisjoint && !literalSpecialization) {
                         throw new IllegalArgumentException(
                                 "ordinary match requires provably disjoint explicit patterns "
                                         + (j + 1) + " and " + (i + 1)
@@ -9294,7 +9722,13 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.LiteralPattern literal) {
             Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), bindings, generics, self);
-            if (!assignable(literalType, subject) && !assignable(subject, literalType)) {
+            // Historical numeric match uses exact cross-width runtime equality,
+            // not numeric assignment or a lossy conversion. Strict source mode
+            // retains its separate admission fence.
+            boolean legacyMixedNumeric = !strictAttoEquality
+                    && (literalType == Primitive.INT && subject == Primitive.FLOAT
+                        || literalType == Primitive.FLOAT && subject == Primitive.INT);
+            if (!legacyMixedNumeric && !assignable(literalType, subject) && !assignable(subject, literalType)) {
                 throw new IllegalArgumentException("literal pattern type " + literalType + " is incompatible with " + subject);
             }
             return;
@@ -9950,6 +10384,10 @@ public final class TypeChecker {
      * identity relation, while open nominal types may share a future/common
      * subtype and therefore cannot be declared disjoint without a proof.
      */
+    private static boolean isNumericErrorName(String name) {
+        return name.equals("ArithmeticOverflowError") || name.equals("DivisionByZeroError");
+    }
+
     private boolean typesMayOverlap(Type a, Type b) {
         if (a == Unknown.INSTANCE || b == Unknown.INSTANCE
                 || a instanceof Generic || b instanceof Generic) return true;
@@ -9967,6 +10405,9 @@ public final class TypeChecker {
         }
 
         if (a instanceof Named an && b instanceof Named bn) {
+            if (checkedI64Arithmetic && an.arguments().isEmpty() && bn.arguments().isEmpty()
+                    && ((an.name().equals("Error") && isNumericErrorName(bn.name()))
+                        || (bn.name().equals("Error") && isNumericErrorName(an.name())))) return true;
             boolean aNominal = findClass(an.name()) != null || findInterface(an.name()) != null;
             boolean bNominal = findClass(bn.name()) != null || findInterface(bn.name()) != null;
             if (aNominal && bNominal) {
@@ -10844,6 +11285,12 @@ public final class TypeChecker {
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
                         Primitive.VOID);
+                case "utf8_string" -> {
+                    if (list.element() != Primitive.INT) {
+                        throw new IllegalArgumentException("utf8_string requires List<int>");
+                    }
+                    yield new Function(List.of(), Primitive.STRING);
+                }
                 default -> null;
             };
         }
@@ -11180,6 +11627,18 @@ public final class TypeChecker {
                 default -> null;
             };
         }
+        if (expression instanceof Ast.TypeTestExpr test && test.binding() == null
+                && test.targetType().equals(Ast.TypeRef.simple("int"))) {
+            // Only an exact proven int constant can fold this type test.
+            Object value = evaluateScalarConstant(test.value(), env, depth + 1);
+            return value instanceof Long && "int".equals(strictNumericSource(test.value(), env))
+                    ? Boolean.TRUE : null;
+        }
+        if (expression instanceof Ast.AwaitExpr awaited && !awaited.coreAdapter()
+                && "int".equals(strictNumericSource(awaited.expression(), env))) {
+            Object value = evaluateScalarConstant(awaited.expression(), env, depth + 1);
+            return value instanceof Long ? value : null;
+        }
         if (expression instanceof Ast.ConditionalExpr conditional) {
             Object predicate = evaluateScalarConstant(conditional.condition(), env, depth + 1);
             if (!(predicate instanceof Boolean condition)) return null;
@@ -11354,13 +11813,67 @@ public final class TypeChecker {
                 && Set.of("+", "-", "~").contains(unary.operator())) {
             return strictNumericSource(unary.operand(), env);
         }
+        if (expr instanceof Ast.AwaitExpr awaited && !awaited.coreAdapter()) {
+            // Immediate int await is identity, but erased INT alone is not
+            // an exact width witness. Do not claim Future or projection width.
+            return "int".equals(strictNumericSource(awaited.expression(), env)) ? "int" : null;
+        }
         if (expr instanceof Ast.ConditionalExpr ternary) {
             String yes = strictNumericSource(ternary.whenTrue(), env);
             String no = strictNumericSource(ternary.whenFalse(), env);
             return yes != null && yes.equals(no) ? yes : null;
         }
+        // Conservative literal and direct tagged-payload match join proof. Do not consult the outer
+        // environment for a name declared or shadowed by an arm pattern/prefix.
+        // Explicit result annotations alone cannot prove exact numeric width.
+        if (expr instanceof Ast.MatchExpr match) {
+            String common = null;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                // Signed literals are parsed as unary expressions. Prove
+                // their width using only literal operands, never outer names.
+                Ast.Expr value = arm.value();
+                while (value instanceof Ast.UnaryExpr unary
+                        && Set.of("+", "-").contains(unary.operator())) {
+                    value = unary.operand();
+                }
+                String width;
+                if (value instanceof Ast.LiteralExpr literal) {
+                    width = literal.value() instanceof Long ? "int"
+                            : literal.value() instanceof Double ? "float" : null;
+                } else if (arm.prefixStatements().isEmpty()
+                        && value instanceof Ast.NameExpr name
+                        && arm.pattern() instanceof Ast.ConstructorPattern constructor
+                        && constructor.arguments().size() == 1
+                        && constructor.arguments().getFirst() instanceof Ast.BindingPattern binding
+                        && name.name().equals(binding.name())) {
+                    // Only a direct payload binder from an explicitly typed
+                    // built-in Option/Result subject proves source width.
+                    // No erased primitive, outer name or arm-local shadowing.
+                    Ast.TypeRef source = strictSourceRef(match.subject(), env);
+                    if (source == null || source.isBorrow() || source.inferArguments()) return null;
+                    Ast.TypeRef payload = switch (constructor.constructor()) {
+                        case "Some" -> source.name().equals("Option") && source.arguments().size() == 1
+                                ? source.arguments().getFirst() : null;
+                        case "Ok" -> source.name().equals("Result") && source.arguments().size() == 2
+                                ? source.arguments().get(0) : null;
+                        case "Err" -> source.name().equals("Result") && source.arguments().size() == 2
+                                ? source.arguments().get(1) : null;
+                        default -> null;
+                    };
+                    width = strictNumericName(payload);
+                } else return null;
+                if (width == null || (common != null && !common.equals(width))) return null;
+                common = width;
+            }
+            if (match.resultType() != null
+                    && !java.util.Objects.equals(common, strictNumericName(match.resultType()))) {
+                return null;
+            }
+            return common;
+        }
         if (expr instanceof Ast.BinaryExpr arithmetic
-                && Set.of("+", "-", "*").contains(arithmetic.operator())) {
+                && (Set.of("+", "-", "*").contains(arithmetic.operator())
+                    || (checkedI64Arithmetic && arithmetic.operator().equals("/")))) {
             String left = strictNumericSource(arithmetic.left(), env);
             String right = strictNumericSource(arithmetic.right(), env);
             return left != null && left.equals(right) ? left : null;
@@ -13048,6 +13561,41 @@ public final class TypeChecker {
         throw new IllegalArgumentException("E_TYPE_QUERY_UNBOUND: " + binding);
     }
 
+    /**
+     * Generic arity for compiler-owned core names is read from CoreTypeRegistry.
+     * This is deliberately limited to explicit ordinary type arguments: array
+     * shape dimensions and named collection layout metadata are separate syntax
+     * channels and must be validated by their dedicated rules.
+     */
+    private void validateRegisteredCoreTypeArity(Ast.TypeRef ref, Set<String> generics) {
+        CoreTypeRegistry.TypeInfo info = CoreTypeRegistry.lookup(ref.name()).orElse(null);
+        if (info == null || info.kind() != CoreTypeRegistry.Kind.TYPE) return;
+        // Type variables, primitive scalars (dedicated diagnostics below) and
+        // user declarations that shadow a prelude name keep their own rules.
+        if (generics.contains(ref.name())
+                || info.canonicalIdentity().startsWith("core/primitive/")) return;
+        if (!Set.of("Option", "Result").contains(ref.name()) && findClass(ref.name()) != null) return;
+        if (info.scope() == CoreTypeRegistry.Scope.ALLOC
+                && preludeProfile == AutomaticPrelude.Profile.CORE) {
+            throw new IllegalArgumentException("E_ALLOC_PROFILE_REQUIRED: "
+                    + info.canonicalIdentity() + " requires an allocator-enabled profile");
+        }
+        if (ref.inferArguments()) return;
+        if (ref.arguments().stream().anyMatch(Ast.TypeRef::isSequenceShape)
+                || ref.arguments().stream().anyMatch(Ast.TypeRef::isNamedParameter)) return;
+        int arity = ref.arguments().size();
+        // Option and Result require exact explicit generic arguments; most
+        // existing collection syntax also has contextual inference forms.
+        if (arity == 0 && !Set.of("Option", "Result").contains(ref.name())) return;
+        if (!info.acceptsArity(arity)) {
+            String expected = info.minGenericArity() == info.maxGenericArity()
+                    ? Integer.toString(info.minGenericArity())
+                    : info.minGenericArity() + ".." + info.maxGenericArity();
+            throw new IllegalArgumentException("E_CORE_TYPE_ARITY: " + info.canonicalIdentity()
+                    + " requires generic arity " + expected + ", found " + arity);
+        }
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
         return resolve(ref, generics, self, false);
     }
@@ -13516,6 +14064,8 @@ public final class TypeChecker {
                 resolvingAliases.remove(alias);
             }
         }
+
+        validateRegisteredCoreTypeArity(ref, generics);
 
         // Primitive and scalar built-in types do not accept higher-kinded
         // application. Previously e.g. int<string> silently resolved to int.

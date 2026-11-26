@@ -426,6 +426,10 @@ public final class OresContext implements AutoCloseable {
      * the terminal Future.
      */
     public Object runRootMain(Callable<?> main) {
+        return runRootMain(null, main);
+    }
+
+    public Object runRootMain(Node location, Callable<?> main) {
         if (vm.isRootSchedulerCurrent()) {
             try {
                 return main.call();
@@ -477,8 +481,9 @@ public final class OresContext implements AutoCloseable {
                         "root main scheduler task resumed after terminal state");
             }
         });
-        if (isolatedRootTurns != null) {
-            while (!task.isDone()) {
+        try {
+            if (isolatedRootTurns != null) {
+                while (!task.isDone()) {
                 Runnable turn = isolatedRootTurns.poll();
                 if (turn == null) {
                     // Waiting is outside guest execution. Re-entering on this
@@ -493,10 +498,28 @@ public final class OresContext implements AutoCloseable {
                         }
                     });
                 }
-                if (turn != null) turn.run();
+                    if (turn != null) turn.run();
+                }
+            } else if (location != null && !task.isDone()) {
+                // The host entry thread, not a CONTROL carrier, is waiting.
+                // Register an interruptible Truffle blocked region so a
+                // context interrupt/cancel can deliver its thread-local action.
+                var settled = new java.util.concurrent.CountDownLatch(1);
+                var registration = task.whenCompleteRuntimeCancellable(
+                        (value, failure) -> settled.countDown());
+                try {
+                    com.oracle.truffle.api.TruffleSafepoint.setBlockedThreadInterruptible(
+                            location, java.util.concurrent.CountDownLatch::await, settled);
+                } finally {
+                    registration.detach();
+                }
             }
+            return task.join();
+        } finally {
+            // On interrupted guest entry, revoke the root task rather than
+            // leave an observer parked on an abandoned scheduler continuation.
+            if (!task.isDone()) task.cancel(true);
         }
-        return task.join();
     }
 
     private void executeRootTurn(Runnable turn) {

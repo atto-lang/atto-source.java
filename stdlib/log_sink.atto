@@ -1,0 +1,57 @@
+// Optional AttoLang-only async stdout adapter for namespace log.
+// Requires the pending capability-checked stdio.stdout.log_async API.
+// NOT part of the core admission path, and not a production sink until the
+// pending runtime API and guest import/typechecker/AOT tests are integrated.
+namespace log_sink;
+
+import * as log from "./log.atto";
+
+// Strict single-line token admission. This intentionally fails closed instead
+// of attempting to implement generic JSON escaping without a verified codec.
+// codepoints() creates an actor-local snapshot; callers MUST enforce an input
+// allocation quota before calling on untrusted strings.
+pub fnc safe_component(String text, int max_scalars) -> bool {
+  if max_scalars < 0 || max_scalars > 16384; do return false; fi
+  val points = text.codepoints();
+  if points.size > max_scalars; do return false; fi
+  for (let int index = 0; index < points.size; index = index + 1) {
+    val int code = points.get(index);
+    if code < 32 || code == 127 || code == 8232 || code == 8233
+        || code == 124 || code == 61 || code == 58 || code == 92; do
+      return false;
+    fi
+  }
+  return true;
+}
+
+pub fnc valid_for_line(log.LogEntry record) -> bool {
+  if !log.valid_entry(record); do return false; fi
+  if !safe_component(record.target, 1024); do return false; fi
+  if !safe_component(record.message, 8192); do return false; fi
+  if !safe_component(record.field1_key, 128); do return false; fi
+  if !safe_component(record.field1_value, 2048); do return false; fi
+  if !safe_component(record.field2_key, 128); do return false; fi
+  if !safe_component(record.field2_value, 2048); do return false; fi
+  return true;
+}
+
+// Call only in an actor/task that has explicit STDOUT capability.
+// Async is default: no _async suffix in this public Atto API.
+// This function does not mutate Buffer, hold a mutable loan across await,
+// or ACK any record. The caller may ACK *only* after successful completion.
+// The runtime must enforce UTF-8 record and global pending-byte budgets;
+// a successful Future is NOT an fsync or durable delivery receipt.
+pub async routine write_record(log.LogEntry record): bool {
+  if !valid_for_line(record); do return false; fi
+  await stdio.stdout.log_async(
+    "severity=", log.severity_name(record.severity),
+    "|target=", record.target,
+    "|message=", record.message,
+    "|actor_id=", record.actor_id,
+    "|trace_id=", record.trace_id,
+    "|span_id=", record.span_id,
+    "|field1=", record.field1_key, ":", record.field1_value,
+    "|field2=", record.field2_key, ":", record.field2_value
+  );
+  return true;
+}

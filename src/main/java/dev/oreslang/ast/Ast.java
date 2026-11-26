@@ -2217,10 +2217,38 @@ public final class Ast {
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
     public enum TaskCaptureTransfer { COPY, MOVE }
-    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) implements Expr {
+    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                           boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                           String zeroCountSourceName, String dynamicCountName) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
+            if ((typedDefaultSelectI64 || typedCountedSelectI64) && domain != ExecutionDomain.CPU)
+                throw new IllegalArgumentException("typed select requires CPU task authority");
+            if (typedDefaultSelectI64 && typedCountedSelectI64)
+                throw new IllegalArgumentException("inconsistent typed select result");
+            if (zeroCountSourceName != null && (!typedCountedSelectI64 || zeroCountSourceName.isBlank()))
+                throw new IllegalArgumentException("invalid zero-count select type witness");
+            if (dynamicCountName != null && (!typedCountedSelectI64
+                    || zeroCountSourceName != null || dynamicCountName.isBlank()))
+                throw new IllegalArgumentException("invalid dynamic counted select witness");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, false);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) {
+            this(domain, body, legacyNb, false, false);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body) {
             this(domain, body, false);
@@ -2524,13 +2552,8 @@ public final class Ast {
         }
     }
 
-    /** Caller-side failure capture. Historical bare trap is Option<T>; canonical
-     *  trap! is a distinct Result<T,Error> target. Preserve this spelling
-     *  distinction all the way to type admission so unsupported Result
-     *  lowering cannot silently execute an Option-producing guest node. */
-    public record TrapExpr(Expr expression, boolean canonicalBangResult) implements Expr {
-        public TrapExpr(Expr expression) { this(expression, false); }
-    }
+    /** Caller-side capture of ordinary failure as a Result. */
+    public record TrapExpr(Expr expression) implements Expr { }
 
     public record ChannelOpExpr(
             ChannelOperation operation,

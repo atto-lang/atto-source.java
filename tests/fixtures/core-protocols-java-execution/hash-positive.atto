@@ -1,4 +1,4 @@
-import trait Hash from "ores.core/protocols";
+import trait Hash from "atto.core/protocols";
 
 define pub class Counter implements Hash as
   pub val int value;

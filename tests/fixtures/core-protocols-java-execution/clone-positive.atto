@@ -1,4 +1,4 @@
-import trait Clone from "ores.core/protocols";
+import trait Clone from "atto.core/protocols";
 
 define pub class Counter implements Clone<int> as
   pub val int value;

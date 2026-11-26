@@ -424,16 +424,27 @@ public final class NativeIo {
         }
     }
 
+    /**
+     * Read one capability-scoped environment key. Host values are never
+     * interpolated into diagnostics. A UTF-8 byte bound protects guest/actor
+     * allocations, including Native Image, before a String crosses to guest.
+     */
     public static String envGet(OresContext context, String name) {
         validateEnvName(name);
         context.requirePermission(RuntimePermissions.Permission.ENV, name, "env.get");
-        return System.getenv(name);
+        // Query the Truffle context environment, never JVM-global getenv.
+        // EnvironmentAccess.NONE exposes only explicitly injected host values.
+        String value = context.env().getEnvironment().get(name);
+        validateEnvValue(value);
+        return value;
     }
 
     public static boolean envHas(OresContext context, String name) {
         validateEnvName(name);
         context.requirePermission(RuntimePermissions.Permission.ENV, name, "env.has");
-        return System.getenv().containsKey(name);
+        // Query only the explicitly injected context environment. An empty
+        // present value is still present, and denial was checked above.
+        return context.env().getEnvironment().containsKey(name);
     }
 
     public static String httpGetText(OresContext context, String rawUri) {
@@ -745,9 +756,51 @@ public final class NativeIo {
         }
     }
 
-    private static void validateEnvName(String name) {
-        if (name == null || name.isBlank() || name.indexOf('=') >= 0 || name.indexOf('\0') >= 0) {
+    static final int MAX_ENV_VALUE_BYTES = 16 * 1024;
+
+    // std/env intentionally accepts portable ASCII key spellings only.
+    // Validate before the permission check and before any OS lookup.
+    static void validateEnvName(String name) {
+        if (name == null || name.length() == 0 || name.length() > 128) {
             throw new IllegalArgumentException("environment variable name is invalid");
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            boolean alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+            boolean digit = c >= '0' && c <= '9';
+            if (!alpha && c != '_' && (i == 0 || !digit)) {
+                throw new IllegalArgumentException("environment variable name is invalid");
+            }
+        }
+    }
+
+    // No exception message may contain a value; values may contain secrets.
+    // Count actual UTF-8 bytes, not Java UTF-16 code units. Reject malformed
+    // surrogate sequences rather than silently substituting replacement chars.
+    static void validateEnvValue(String value) {
+        if (value == null) return;
+        if (value.length() > MAX_ENV_VALUE_BYTES)
+            throw new IllegalArgumentException("environment variable value exceeds byte limit");
+        int bytes = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (current == '\0') {
+                throw new IllegalArgumentException("environment variable value is invalid");
+            }
+            int codepoint = current;
+            if (Character.isHighSurrogate(current)) {
+                if (i + 1 >= value.length() ||
+                        !Character.isLowSurrogate(value.charAt(i + 1)))
+                    throw new IllegalArgumentException("environment variable value is invalid UTF-16");
+                codepoint = Character.toCodePoint(current, value.charAt(++i));
+            } else if (Character.isLowSurrogate(current)) {
+                throw new IllegalArgumentException("environment variable value is invalid UTF-16");
+            }
+            bytes += codepoint < 0x80 ? 1
+                    : codepoint < 0x800 ? 2
+                    : codepoint < 0x10000 ? 3 : 4;
+            if (bytes > MAX_ENV_VALUE_BYTES)
+                throw new IllegalArgumentException("environment variable value exceeds byte limit");
         }
     }
 
