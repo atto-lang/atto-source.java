@@ -11,7 +11,7 @@ final class AffineDropPlanVerifierV1Test {
     private static final Finish END = new Finish();
 
     private static Plan plan(boolean returnsOwner, Instruction entry) {
-        return new Plan(OWNERS, List.of("flag"), returnsOwner, entry);
+        return new Plan(OWNERS, List.of("flag"), returnsOwner ? "int" : null, entry);
     }
 
     private static void reject(boolean returnsOwner, Instruction instruction, String reason) {
@@ -69,9 +69,35 @@ final class AffineDropPlanVerifierV1Test {
     void rejectsDuplicateParameterSlotsAndNames() {
         assertThrows(IllegalArgumentException.class, () -> AffineDropPlanVerifierV1.verify(
                 new Plan(List.of(new Parameter(1, "a", "int"),
-                        new Parameter(1, "b", "i32")), List.of(), false, END)));
+                        new Parameter(1, "b", "i32")), List.of(), null, END)));
         assertThrows(IllegalArgumentException.class, () -> AffineDropPlanVerifierV1.verify(
-                new Plan(OWNERS, List.of("a"), false, END)));
+                new Plan(OWNERS, List.of("a"), null, END)));
+    }
+
+    @Test
+    void rejectsReturnTypeMismatchThroughBranchAndTransfer() {
+        var mixed = List.of(new Parameter(1, "a", "int"), new Parameter(2, "b", "i32"));
+        var yes = new Transfer(1, RETURN_SLOT, new Drop(2, END));
+        var no = new Transfer(2, 3, new Transfer(3, RETURN_SLOT, new Drop(1, END)));
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                AffineDropPlanVerifierV1.verify(new Plan(mixed, List.of("flag"), "int",
+                        new Branch("flag", yes, no))));
+        assertTrue(error.getMessage().contains("return element type mismatch"), error::getMessage);
+        assertDoesNotThrow(() -> AffineDropPlanVerifierV1.verify(
+                new Plan(mixed, List.of(), "i32", no)));
+    }
+
+    @Test
+    void rejectsMalformedElementDescriptors() {
+        for (String type : new String[]{null, "", "bool"}) {
+            var error = assertThrows(IllegalArgumentException.class, () ->
+                    AffineDropPlanVerifierV1.verify(new Plan(
+                            List.of(new Parameter(1, "a", type)), List.of(), null, END)));
+            assertTrue(error.getMessage().contains("invalid or duplicate affine parameter"));
+        }
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                AffineDropPlanVerifierV1.verify(new Plan(OWNERS, List.of(), "bool", END)));
+        assertTrue(error.getMessage().contains("invalid return element type"));
     }
 
     @Test
