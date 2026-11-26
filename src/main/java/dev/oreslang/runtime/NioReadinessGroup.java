@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import java.io.IOException;
 import java.nio.channels.CancelledKeyException;
-import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
@@ -35,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class NioReadinessGroup implements AutoCloseable {
     private static final int DEFAULT_MAX_PENDING = 4_096;
     private static final int DEFAULT_COMMAND_CAPACITY = 4_096;
+    private static final int MAX_COMMANDS_PER_POLL = 64;
 
     private final Object lifecycle = new Object();
     private final int maxPending;
@@ -186,10 +186,17 @@ final class NioReadinessGroup implements AutoCloseable {
     private void registerOnReactor(Watch watch) {
         if (watch.retired.get()) return;
         try {
+            // A cancelled key remains registered until a selection operation
+            // purges it. A completion can enqueue a new watch before the next
+            // blocking select, including from the reactor's own runtime waiter.
+            SelectionKey previous = watch.channel.keyFor(selector);
+            if (previous != null && !previous.isValid()) {
+                selector.selectNow();
+            }
             SelectionKey key = watch.channel.register(selector, watch.interestOps, watch);
             watch.key = key;
             if (watch.retired.get()) key.cancel();
-        } catch (ClosedChannelException | CancelledKeyException failure) {
+        } catch (IOException | CancelledKeyException failure) {
             finish(watch, null, failure);
         } catch (RuntimeException failure) {
             finish(watch, null, failure);
@@ -211,6 +218,7 @@ final class NioReadinessGroup implements AutoCloseable {
                 // becomes a no-op; an already-created key is safe to cancel
                 // from the caller thread.
                 retireDirectly = true;
+                wake = selector;
             }
         }
         if (retireDirectly) {
@@ -233,19 +241,27 @@ final class NioReadinessGroup implements AutoCloseable {
         try {
             while (true) {
                 drainCommands();
+                // Registration may have performed selectNow() to purge a
+                // cancelled key, which can also discover unrelated readiness.
+                // Consume that readiness before ever blocking again.
+                processSelected();
+                final boolean queued;
                 synchronized (lifecycle) {
                     if (closed) break;
+                    queued = !commands.isEmpty();
                 }
 
-                selector.select();
+                // Bound command work so a continuous producer cannot starve
+                // ready sockets. Never block with published commands waiting.
+                if (queued) selector.selectNow();
+                else selector.select();
                 processSelected();
             }
-            drainCommands();
         } catch (ClosedSelectorException ignored) {
             synchronized (lifecycle) {
                 if (!closed) terminal = ignored;
             }
-        } catch (IOException | RuntimeException failure) {
+        } catch (IOException | RuntimeException | Error failure) {
             terminal = failure;
         } finally {
             if (terminal != null) {
@@ -271,7 +287,7 @@ final class NioReadinessGroup implements AutoCloseable {
     }
 
     private void drainCommands() {
-        while (true) {
+        for (int i = 0; i < MAX_COMMANDS_PER_POLL; i++) {
             Runnable command;
             synchronized (lifecycle) {
                 command = commands.pollFirst();
