@@ -96,4 +96,52 @@ final class CheckedQuotientProfileForwardPortTest {
             assertEquals(quotient.longValueExact(), StrictIntegerArithmetic.div(a, b));
         }
     }
+
+    @Test void checkedNumericFaultsAreTypedOrdinaryGuestErrors() throws Exception {
+        String[][] cases = {
+            {"a / b", "7", "0", "DivisionByZeroError"},
+            {"a / b", "-9223372036854775808", "-1", "ArithmeticOverflowError"},
+            {"a + b", "9223372036854775807", "1", "ArithmeticOverflowError"},
+            {"a - b", "-9223372036854775808", "1", "ArithmeticOverflowError"},
+            {"a * b", "3037000500", "3037000500", "ArithmeticOverflowError"},
+            {"-a", "-9223372036854775808", "0", "ArithmeticOverflowError"},
+            {"Integer.rem(a, b)", "7", "0", "DivisionByZeroError"},
+            {"Integer.mod(a, b)", "7", "0", "DivisionByZeroError"}
+        };
+        for (String spelling : new String[] {"trap", "trap!"}) {
+            for (String[] c : cases) {
+                String source = """
+                        // oreslang:checked-i64-v1
+                        fnc checked(int a, int b): int { return %s; }
+                        pub fnc main(): int {
+                          val outcome = %s checked(%s, %s);
+                          if outcome.is_err() then
+                            if outcome.unwrap_err() is type %s then return 42; fi
+                          fi
+                          return 1;
+                        }
+                        """.formatted(c[0], spelling, c[1], c[2], c[3]);
+                assertEquals(42.0, run(source, "typed-fault.ores"), c[0] + " " + spelling);
+            }
+        }
+    }
+
+    @Test void ordinaryNumericFaultIdentityDoesNotReclassifyHostArithmetic() {
+        var zero = dev.oreslang.runtime.GuestErrorValue.divisionByZero();
+        var overflow = dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow();
+        var signal = dev.oreslang.runtime.GuestOrdinaryThrow.signal(zero);
+        assertSame(zero, signal.error());
+        assertNotSame(zero, dev.oreslang.runtime.GuestErrorValue.divisionByZero());
+        assertEquals(65538, zero.abiCode());
+        assertEquals(65537, overflow.abiCode());
+        assertEquals("DivisionByZeroError", zero.nominalType());
+        assertEquals("ArithmeticOverflowError", overflow.nominalType());
+        assertTrue(dev.oreslang.runtime.TrapFailurePolicy.isTrappable(signal, IllegalStateException.class));
+        assertFalse(dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+                new ArithmeticException("ORES_I64_DIVISION_BY_ZERO"), IllegalStateException.class));
+        assertFalse(dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+                new RuntimeException(signal), IllegalStateException.class));
+        signal.addSuppressed(new java.util.concurrent.CancellationException());
+        assertFalse(dev.oreslang.runtime.TrapFailurePolicy.isTrappable(signal, IllegalStateException.class));
+    }
 }
