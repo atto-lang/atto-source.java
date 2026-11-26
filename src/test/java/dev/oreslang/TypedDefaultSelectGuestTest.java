@@ -12,6 +12,31 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Restricted executable typed-default and checked scalar counted selection. */
 @Timeout(20)
 final class TypedDefaultSelectGuestTest {
+    @Test void literalDefaultIsAlreadySettledWithoutScheduling() throws Exception {
+        assertEquals("false|#success|42", run("""
+                pub async fnc main(): void {
+                  val Future<int> f = select<int> { default: -> { return 42; } };
+                  stdio.stdout.write(f.cancel()); stdio.stdout.write("|");
+                  stdio.stdout.write(await f.get_done()); stdio.stdout.write("|");
+                  stdio.stdout.write(await f);
+                  return;
+                }
+                """));
+    }
+
+    @Test void literalDefaultAndDistinctAliasRotationAreDeterministic() throws Exception {
+        String code = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "tests/fixtures/select-source-v2/counted-distinct-alias-projection.atto"));
+        try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            for (int i = 0; i < 64; i++) {
+                assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code,
+                        "counted-distinct-alias-projection.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong(),
+                        "distinct alias trial " + i);
+            }
+        }
+    }
+
     @Test void localRawFutureBindingKeepsInferredResultType() throws Exception {
         assertEquals("42|43|44",run("""
                 pub async fnc main(): void {
