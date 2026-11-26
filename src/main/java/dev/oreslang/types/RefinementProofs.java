@@ -96,6 +96,12 @@ public final class RefinementProofs {
         }
 
         public Interval constrain(String operator, long bound) {
+            if (operator.equals("!=")) {
+                if (bound != 0 && bound != -1) throw new IllegalArgumentException("E_REFINEMENT_CONTRACT: unsupported exclusion");
+                if (!has(bound)) return this;
+                if (minimum == maximum) throw emptyConstraint();
+                return new Interval(minimum, maximum, holes | bit(bound));
+            }
             long lower = minimum;
             long upper = maximum;
             switch (operator) {
@@ -116,7 +122,7 @@ public final class RefinementProofs {
                 default -> throw new IllegalArgumentException("E_REFINEMENT_PREDICATE: expected an interval comparison");
             }
             if (lower > upper) throw emptyConstraint();
-            return new Interval(lower, upper);
+            return new Interval(lower, upper, holes);
         }
 
         public Interval plusOnNormalResult(Interval b) {
