@@ -9,6 +9,8 @@ on:
       - 'src/main/java/dev/oreslang/compiler/CompilerCacheLedger.java'
       - 'src/test/java/dev/oreslang/compiler/CompilerCacheLedgerTest.java'
       - 'src/test/java/dev/oreslang/IncrementalGuestDifferentialTest.java'
+      - 'src/test/java/dev/oreslang/IncrementalPackageLayoutIsolationTest.java'
+      - 'src/main/java/dev/oreslang/compiler/PackageLayout.java'
       - 'src/test/java/dev/oreslang/IncrementalFileFallbackV1Test.java'
       - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
       - '.github/workflows/compiler-cache-key.yml'
@@ -37,4 +39,4 @@ jobs:
           set -eu
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export PATH="$JAVA_HOME/bin:$PATH"
-          mvn -B -Dtest=CompilerCacheKeyTest,CompilerArtifactReceiptTest,CompilerCacheLedgerTest,IncrementalFileFallbackV1Test,IncrementalGuestDifferentialTest -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -Dtest=CompilerCacheKeyTest,CompilerArtifactReceiptTest,CompilerCacheLedgerTest,IncrementalFileFallbackV1Test,IncrementalGuestDifferentialTest,IncrementalPackageLayoutIsolationTest -Dsurefire.failIfNoSpecifiedTests=true test
