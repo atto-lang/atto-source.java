@@ -19,6 +19,8 @@ public final class CheckCanonicalXorReports {
     private static final String XOR_SUITE = "AttoCanonicalIntegerXorParityTest";
     private static final String BOOL_SUITE = "BooleanIntrinsicsTest";
 
+    private static final long MAX_REPORT_BYTES = 16L * 1024 * 1024;
+
     private CheckCanonicalXorReports() { }
 
     private static Set<String> methods(String... names) {
@@ -76,6 +78,9 @@ public final class CheckCanonicalXorReports {
         if (!Files.isRegularFile(report, LinkOption.NOFOLLOW_LINKS))
             throw new IllegalStateException("Missing or symlinked JUnit report: " + report);
 
+        if (Files.size(report) > MAX_REPORT_BYTES)
+            throw new IllegalStateException("JUnit report exceeds size limit: " + suite);
+
         var factory = DocumentBuilderFactory.newInstance();
         factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
         factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -104,6 +109,8 @@ public final class CheckCanonicalXorReports {
         Set<String> executed = new HashSet<>();
         for (int i = 0; i < cases.getLength(); i++) {
             Element test = (Element) cases.item(i);
+            if (test.getParentNode() != root)
+                throw new IllegalStateException("JUnit testcase must be a direct suite child: " + suite);
             if (!PACKAGE.concat(suite).equals(test.getAttribute("classname")))
                 throw new IllegalStateException("Wrong test classname: " + suite);
             String name = test.getAttribute("name");

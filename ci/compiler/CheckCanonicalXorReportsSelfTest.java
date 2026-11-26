@@ -142,6 +142,18 @@ public final class CheckCanonicalXorReportsSelfTest {
         run("nonintegral-tests-count",false,mutation(c -> c.rewrite(XOR,"tests=\""+XOR_CASES.size()+"\"","tests=\""+XOR_CASES.size()+".0\"")));
         run("doctype-entity",false,mutation(c -> c.write(XOR,"<?xml version=\"1.0\"?><!DOCTYPE testsuite [<!ENTITY x SYSTEM \"file:///etc/passwd\">]>"+report(XOR,XOR_CASES).replace("<?xml version=\"1.0\"?>", ""))));
         run("nested-testsuites-root",false,mutation(c -> c.write(XOR, "<testsuites>"+report(XOR,XOR_CASES).replace("<?xml version=\"1.0\"?>", "")+"</testsuites>")));
+        run("nested-testcase",false,mutation(c -> {
+            Path report = reportPath(c.root, XOR);
+            String xml = Files.readString(report, StandardCharsets.UTF_8);
+            String first = "  <testcase classname=\"dev.oreslang." + XOR + "\" name=\"" + XOR_CASES.get(0) + "\"/>";
+            if (!xml.contains(first)) throw new AssertionError("missing first testcase");
+            c.write(XOR, xml.replace(first, "  <group>" + first + "</group>"));
+        }));
+        run("oversized-report",false,mutation(c -> {
+            Path report = reportPath(c.root, XOR);
+            Files.writeString(report, " ".repeat(16 * 1024 * 1024), StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.APPEND);
+        }));
         run("symlink-report",false,mutation(c -> {
             Path report = reportPath(c.root, XOR);
             Path target = c.root.resolve("forged.xml");
@@ -160,6 +172,6 @@ public final class CheckCanonicalXorReportsSelfTest {
             Files.move(dir, relocated);
             Files.createSymbolicLink(dir, relocated);
         }));
-        System.out.println("SELFTEST_VERIFIER_POLICY_ONLY cases=18 passed=18 guest_executed=0");
+        System.out.println("SELFTEST_VERIFIER_POLICY_ONLY cases=20 passed=20 guest_executed=0");
     }
 }
