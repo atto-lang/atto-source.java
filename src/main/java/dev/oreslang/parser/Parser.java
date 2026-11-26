@@ -7355,9 +7355,11 @@ public final class Parser {
      */
     private String builtinOfFactory(Ast.Expr callee) {
         if (!(callee instanceof Ast.MemberExpr member)
-                || !member.member().equals("of")
                 || !(member.receiver() instanceof Ast.NameExpr owner)) return null;
         String name = owner.name();
+        if (member.member().equals("of_entries") && name.equals("Map")
+                && !shadowedOfTypes.contains(name)) return "Map.of_entries";
+        if (!member.member().equals("of")) return null;
         if (!BUILTIN_OF_TYPES.contains(name) || shadowedOfTypes.contains(name))
             return null;
         return name;
@@ -7372,7 +7374,8 @@ public final class Parser {
     }
 
     private Ast.Expr parseFactoryOf(String kind, List<Ast.TypeRef> explicitTypes) {
-        if (kind.equals("Map")) {
+        if (kind.equals("Map") || kind.equals("Map.of_entries")) {
+            boolean entryOnly = kind.equals("Map.of_entries");
             Ast.TypeRef witness = null;
             if (explicitTypes != null) {
                 if (explicitTypes.size() != 2
@@ -7386,7 +7389,7 @@ public final class Parser {
                         ? new Ast.ContextualEmptyMapExpr()
                         : new Ast.TypedEmptyAggregateExpr(witness);
             }
-            return parseMapOfEntries(witness);
+            return parseMapOfEntries(witness, entryOnly);
         }
         if (explicitTypes != null) {
             throw error(previous(), kind + ".of<T>(...) requires independently checked typed factory lowering");
@@ -7425,7 +7428,7 @@ public final class Parser {
             if (factory != null && check(LT) && adjacent(previous(), peek())
                     && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> types = parseCallTypeArguments();
-                consume(LPAREN, "expected '(' after " + factory + ".of type arguments");
+                consume(LPAREN, "expected '(' after " + (factory.equals("Map.of_entries") ? factory : factory + ".of") + " type arguments");
                 if (factory.equals("Record")) {
                     throw error(previous(), "Record.of does not admit explicit generic arguments");
                 }
@@ -7441,7 +7444,8 @@ public final class Parser {
                 // Do not allow a bare compiler-owned factory to escape as
                 // a first-class dynamic/host member until it has a typed
                 // function-value representation with ownership and AOT proof.
-                throw error(peek(), factory + ".of must be invoked as a checked collection factory");
+                throw error(peek(), (factory.equals("Map.of_entries") ? factory : factory + ".of")
+                        + " must be invoked as a checked collection factory");
             } else if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
@@ -7879,7 +7883,7 @@ public final class Parser {
         consume(LPAREN, "expected '(' after inline product factory");
     }
 
-    private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType) {
+    private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType, boolean entryOnly) {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
         java.util.Map<String, Integer> constantStringKeyKinds = new java.util.HashMap<>();
         do {
@@ -7892,6 +7896,8 @@ public final class Parser {
             int itemKind = 0; // legacy arrow entry
             if (inlineProductFactory("Pair") || inlineProductFactory("Entry")) {
                 boolean pair = inlineProductFactory("Pair");
+                if (entryOnly && pair)
+                    throw error(peek(), "Map.of_entries accepts Entry items only, not Pair");
                 itemKind = pair ? 1 : 2;
                 openInlineProductFactory();
                 // A literal-only Pair key is deliberately narrower than the
