@@ -1,0 +1,10 @@
+fnc seed(): int {
+    stdio.println("factory");
+    return 5;
+}
+
+pub async fnc work(): int {
+    defer (|int value| -> || -> { stdio.println(value); })(seed());
+    stdio.println("body");
+    return 42;
+}
