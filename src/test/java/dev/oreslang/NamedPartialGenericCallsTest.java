@@ -294,6 +294,8 @@ final class NamedPartialGenericCallsTest {
             assertDoesNotThrow(() -> TypeChecker.check(square));
             assertDoesNotThrow(() -> TypeChecker.check(angle));
             assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                    "fnc same(" + pair[0] + " value): " + pair[1] + " { return rt take value; }")));
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
                     "fnc same(" + pair[0] + " value): " + pair[1] + " { return value; }")));
         }
     }
