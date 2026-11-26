@@ -370,4 +370,49 @@ final class CollectionOfFactoryGuestTest {
                 () -> Parser.parse(program("const a = Array.of(...source);")));
     }
 
+
+    @Test
+    void inlinePairAndEntryFactoriesReuseCheckedAggregateStorage() {
+        String source = program("""
+            const m = Map.of<string,int>(Pair.of("alpha", 1), Entry.of("beta", 2), "gamma" => 3);
+            const r = Record.of(Pair.of("count", 42), Pair.of("ready", true));
+            const named = Record.of(count=42, ready=true);
+            stdio.println(m.size);
+            stdio.println(r.count);
+            stdio.println(r.ready);
+            stdio.println(named.count);
+            """);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("3\n42\ntrue\n42\n", guestStdout(source));
+    }
+
+    @Test
+    void inlineProductsRejectIncorrectNamesKindsAndArity() {
+        for (String expression : new String[] {
+            "Record.of(Entry.of(\"a\", 1))",
+            "Record.of(Pair.of(42, 1))",
+            "Record.of(Pair.of(\"first-name\", 1))",
+            "Record.of(Pair.of(\"return\", 1))",
+            "Record.of(Pair.of(\" a\", 1))",
+            "Record.of(Pair.of(\"a\", 1), Pair.of(\"a\", 2))",
+            "Record.of(Pair.of(\"a\", 1), b=2)",
+            "Record.of(\"a\"=1)",
+            "Map.of<string,int>(Pair.of(42, 1))",
+            "Map.of<string,int>(Pair.of(\"a\"))",
+            "Map.of<string,int>(Entry.of(\"a\", 1, 2))"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program("const x = " + expression + ";")), expression);
+        }
+        assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck(program(
+                "const x = Map.of<string,int>(Pair.of(\"a\", 1), Entry.of(\"a\", 2));")));
+    }
+
+    @Test
+    void shadowedPairCannotBeConsumedAsStaticRecordField() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+            "define class Pair as end\n" + program("const r = Record.of(Pair.of(\"a\", 1));")));
+    }
+
 }
