@@ -589,6 +589,12 @@ public final class OwnershipChecker {
             checkStatement(stmt, scope, returnType);
             if (stmt instanceof Ast.BindingStmt binding) {
                 releaseUnusedDirectLoan(binding, body, i + 1, scope, livenessFuel);
+                // Only the immediately following scalar read is modeled here.
+                // No arbitrary intervening call, capture or alias is assumed safe.
+                if (i > 0 && body.get(i - 1) instanceof Ast.BindingStmt prior
+                        && isNonescapingScalarRead(binding, prior, scope)) {
+                    releaseUnusedDirectLoan(prior, body, i + 1, scope, livenessFuel);
+                }
             }
         }
         scope.close();
@@ -637,6 +643,36 @@ public final class OwnershipChecker {
         loan.moved = true;
         shadowEvent("END_BORROW", owner);
         if (borrowMirAudit != null) borrowMirAudit.unsupported("inferred loan expiry");
+    }
+
+    // The admitted read has already been checked by checkBinding. Require
+    // an inferred, non-rebindable primitive value (no annotated owner,
+    // alias, lease, callable or aggregate). The receiver must be exactly the
+    // preceding direct loan's binder. The original release helper checks
+    // provenance and the entire remaining suffix before releasing.
+    private boolean isNonescapingScalarRead(Ast.BindingStmt read,
+                                            Ast.BindingStmt prior, Scope scope) {
+        // Java val is const mut. A proven primitive COPY result has no
+        // referent to alias, so its syntactic referent flag is irrelevant.
+        // Keep the fixed-slot, provenance and primitive checks below.
+        if (read.declaredType() != null
+                || read.inferredTypeName() != null
+                || !(read.initializer() instanceof Ast.MemberExpr field)
+                || !(field.receiver() instanceof Ast.NameExpr name)
+                || !name.name().equals(prior.name())) return false;
+        VarState result = scope.locals.get(read.name());
+        VarState loan = scope.locals.get(prior.name());
+        if (result == null || loan == null || result == loan
+                || result.origin != Origin.LOCAL || result.moved || result.rebindable
+                || result.kind != ValueKind.COPY || result.borrowSource != null
+                || result.borrowLease || result.aliasSource != null
+                || loan.moved || !loan.borrowLease
+                || !isPrimitiveCopyType(result.type)) return false;
+        // Narrow to built-in integer and bool value reads; other primitive
+        // or nominal kinds may require a distinct representation proof.
+        return (result.type.name().equals("int") || result.type.name().equals("bool"))
+                && !hasLocalTypeAliasNamed(result.type.name())
+                && findClass(result.type.name()) == null;
     }
 
     private static boolean loanAbsentFromStatement(Ast.Stmt stmt, String name,
