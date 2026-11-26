@@ -72,7 +72,7 @@ final class IncrementalPackageLayoutIsolationTest {
         var compiler = new IncrementalCompiler();
         var sources = Map.of("a.atto", "pub fnc value(): int { return 42; }",
                 "b.atto", "pub fnc value(): int { return 43; }",
-                "client.atto", "import fnc {value} from 'selected'; pub fnc main(): int { return value(); }");
+                "client.atto", "import fnc {value} from 'selected'; pub fnc main(): void { return; }");
         var pins = Map.of("client.atto", Map.of("selected", "a.atto"));
         var first = compiler.compile(sources, pins);
         var ambiguous = new java.util.LinkedHashMap<String, Map<String, String>>();
