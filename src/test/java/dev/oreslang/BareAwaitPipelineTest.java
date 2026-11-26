@@ -52,8 +52,28 @@ final class BareAwaitPipelineTest {
         assertEquals("42", output.toString(StandardCharsets.UTF_8));
     }
 
-    @Test void immediateScalarStillRequiresSeparateSemanticAdmission() {
+    @Test void immediateIntIsIdentityInBothFormsAndThroughContinuation() throws Exception {
+        String source = """
+            fnc identity(int x): int { return x; }
+            fnc prefixed(int x): int { return await x; }
+            pub fnc main(): void {
+                const f2 = 42 |> await;
+                const f3 = 42 |> await |> identity;
+                stdio.stdout.write(f2);
+                stdio.stdout.write(f3);
+                stdio.stdout.write(prefixed(42));
+                return;
+            }
+            """;
+        var program = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        var output = new ByteArrayOutputStream();
+        String name = "immediate-int-await.atto";
+        try (var lease = OresLanguage.openPrecheckedProgram(name, source, program);
+             Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
+        }
+        assertEquals("424242", output.toString(StandardCharsets.UTF_8));
         assertThrows(IllegalArgumentException.class, () ->
-            OresCompiler.parseAndTypeCheckStrictAtto("pub fnc main(): int { return 42 |> await; }"));
+            OresCompiler.parseAndTypeCheckStrictAtto("pub fnc main(): int { return 42 |> std.await; }"));
     }
 }
