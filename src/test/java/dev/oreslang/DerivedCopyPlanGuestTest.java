@@ -85,6 +85,49 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void flatShallowCopySlotsRemainIndependentInBothDirections() throws Exception {
+        assertEquals("31|42", run("""
+                define class Person as
+                  pub let int age = 10;
+                end
+                pub fnc main(): void {
+                  let mut Person a = new Person();
+                  let mut Person b = copy! a;
+                  a.age = 31;
+                  b.age = 42;
+                  stdio.stdout.write(a.age);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(b.age);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void deepCopyShellAndWholeClassFieldReplacementRetainIndependentSlots() throws Exception {
+        assertEquals("20|22", run("""
+                define class Scores as
+                  pub let int n = 10;
+                end
+                define class Person as
+                  pub let Scores scores = new Scores();
+                end
+                pub fnc main(): void {
+                  let mut Person a = new Person();
+                  let mut Person b = copy!! a;
+                  a.scores = new Scores();
+                  b.scores = new Scores();
+                  a.scores.n = 20;
+                  b.scores.n = 22;
+                  stdio.stdout.write(a.scores.n);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(b.scores.n);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void shallowBangRejectsOwnedMutableChildrenEvenWhenSequenceEmpty() {
         String source = """
                 define class Person as
