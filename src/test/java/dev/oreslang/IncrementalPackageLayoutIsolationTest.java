@@ -67,4 +67,34 @@ final class IncrementalPackageLayoutIsolationTest {
         var layout = new PackageLayout(Map.of("vendor/v1", "shop", "vendor/v2", "other"));
         assertNotEquals(layout.packageId("vendor/v1/a.atto"), layout.packageId("vendor/v2/a.atto"));
     }
+
+    @Test void duplicateNormalizedImportersCannotSilentlyRebindOrPoisonCache() {
+        var compiler = new IncrementalCompiler();
+        var sources = Map.of("a.atto", "pub fnc value(): int { return 42; }",
+                "b.atto", "pub fnc value(): int { return 43; }",
+                "client.atto", "import fnc {value} from 'selected'; pub fnc main(): int { return value(); }");
+        var pins = Map.of("client.atto", Map.of("selected", "a.atto"));
+        var first = compiler.compile(sources, pins);
+        var ambiguous = new java.util.LinkedHashMap<String, Map<String, String>>();
+        ambiguous.put("client.atto", Map.of("selected", "a.atto"));
+        ambiguous.put("./client.atto", Map.of("selected", "b.atto"));
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(sources, ambiguous));
+        var recovered = compiler.compile(sources, pins);
+        assertTrue(recovered.rebuiltUnits().isEmpty());
+        assertSame(first.units().get("client.atto"), recovered.units().get("client.atto"));
+    }
+
+    @Test void invalidEmptySnapshotAndNullSourceRetainCommittedCache() {
+        var compiler = new IncrementalCompiler();
+        var first = compiler.compile(SOURCE);
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(),
+                Map.of(ID, Map.of("unused", "other.atto"))));
+        var malformed = new java.util.LinkedHashMap<String, String>();
+        malformed.put(ID, null);
+        malformed.put("./" + ID, SOURCE.get(ID));
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(malformed));
+        var recovered = compiler.compile(SOURCE);
+        assertTrue(recovered.reparsedUnits().isEmpty());
+        assertSame(first.units().get(ID), recovered.units().get(ID));
+    }
 }
