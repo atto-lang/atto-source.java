@@ -4408,6 +4408,10 @@ public final class TypeChecker {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
             }
+            if (unary.operator().equals(Ast.VerifiedI64.CHECK_I32)) {
+                requireAssignable(operand, Primitive.INT, "checked i32 carrier operand");
+                return Primitive.INT;
+            }
             if (unary.operator().equals("~")) {
                 requireInteger(operand, "~ operand");
                 return Primitive.INT;
@@ -4446,6 +4450,12 @@ public final class TypeChecker {
             }
             Type right = typeOf(binary.right(), env, generics, self);
             return switch (binary.operator()) {
+                case Ast.VerifiedI64.ADD, Ast.VerifiedI64.SUBTRACT,
+                        Ast.VerifiedI64.MULTIPLY, Ast.VerifiedI64.DIVIDE -> {
+                    requireAssignable(left, Primitive.INT, "checked i64 left operand");
+                    requireAssignable(right, Primitive.INT, "checked i64 right operand");
+                    yield Primitive.INT;
+                }
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
                     requireAssignable(right, Primitive.BOOL, "logical operand");
@@ -4506,6 +4516,18 @@ public final class TypeChecker {
                     "spread expressions are only valid as arguments to a variadic callable");
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals(Ast.VerifiedI64.CHECK_REFINEMENT)) {
+                var args = runtime.arguments();
+                if (args.size() != 3 || !(args.get(1) instanceof Ast.LiteralExpr low)
+                        || !(args.get(2) instanceof Ast.LiteralExpr high)
+                        || !(low.value() instanceof Long minimum) || !(high.value() instanceof Long maximum)
+                        || minimum > maximum) {
+                    throw new IllegalArgumentException("invalid internal refinement bounds");
+                }
+                requireAssignable(typeOf(args.getFirst(), env, generics, self), Primitive.INT,
+                        "checked refinement carrier operand");
+                return Primitive.INT;
+            }
             if (runtime.operation().equals("spawn")) {
                 if (runtime.arguments().size() != 1
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
