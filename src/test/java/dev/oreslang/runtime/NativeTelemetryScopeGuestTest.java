@@ -25,14 +25,12 @@ final class NativeTelemetryScopeGuestTest {
         assertFalse(parsed.hasJavaSource());
         assertFalse(source.contains("java:"));
         assertFalse(source.contains("stdio."));
-        // Only explicit export may suspend; the disabled provider and batch
-        // construction must remain synchronous and free of HTTP calls.
-        int exporter = source.indexOf("pub async fnc post_otlp_json_async(");
-        assertTrue(exporter > 0);
-        String localOnly = source.substring(0, exporter);
-        assertFalse(localOnly.contains("await "));
-        assertFalse(localOnly.contains("http.request("));
-        assertTrue(source.substring(exporter).contains("await http.request("));
+        assertFalse(source.contains("await "));
+        assertFalse(source.contains("http.request("));
+        String transport = CoreLibrarySources.source("ores.std/telemetry_export");
+        assertTrue(transport.contains("await http.request("));
+        assertNotEquals(CoreLibrarySources.unitId("ores.std/telemetry"),
+                CoreLibrarySources.unitId("ores.std/telemetry_export"));
     }
 
     @Test

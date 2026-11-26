@@ -260,16 +260,4 @@ define module telemetry as
     return new SpanBatch(capacity);
   }
 
-  // Native Atto async HTTP POST building block; not a collector by itself.
-  // This returns only the HTTP status. OTLP partialSuccess must be parsed
-  // by a collector before it acknowledges or drops a buffered batch.
-  // Network policy/NET permission/cancellation are enforced by the same
-  // pinned http.request runtime used by ordinary Atto services.
-  pub async fnc post_otlp_json_async(String endpoint, String json): int {
-    val response = await http.request("POST", endpoint,
-        [("Content-Type", "application/json")], json);
-    val int status = response.status;
-    await response.close();
-    return status;
-  }
 end
