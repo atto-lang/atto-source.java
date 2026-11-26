@@ -64,7 +64,7 @@ final class InterfaceFncKeywordTest {
         assertThrows(IllegalArgumentException.class, () ->
                 Parser.parse("define interface Api as fnc mtd run(): int; end"));
         assertThrows(IllegalArgumentException.class, () ->
-                Parser.parse("define interface Api as mtd run(Actor self)(): int; end"));
+                Parser.parse("define interface Api as mtd run(Actor actorRef)(): int; end"));
     }
 
     @Test
@@ -99,7 +99,7 @@ final class InterfaceFncKeywordTest {
     void moduleContractFunctionAndActorReceiverRemainDistinct() {
         var ordinary = declaration("define contract Api as fnc run(): int; end");
         assertInstanceOf(Ast.InterfaceFunctionDecl.class, ordinary.members().getFirst());
-        var receiver = declaration("define contract Api as mtd run(Worker self)(): int; end");
+        var receiver = declaration("define contract Api as mtd run(Worker worker)(): int; end");
         assertInstanceOf(Ast.InterfaceActorMethodDecl.class, receiver.members().getFirst());
     }
 }

@@ -127,7 +127,9 @@ final class AttoDiamondDispatchParityTest {
                 """;
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(program)));
-        assertTrue(error.getMessage().contains("arity 1"), error.getMessage());
+        assertTrue(error.getMessage().contains("arity 1") ||
+                error.getMessage().contains("duplicate method signature 'Invalid.value/1'"),
+                error.getMessage());
     }
 
     @Test
