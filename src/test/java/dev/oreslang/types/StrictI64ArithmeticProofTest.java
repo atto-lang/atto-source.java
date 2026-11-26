@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import org.junit.jupiter.api.Test;
+import dev.oreslang.parser.Parser;
 import static org.junit.jupiter.api.Assertions.*;
 import static dev.oreslang.types.RefinementProofs.Interval;
 
@@ -24,6 +25,30 @@ final class StrictI64ArithmeticProofTest {
         assertTrue(new Interval(-42,42).provesNegation());
         assertFalse(all.provesArithmetic("unknown", zero));
     }
+    @Test void realSourceAdmissionNeverFallsBack() {
+        String pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42; ";
+        for(String expression:new String[]{"40+2","84 / 2","42 as Bounded","-9223372036854775808"})
+            assertNotNull(TypeChecker.check(Parser.parseVerifiedStrictI64(pre+"pub fnc main() -> int { return "+expression+"; }")));
+        assertNotNull(TypeChecker.check(Parser.parseVerifiedStrictI64(pre+
+            "fnc f(Bounded x) -> int { return x+1; } pub fnc main() -> int { return f(41); }")));
+        for(String expression:new String[]{"42/0","-9223372036854775808 / -1","9223372036854775807+1","(9223372036854775807+1)*0"}) {
+            var fault=assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+"pub fnc main() -> int { return "+expression+"; }"));
+            assertTrue(fault.getMessage().contains("E_VERIFY_UNPROVEN:"),fault.getMessage());
+        }
+        for(String body:new String[]{
+            "fnc f(int x) -> int { return -x; } pub fnc main() -> int { return f(-42); }",
+            "fnc f(int x) -> int { return x+1; } pub fnc main() -> int { return f(41); }",
+            "fnc f(int x) -> Bounded { return x as Bounded; } pub fnc main() -> int { return f(42); }",
+            "pub fnc main() -> int { val int n = 9223372036854775807+1; return 42; }"}) {
+            var fault=assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+body));
+            assertTrue(fault.getMessage().contains("E_VERIFY_UNPROVEN:"),fault.getMessage());
+        }
+        var ordinary=assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64("pub fnc main() -> int { return 42; }"));
+        assertTrue(ordinary.getMessage().contains("E_VERIFY_UNSUPPORTED:"));
+        var i32=assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+"type Narrow = i32 where self > 0; pub fnc main() -> int { return 42; }"));
+        assertTrue(i32.getMessage().contains("E_VERIFY_UNSUPPORTED:"));
+    }
+
     @Test void compareToConcreteCheckedOperations() {
         for (long lo=-4; lo<=4; lo++) for (long hi=lo; hi<=4; hi++)
             for (long rlo=-4; rlo<=4; rlo++) for(long rhi=rlo; rhi<=4; rhi++)
