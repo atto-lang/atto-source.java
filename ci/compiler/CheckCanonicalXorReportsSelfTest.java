@@ -33,6 +33,7 @@ public final class CheckCanonicalXorReportsSelfTest {
     private static final List<String> BOOL_CASES = List.of(
             "builtinGlobalsNeedNoImportsAndSurviveBuildAdmission",
             "exhaustiveTruthTablesForGlobalAndQualifiedScalarAndArrayForms",
+            "exactTypedNamedReductionDeclarationsAndEffectOrder",
             "typedArrayVariablesWorkForEveryIntrinsic",
             "scalarShortCircuitingSkipsOnlyOperandsAfterTheDecisiveValue",
             "everyIntrinsicRejectsEmptyCallsScalarSingletonsAndNonBooleanOperands",
@@ -130,6 +131,7 @@ public final class CheckCanonicalXorReportsSelfTest {
         run("missing-xor-report",false,mutation(c -> Files.delete(reportPath(c.root, XOR))));
         run("missing-boolean-report",false,mutation(c -> Files.delete(reportPath(c.root, BOOL))));
         run("missing-required-case",false,mutation(c -> c.write(XOR, report(XOR, XOR_CASES.subList(1, XOR_CASES.size())))));
+        run("missing-named-reduction-case",false,mutation(c -> c.write(BOOL, report(BOOL, BOOL_CASES.stream().filter(n -> !n.equals("exactTypedNamedReductionDeclarationsAndEffectOrder")).toList()))));
         run("wrong-classname",false,mutation(c -> c.rewrite(XOR,"classname=\"dev.oreslang."+XOR+"\"", "classname=\"dev.oreslang.ForgedSuite\"")));
         run("duplicate-case",false,mutation(c -> c.rewrite(XOR, "name=\""+XOR_CASES.get(1)+"\"", "name=\""+XOR_CASES.get(0)+"\"")));
         run("skipped-count",false,mutation(c -> c.rewrite(XOR,"skipped=\"0\"","skipped=\"1\"")));
@@ -158,6 +160,6 @@ public final class CheckCanonicalXorReportsSelfTest {
             Files.move(dir, relocated);
             Files.createSymbolicLink(dir, relocated);
         }));
-        System.out.println("SELFTEST_VERIFIER_POLICY_ONLY cases=17 passed=17 guest_executed=0");
+        System.out.println("SELFTEST_VERIFIER_POLICY_ONLY cases=18 passed=18 guest_executed=0");
     }
 }
