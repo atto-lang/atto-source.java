@@ -14,7 +14,7 @@
     },
     {
       "path": "tests/fixtures/core-borrow-v1/fail/read-loan.atto",
-      "git_blob_sha": "427df953200ba6f2f0679d548c7c15e8fb701f96",
+      "git_blob_sha": "84022ad3f81bd61e3ee88a96ad57d6c006e38725",
       "expected": "REJECT_BEFORE_CODEGEN",
       "expected_exit": null,
       "expected_error": "E_BORROW",
