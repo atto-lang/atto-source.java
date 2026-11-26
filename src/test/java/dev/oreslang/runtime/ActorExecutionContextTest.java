@@ -161,7 +161,16 @@ final class ActorExecutionContextTest {
             failing.send("fail");
             ExecutionException failure = assertThrows(ExecutionException.class,
                     () -> failing.done().get(5, TimeUnit.SECONDS));
-            assertTrue(String.valueOf(failure.getCause()).contains(
+            // Guest-observable completion is a cause-free snapshot, not a
+            // foreign actor's raw exception graph. Verify both boundaries.
+            assertTrue(failure.getCause() instanceof ActorRuntime.ActorFailureSnapshotException);
+            var snapshot = (ActorRuntime.ActorFailureSnapshotException) failure.getCause();
+            assertEquals(failing.id(), snapshot.notice().actor());
+            assertEquals(failing.generation(), snapshot.notice().generation());
+            assertEquals(ActorRuntime.ActorFailureKind.FAILURE, snapshot.notice().failureKind());
+            assertFalse(String.valueOf(snapshot).contains("intentional actor turn failure"));
+            assertNull(snapshot.getCause());
+            assertTrue(String.valueOf(failing.failure().orElseThrow()).contains(
                     "intentional actor turn failure"));
             assertNotNull(failedTurn.get());
 
