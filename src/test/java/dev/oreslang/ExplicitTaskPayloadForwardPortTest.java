@@ -38,7 +38,7 @@ final class ExplicitTaskPayloadForwardPortTest {
             pub suspends fnc main(): int {
               val Future<String> pending = task<String> { return "ready"; };
               val String result = await pending;
-              if (result eq "ready") { return 42; }
+              if result eq "ready" then return 42; fi
               return 1;
             }
             """);
