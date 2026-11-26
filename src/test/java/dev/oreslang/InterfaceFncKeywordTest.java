@@ -54,8 +54,8 @@ final class InterfaceFncKeywordTest {
         var bare = declaration("define interface Api as mtd(): int; end");
         assertEquals(bare, declaration("define interface Api as fnc mtd(): int; end"));
         assertEquals(bare, declaration("define interface Api as mtd mtd(): int; end"));
-        var fields = declaration("define interface Api as mtd value; Box<T> other; end");
-        assertEquals(2, fields.members().size());
+        var fields = declaration("define interface Api as mtd value; method other; Box<T> third; end");
+        assertEquals(3, fields.members().size());
         assertTrue(fields.members().stream().allMatch(Ast.InterfaceFieldDecl.class::isInstance));
     }
 
@@ -65,6 +65,19 @@ final class InterfaceFncKeywordTest {
                 Parser.parse("define interface Api as fnc mtd run(): int; end"));
         assertThrows(IllegalArgumentException.class, () ->
                 Parser.parse("define interface Api as mtd run(Actor self)(): int; end"));
+    }
+
+    @Test
+    void multiParameterGenericsAndMalformedHeadersRetainAdmissionBoundaries() {
+        var bare = declaration("define interface Api as pair<A,B>(A a, B b): A; end");
+        assertEquals(bare, declaration("define interface Api as fnc pair<A,B>(A a, B b): A; end"));
+        assertEquals(bare, declaration("define interface Api as mtd pair<A,B>(A a, B b): A; end"));
+        for (String signature : new String[]{"run<T,>(T x): T;", "run<T,T>(T x): T;", "run<>(int x): int;"}) {
+            for (String prefix : new String[]{"", "fnc ", "mtd "}) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> Parser.parse("define interface Api as " + prefix + signature + " end"));
+            }
+        }
     }
 
     @Test

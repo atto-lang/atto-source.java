@@ -2457,19 +2457,22 @@ public final class Parser {
     }
 
     // A generic type-first field (e.g. Box<T> value;) is not a method.
-    // Probe only the name/generic header and restore the cursor on every path.
+    // Inspect token kinds only; declaration validation is performed once by
+    // parseGenericParameters after admission, without speculative parsing.
     private boolean looksLikeInterfaceMethodHead(int index) {
-        if (index >= tokens.size() || tokens.get(index).type() != IDENT) return false;
-        int mark = current;
-        try {
-            current = index + 1;
-            parseGenericParameters();
-            return check(LPAREN);
-        } catch (IllegalArgumentException malformed) {
-            return false;
-        } finally {
-            current = mark;
+        if (index + 1 >= tokens.size() || tokens.get(index).type() != IDENT) return false;
+        if (tokens.get(index + 1).type() == LPAREN) return true;
+        if (tokens.get(index + 1).type() != LT) return false;
+        int cursor = index + 2;
+        while (cursor < tokens.size() && tokens.get(cursor).type() == IDENT) {
+            cursor++;
+            if (cursor >= tokens.size()) return false;
+            if (tokens.get(cursor).type() == GT) {
+                return cursor + 1 < tokens.size() && tokens.get(cursor + 1).type() == LPAREN;
+            }
+            if (tokens.get(cursor++).type() != COMMA) return false;
         }
+        return false;
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
