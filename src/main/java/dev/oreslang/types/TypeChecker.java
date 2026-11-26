@@ -3410,6 +3410,18 @@ public final class TypeChecker {
                 }
                 env.defineInferredType(name, actual);
             }
+            // A named inferred aggregate denotes a captured closed shape. A
+            // direct literal must not silently project extra Record fields away
+            // via the ordinary readonly structural-view assignment path.
+            if (!namedInference && binding.declaredType() != null
+                    && binding.declaredType().arguments().isEmpty()
+                    && env.lookupInferredType(binding.declaredType().name()) != null
+                    && binding.initializer() instanceof Ast.ObjectExpr
+                    && actual instanceof Record actualRow && declaredAhead instanceof Record expectedRow
+                    && !actualRow.members().keySet().equals(expectedRow.members().keySet())) {
+                throw new IllegalArgumentException("initializer for " + binding.name()
+                        + " must exactly match the inferred aggregate fields");
+            }
             Type declared = declaredAhead == null
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);

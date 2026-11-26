@@ -2547,7 +2547,8 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
-        if (startsNamedAggregateBinding()) {
+        if (startsNamedAggregateBinding() && (checkNext(LT)
+                || (kind == Ast.BindingKind.CONST && !mutableReferent && annotations.isEmpty()))) {
             return parseNamedAggregateBinding(kind, mutableReferent, annotations);
         }
         Ast.TypeRef type = null;
@@ -3760,7 +3761,7 @@ public final class Parser {
      */
     private boolean isLocalTypeName(String name) {
         for (java.util.Map<String, String> scope : localTypeScopes) {
-            if (scope.containsKey(name)) return true;
+            if ("local".equals(scope.get(name))) return true;
         }
         return false;
     }
@@ -5115,8 +5116,15 @@ public final class Parser {
     // Reuse the existing inferredTypeName AST/checker pipeline; do not make a
     // new runtime type or interpret ordinary Tuple<T> as a binder.
     private boolean startsNamedAggregateBinding() {
-        if (!isAggregateWrapper(peek().lexeme()) || !checkNext(LT)
-                || current + 2 >= tokens.size()) return false;
+        if (!isAggregateWrapper(peek().lexeme()) || current + 3 >= tokens.size()) return false;
+        if (checkNext(IDENT) && tokens.get(current + 2).type() == EQUAL) {
+            TokenType opening = peek().lexeme().equals("struct") ? LBRACE : LPAREN;
+            return tokens.get(current + 3).type() == opening
+                    && (!peek().lexeme().equals("Record") || (current + 5 < tokens.size()
+                        && tokens.get(current + 4).type() == IDENT
+                        && tokens.get(current + 5).type() == EQUAL));
+        }
+        if (!checkNext(LT)) return false;
         String argument = tokens.get(current + 2).lexeme();
         if (argument.equals("infer")) return true;
         return current + 4 < tokens.size() && tokens.get(current + 3).type() == GT
@@ -5128,17 +5136,21 @@ public final class Parser {
             boolean mutableReferent, List<Ast.Annotation> annotations) {
         Token wrapper = advance();
         String aggregate = wrapper.lexeme();
-        consume(LT, "expected '<' for named aggregate");
-        boolean introduce = peek().lexeme().equals("infer");
+        boolean anonymous = !match(LT);
+        boolean introduce = !anonymous && peek().lexeme().equals("infer");
         if (introduce) advance();
-        String alias = consume(IDENT, "expected named aggregate type identifier").lexeme();
-        consume(GT, "expected '>' after named aggregate type");
+        String alias = anonymous ? null
+                : consume(IDENT, "expected named aggregate type identifier").lexeme();
+        if (!anonymous) consume(GT, "expected '>' after named aggregate type");
         String variable = consume(IDENT, "expected binding name").lexeme();
+        if (!annotations.isEmpty()) {
+            throw error(wrapper, "aggregate literal shorthand does not accept type metadata annotations");
+        }
         if (introduce && (bindingKind != Ast.BindingKind.CONST || mutableReferent
-                || !annotations.isEmpty() || localTypeScopes.isEmpty())) {
+                || localTypeScopes.isEmpty())) {
             throw error(wrapper, "named aggregate inference requires an unannotated immutable local const binding");
         }
-        if (!introduce && !aggregate.equals(namedAggregateKind(alias))) {
+        if (!anonymous && !introduce && !aggregate.equals(namedAggregateKind(alias))) {
             throw error(wrapper, "inferred aggregate kind mismatch for '" + alias + "'");
         }
         if (introduce && (isAggregateWrapper(alias) || alias.equals("infer"))) {
@@ -5176,8 +5188,8 @@ public final class Parser {
         }
         consumeExpressionStatementTerminator(value, "binding should end with ';'");
         if (introduce) localTypeScopes.peek().put(alias, aggregate);
-        return new Ast.BindingStmt(bindingKind, Ast.TypeRef.simple(alias), variable, value,
-                mutableReferent, introduce ? alias : null);
+        return new Ast.BindingStmt(bindingKind, anonymous ? null : Ast.TypeRef.simple(alias),
+                variable, value, mutableReferent, introduce ? alias : null);
     }
 
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {

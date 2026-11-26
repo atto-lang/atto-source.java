@@ -45,10 +45,21 @@ final class NamedAggregateTypeBinderTest {
                 "const Record<infer T> r=(a=1); const Tuple<infer T> t=(1,2);",
                 "const Record<infer T> r=(a=1); const Record<T> s=(a=true);",
                 "const Record<infer T> r=(a=1,b=2); const Record<T> s=(a=1);",
+                "const Record<infer T> r=(a=1); const Record<T> s=(a=1,b=2);",
                 "const Tuple<infer T> t=(1,true); const Tuple<T> s=(true,1);",
                 "const Tuple<infer T> t=(1,true); const Tuple<T> s=(1);",
                 "const struct<infer T> r={a:1}; const Record<T> s=(a=1);"
         }) assertThrows(IllegalArgumentException.class, () -> check(body+" return 0;"),body);
+    }
+    @Test void bareAggregateAnnotationsDoNotIntroduceAliases() {
+        assertDoesNotThrow(() -> check("""
+                const Record r=(a=10);
+                const Tuple t=(true,12);
+                const struct s={a:20};
+                return r.a+t[1]+s.a;
+                """));
+        assertThrows(IllegalArgumentException.class, () -> check(
+                "const Record r=(a=1); const Record<T> s=(a=1); return 0;"));
     }
     @Test void actualGuestPrints42() throws Exception {
         String source = """
