@@ -5118,7 +5118,7 @@ public final class Parser {
     private boolean startsNamedAggregateBinding() {
         if (!isAggregateWrapper(peek().lexeme()) || current + 3 >= tokens.size()) return false;
         if (checkNext(IDENT) && tokens.get(current + 2).type() == EQUAL) {
-            TokenType opening = peek().lexeme().equals("struct") ? LBRACE : LPAREN;
+            Token.Type opening = peek().lexeme().equals("struct") ? LBRACE : LPAREN;
             return tokens.get(current + 3).type() == opening
                     && (!peek().lexeme().equals("Record") || (current + 5 < tokens.size()
                         && tokens.get(current + 4).type() == IDENT
