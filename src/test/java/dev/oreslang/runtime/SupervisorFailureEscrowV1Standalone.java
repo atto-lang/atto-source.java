@@ -11,6 +11,77 @@ final class SupervisorFailureEscrowV1Standalone {
         try { action.run(); } catch (IllegalArgumentException | IllegalStateException | UnsupportedOperationException expected) { return; }
         throw new AssertionError(message);
     }
+    private static void saturatedFailurePublication() {
+        var ledger = new SupervisorFailureEscrowV1();
+        ledger.registerRoot(1000L, 1);
+        ledger.registerChild(1001L, 1000L, 1);
+        ledger.registerChild(1002L, 1001L, 2);
+        ledger.registerChild(1003L, 1000L, 1);
+        for (int i = 4; i < SupervisorFailureEscrowV1.MAX_NODES; i++) {
+            ledger.registerChild(1000L + i, 1001L, i);
+        }
+        rejected(() -> ledger.registerChild(99999L, 1000L, 1), "full CONTROL ledger accepted child");
+        var permits = new SupervisorFailureEscrowV1.DataAdmission[
+                SupervisorFailureEscrowV1.MAX_DATA_ADMISSIONS_IN_FLIGHT];
+        for (int i = 0; i < permits.length; i++) {
+            permits[i] = ledger.beginDataAdmission(1002L, 2);
+            ok(permits[i] != null, "DATA capacity unexpectedly unavailable");
+        }
+        rejected(() -> ledger.beginDataAdmission(1003L, 1), "full DATA ledger accepted permit");
+
+        // HotSpot current-thread allocation counter, measured only around valid
+        // first-failure publication, not diagnostic inspection or policy delivery.
+        var bean = java.lang.management.ManagementFactory.getThreadMXBean();
+        if (!(bean instanceof com.sun.management.ThreadMXBean allocation)
+                || !allocation.isThreadAllocatedMemorySupported()) {
+            throw new AssertionError("allocation instrumentation unavailable");
+        }
+        allocation.setThreadAllocatedMemoryEnabled(true);
+        long thread = Thread.currentThread().threadId();
+        // Warm the exact code path including IDs outside Long's cache.
+        var warm = new SupervisorFailureEscrowV1();
+        warm.registerRoot(20000L, 1);
+        for (int i = 1; i <= 512; i++) warm.registerChild(20000L + i, 20000L, i);
+        for (int i = 1; i <= 512; i++) warm.fail(20000L + i);
+        allocation.getThreadAllocatedBytes(thread);
+        long before = allocation.getThreadAllocatedBytes(thread);
+        var original = ledger.fail(1001L);
+        long after = allocation.getThreadAllocatedBytes(thread);
+        ok(before >= 0 && after == before, "terminal publication allocated " + (after - before) + " bytes");
+        ok(ledger.fail(1001L) == original, "failure replay replaced notice");
+        ok(original.failedId() == 1001L && original.failedGeneration() == 1,
+                "wrong reserved notice identity");
+        ok(ledger.pendingCount() == 1, "failure lost under saturation");
+        ok(!ledger.mayAdmit(1002L, 2), "descendant not fenced");
+        ok(ledger.mayAdmit(1003L, 1), "unrelated sibling fenced");
+        ok(ledger.dataInFlightInSubtree(1001L) == permits.length,
+                "failure erased outstanding DATA permits");
+        for (var permit : permits) ledger.finishDataAdmission(permit, false);
+        ok(ledger.dataInFlightInSubtree(1001L) == 0, "outstanding DATA not drained");
+        ok(ledger.acknowledge(ledger.deliver(1001L)), "reserved failure not delivered");
+        var sibling = ledger.beginDataAdmission(1003L, 1);
+        ok(sibling != null, "healthy sibling cannot make progress");
+        ledger.finishDataAdmission(sibling, true);
+        System.out.println("SATURATED_CONTROL_NODES=" + SupervisorFailureEscrowV1.MAX_NODES
+                + " DATA_PERMITS=" + permits.length + " FAILURE_PUBLICATION_ALLOCATED_BYTES="
+                + (after - before));
+    }
+
+    private static void rollbackIndexDoesNotRetainUnpublishedChild() {
+        var ledger = new SupervisorFailureEscrowV1();
+        ledger.registerRoot(1000L, 1);
+        ledger.registerChild(1001L, 1000L, 1);
+        for (int i = 0; i < SupervisorFailureEscrowV1.MAX_NODES * 2; i++) {
+            rejected(() -> ledger.registerChildAtomically(1002L, 1001L, 2,
+                    () -> { throw new IllegalStateException("rollback"); }), "rollback must throw");
+        }
+        rejected(() -> ledger.fail(1002L), "unpublished child survived in terminal index");
+        ledger.registerChild(1002L, 1001L, 3);
+        ledger.fail(1001L);
+        ok(!ledger.mayAdmit(1002L, 3), "replacement child not fenced");
+        ok(ledger.fail(1002L).failedGeneration() == 3, "stale notice survived rollback");
+    }
+
     public static void main(String[] args) throws Exception {
         var ledger = new SupervisorFailureEscrowV1();
         ledger.registerRoot(1, 1);
@@ -89,6 +160,8 @@ final class SupervisorFailureEscrowV1Standalone {
         ok(!clean.snapshot().get(2L).alive(), "clean termination retires the actor");
         ok(clean.pendingCount() == 0, "clean terminal creates no failure notice");
         rejected(() -> clean.fail(2), "late failure cannot forge a previously clean terminal");
+        rollbackIndexDoesNotRetainUnpublishedChild();
+        saturatedFailurePublication();
         System.out.println("PASS SupervisorFailureEscrowV1Standalone assertions=" + assertions);
     }
 }
