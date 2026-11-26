@@ -52,6 +52,8 @@ final class SupervisorFailureEscrowV1 {
     private static final class Cell {
         final long id, parentId, generation, reservation;
         final int depth;
+        final Cell parent;
+        final Notice reservedNotice;
         boolean alive = true;
         boolean fenced;
         Notice terminal;
@@ -61,16 +63,22 @@ final class SupervisorFailureEscrowV1 {
         long dataCommitted;
         long dataAborted;
 
-        Cell(long id, long parentId, long generation, long reservation, int depth) {
+        Cell(long id, long parentId, long generation, long reservation, int depth, Cell parent) {
             this.id = id;
             this.parentId = parentId;
             this.generation = generation;
             this.reservation = reservation;
             this.depth = depth;
+            this.parent = parent;
+            this.reservedNotice = new Notice(id, generation, reservation);
         }
     }
 
     private final LinkedHashMap<Long, Cell> nodes = new LinkedHashMap<>();
+    // Bounded index allocated before admission. Terminal publication does not
+    // box long IDs or allocate a map iterator, even for a full ledger.
+    private final Cell[] terminalIndex = new Cell[MAX_NODES];
+    private int terminalIndexSize;
     private final Set<DataAdmission> dataAdmissions =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private long nextReservation = 1;
@@ -80,8 +88,9 @@ final class SupervisorFailureEscrowV1 {
     synchronized void registerRoot(long id, long generation) {
         if (!nodes.isEmpty()) throw new IllegalStateException("root already registered");
         requireIdentity(id, generation);
-        Cell root = new Cell(id, 0, generation, reserve(), 1);
+        Cell root = new Cell(id, 0, generation, reserve(), 1, null);
         nodes.put(id, root);
+        terminalIndex[terminalIndexSize++] = root;
         rootId = id;
     }
 
@@ -94,7 +103,9 @@ final class SupervisorFailureEscrowV1 {
         if (!parent.alive || parent.fenced || parent.depth >= MAX_DEPTH) {
             throw new IllegalStateException("supervisor cannot admit a child");
         }
-        nodes.put(id, new Cell(id, parentId, generation, reserve(), parent.depth + 1));
+        Cell child = new Cell(id, parentId, generation, reserve(), parent.depth + 1, parent);
+        nodes.put(id, child);
+        terminalIndex[terminalIndexSize++] = child;
     }
 
     /**
@@ -112,19 +123,21 @@ final class SupervisorFailureEscrowV1 {
         try {
             publisher.run();
         } catch (RuntimeException | Error failure) {
-            Cell removed = nodes.remove(id);
-            if (removed == null || removed.terminal != null
-                    || removed.dataInFlight != 0) {
+            Cell removed = nodes.get(id);
+            if (removed == null || removed.terminal != null || !removed.alive
+                    || removed.dataInFlight != 0 || hasDescendants(removed)) {
                 throw new IllegalStateException(
                         "unpublished CONTROL child rollback invariant violated", failure);
             }
+            nodes.remove(id);
+            removeTerminalIndex(removed);
             throw failure;
         }
     }
 
     /** In-flight descendants may themselves fail after an ancestor is fenced. */
     synchronized Notice fail(long id) {
-        Cell cell = requireNode(id);
+        Cell cell = requireTerminalNode(id);
         if (id == rootId) throw new IllegalStateException("guardian failure requires external supervisor");
         if (cell.terminal != null) return cell.terminal; // terminal replay is inert
         if (!cell.alive) {
@@ -132,11 +145,9 @@ final class SupervisorFailureEscrowV1 {
         }
         cell.alive = false;
         cell.fenced = true;
-        cell.terminal = new Notice(id, cell.generation, cell.reservation);
+        cell.terminal = cell.reservedNotice;
         cell.pending = true;
-        for (Cell descendant : nodes.values()) {
-            if (isDescendantOf(descendant, id)) descendant.fenced = true;
-        }
+        fenceDescendants(id);
         return cell.terminal;
     }
 
@@ -144,7 +155,7 @@ final class SupervisorFailureEscrowV1 {
      * A supervisor exiting normally still fences descendants; the caller
      * must arrange structured child cleanup outside this pure ledger. */
     synchronized void completeNormally(long id) {
-        Cell cell = requireNode(id);
+        Cell cell = requireTerminalNode(id);
         if (id == rootId) throw new IllegalStateException("guardian requires external supervisor");
         if (cell.pending || cell.terminal != null) {
             // A real failure may not be laundered into a clean termination.
@@ -152,9 +163,7 @@ final class SupervisorFailureEscrowV1 {
         }
         cell.alive = false;
         cell.fenced = true;
-        for (Cell descendant : nodes.values()) {
-            if (isDescendantOf(descendant, id)) descendant.fenced = true;
-        }
+        fenceDescendants(id);
     }
 
     /** Returns the nearest healthy ancestor's CONTROL delivery, never guest DATA. */
@@ -278,12 +287,43 @@ final class SupervisorFailureEscrowV1 {
     }
 
     private boolean isDescendantOf(Cell child, long ancestorId) {
-        long parentId = child.parentId;
-        while (parentId != 0) {
-            if (parentId == ancestorId) return true;
-            parentId = requireNode(parentId).parentId;
+        for (Cell parent = child.parent; parent != null; parent = parent.parent) {
+            if (parent.id == ancestorId) return true;
         }
         return false;
+    }
+
+    private void fenceDescendants(long id) {
+        for (int i = 0; i < terminalIndexSize; i++) {
+            Cell descendant = terminalIndex[i];
+            if (isDescendantOf(descendant, id)) descendant.fenced = true;
+        }
+    }
+
+    private boolean hasDescendants(Cell cell) {
+        for (int i = 0; i < terminalIndexSize; i++) {
+            if (isDescendantOf(terminalIndex[i], cell.id)) return true;
+        }
+        return false;
+    }
+
+    private Cell requireTerminalNode(long id) {
+        for (int i = 0; i < terminalIndexSize; i++) {
+            Cell cell = terminalIndex[i];
+            if (cell.id == id) return cell;
+        }
+        throw new IllegalArgumentException("unknown CONTROL identity");
+    }
+
+    private void removeTerminalIndex(Cell cell) {
+        for (int i = 0; i < terminalIndexSize; i++) {
+            if (terminalIndex[i] == cell) {
+                terminalIndex[i] = terminalIndex[--terminalIndexSize];
+                terminalIndex[terminalIndexSize] = null;
+                return;
+            }
+        }
+        throw new IllegalStateException("missing CONTROL terminal index");
     }
 
     private Cell requireNode(long id) {
