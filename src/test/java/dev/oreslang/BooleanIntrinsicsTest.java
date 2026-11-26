@@ -71,6 +71,41 @@ final class BooleanIntrinsicsTest {
     }
 
     @Test
+    void exactTypedNamedReductionDeclarationsAndEffectOrder() throws Exception {
+        String program = """
+                fnc mark(bool value, int label): bool {
+                  stdio.println(label);
+                  return value;
+                }
+                pub fnc main(): void {
+                  val bool a = Xor(true, false);
+                  val bool b = And(true, false);
+                  val bool c = Or(true, false);
+                  val bool d = Xor([true, false]);
+                  val bool e = And([true, false, true, true, true]);
+                  val bool f = Or([true, false, true, false]);
+                  stdio.println(a);
+                  stdio.println(b);
+                  stdio.println(c);
+                  stdio.println(d);
+                  stdio.println(e);
+                  stdio.println(f);
+                  stdio.println(And(mark(false, 1), mark(true, 2)));
+                  stdio.println(Or(mark(true, 3), mark(false, 4)));
+                  stdio.println(Xor(mark(false, 5), mark(true, 6), mark(false, 7)));
+                  stdio.println(And([mark(false, 8), mark(true, 9)]));
+                  stdio.println(Or([mark(true, 10), mark(false, 11)]));
+                  stdio.println(Xor([mark(true, 12), mark(true, 13), mark(true, 14)]));
+                  return;
+                }
+                """;
+        assertEquals("true\nfalse\ntrue\ntrue\nfalse\ntrue\n"
+                + "1\nfalse\n3\ntrue\n5\n6\n7\ntrue\n8\n9\nfalse\n"
+                + "10\n11\ntrue\n12\n13\n14\ntrue\n",
+                run(program, "named-boolean-effect-order.ores"));
+    }
+
+    @Test
     void typedArrayVariablesWorkForEveryIntrinsic() throws Exception {
         assertEquals("false\ntrue\nfalse\nfalse\ntrue\nfalse\n", run("""
                 pub fnc main(): void {
@@ -116,7 +151,7 @@ final class BooleanIntrinsicsTest {
         for (String prefix : new String[]{"", "BooleanOps."}) {
             for (String name : new String[]{"And", "Or", "Xor"}) {
                 for (String operands : new String[]{"", "true", "1", "[1]", "[true, 1]",
-                        "true, 1", "true, false, 1", "[true], [false]"}) {
+                        "true, 1", "false, 1", "true, false, 1", "[true], [false]", "[[true]]"}) {
                     String call = prefix + name + "(" + operands + ")";
                     assertThrows(IllegalArgumentException.class,
                             () -> TypeChecker.check(Parser.parse(
