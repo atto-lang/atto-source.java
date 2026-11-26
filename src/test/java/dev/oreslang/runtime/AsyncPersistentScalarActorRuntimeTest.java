@@ -154,10 +154,10 @@ final class AsyncPersistentScalarActorRuntimeTest {
     }
 
     private static String process(String mode, Path db) throws Exception {
-        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String javaExecutable = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         String classpath = System.getProperty(
                 "surefire.test.class.path", System.getProperty("java.class.path"));
-        Process process = new ProcessBuilder(java, "-cp", classpath,
+        Process process = new ProcessBuilder(javaExecutable, "-cp", classpath,
                 AsyncPersistentScalarRuntimeProcessMain.class.getName(),
                 mode, db.toString()).redirectErrorStream(true).start();
         if (!process.waitFor(30, TimeUnit.SECONDS)) {
