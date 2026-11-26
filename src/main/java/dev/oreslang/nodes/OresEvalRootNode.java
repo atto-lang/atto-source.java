@@ -2249,69 +2249,95 @@ public final class OresEvalRootNode extends RootNode {
             return future;
         }
 
-        private record CountedGuestPlan(int count, String source, Ast.SelectPolicy policy,
-                Ast.SelectArm arm, Ast.Expr projection) {}
+        private record CountedGuestArm(String source, Ast.ChannelOperation operation,
+                String binding, Ast.BindingKind bindingKind, Ast.Expr projection) {}
+        private record CountedGuestPlan(int count, Ast.SelectPolicy policy,
+                List<CountedGuestArm> arms) {}
 
-        // Reuse the checked synthetic body as the proof of the currently
-        // admitted single-read i64 slice. Never execute an unchecked clone.
+        // Each plan is recovered from the same checked synthetic body that
+        // establishes source type, ownership, capture identity and projection.
+        private List<CountedGuestArm> checkedCountedGuestRound(Ast.SelectStmt select,
+                boolean dynamic) {
+            if (select.arms().isEmpty() || select.arms().size() > 8
+                    || select.policy() == Ast.SelectPolicy.RANDOM)
+                throw new IllegalStateException("invalid checked counted round");
+            List<CountedGuestArm> arms = new ArrayList<>();
+            for (var arm : select.arms()) {
+                if (!(arm.channel() instanceof Ast.NameExpr source)
+                        || (arm.operation() != Ast.ChannelOperation.READ
+                            && arm.operation() != Ast.ChannelOperation.AWAIT)
+                        || !Ast.TypeRef.simple("int").equals(arm.bindingType())
+                        || arm.bindingName() == null || arm.mutableReferent()
+                        || arm.body().size() != 1
+                        || !(arm.body().getFirst() instanceof Ast.ExprStmt stmt))
+                    throw new IllegalStateException("invalid checked counted arm");
+                Ast.Expr projection;
+                if (dynamic) {
+                    if (!(stmt.expression() instanceof Ast.CallExpr call)
+                            || !(call.callee() instanceof Ast.MemberExpr member)
+                            || !member.member().equals("add")
+                            || call.arguments().size() != 1)
+                        throw new IllegalStateException("invalid checked counted projection");
+                    projection = call.arguments().getFirst();
+                } else {
+                    if (!(stmt.expression() instanceof Ast.AssignExpr assignment))
+                        throw new IllegalStateException("invalid checked counted projection");
+                    projection = assignment.value();
+                }
+                arms.add(new CountedGuestArm(source.name(), arm.operation(), arm.bindingName(),
+                        arm.bindingKind(), projection));
+            }
+            return List.copyOf(arms);
+        }
+
         private CountedGuestPlan checkedCountedGuestPlan(List<Ast.Stmt> body, Long dynamicCount) {
             if (dynamicCount != null) {
                 if (body.size() != 4 || !(body.get(2) instanceof Ast.LoopStmt loop)
                         || loop.body().size() != 2
-                        || !(loop.body().get(1) instanceof Ast.SelectStmt select)
-                        || select.arms().size() != 1)
+                        || !(loop.body().get(1) instanceof Ast.SelectStmt select))
                     throw new IllegalStateException("invalid checked counted loop");
-                var arm = select.arms().getFirst();
-                if (!(arm.channel() instanceof Ast.NameExpr source)
-                        || arm.operation() != Ast.ChannelOperation.READ
-                        || arm.body().size() != 1
-                        || !(arm.body().getFirst() instanceof Ast.ExprStmt stmt)
-                        || !(stmt.expression() instanceof Ast.CallExpr call)
-                        || !(call.callee() instanceof Ast.MemberExpr member)
-                        || !member.member().equals("add")
-                        || call.arguments().size() != 1)
-                    throw new IllegalStateException("invalid checked counted projection");
-                return new CountedGuestPlan(dynamicCount.intValue(), source.name(),
-                        select.policy(), arm, call.arguments().getFirst());
+                return new CountedGuestPlan(dynamicCount.intValue(), select.policy(),
+                        checkedCountedGuestRound(select, true));
             }
             int count = (body.size() - 1) / 2;
             if (count < 1 || count > 16 || body.size() != count * 2 + 1)
                 throw new IllegalStateException("invalid checked counted body");
             CountedGuestPlan plan = null;
             for (int i = 0; i < count; i++) {
-                if (!(body.get(i * 2 + 1) instanceof Ast.SelectStmt select)
-                        || select.arms().size() != 1)
+                if (!(body.get(i * 2 + 1) instanceof Ast.SelectStmt select))
                     throw new IllegalStateException("invalid checked counted round");
-                var arm = select.arms().getFirst();
-                if (!(arm.channel() instanceof Ast.NameExpr source)
-                        || arm.operation() != Ast.ChannelOperation.READ
-                        || arm.body().size() != 1
-                        || !(arm.body().getFirst() instanceof Ast.ExprStmt stmt)
-                        || !(stmt.expression() instanceof Ast.AssignExpr assignment))
-                    throw new IllegalStateException("invalid checked counted projection");
-                if (plan == null) {
-                    plan = new CountedGuestPlan(count, source.name(), select.policy(),
-                            arm, assignment.value());
-                } else if (!plan.source().equals(source.name())
-                        || plan.policy() != select.policy()
-                        || !plan.arm().bindingName().equals(arm.bindingName())
-                        || !plan.projection().equals(assignment.value()))
+                var round = new CountedGuestPlan(count, select.policy(),
+                        checkedCountedGuestRound(select, false));
+                if (plan == null) plan = round;
+                else if (!plan.equals(round))
                     throw new IllegalStateException("counted rounds changed checked source/projection");
             }
             return plan;
         }
 
         private void runCountedGuest(SourceTask task, CountedGuestPlan plan, Env params) {
-            var source = requireChannel(params.lookup(plan.source()), "counted select");
-            var cursor = new CountedTaskSelection(plan.count(),
-                    List.of(ChannelRuntime.read(source)), runtimeSelectPolicy(plan.policy()), number -> {
-                        Env armEnv = new Env(params);
-                        armEnv.define(plan.arm().bindingName(), number, plan.arm().bindingKind());
-                        Object value = eval(plan.projection(), armEnv);
-                        if (!(value instanceof Long projected))
-                            throw new IllegalStateException("counted projection produced non-i64");
-                        return projected;
-                    });
+            List<ChannelRuntime.SelectCase> cases = new ArrayList<>();
+            List<java.util.function.LongUnaryOperator> projectors = new ArrayList<>();
+            for (var arm : plan.arms()) {
+                Object source = params.lookup(arm.source());
+                if (arm.operation() == Ast.ChannelOperation.READ) {
+                    cases.add(ChannelRuntime.read(requireChannel(source, "counted select")));
+                } else if (source instanceof OresFuture<?> future) {
+                    cases.add(ChannelRuntime.await(future));
+                } else {
+                    throw new IllegalStateException("counted select requires checked Future<int>");
+                }
+                projectors.add(number -> {
+                    Env armEnv = new Env(params);
+                    armEnv.define(arm.binding(), number, arm.bindingKind());
+                    Object value = eval(arm.projection(), armEnv);
+                    if (!(value instanceof Long projected))
+                        throw new IllegalStateException("counted projection produced non-i64");
+                    return projected;
+                });
+            }
+            var cursor = new CountedTaskSelection(plan.count(), cases,
+                    runtimeSelectPolicy(plan.policy()), projectors);
             runCountedGuestRound(task, cursor);
         }
 

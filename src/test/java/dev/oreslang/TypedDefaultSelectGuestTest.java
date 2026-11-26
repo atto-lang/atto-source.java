@@ -9,7 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Restricted executable typed-default and single-channel counted selection. */
+/** Restricted executable typed-default and checked scalar counted selection. */
 @Timeout(20)
 final class TypedDefaultSelectGuestTest {
     @Test void bareTypedSelectAndLegacyAliasReturnTrackedFuture() throws Exception {
@@ -391,6 +391,37 @@ final class TypedDefaultSelectGuestTest {
                 }
                 """));
         assertTrue(failure.getMessage().contains("all counted selection sources exhausted"), failure.getMessage());
+    }
+
+    @Test void portableMixedCountedExactBlobsReturn42() throws Exception {
+        for (String name : new String[]{"counted-mixed-future-alias", "counted-multi-channel-fair", "counted-distinct-alias-projection"}) {
+            String code = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "tests/fixtures/select-source-v2", name + ".atto"));
+            try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+                assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code, name+".atto")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong(), name);
+            }
+        }
+    }
+
+    @Test void dynamicMultiChannelCountUsesPersistentFairRotation() throws Exception {
+        assertEquals("11|22|13|99", run("""
+                pub async fnc main(): void {
+                  val Channel<int> a = Channel.new<int>(2);
+                  val Channel<int> b = Channel.new<int>(2);
+                  writech a, 1; writech a, 3;
+                  writech b, 2; writech b, 99;
+                  val int count = 3;
+                  val Array[int] values = await select<int>(count) fair over
+                    when readch a: int n -> { return n + 10; }
+                    when readch b: int n -> { return n + 20; }
+                  end;
+                  stdio.stdout.write(values[0]); stdio.stdout.write("|");
+                  stdio.stdout.write(values[1]); stdio.stdout.write("|");
+                  stdio.stdout.write(values[2]); stdio.stdout.write("|");
+                  stdio.stdout.write(readch b); return;
+                }
+                """));
     }
 
     private static String run(String program) throws Exception {
