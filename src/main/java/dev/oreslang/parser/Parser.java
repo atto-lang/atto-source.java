@@ -3396,12 +3396,13 @@ public final class Parser {
     // Ordinary tuple/record *types* are followed by a parameter identifier.
     // Patterns occupy a full slot and end at its delimiter or explicit type.
     private boolean looksLikeCallablePattern() {
-        if (check(IDENT) && checkNext(LBRACE)) return true;
-        if (!check(LPAREN) && !check(LBRACE)) return false;
-        Token.Type opener = peek().type();
+        boolean nominal = check(IDENT) && checkNext(LBRACE);
+        if (!nominal && !check(LPAREN) && !check(LBRACE)) return false;
+        int start = nominal ? current + 1 : current;
+        Token.Type opener = tokens.get(start).type();
         Token.Type closer = opener == LPAREN ? RPAREN : RBRACE;
         int depth = 0;
-        for (int i = current; i < tokens.size(); i++) {
+        for (int i = start; i < tokens.size(); i++) {
             Token.Type t = tokens.get(i).type();
             if (t == opener) depth++;
             else if (t == closer && --depth == 0) {
