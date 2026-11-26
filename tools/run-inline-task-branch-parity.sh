@@ -54,7 +54,7 @@ while read -r name blob; do
     cat "$work/$stream"
     printf '\n'
   done
-  if [[ "$check" == 0 && "$run" == 0 && "$(cat "$work/run.out")" == 42 ]]; then
+  if [[ "$check" == 0 && "$run" == 42 && ! -s "$work/run.out" ]]; then
     passed=$((passed+1))
   fi
 done <<'CASES'

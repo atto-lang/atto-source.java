@@ -6,6 +6,8 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Checked inline task slice; the separate .NET fixture gate must still run 4/4. */
@@ -252,5 +254,282 @@ final class InlineTaskTerminalReturnTest {
         assertTrue(assertThrows(IllegalArgumentException.class,
                 () -> Parser.parseStrictAtto(source)).getMessage()
                 .contains("E_SYNC_TASK_EARLY_RETURN_UNSUPPORTED"));
+    }
+
+    @Test void orderedEarlyReturnChainEvaluatesOnlySelectedBranch() throws Exception {
+        String source = """
+                fnc route_eq(int value, int target): bool { return value eq target; }
+                fnc choose(int route): int {
+                  let int count = 0;
+                  val int result = sync task<int> {
+                    if route_eq(route, 0) && count eq 0 do
+                      count = count + 2;
+                      return 40;
+                    elif route_eq(route, 1) then
+                      count = count + 3;
+                      return 39;
+                    fi
+                    count = count + 4;
+                    return 38;
+                  };
+                  return result + count;
+                }
+                pub fnc main(): int {
+                  guard choose(0) eq 42, choose(1) eq 42, choose(2) eq 42 { return 1; }
+                  return 42;
+                }
+                """;
+        assertEquals(42L, run(source));
+    }
+
+    @Test void conditionalReturnBudgetIsBounded() {
+        String prefix = "pub fnc main(): int { return sync task<int> { ";
+        String branch = "if false do return 1; fi ";
+        String suffix = "return 42; }; }";
+        assertDoesNotThrow(() -> Parser.parseStrictAtto(prefix + branch.repeat(16) + suffix));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> Parser.parseStrictAtto(prefix + branch.repeat(17) + suffix))
+                .getMessage().contains("E_SYNC_TASK_EARLY_RETURN_BUDGET"));
+    }
+
+    @Test void skippedShortCircuitTasksCannotMutateOuterState() throws Exception {
+        String source = """
+                fnc choose(bool run): int {
+                  let int count = 0;
+                  val bool result = run && sync task<bool> {
+                    count = count + 2;
+                    return true;
+                  };
+                  if run do
+                    guard result { return 1; }
+                    return 40 + count;
+                  fi
+                  guard !result { return 2; }
+                  return 42 + count;
+                }
+                pub fnc main(): int {
+                  guard choose(true) eq 42, choose(false) eq 42 { return 1; }
+                  return 42;
+                }
+                """;
+        assertEquals(42L, run(source));
+    }
+
+    @Test void voidTaskUsesCallerScopeAndDoesNotReturnFromCaller() throws Exception {
+        assertEquals(42L, run("""
+                pub fnc main(): int {
+                  let int count = 0;
+                  do sync task<void> {
+                    count = 20;
+                    rt cooperate;
+                    return;
+                  }
+                  do sync task<void> {
+                    count = count + 22;
+                  };
+                  return count;
+                }
+                """));
+    }
+
+    @Test void voidTaskLocalLoopAndNestedScopeRemainIndependent() throws Exception {
+        assertEquals(42L, run("""
+                pub fnc main(): int {
+                  let int count = 0;
+                  do sync task<void> {
+                    loop {
+                      count = count + 1;
+                      if count eq 2 { continue; } fi
+                      if count eq 4 { break; } fi
+                    }
+                    do sync task<void> { count = count + 38; }
+                  }
+                  return count;
+                }
+                """));
+    }
+
+    @Test void voidTaskRejectsNonlocalTransfersAndValueReturns() {
+        for (String body : new String[] {
+                "return 42;", "return; rt cooperate;", "if true do return 42; fi", "loop { return; }"
+        }) {
+            String source = "pub fnc main(): int { do sync task<void> { "
+                    + body + " } return 42; }";
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parseStrictAtto(source)).getMessage()
+                    .contains("E_SYNC_TASK_VOID_RETURN_UNSUPPORTED"), body);
+        }
+        for (String transfer : new String[] { "break;", "continue;" }) {
+            String source = "pub fnc main(): int { loop { do sync task<void> { "
+                    + transfer + " } return 42; } return 1; }";
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parseStrictAtto(source)).getMessage()
+                    .contains("E_SYNC_TASK_CONTROL_TRANSFER"), transfer);
+        }
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> Parser.parseStrictAtto(
+                        "pub fnc main(): int { do sync task<int> { return 42; } return 0; }"))
+                .getMessage().contains("E_SYNC_TASK_VOID_RESULT"));
+    }
+
+    @Test void inlineTaskDefersExecuteOnceInLexicalOrderBeforeCallerContinues() throws Exception {
+        String source = """
+                pub fnc main(): int {
+                  do sync task<void> {
+                    defer stdio.stdout.write("outer|");
+                    val int result = sync task<int> {
+                      defer stdio.stdout.write("inner|");
+                      return 42;
+                    };
+                    stdio.stdout.write("joined|");
+                    return;
+                  }
+                  stdio.stdout.write("caller");
+                  return 42;
+                }
+                """;
+        OresCompiler.parseAndTypeCheckStrictAtto(source);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, source,
+                    "inline-task-cleanup.atto").mimeType(OresLanguage.MIME_TYPE).build()).asLong());
+        }
+        assertEquals("inner|joined|outer|caller", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void conditionalVoidReturnsSkipSuffixAndResumeCaller() throws Exception {
+        assertEquals(42L, run("""
+                fnc choose(bool early): int {
+                  let int count = 0;
+                  do sync task<void> {
+                    if early then
+                      count = 42;
+                      return;
+                    fi
+                    count = 42;
+                  }
+                  return count;
+                }
+                pub fnc main(): int {
+                  guard choose(true) eq 42, choose(false) eq 42 { return 1; }
+                  let int count = 0;
+                  do sync task<void> {
+                    if true then
+                      count = 40;
+                      return;
+                    fi
+                    count = 99;
+                  }
+                  return count + 2;
+                }
+                """));
+    }
+
+    @Test void nestedValueReturnsKeepBothBranchScopesAndSkipSuffixes() throws Exception {
+        assertEquals(42L, run("""
+                fnc choose(int route): int {
+                  let int count = 0;
+                  val int result = sync task<int> {
+                    if route neq 0 then
+                      val int local = 40;
+                      if route eq 1 then
+                        count = 2;
+                        return local;
+                      fi
+                      count = 3;
+                      return local - 1;
+                    fi
+                    count = 4;
+                    return 38;
+                  };
+                  return result + count;
+                }
+                pub fnc main(): int {
+                  guard choose(0) eq 42, choose(1) eq 42, choose(2) eq 42 { return 1; }
+                  return 42;
+                }
+                """));
+    }
+
+    @Test void nestedEarlyReturnsUnwindBothDefersOnce() throws Exception {
+        String source = """
+                pub fnc main(): int {
+                  do sync task<void> {
+                    defer stdio.stdout.write("outer|");
+                    if true then
+                      defer stdio.stdout.write("branch|");
+                      if true then
+                        defer stdio.stdout.write("inner|");
+                        rt cooperate;
+                        return;
+                      fi
+                      stdio.stdout.write("bad-branch|");
+                      return;
+                    fi
+                    stdio.stdout.write("bad-outer|");
+                  }
+                  stdio.stdout.write("caller");
+                  return 42;
+                }
+                """;
+        OresCompiler.parseAndTypeCheckStrictAtto(source);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, source,
+                    "inline-early-cleanup.atto").mimeType(OresLanguage.MIME_TYPE).build()).asLong());
+        }
+        assertEquals("inner|branch|outer|caller", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void cancellationUnwindsInlineAndScheduledTaskDefersBeforeDone() throws Exception {
+        // Exercise the existing explicit-async scheduler lane. This is a
+        // cancellation regression, not evidence of strict Atto/AOT admission.
+        String source = """
+                define class Flag as
+                  pub let int value = 0;
+                end
+                pub async fnc main(): void {
+                  val flag = SharedMutex.new(new Flag());
+                  let Future<void> child = task {
+                    defer stdio.stdout.write("|outer");
+                    do sync task<void> {
+                      defer stdio.stdout.write("|inline");
+                      stdio.stdout.write("started");
+                      block {
+                        val g = flag.lock();
+                        g.value = 1;
+                      }
+                      loop {
+                        rt cooperate;
+                      }
+                    }
+                    stdio.stdout.write("|unreachable");
+                    return;
+                  };
+                  let mut int started = 0;
+                  while started == 0 {
+                    rt cooperate;
+                    block {
+                      val g = flag.lock();
+                      started = g.value;
+                    }
+                  }
+                  child.cancel();
+                  val outcome = await child.get_done();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(outcome);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        OresCompiler.parseAndTypeCheck(source);
+        try (var context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source,
+                    "inline-cancellation.ores").mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("started|inline|outer|#cancelled", output.toString(StandardCharsets.UTF_8));
     }
 }

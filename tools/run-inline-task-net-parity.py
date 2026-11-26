@@ -51,23 +51,27 @@ def main():
     if not entry.is_file() or entry.is_symlink():
         raise SystemExit("Missing actual compiler entrypoint")
     digest = hashlib.sha256(entry.read_bytes()).hexdigest()
+    # New candidates have their own markers. Historical receipts apply only
+    # to the four original manifest cases, never to an extension.
+    additions = [
+        ("inline-local-loops-do", "c502b65bd859fdfc2fb8b9221b9af997447c22e1",
+         "INLINE_TASK_DO_JAVA_PASS"),
+        ("inline-early-conditional", "678821cc705b2637b755f4d8a04e5aa81df80c98",
+         "INLINE_TASK_EARLY_CONDITIONAL_JAVA_PASS"),
+        ("inline-multi-conditional", "131f0414ae6aba434a0f09553a907f4ec2c2506a",
+         "INLINE_TASK_MULTI_CONDITIONAL_JAVA_PASS"),
+        ("inline-shortcircuit-writeback", "adea3e544fd92d4b79387f7dc9881e36ecae65f3",
+         "INLINE_TASK_SHORTCIRCUIT_JAVA_PASS"),
+    ]
+    extras = [{"name": name, "path": f"tests/fixtures/inline-task-net-parity/{name}.atto",
+               "blob": sha, "expected": "42"} for name, sha, _ in additions]
+    markers = {name: marker for name, _, marker in additions}
+    historical = {case["name"] for case in manifest["cases"]}
+    if historical.intersection(markers) or len(markers) != len(additions):
+        raise SystemExit("Duplicated historical/extension fixture")
     failures = 0
-    extension_failures = 0
-    # New shared-source candidate, not covered by the historical .NET receipt.
-    extension = {
-        "name": "inline-local-loops-do",
-        "path": "tests/fixtures/inline-task-net-parity/inline-local-loops-do.atto",
-        "blob": "c502b65bd859fdfc2fb8b9221b9af997447c22e1",
-        "expected": "42",
-    }
-    early = {
-        "name": "inline-early-conditional",
-        "path": "tests/fixtures/inline-task-net-parity/inline-early-conditional.atto",
-        "blob": "678821cc705b2637b755f4d8a04e5aa81df80c98",
-        "expected": "42",
-    }
-    early_failures = 0
-    for case in [*manifest["cases"], extension, early]:
+    extra_failures = []
+    for case in [*manifest["cases"], *extras]:
         src = ROOT / case["path"]
         if not src.is_file() or src.is_symlink():
             raise SystemExit("Missing regular source fixture")
@@ -78,12 +82,13 @@ def main():
         run = None
         if check["exit"] == 0:
             run = invoke(command, ["--no-prompt", str(src)])
-        passed = (run is not None and run["exit"] == 0 and
-                  run["stdout"] == case["expected"] and src.read_bytes() == before)
-        if case is extension:
-            extension_failures += not passed
-        elif case is early:
-            early_failures += not passed
+        passed = (run is not None and run["exit"] == int(case["expected"]) and
+                  run["stdout"] == "" and src.read_bytes() == before)
+        if case["name"] in markers:
+            if passed:
+                print(markers[case["name"]] + " 1/1", flush=True)
+            else:
+                extra_failures.append(case["name"])
         else:
             failures += not passed
         print(json.dumps({"case": case["name"], "head": head, "tree": tree,
@@ -92,12 +97,8 @@ def main():
                           "check": check, "run": run, "passed": passed}), flush=True)
     if not failures:
         print("EXACT_INLINE_TASK_JAVA_PASS 4/4", flush=True)
-    if not extension_failures:
-        print("INLINE_TASK_DO_JAVA_PASS 1/1", flush=True)
-    if not early_failures:
-        print("INLINE_TASK_EARLY_CONDITIONAL_JAVA_PASS 1/1", flush=True)
-    if failures or extension_failures or early_failures:
-        raise SystemExit(f"PARITY_NOT_PROVEN: historical={failures}/4 new_do={extension_failures}/1 early={early_failures}/1 failed")
+    if failures or extra_failures:
+        raise SystemExit(f"PARITY_NOT_PROVEN: historical={failures}/4 extensions={extra_failures}")
 
 if __name__ == "__main__":
     main()
