@@ -17,6 +17,8 @@ public final class CheckCanonicalXorReportsSelfTest {
     private static final String BOOL = "BooleanIntrinsicsTest";
     private static final List<String> XOR_CASES = List.of(
             "strictIntegerXorCompilesAndRunsInActualTruffleGuest",
+                "strictCompoundXorUpdatesMutableIntegerOnce",
+                "compoundXorRejectsImmutableNonintegerAndSeparatedTokens",
             "singleCaretReturnAndContiguousIntegerXorWorkTogether",
             "canonicalBooleanXorAndMixedScalarKindsFailDuringAdmission",
             "rejectedSingleOrSpacedCaretNeverCreatesCheckedAst",
@@ -135,7 +137,7 @@ public final class CheckCanonicalXorReportsSelfTest {
         run("hidden-skipped-element",false,mutation(c -> c.rewrite(XOR,"/>","><skipped/></testcase>")));
         run("hidden-failure-element",false,mutation(c -> c.rewrite(XOR,"/>","><failure/></testcase>")));
         run("bad-suite-name",false,mutation(c -> c.rewrite(XOR,"name=\"dev.oreslang."+XOR+"\" tests=", "name=\"ForgedSuite\" tests=")));
-        run("nonintegral-tests-count",false,mutation(c -> c.rewrite(XOR,"tests=\"12\"","tests=\"12.0\"")));
+        run("nonintegral-tests-count",false,mutation(c -> c.rewrite(XOR,"tests=\""+XOR_CASES.size()+"\"","tests=\""+XOR_CASES.size()+".0\"")));
         run("doctype-entity",false,mutation(c -> c.write(XOR,"<?xml version=\"1.0\"?><!DOCTYPE testsuite [<!ENTITY x SYSTEM \"file:///etc/passwd\">]>"+report(XOR,XOR_CASES).replace("<?xml version=\"1.0\"?>", ""))));
         run("nested-testsuites-root",false,mutation(c -> c.write(XOR, "<testsuites>"+report(XOR,XOR_CASES).replace("<?xml version=\"1.0\"?>", "")+"</testsuites>")));
         run("symlink-report",false,mutation(c -> {

@@ -29,6 +29,8 @@ public final class CheckCanonicalXorReports {
         if (args.length != 0) throw new IllegalArgumentException("No arguments permitted");
         check(XOR_SUITE, methods(
                 "strictIntegerXorCompilesAndRunsInActualTruffleGuest",
+                "strictCompoundXorUpdatesMutableIntegerOnce",
+                "compoundXorRejectsImmutableNonintegerAndSeparatedTokens",
                 "singleCaretReturnAndContiguousIntegerXorWorkTogether",
                 "canonicalBooleanXorAndMixedScalarKindsFailDuringAdmission",
                 "rejectedSingleOrSpacedCaretNeverCreatesCheckedAst",

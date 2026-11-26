@@ -64,6 +64,36 @@ final class AttoCanonicalIntegerXorParityTest {
     }
 
     @Test
+    void strictCompoundXorUpdatesMutableIntegerOnce() throws Exception {
+        assertEquals("rhs\n6\n", canonicalGuest("""
+                fnc operand(): int { stdio.println("rhs"); return 10; }
+                pub fnc main(): void {
+                    let int x = 12;
+                    x ^^= operand();
+                    stdio.println(x);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void compoundXorRejectsImmutableNonintegerAndSeparatedTokens() {
+        strictRejects("pub fnc main(): int { val int x = 12; x ^^= 10; return x; }",
+                "E_IMMUTABLE_REBIND");
+        for (String body : new String[]{
+                "let int x = 12; x ^= 10; return x;",
+                "let int x = 12; x ^ ^= 10; return x;",
+                "let int x = 12; x ^^ = 10; return x;",
+                "let int x = 12; x ^^= true; return x;",
+                "let bool x = true; x ^^= false; return 0;",
+                "let int x = 12; (x + 1) ^^= 10; return x;",
+        }) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    OresCompiler.parseAndTypeCheckStrictAtto("pub fnc main(): int { " + body + " }"), body);
+        }
+    }
+
+    @Test
     void canonicalBooleanXorAndMixedScalarKindsFailDuringAdmission() {
         for (String expr : new String[]{
                 "true ^^ false", "true ^^ 1", "1 ^^ false", "1.5 ^^ 2",

@@ -5776,6 +5776,18 @@ public final class Parser {
                     + "'rpipe' flows right-to-left; typed continuous graph, bounded stream "
                     + "ownership, checked error completion and supervisor lowering are not yet enabled");
         }
+        // Compound XOR uses the ordinary checked assignment and integer XOR
+        // paths. Only simple local names are admitted: fields and indices
+        // require separately proven once-only lvalue evaluation.
+        if (checkXorCompoundAssignment()) {
+            Token operator = advance();
+            advance();
+            advance();
+            if (!(expr instanceof Ast.NameExpr name)) {
+                throw error(operator, "E_OPERATOR_CARET: ^^= requires a writable integer local");
+            }
+            return new Ast.AssignExpr(name, new Ast.BinaryExpr("^^", name, parseAssignment()));
+        }
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
@@ -5990,7 +6002,7 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseXor() {
         Ast.Expr expr = parseBitwiseAnd();
-        while (matchAdjacentPair(CARET)) {
+        while (!checkXorCompoundAssignment() && matchAdjacentPair(CARET)) {
             expr = new Ast.BinaryExpr("^^", expr, parseBitwiseAnd());
         }
         if (matchSingleOperator(CARET)) throw error(previous(),
@@ -7662,6 +7674,12 @@ public final class Parser {
                 && tokens.get(current).type() == type
                 && tokens.get(current + 1).type() == type
                 && adjacent(tokens.get(current), tokens.get(current + 1));
+    }
+
+    private boolean checkXorCompoundAssignment() {
+        return checkAdjacentPair(CARET) && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == EQUAL
+                && adjacent(tokens.get(current + 1), tokens.get(current + 2));
     }
 
     private boolean matchAdjacentPair(Token.Type type) {
