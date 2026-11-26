@@ -100,11 +100,11 @@ final class ActorCallContinuation {
                                 int localCount, int operandCapacity) {
         requireTurn();
         if (functionId < 0 || returnPc < 0 || localCount < 0
-                || operandCapacity < 0 || localCount + operandCapacity > MAX_SLOTS) {
+                || operandCapacity < 0 || (long) localCount + operandCapacity > MAX_SLOTS) {
             throw new IllegalArgumentException("invalid actor call-frame layout");
         }
         long byteCount = HEADER_BYTES
-                + (long) (localCount + operandCapacity) * GuestScalarFrameCodec.SLOT_BYTES;
+                + ((long) localCount + operandCapacity) * GuestScalarFrameCodec.SLOT_BYTES;
         if (byteCount > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("actor call frame exceeds representable size");
         }
