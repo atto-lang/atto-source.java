@@ -371,7 +371,7 @@ final class DerivedCopyPlanGuestTest {
     void deepOverrideAndInheritedDenialCannotBeBypassedByDerivedPlan() {
         for (String source : java.util.List.of(
                 """
-                define class Record as
+                define class Record implements DeepCopyable<Record> as
                   pub let int n = 1;
                   pub copy_deep() -> Record { return self; }
                 end
@@ -380,7 +380,7 @@ final class DerivedCopyPlanGuestTest {
                 """
                 @NonCopyable
                 define class Base as pub val int n = 1; end
-                define class Child extends Base as pub val int m = 2; end
+                define class Child extends Base implements DeepCopyable<Child> as pub val int m = 2; end
                 fnc bad(Child value): Child { return copy!! value; }
                 """)) {
             var error = assertThrows(IllegalArgumentException.class,
