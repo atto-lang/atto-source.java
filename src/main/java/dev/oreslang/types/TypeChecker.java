@@ -7718,12 +7718,24 @@ public final class TypeChecker {
             // This first lowering snapshots exactly one lexical channel
             // capability at task admission. Do not repeatedly resolve a
             // global/imported value or admit a broader event payload.
-            if (task.body().size() < 3
-                    || !(task.body().get(1) instanceof Ast.SelectStmt selected)
-                    || selected.arms().size() != 1
-                    || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source))
-                throw new IllegalArgumentException("invalid restricted counted select lowering");
-            Env.Binding sourceBinding = env.lookup(source.name());
+            String sourceName = task.zeroCountSourceName();
+            if (sourceName != null) {
+                if (task.body().size() != 1
+                        || !(task.body().getFirst() instanceof Ast.ReturnStmt returned)
+                        || !(returned.value() instanceof Ast.NewExpr empty)
+                        || !empty.type().equals(new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false))
+                        || !empty.arguments().isEmpty()
+                        || findClass("Array") != null || importedValues.contains("Array"))
+                    throw new IllegalArgumentException("invalid zero-count select lowering");
+            } else {
+                if (task.body().size() < 3
+                        || !(task.body().get(1) instanceof Ast.SelectStmt selected)
+                        || selected.arms().size() != 1
+                        || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source))
+                    throw new IllegalArgumentException("invalid restricted counted select lowering");
+                sourceName = source.name();
+            }
+            Env.Binding sourceBinding = env.lookup(sourceName);
             if (sourceBinding == null
                     || !new Named("Channel", List.of(Primitive.INT)).equals(sourceBinding.type()))
                 throw new IllegalArgumentException("restricted counted select requires lexical Channel<int>");

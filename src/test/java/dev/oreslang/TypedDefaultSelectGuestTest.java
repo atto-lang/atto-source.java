@@ -9,7 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** First executable value-select subset, no event or counted support. */
+/** Restricted executable typed-default and single-channel counted selection. */
 @Timeout(20)
 final class TypedDefaultSelectGuestTest {
     @Test void bareTypedSelectAndLegacyAliasReturnTrackedFuture() throws Exception {
@@ -135,7 +135,7 @@ final class TypedDefaultSelectGuestTest {
 
     @Test void countedUnsupportedSourceFormsAndContextFailClosed() {
         for (String expression : new String[]{
-          "select<int>(0) { when readch incoming: int n -> { return n; } }",
+          "select<int>(-1) { when readch incoming: int n -> { return n; } }",
           "select<int>(17) { when readch incoming: int n -> { return n; } }",
           "select<int>(1+2) { when readch incoming: int n -> { return n; } }",
           "select<int>(1) { when readch incoming: int n -> { return n; } default: -> { return 0; } }",
@@ -153,8 +153,8 @@ final class TypedDefaultSelectGuestTest {
 
     // Exact bytes from atto-platform-conformance #608, head
     // 62471273cf3d62abdf24bbfbdf312645a08d578e. Keep unsupported targets separate.
-    @Test void portableCountedThreeAndAliasExactBlobsReturn42() throws Exception {
-        for (String name : new String[]{"counted-three", "counted-alias"}) {
+    @Test void portableFourPositiveCountedExactBlobsReturn42() throws Exception {
+        for (String name : new String[]{"counted-three", "counted-alias", "counted-one", "counted-zero"}) {
             String code = java.nio.file.Files.readString(java.nio.file.Path.of("tests/fixtures/select-source-v2", name + ".atto"));
             try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
                 assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code, name+".atto")
@@ -163,11 +163,36 @@ final class TypedDefaultSelectGuestTest {
         }
     }
 
-    @Test void portableUnsupportedCountedBlobsFailClosed() throws Exception {
-        for (String name : new String[]{"counted-one", "counted-zero"}) {
-            String code = java.nio.file.Files.readString(java.nio.file.Path.of("tests/fixtures/select-source-v2", name + ".atto"));
-            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(code), name);
-        }
+    @Test void zeroCountNeverCommitsAndReturnsFreshEmptyArray() throws Exception {
+        assertEquals("0|0|42",run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 42;
+                  val Array[int] first = await select<int>(0) {
+                    when readch incoming: int n -> { return n * 2; }
+                  };
+                  val Array[int] second = await select(0) over
+                    when readch incoming: int n -> { return n; }
+                  end;
+                  stdio.stdout.write(first.size()); stdio.stdout.write("|");
+                  stdio.stdout.write(second.size()); stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming);
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  val Channel<bool> incoming = Channel.new<bool>(1);
+                  val Future<Array<int>> bad = select<int>(0) { when readch incoming: int n -> { return n; } };
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  val Future<Array<int>> bad = select<int>(0) { when readch missing: int n -> { return n; } };
+                  return;
+                }
+                """));
     }
 
     @Test void countedProjectionBudgetAndWrongPayloadRejected() {

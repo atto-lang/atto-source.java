@@ -2218,7 +2218,8 @@ public final class Ast {
     public enum ExecutionDomain { CPU, GPU }
     public enum TaskCaptureTransfer { COPY, MOVE }
     public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
-                           boolean typedDefaultSelectI64, boolean typedCountedSelectI64) implements Expr {
+                           boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                           String zeroCountSourceName) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
@@ -2226,6 +2227,12 @@ public final class Ast {
                 throw new IllegalArgumentException("typed select requires CPU task authority");
             if (typedDefaultSelectI64 && typedCountedSelectI64)
                 throw new IllegalArgumentException("inconsistent typed select result");
+            if (zeroCountSourceName != null && (!typedCountedSelectI64 || zeroCountSourceName.isBlank()))
+                throw new IllegalArgumentException("invalid zero-count select type witness");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64, null);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
                         boolean typedDefaultSelectI64) {

@@ -7141,7 +7141,7 @@ public final class Parser {
         String unsupported = "counted select requires tracked Future result lowering outside restricted single-read literal slice";
         if (!match(INT)) throw error(peek(), unsupported);
         long count = parseSignedI64(previous());
-        if (count < 1 || count > 16 || !match(RPAREN))
+        if (count < 0 || count > 16 || !match(RPAREN))
             throw error(peek(), unsupported);
         Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.BLOCKING, true);
         if (selected.policy() == Ast.SelectPolicy.RANDOM || selected.arms().size() != 1)
@@ -7156,6 +7156,14 @@ public final class Parser {
                 || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
                 || !isCountedScalarProjection(returned.value(), arm.bindingName()))
             throw error(previous(), unsupported);
+        if (count == 0) {
+            // Retain only a static lexical type witness, never capture or
+            // evaluate the source and never materialize an executable arm.
+            var array = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
+                    List.of(new Ast.ReturnStmt(new Ast.NewExpr(array, List.of()))),
+                    false, false, true, source.name());
+        }
         List<Ast.Stmt> taskBody = new ArrayList<>();
         List<Ast.Expr> values = new ArrayList<>();
         for (int i = 0; i < count; i++) {
@@ -7207,8 +7215,12 @@ public final class Parser {
         // Static select expressions will return a tracked Future, including
         // explicit select<T>. Do not lower them as legacy blocking/detached
         // statements or pretend that parsing a generic admits the feature.
-        if (check(LPAREN)) {
-            throw error(peek(), "counted select requires tracked Future result lowering and bounded batch storage");
+        if (match(LPAREN)) {
+            if (mode == Ast.WaitMode.IMMEDIATE)
+                throw error(previous(), "counted select requires tracked Future result lowering");
+            // The same narrow typed binding + pure int projection establishes
+            // the inferred result independently of contextual annotation.
+            return parseRestrictedCountedSelect();
         }
         if (match(LT)) {
             // First executable value-select slice: exactly one default arm,
