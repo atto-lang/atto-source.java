@@ -58,6 +58,51 @@ final class DynamicSelectPlanGenerationTest {
     }
 
     @Test
+    void overlappingPendingFairSelectionsUseLatestCommittedGenerationCredit() {
+        var producer = new OresFuture<Integer>();
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("a", ChannelRuntime.await(producer));
+        plan.put("b", ChannelRuntime.await(producer));
+        var first = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var second = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        assertFalse(first.isDone());
+        assertFalse(second.isDone());
+        assertTrue(producer.completeFromRuntime(42));
+        assertEquals("a", first.join().key());
+        assertEquals("b", second.join().key());
+        assertEquals(2L, first.join().version());
+        assertEquals(2L, second.join().version());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void retiredGenerationFairCreditNeverRotatesReplacementPlan() {
+        var producer = new OresFuture<Integer>();
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("a", ChannelRuntime.await(producer));
+        plan.put("b", ChannelRuntime.await(producer));
+        var first = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var second = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var third = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var left = new ChannelRuntime.Channel<Integer>(1);
+        var right = new ChannelRuntime.Channel<Integer>(1);
+        plan.put("a", ChannelRuntime.read(left));
+        plan.put("b", ChannelRuntime.read(right));
+        assertTrue(producer.completeFromRuntime(42));
+        assertEquals("a", first.join().key());
+        assertEquals("b", second.join().key());
+        assertEquals("a", third.join().key());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertTrue(left.tryWrite(10));
+        assertTrue(right.tryWrite(20));
+        var fresh = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+        assertEquals("a", fresh.key());
+        assertEquals(4L, fresh.version());
+        assertEquals(10, fresh.selection().value());
+        assertEquals(20, right.tryRead().orElseThrow());
+    }
+
+    @Test
     void repeatedLoopSelectionsReuseTheDescriptorButNotWinnerOrWaiters() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
