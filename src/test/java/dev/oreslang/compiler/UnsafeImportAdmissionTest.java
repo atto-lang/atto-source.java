@@ -16,7 +16,9 @@ final class UnsafeImportAdmissionTest {
     @Test void rejectsNativePathsBeforeResolverAndExplicitRedirects() {
         for (String path : List.of("std/unsafe/ffi", "ores.std/unsafe", "atto.std.unsafe.ffi",
                 "atto::std::unsafe::ffi", "std::unsafe::ffi", "./atto.std/unsafe",
-                "atto.std/other/../unsafe/ffi")) {
+                "atto.std/other/../unsafe/ffi", "std/unsafe/../safe", "atto.std/unsafe/../safe",
+                "atto::std/unsafe/../safe", "ores:std/unsafe/../safe",
+                "atto::std/../safe", "ores:std/../safe", "atto/std/../safe", "ores/std/../safe")) {
             var error = assertThrows(IllegalArgumentException.class,
                     () -> ImportGraph.resolveImportUnitId("main.atto", imported(path), Set.of(path)));
             assertTrue(error.getMessage().contains("E_UNSAFE_DOMAIN"), error::getMessage);
