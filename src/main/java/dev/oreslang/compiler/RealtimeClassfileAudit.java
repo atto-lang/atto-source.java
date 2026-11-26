@@ -49,7 +49,16 @@ public final class RealtimeClassfileAudit {
     public static Report audit(Path classFile) throws IOException {
         long fileSize = Files.size(classFile);
         if (fileSize < 24 || fileSize > MAX_CLASS_BYTES) deny("invalid or oversized classfile");
-        byte[] bytes = Files.readAllBytes(classFile);
+        try (var input = Files.newInputStream(classFile, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            return audit(input.readNBytes(MAX_CLASS_BYTES + 1));
+        }
+    }
+
+    /** Audit an owned snapshot before returning or executing cached bytes. */
+    public static Report audit(byte[] candidate) throws IOException {
+        if (candidate == null || candidate.length < 24 || candidate.length > MAX_CLASS_BYTES)
+            deny("invalid or oversized classfile");
+        byte[] bytes = candidate.clone();
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             if (in.readInt() != 0xCAFEBABE) deny("bad classfile magic");
             in.readUnsignedShort();
@@ -97,7 +106,7 @@ public final class RealtimeClassfileAudit {
                 for (int a = 0; a < attributes; a++) {
                     String attributeName = utf8(cp, in.readUnsignedShort());
                     int length = in.readInt();
-                    if (length < 0) deny("negative attribute length");
+                    if (length < 0 || length > in.available()) deny("invalid or truncated attribute length");
                     byte[] payload = in.readNBytes(length);
                     if (payload.length != length) deny("truncated method attribute");
                     if (!"Code".equals(attributeName)) deny("unknown method attribute");
@@ -435,7 +444,7 @@ public final class RealtimeClassfileAudit {
     }
 
     private static void skipFully(DataInputStream in, int length) throws IOException {
-        if (length < 0) deny("negative attribute length");
+        if (length < 0 || length > in.available()) deny("invalid or truncated attribute length");
         byte[] skipped = in.readNBytes(length);
         if (skipped.length != length) deny("truncated classfile attribute");
     }
