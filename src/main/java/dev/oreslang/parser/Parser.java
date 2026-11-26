@@ -5089,6 +5089,7 @@ public final class Parser {
         boolean mutableBorrow = check(MUT);
         if (mutableBorrow) advance();
         String operation = advance().lexeme();
+        if (operation.equals("move")) operation = "take"; // exact alias before semantic lowering
         Token bang = consume(BANG, "expected '!' attached to ownership operation");
         // A contiguous second bang selects explicit deep copy. A separated
         // bang remains an operand negation, not an ownership mode marker.
@@ -5131,7 +5132,7 @@ public final class Parser {
             return false;
         }
         String verb = tokens.get(verbIndex).lexeme();
-        if (!verb.equals("copy") && !verb.equals("take")
+        if (!verb.equals("copy") && !verb.equals("take") && !verb.equals("move")
                 && !verb.equals("borrow") && !verb.equals("share")) return false;
         if (verbIndex + 1 >= tokens.size()) return false;
         Token marker = tokens.get(verbIndex + 1);
