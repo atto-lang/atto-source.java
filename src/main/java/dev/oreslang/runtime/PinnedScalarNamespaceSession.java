@@ -4,6 +4,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.PinnedNamespaceInventory;
+import dev.oreslang.compiler.PackageLayout;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.*;
@@ -30,6 +31,21 @@ public final class PinnedScalarNamespaceSession {
     private Ast.Program acceptedProgram;
     public record Result(IncrementalCompiler.BuildResult build,int exitStatus,int inventoryParsed,int inventoryReused,int consumerParsed){}
     private static IllegalArgumentException deny(String detail){return new IllegalArgumentException("E_NAMESPACE_PROFILE: "+detail);}
+    /** Logical, session-local identity: dependency alias plus exact pinned
+     * provider manifest. The manifest includes the provider package name.
+     * Source body pins intentionally do not participate: a repinned body edit
+     * should retain the package domain. No physical origin authority claimed. */
+    private static String packageIdentity(String alias,String providerManifest){
+        try {
+            var md=java.security.MessageDigest.getInstance("SHA-256");
+            md.update(alias.getBytes(StandardCharsets.UTF_8));
+            md.update((byte)0);
+            md.update(providerManifest.getBytes(StandardCharsets.UTF_8));
+            return "p_"+HexFormat.of().formatHex(md.digest());
+        } catch(java.security.NoSuchAlgorithmException impossible){
+            throw new IllegalStateException(impossible);
+        }
+    }
     private static boolean identifier(String name){return name!=null&&name.matches("[A-Za-z_][A-Za-z0-9_]{0,127}")&&!Set.of("main","stdio","init",Parser.ROOT_MODULE).contains(name);}
     private static Ast.ModuleDecl root(Ast.Program p){
         if(!p.exports().isEmpty()||p.modules().size()!=1)throw deny("single root module");
@@ -102,7 +118,11 @@ public final class PinnedScalarNamespaceSession {
         });
         lowered.append("pub fnc main(): void {\n").append(body).append("}\n");
         sources.put(ENTRY,lowered.toString());
-        var build=compiler.compile(sources,Map.of(ENTRY,resolutions));
+        // Only explicitly namespaced selected providers enter this layout. The
+        // legacy folder-derived default is never used for the inventory.
+        // A changed logical package identity invalidates previous typed units.
+        var layout=new PackageLayout(Map.of("provider",packageIdentity(selected.packageAlias(),providerManifest)));
+        var build=compiler.compile(sources,Map.of(ENTRY,resolutions),layout);
         var policy=new IsolatePolicy(Set.of(IsolatePolicy.Capability.STDOUT),64L*1024*1024,64,Duration.ofSeconds(10));
         try(Context context=policy.restrictedContextBuilder(ExecutionProfile.serverJit()).out(out).err(err).build()){
             var units=new TreeMap<String,Value>();
