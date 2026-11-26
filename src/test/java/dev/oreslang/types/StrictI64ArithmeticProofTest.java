@@ -68,6 +68,28 @@ final class StrictI64ArithmeticProofTest {
         }
     }
 
+    @Test void executeStrictCheckedAstThroughRealGuestRuntime() throws Exception {
+        String pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42; ";
+        String[] bodies={
+            "pub fnc main() -> int { return 40+2; }",
+            "fnc f(int x) -> int { if x != 0 { return 42/x; } return 0; } pub fnc main() -> int { return f(1); }",
+            "fnc f(int x) -> int { if x != 0 && 42/x > 0 { return 1; } return 42; } pub fnc main() -> int { return f(0); }",
+            "fnc f(int x) -> int { if x == 0 || 42/x > 0 { return 42; } return 0; } pub fnc main() -> int { return f(0); }",
+            "fnc f(int x) -> int { if x != 0 && x != -1 { return -9223372036854775808/x; } return 0; } pub fnc main() -> int { return f(2); }"
+        };
+        long[] want={42,42,42,42,-4611686018427387904L};
+        for(int i=0;i<bodies.length;i++){
+            String text=pre+bodies[i],name="strict-guest-"+i+".atto";
+            var ast=dev.oreslang.compiler.OresCompiler.analyze(Parser.parseVerifiedStrictI64(text));
+            var source=org.graalvm.polyglot.Source.newBuilder(dev.oreslang.OresLanguage.ID,text,name).cached(false).build();
+            try(var context=org.graalvm.polyglot.Context.newBuilder(dev.oreslang.OresLanguage.ID).allowExperimentalOptions(true).option("engine.WarnInterpreterOnly","false").build();
+                var lease=dev.oreslang.OresLanguage.openPrecheckedProgram(name,text,ast)){
+                var value=context.eval(source);
+                assertEquals(want[i],value.asLong(),name);
+            }
+        }
+    }
+
     @Test void compareToConcreteCheckedOperations() {
         for (long lo=-4; lo<=4; lo++) for (long hi=lo; hi<=4; hi++)
             for (long rlo=-4; rlo<=4; rlo++) for(long rhi=rlo; rhi<=4; rhi++)
