@@ -2376,15 +2376,25 @@ public final class Parser {
                         receiver.name(), methodName, memberModifiers.visibility, parameters, returns));
                 continue;
             }
-            if (!moduleContract && actorMethodHead) {
-                throw error(peek(), "actor receiver requirements belong only in module contracts");
-            }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }
-            // Trait/interface signatures allow the canonical bare instance
-            // method form: get_future(): Future<T>;
-            if (match(FNC) || (check(IDENT) && checkNext(LPAREN))) {
+            // The optional contextual mtd marker belongs to nominal instance
+            // signatures. Module receiver requirements keep their distinct
+            // receiver grammar. A method named mtd() or a field typed mtd
+            // must not be consumed as a marker.
+            boolean explicitFnc = match(FNC);
+            boolean explicitMtd = !moduleContract && isContextualIdentifier("mtd")
+                    && looksLikeInterfaceMethodHead(current + 1);
+            if (explicitMtd) {
+                if (explicitFnc) {
+                    throw error(peek(), "an instance signature cannot combine 'fnc' and 'mtd' markers");
+                }
+                advance();
+            }
+            if (explicitFnc || explicitMtd
+                    || (moduleContract ? check(IDENT) && checkNext(LPAREN)
+                                       : looksLikeInterfaceMethodHead(current))) {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
                 validateInterfaceCallableModifiers(memberModifiers);
                 CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);
@@ -2444,6 +2454,22 @@ public final class Parser {
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
         return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+    }
+
+    // A generic type-first field (e.g. Box<T> value;) is not a method.
+    // Probe only the name/generic header and restore the cursor on every path.
+    private boolean looksLikeInterfaceMethodHead(int index) {
+        if (index >= tokens.size() || tokens.get(index).type() != IDENT) return false;
+        int mark = current;
+        try {
+            current = index + 1;
+            parseGenericParameters();
+            return check(LPAREN);
+        } catch (IllegalArgumentException malformed) {
+            return false;
+        } finally {
+            current = mark;
+        }
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {

@@ -131,10 +131,10 @@ final class AttoDiamondDispatchParityTest {
     }
 
     @Test
-    void javaInterfaceSignaturesRequireFncKeyword() {
+    void javaInterfaceSignaturesAcceptCompatibilityAndBareSpellings() {
         assertDoesNotThrow(() -> Parser.parse(
                 "define interface Named as fnc name(): string; end"));
-        assertThrows(IllegalArgumentException.class, () ->
-                Parser.parse("define interface Named as name(): string; end"));
+        assertDoesNotThrow(() -> Parser.parse("define interface Named as name(): string; end"));
+        assertDoesNotThrow(() -> Parser.parse("define interface Named as mtd name(): string; end"));
     }
 }
