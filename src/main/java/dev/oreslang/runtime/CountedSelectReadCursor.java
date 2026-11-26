@@ -47,6 +47,48 @@ final class CountedSelectReadCursor {
     private CountedSelectReadCursor(int count, List<ChannelRuntime.ReadChannel<Long>> sources,
             List<OresFuture<Long>> futures, ChannelRuntime.SelectPolicy policy,
             ActorRuntime runtime) {
+        this(count, policy, runtime);
+        if (count == 0) return;
+        Objects.requireNonNull(sources);
+        Objects.requireNonNull(futures);
+        long total = (long)sources.size() + futures.size();
+        if (total == 0 || total > ChannelRuntime.MAX_SELECT_CASES)
+            throw new IllegalArgumentException("invalid counted source count");
+        for (var source : sources) live.add(ChannelRuntime.read(source));
+        for (var future : futures) live.add(ChannelRuntime.await(future));
+    }
+
+    // Mixed cases must retain their original lexical order; splitting them
+    // into channel and Future lists changes PRIORITY and FAIR arbitration.
+    static CountedSelectReadCursor ordered(int count,
+            List<? extends ChannelRuntime.SelectCase> cases,
+            ChannelRuntime.SelectPolicy policy) {
+        return new CountedSelectReadCursor(count, policy, null, cases);
+    }
+
+    static CountedSelectReadCursor actorOwnedOrdered(ActorRuntime runtime, int count,
+            List<? extends ChannelRuntime.SelectCase> cases,
+            ChannelRuntime.SelectPolicy policy) {
+        return new CountedSelectReadCursor(count, policy, Objects.requireNonNull(runtime), cases);
+    }
+
+    private CountedSelectReadCursor(int count, ChannelRuntime.SelectPolicy policy,
+            ActorRuntime runtime, List<? extends ChannelRuntime.SelectCase> cases) {
+        this(count, policy, runtime);
+        if (count == 0) return;
+        Objects.requireNonNull(cases);
+        if (cases.isEmpty() || cases.size() > ChannelRuntime.MAX_SELECT_CASES)
+            throw new IllegalArgumentException("invalid counted source count");
+        for (var candidate : cases) {
+            if (!(candidate instanceof ChannelRuntime.ReadCase<?> ||
+                    candidate instanceof ChannelRuntime.FutureCase<?>))
+                throw new IllegalArgumentException("counted selection requires read/Future cases");
+            live.add(candidate);
+        }
+    }
+
+    private CountedSelectReadCursor(int count, ChannelRuntime.SelectPolicy policy,
+            ActorRuntime runtime) {
         if (count < 0 || count > MAX_COUNT)
             throw new IllegalArgumentException("SelectCountInvalid");
         actorRuntime = runtime;
@@ -60,13 +102,6 @@ final class CountedSelectReadCursor {
             state = State.SUCCESS;
             return;
         }
-        Objects.requireNonNull(sources);
-        Objects.requireNonNull(futures);
-        long total = (long)sources.size() + futures.size();
-        if (total == 0 || total > ChannelRuntime.MAX_SELECT_CASES)
-            throw new IllegalArgumentException("invalid counted source count");
-        for (var source : sources) live.add(ChannelRuntime.read(source));
-        for (var future : futures) live.add(ChannelRuntime.await(future));
         state = State.READY;
     }
 

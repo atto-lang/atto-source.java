@@ -151,6 +151,48 @@ final class CountedSelectReadCursorTest {
         assertFalse(f.isDone());
         assertTrue(f.completeFromRuntime(42L));
     }
+    @Test void mixedLexicalPriorityDoesNotGroupChannelsBeforeFutures() {
+        var channel = new ChannelRuntime.Channel<Long>(2);
+        assertTrue(channel.tryWrite(20L));
+        assertTrue(channel.tryWrite(30L));
+        var f = OresFuture.completed(10L);
+        var c = CountedSelectReadCursor.ordered(2,
+                List.of(ChannelRuntime.await(f), ChannelRuntime.read(channel.output())),
+                ChannelRuntime.SelectPolicy.PRIORITY);
+        c.beginRound(); assertTrue(c.retireRound());
+        c.beginRound(); assertTrue(c.retireRound());
+        assertEquals(List.of(10L,20L), c.result());
+        assertEquals(30L, channel.tryRead().orElseThrow());
+    }
+
+    @Test void mixedFairOrderSurvivesFutureAliasRetirement() {
+        var a = new ChannelRuntime.Channel<Long>(2);
+        var b = new ChannelRuntime.Channel<Long>(2);
+        assertTrue(a.tryWrite(10L)); assertTrue(a.tryWrite(40L));
+        assertTrue(b.tryWrite(30L)); assertTrue(b.tryWrite(50L));
+        var f = OresFuture.completed(20L);
+        var c = CountedSelectReadCursor.ordered(4,
+                List.of(ChannelRuntime.read(a.output()), ChannelRuntime.await(f),
+                        ChannelRuntime.read(b.output()), ChannelRuntime.await(f)),
+                ChannelRuntime.SelectPolicy.FAIR);
+        for (int i = 0; i < 4; i++) {
+            c.beginRound(); assertTrue(c.retireRound());
+        }
+        assertEquals(List.of(10L,20L,30L,40L), c.result());
+        assertEquals(50L, b.tryRead().orElseThrow());
+        assertEquals(0, f.pendingRuntimeWaiterCount());
+    }
+
+    @Test void orderedCasesRejectUnsupportedOperationsBeforeRegistration() {
+        var channel = new ChannelRuntime.Channel<Long>(1);
+        assertThrows(IllegalArgumentException.class, () -> CountedSelectReadCursor.ordered(1,
+                List.of(ChannelRuntime.read(channel.output()), ChannelRuntime.defaultCase()),
+                ChannelRuntime.SelectPolicy.FAIR));
+        assertEquals(0, channel.pendingRegistrations());
+        assertEquals(List.of(), CountedSelectReadCursor.ordered(0, null,
+                ChannelRuntime.SelectPolicy.FAIR).result());
+    }
+
     @Test void foreignThreadCannotDriveOwnerCursor() throws Exception {
         var ch = new ChannelRuntime.Channel<Long>(1);
         var c = cursor(1,ch);
