@@ -5411,8 +5411,8 @@ public final class Parser {
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
-        if (canonicalAttoSource && !explicitImperative) {
-            consume(THEN, "bare keyword if requires 'then'");
+        if (canonicalAttoSource && !explicitImperative && !check(DO)) {
+            consume(THEN, "bare keyword if requires 'do' for statements or 'then' for values");
             if (check(RETURN) || check(CARET)) {
                 Ast.Expr value = parseConditionalValueArm();
                 if (match(FI)) {
@@ -5429,13 +5429,13 @@ public final class Parser {
         }
 
         // Canonical keyword-delimited form:
-        //   if condition; then
-        //   elif condition; then
+        //   if condition do
+        //   elif condition do
         //   else
         //   fi
         //
         // Compatibility forms remain accepted while source migrates:
-        // - 'if ... do' / 'elseif ... do' are deprecated spellings.
+        // - 'if ... do' / 'elif ... do' are canonical imperative spellings.
         // - 'elseif' aliases canonical 'elif'.
         // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
@@ -5501,16 +5501,10 @@ public final class Parser {
     }
 
     private void consumeConditionalThen(String branch) {
-        if (match(THEN)) return;
-        if (match(DO)) {
-            Token deprecated = previous();
-            warnings.add(new SyntaxWarning(
-                    deprecated.line(),
-                    deprecated.column(),
-                    "conditional 'do' is deprecated; use 'then'"));
-            return;
-        }
-        throw error(peek(), "expected 'then' after " + branch + " condition");
+        // Suffix do is canonical for statements; then remains a migration
+        // delimiter on paths already classified as imperative.
+        if (match(DO, THEN)) return;
+        throw error(peek(), "expected 'do' after " + branch + " condition");
     }
 
     private boolean matchConditionalBranch() {
@@ -6576,10 +6570,29 @@ public final class Parser {
     private Ast.Expr parseConditional() {
         Ast.Expr condition = parseLogicalOr();
         if (!match(QUESTION)) return condition;
-        Ast.Expr whenTrue = parseAssignment();
+        Ast.Expr whenTrue = canonicalAttoSource && check(LBRACE)
+                ? parseSingleResultTernaryBlock() : parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
-        Ast.Expr whenFalse = parseConditional();
+        Ast.Expr whenFalse = canonicalAttoSource && check(LBRACE)
+                ? parseSingleResultTernaryBlock() : parseConditional();
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    // A single explicit result needs no lexical bindings or closure. General
+    // statement sequences remain unsupported until lexical block lowering.
+    private Ast.Expr parseSingleResultTernaryBlock() {
+        consume(LBRACE, "expected ternary arm block");
+        if (check(RBRACE)) {
+            throw error(peek(), "E_VALUE_ARM: empty ternary block requires a value");
+        }
+        if (!match(RETURN, CARET)) {
+            throw error(peek(), "E_VALUE_ARM: ternary block requires explicit return or ^; "
+                    + "multi-statement arms require lexical value-block lowering");
+        }
+        Ast.Expr result = parseExpression();
+        match(SEMICOLON);
+        consume(RBRACE, "E_VALUE_ARM: single-result ternary block requires closing '}'");
+        return result;
     }
 
     private Ast.Expr parseLogicalOr() {
@@ -7540,7 +7553,15 @@ public final class Parser {
             if (matchContextualKeyword("infer") || match(INFER)) {
                 throw error(previous(), "inferred structs use 'infer struct{...}'");
             }
-            if (check(LBRACE)) return parseExplicitStructLiteral();
+            if (check(LBRACE)) {
+                // Preserve the explicit two-brace shape/initializer spelling.
+                // In canonical source a single brace group constructs a closed
+                // inferred struct, never a Record and never a statement block.
+                if (canonicalAttoSource && !hasFollowingStructInitializer()) {
+                    return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+                }
+                return parseExplicitStructLiteral();
+            }
             throw error(peek(), "struct expression requires 'infer struct{...}' or 'struct{field: Type,...}{...}'");
         }
         if (match(ARR)) {
@@ -7671,6 +7692,22 @@ public final class Parser {
         }
         consume(RPAREN, "expected ')' after Record.of literal");
         return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
+    // Token-only classification, no speculative parsing or fallback on error.
+    // The first balanced brace group is a type shape only when a second group
+    // follows. Nested expressions and strings cannot counterfeit delimiters.
+    private boolean hasFollowingStructInitializer() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type kind = tokens.get(i).type();
+            if (kind == EOF) break;
+            if (kind == LBRACE) depth++;
+            else if (kind == RBRACE && --depth == 0) {
+                return i + 1 < tokens.size() && tokens.get(i + 1).type() == LBRACE;
+            }
+        }
+        throw error(peek(), "expected '}' after struct");
     }
 
     private Ast.ObjectExpr parseExplicitStructLiteral() {
