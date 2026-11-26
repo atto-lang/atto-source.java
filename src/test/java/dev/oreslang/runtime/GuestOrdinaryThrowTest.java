@@ -67,6 +67,32 @@ final class GuestOrdinaryThrowTest {
     }
 
     @Test
+    void unwrapSignalsPreserveNominalIdentityAndOriginalPayloadWithoutFormatting() {
+        Object payload = new Object() {
+            @Override public String toString() { throw new AssertionError("payload formatted"); }
+        };
+        GuestErrorValue option = GuestErrorValue.optionUnwrap();
+        GuestErrorValue result = GuestErrorValue.resultUnwrap(payload);
+        assertEquals("OptionUnwrapError", option.nominalType());
+        assertEquals("ResultUnwrapError", result.nominalType());
+        assertNull(option.payload());
+        assertSame(payload, result.payload());
+        assertSame(result, GuestOrdinaryThrow.signal(result).error());
+        assertEquals("ResultUnwrapError", result.toString());
+        assertNotSame(option, GuestErrorValue.optionUnwrap());
+        assertTrue(TrapFailurePolicy.isTrappable(GuestOrdinaryThrow.signal(option), GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isTrappable(GuestOrdinaryThrow.signal(result), GuestPanic.class));
+    }
+
+    @Test
+    void terminalSuppressionStillBypassesCheckedUnwrapTrap() {
+        GuestOrdinaryThrow signal = GuestOrdinaryThrow.signal(GuestErrorValue.resultUnwrap("data"));
+        signal.addSuppressed(new GuestPanic());
+        assertFalse(TrapFailurePolicy.isTrappable(signal, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(signal, GuestPanic.class));
+    }
+
+    @Test
     void invalidPayloadCannotCreateTypedGuestSignal() {
         assertThrows(NullPointerException.class, () -> GuestErrorValue.baseError(null));
         assertThrows(IllegalArgumentException.class,
