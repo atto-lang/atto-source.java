@@ -7904,8 +7904,13 @@ public final class Parser {
                 verifiedUpperBounds.put(localName, term.upperBounds());
                 body.add(new Ast.BindingStmt(Ast.BindingKind.VAL, VERIFIED_CARRIER, localName, term.expression(), false));
             }
-            consume(RETURN, "E_REFINEMENT_BODY: expected an explicit return after immutable bindings");
-            var term = parseVerifiedExpression(0);
+            QuantityTerm term;
+            if (strictVerifiedI64) term = strictVerifiedReturn(0);
+            else {
+                consume(RETURN, "E_REFINEMENT_BODY: expected an explicit return after immutable bindings");
+                term = parseVerifiedExpression(0);
+                consume(SEMICOLON, "expected ';' after return");
+            }
             returnType.require(term.type(), "E_REFINEMENT_RETURN", "return from " + name.lexeme());
             result.require(term.type(), "E_REFINEMENT_POSTCONDITION", "ensures of " + name.lexeme());
             for (int upper : upperParameters) {
@@ -7914,7 +7919,6 @@ public final class Parser {
                     throw error(name, "E_REFINEMENT_POSTCONDITION: cannot prove result <= " + parameter);
                 }
             }
-            consume(SEMICOLON, "expected ';' after return");
             consume(RBRACE, "expected '}' after verified return");
             body.add(new Ast.ReturnStmt(term.expression()));
 
@@ -7927,6 +7931,120 @@ public final class Parser {
         }
         if (!mainSeen) throw error(peek(), "E_REFINEMENT_EXPORT: verified source requires a public main");
         return declarations;
+    }
+
+    // Immutable binding identities only; assignments/loops remain unsupported.
+    // Lazy conditionals preserve execution order and every branch is checked.
+    private record StrictPredicate(Ast.Expr expression, Map<String, RefinedQuantity> yes,
+                                   Map<String, RefinedQuantity> no) {}
+    private void strictFacts(Map<String, RefinedQuantity> facts) {
+        verifiedLocals.clear();
+        verifiedLocals.putAll(facts);
+    }
+    private Map<String, RefinedQuantity> strictJoin(Map<String, RefinedQuantity> a,
+                                                     Map<String, RefinedQuantity> b) {
+        var out = new HashMap<String, RefinedQuantity>();
+        a.forEach((name, type) -> out.put(name,
+            new RefinedQuantity(type.unit(), type.range().union(b.get(name).range()), type.i32())));
+        return out;
+    }
+    private Interval strictRestrict(Interval range, String op, long value) {
+        try {
+            return op.equals("neq") ? range.excluding(value) : range.constrain(op, value);
+        } catch (IllegalArgumentException impossible) {
+            // No vacuous proof for unreachable paths.
+            return range;
+        }
+    }
+    private StrictPredicate strictPredicate(Map<String, RefinedQuantity> incoming, int depth) {
+        if (depth > 16) throw error(peek(), "E_UNIT_LIMIT: strict condition depth");
+        strictFacts(incoming);
+        if (match(BANG)) {
+            var p = strictPredicate(incoming, depth + 1);
+            return new StrictPredicate(new Ast.ConditionalExpr(p.expression(),
+                new Ast.LiteralExpr(false), new Ast.LiteralExpr(true)), p.no(), p.yes());
+        }
+        if (match(LPAREN)) {
+            var p = strictOr(incoming, depth + 1);
+            consume(RPAREN, "expected ')' in strict guard");
+            return p;
+        }
+        var left = parseVerifiedExpression(0);
+        String op;
+        if (match(EQ, EQUAL_EQUAL)) op = "eq";
+        else if (match(NEQ, BANG_EQUAL)) op = "neq";
+        else if (match(LT, LTE, GT, GTE)) op = previous().lexeme();
+        else throw error(peek(), "E_VERIFY_UNSUPPORTED: expected strict comparison");
+        var right = parseVerifiedExpression(0);
+        left.unit().requireCompatible(right.unit());
+        var yes = new HashMap<>(incoming);
+        var no = new HashMap<>(incoming);
+        if (left.expression() instanceof Ast.NameExpr n
+                && incoming.containsKey(n.name())
+                && right.type().range().minimum() == right.type().range().maximum()) {
+            var t = incoming.get(n.name());
+            long bound = right.type().range().minimum();
+            String inverse = switch(op) {
+                case "eq" -> "neq"; case "neq" -> "eq";
+                case "<" -> ">="; case "<=" -> ">";
+                case ">" -> "<="; case ">=" -> "<";
+                default -> throw new AssertionError();
+            };
+            yes.put(n.name(), new RefinedQuantity(t.unit(), strictRestrict(t.range(), op, bound), t.i32()));
+            no.put(n.name(), new RefinedQuantity(t.unit(), strictRestrict(t.range(), inverse, bound), t.i32()));
+        }
+        return new StrictPredicate(new Ast.BinaryExpr(op, left.expression(), right.expression()), yes, no);
+    }
+    private StrictPredicate strictAnd(Map<String, RefinedQuantity> incoming, int depth) {
+        var p = strictPredicate(incoming, depth);
+        int count = 0;
+        while (matchAdjacentPair(AMP)) {
+            if (++count > 16) throw error(peek(), "E_UNIT_LIMIT: strict conjunction budget");
+            var q = strictPredicate(p.yes(), depth);
+            p = new StrictPredicate(new Ast.ConditionalExpr(p.expression(), q.expression(),
+                new Ast.LiteralExpr(false)), q.yes(), strictJoin(p.no(), q.no()));
+        }
+        return p;
+    }
+    private StrictPredicate strictOr(Map<String, RefinedQuantity> incoming, int depth) {
+        var p = strictAnd(incoming, depth);
+        int count = 0;
+        while (matchAdjacentPair(PIPE)) {
+            if (++count > 16) throw error(peek(), "E_UNIT_LIMIT: strict disjunction budget");
+            var q = strictAnd(p.no(), depth);
+            p = new StrictPredicate(new Ast.ConditionalExpr(p.expression(), new Ast.LiteralExpr(true),
+                q.expression()), strictJoin(p.yes(), q.yes()), q.no());
+        }
+        return p;
+    }
+    private QuantityTerm strictVerifiedReturn(int depth) {
+        if (depth > 16) throw error(peek(), "E_UNIT_LIMIT: strict return depth");
+        if (match(IF)) {
+            var incoming = new HashMap<>(verifiedLocals);
+            var p = strictOr(incoming, 0);
+            consume(LBRACE, "expected '{' in strict guard");
+            strictFacts(p.yes());
+            var yes = strictVerifiedReturn(depth + 1);
+            consume(RBRACE, "expected '}' in strict guard");
+            strictFacts(p.no());
+            boolean alternate = match(ELSE);
+            if (alternate) consume(LBRACE, "expected '{' in strict else");
+            var no = strictVerifiedReturn(depth + 1);
+            if (alternate) consume(RBRACE, "expected '}' in strict else");
+            strictFacts(incoming);
+            yes.unit().requireCompatible(no.unit());
+            if (yes.type().i32() != no.type().i32())
+                throw error(peek(), "E_VERIFY_UNSUPPORTED: mixed branch carriers");
+            var bounds = new HashSet<>(yes.upperBounds());
+            bounds.retainAll(no.upperBounds());
+            return new QuantityTerm(new Ast.ConditionalExpr(p.expression(), yes.expression(), no.expression()),
+                new RefinedQuantity(yes.unit(), yes.type().range().union(no.type().range()), yes.type().i32()),
+                Math.max(yes.depth(), no.depth()) + 1, Set.copyOf(bounds));
+        }
+        consume(RETURN, "E_VERIFY_UNSUPPORTED: strict returning branch requires return");
+        var result = parseVerifiedExpression(0);
+        consume(SEMICOLON, "expected ';' after strict return");
+        return result;
     }
 
     private QuantityTerm verifiedReference(int depth) {
@@ -8054,8 +8172,8 @@ public final class Parser {
                     case Ast.VerifiedI64.SUBTRACT -> leftRange.minus(rightRange);
                     case Ast.VerifiedI64.MULTIPLY -> leftRange.times(rightRange);
                     case Ast.VerifiedI64.DIVIDE -> {
-                        if ((rightRange.minimum() <= 0 && rightRange.maximum() >= 0)
-                            || (leftRange.minimum() == Long.MIN_VALUE && rightRange.minimum() <= -1 && rightRange.maximum() >= -1))
+                        if (rightRange.containsValue(0)
+                            || (leftRange.containsValue(Long.MIN_VALUE) && rightRange.containsValue(-1)))
                             throw new IllegalArgumentException("unproved division");
                     }
                     default -> throw new IllegalArgumentException("unproved operator");
