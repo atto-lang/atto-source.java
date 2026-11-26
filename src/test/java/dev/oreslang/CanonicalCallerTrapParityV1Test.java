@@ -3,7 +3,6 @@ package dev.oreslang;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
-import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
@@ -104,12 +103,12 @@ final class CanonicalCallerTrapParityV1Test {
     }
 
     @Test
-    void panicIsNeverReclassifiedAsCaughtOrdinaryError() throws Exception {
-        String name = "06-panic-bypass.atto";
-        String code = source(name);
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(code));
-        PolyglotException panic = assertThrows(PolyglotException.class, () -> execute(name));
-        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    void historicalUnwrapPanicFixtureNowCompletesAfterCheckedCapture() throws Exception {
+        // Preserve the immutable v1 source bytes; the November 25 spec
+        // amendment supersedes its historical panic expectation.
+        Guest actual = execute("06-panic-bypass.atto");
+        assertEquals(0L, actual.value());
+        assertEquals("", actual.stdout());
     }
 
     @Test
