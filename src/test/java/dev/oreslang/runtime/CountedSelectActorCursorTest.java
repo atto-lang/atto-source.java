@@ -32,6 +32,7 @@ final class CountedSelectActorCursorTest {
                         done.countDown();
                     });
                 });
+                assertFalse(c.retireRound(), "actor receipt belongs to retirement turn");
                 armed.countDown();
             });
             actor.send("start");

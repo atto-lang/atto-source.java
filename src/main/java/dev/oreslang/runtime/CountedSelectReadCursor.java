@@ -91,7 +91,13 @@ final class CountedSelectReadCursor {
             throw new IllegalStateException("not an actor-owned cursor");
         Objects.requireNonNull(retirement);
         var round = beginRoundInternal();
-        actorRuntime.enqueueCountedRoundRetirement(round, actorTarget, retirement);
+        AtomicBoolean receipt = drained;
+        actorRuntime.enqueueCountedRoundRetirement(round, actorTarget, () -> {
+            // Only this authenticated retirement turn may observe the actor
+            // receipt. Never depend on notification listener ordering.
+            receipt.set(true);
+            retirement.run();
+        });
     }
 
     private OresFuture<ChannelRuntime.SelectResult> beginRoundInternal() {
@@ -102,8 +108,10 @@ final class CountedSelectReadCursor {
             var set = ChannelRuntime.SelectSet.countedReads(live, cursor);
             drained = new AtomicBoolean();
             active = set.selectAsync(policy);
-            AtomicBoolean receipt = drained;
-            active.whenNotificationsDrainedRuntime(() -> receipt.set(true));
+            if (actorRuntime == null) {
+                AtomicBoolean receipt = drained;
+                active.whenNotificationsDrainedRuntime(() -> receipt.set(true));
+            }
             state = State.WAITING;
             return active;
         } catch (RuntimeException exception) {

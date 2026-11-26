@@ -3253,8 +3253,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     // Register the active round as an actor-owned Future and queue a
     // continuation only after its physical notification-drain receipt.
-    // The cursor's receipt is registered first, so retirement cannot race
-    // an earlier terminal-value notification on another actor carrier.
+    // The callback itself carries the receipt. Receipt listeners may run
+    // out of order when added after notificationDrainComplete is published;
+    // do not depend on one listener setting a flag before another enqueues.
     void enqueueCountedRoundRetirement(OresFuture<?> round,
             ContinuationTarget target, Runnable continuation) {
         Objects.requireNonNull(round);
