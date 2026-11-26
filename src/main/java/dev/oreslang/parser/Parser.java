@@ -3452,7 +3452,7 @@ public final class Parser {
         } while (!check(closer));
         consume(closer, "expected closing callable parameter pattern");
         if (tuple && entries == 1 && !comma) throw error(previous(), "singleton tuple pattern requires trailing comma");
-        Ast.TypeRef explicit = match(COLON) ? parseTypeRef() : null;
+        Ast.TypeRef explicit = match(COLON) ? (contextual ? parsePipeParameterType() : parseTypeRef()) : null;
         if (nominal != null && explicit != null) throw error(previous(), "duplicate callable root type");
         Ast.TypeRef type = nominal != null ? nominal : explicit;
         if (tuple) {
