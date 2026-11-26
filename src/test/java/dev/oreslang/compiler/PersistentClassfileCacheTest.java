@@ -162,7 +162,33 @@ public final class PersistentClassfileCacheTest {
         assertThrows(IllegalArgumentException.class,()->build(root,B,false,true,pin));
         System.out.println("PERSISTENT_JAVA_CLASSFILE|cold=42|warm-child=42|edit=43|rollback|corruption-denied");
     }
+    private static PersistentPrimitiveClassfileSession api(Path root)throws Exception{
+        return new PersistentPrimitiveClassfileSession(root,"tenant/api",digest("fixture compiler"),digest(System.getProperty("java.runtime.version")));
+    }
+    private static PersistentPrimitiveClassfileSession.Build apiBuild(PersistentPrimitiveClassfileSession session,String source,boolean cold)throws Exception{
+        byte[] record=CompilerCacheLedger.record("tenant/api",2,MASTER);
+        return session.compile(source,"tick",1,new RealtimePrimitiveCompiler.Budget(200,3),record,hash(record),MASTER,cold);
+    }
+    @Test void restrictedClassfileApi(@TempDir Path root)throws Exception{
+        var session=api(root);var cold=apiBuild(session,A,true);assertFalse(cold.reused());execute(root,cold.bytes(),42);
+        assertArrayEquals(compile(root,A),cold.bytes());
+        var cp=System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"));
+        var child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),"-cp",cp,
+                PersistentClassfileCacheTest.class.getName(),root.toString(),"api").inheritIO().start();
+        assertTrue(child.waitFor(90,java.util.concurrent.TimeUnit.SECONDS));assertEquals(0,child.exitValue());
+        var edited=apiBuild(session,B,false);assertFalse(edited.reused());execute(root,edited.bytes(),43);
+        assertThrows(IllegalArgumentException.class,()->apiBuild(session,BAD,true));assertTrue(apiBuild(session,B,false).reused());
+        byte[] record=CompilerCacheLedger.record("tenant/api",2,MASTER);
+        assertThrows(IllegalArgumentException.class,()->session.compile(B,"tick",1,new RealtimePrimitiveCompiler.Budget(200,3),record,new byte[32],MASTER,true));
+        var different=new PersistentPrimitiveClassfileSession(root,"tenant/api",digest("fixture compiler"),digest("changed JDK"));
+        assertFalse(apiBuild(different,B,false).reused());
+        System.out.println("JAVA_RESTRICTED_API|guest=42/43|restart|rollback|toolchain-fence");
+    }
     public static void main(String[] args)throws Exception{
+        if(args.length==2&&args[1].equals("api")){
+            Path root=Path.of(args[0]);var warm=apiBuild(api(root),A,false);assertTrue(warm.reused());execute(root,warm.bytes(),42);
+            System.out.println("JAVA_RESTRICTED_CHILD|hit|guest=42");return;
+        }
         Path root=Path.of(args[0]);execute(root,build(root,A,false,true,currentPin()),42);
         System.out.println("PERSISTENT_JAVA_CHILD|cache-hit-no-compile|guest=42");
     }
