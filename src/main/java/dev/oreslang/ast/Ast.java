@@ -2219,7 +2219,7 @@ public final class Ast {
     public enum TaskCaptureTransfer { COPY, MOVE }
     public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
                            boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
-                           String zeroCountSourceName) implements Expr {
+                           String zeroCountSourceName, String dynamicCountName) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
@@ -2229,6 +2229,15 @@ public final class Ast {
                 throw new IllegalArgumentException("inconsistent typed select result");
             if (zeroCountSourceName != null && (!typedCountedSelectI64 || zeroCountSourceName.isBlank()))
                 throw new IllegalArgumentException("invalid zero-count select type witness");
+            if (dynamicCountName != null && (!typedCountedSelectI64
+                    || zeroCountSourceName != null || dynamicCountName.isBlank()))
+                throw new IllegalArgumentException("invalid dynamic counted select witness");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, null);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
                         boolean typedDefaultSelectI64, boolean typedCountedSelectI64) {

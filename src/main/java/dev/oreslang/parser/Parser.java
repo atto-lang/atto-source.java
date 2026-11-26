@@ -7138,11 +7138,17 @@ public final class Parser {
     // Dynamic counts, zero, multiple sources, Future and arbitrary arm
     // bodies still fail closed until general aggregate lowering exists.
     private Ast.Expr parseRestrictedCountedSelect() {
-        String unsupported = "counted select requires tracked Future result lowering outside restricted single-read literal slice";
-        if (!match(INT)) throw error(peek(), unsupported);
-        long count = parseSignedI64(previous());
-        if (count < 0 || count > 16 || !match(RPAREN))
-            throw error(peek(), unsupported);
+        String unsupported = "counted select requires tracked Future result lowering outside restricted single-read slice";
+        long count = -1;
+        String dynamicCount = null;
+        if (match(INT)) {
+            count = parseSignedI64(previous());
+            if (count < 0 || count > 16) throw error(previous(), unsupported);
+        } else if (match(IDENT)) {
+            dynamicCount = previous().lexeme();
+            if (dynamicCount.startsWith("$")) throw error(previous(), unsupported);
+        } else throw error(peek(), unsupported);
+        if (!match(RPAREN)) throw error(peek(), unsupported);
         Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.BLOCKING, true);
         if (selected.policy() == Ast.SelectPolicy.RANDOM || selected.arms().size() != 1)
             throw error(previous(), unsupported);
@@ -7156,6 +7162,30 @@ public final class Parser {
                 || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
                 || !isCountedScalarProjection(returned.value(), arm.bindingName()))
             throw error(previous(), unsupported);
+        if (dynamicCount != null) {
+            // Runtime snapshots the lexical count once before source admission.
+            // Fixed-size checked body; no count-dependent AST unrolling.
+            String output = "$counted_select_output";
+            var array = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
+            var result = new Ast.BindingStmt(Ast.BindingKind.VAL, array, output,
+                    new Ast.NewExpr(array, List.of()));
+            var reserve = new Ast.ExprStmt(new Ast.CallExpr(
+                    new Ast.MemberExpr(new Ast.NameExpr(output), "reserve"),
+                    List.of(new Ast.NameExpr(dynamicCount))));
+            var stop = new Ast.IfStmt(List.of(new Ast.IfBranch(
+                    new Ast.BinaryExpr(">=", new Ast.MemberExpr(new Ast.NameExpr(output), "size"),
+                            new Ast.NameExpr(dynamicCount)), List.of(new Ast.BreakStmt()))), List.of());
+            var add = new Ast.ExprStmt(new Ast.CallExpr(
+                    new Ast.MemberExpr(new Ast.NameExpr(output), "add"),
+                    List.of(copyCountedScalarProjection(returned.value()))));
+            var round = new Ast.SelectStmt(Ast.WaitMode.BLOCKING, selected.policy(),
+                    List.of(new Ast.SelectArm(Ast.ChannelOperation.READ, new Ast.NameExpr(source.name()),
+                            null, arm.bindingKind(), arm.bindingName(), List.of(add), false, arm.bindingType())), true);
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
+                    List.of(result, reserve, new Ast.LoopStmt(List.of(stop, round)),
+                            new Ast.ReturnStmt(new Ast.NameExpr(output))),
+                    false, false, true, null, dynamicCount);
+        }
         if (count == 0) {
             // Retain only a static lexical type witness, never capture or
             // evaluate the source and never materialize an executable arm.

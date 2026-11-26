@@ -1052,7 +1052,7 @@ public final class TreeShaker {
                                 task.body(),
                                 module,
                                 new LinkedHashMap<>(locals)),
-                        task.legacyNb(), task.typedDefaultSelectI64(), task.typedCountedSelectI64(), task.zeroCountSourceName());
+                        task.legacyNb(), task.typedDefaultSelectI64(), task.typedCountedSelectI64(), task.zeroCountSourceName(), task.dynamicCountName());
             }
             if (expression instanceof Ast.ChannelOpExpr operation) {
                 return new Ast.ChannelOpExpr(

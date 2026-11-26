@@ -2290,6 +2290,24 @@ public final class OresEvalRootNode extends RootNode {
                         "checked Task capture admission execution domain does not match TaskExpr");
             }
 
+            Long dynamicCount = null;
+            if (taskExpr.dynamicCountName() != null) {
+                String name = taskExpr.dynamicCountName();
+                if (!taskExpr.typedCountedSelectI64()
+                        || admitted.get(name) != Ast.TaskCaptureTransfer.COPY)
+                    throw new IllegalStateException("invalid checked dynamic count admission");
+                Object countValue = env.lookup(name);
+                if (!(countValue instanceof Long number) || number < 0 || number > 16)
+                    throw new IllegalArgumentException("SelectCountInvalid");
+                dynamicCount = number;
+                if (number == 0L)
+                    return SourceTaskHandles.completedWithoutWork(new NativeAttoSequence("Array"));
+                // Count is a compiler-checked COPY. Snapshot it exactly once
+                // here, before even inspecting source capture slots.
+                var otherCaptures = new LinkedHashMap<>(admitted);
+                otherCaptures.remove(name);
+                admitted = otherCaptures;
+            }
             if (taskExpr.zeroCountSourceName() != null) {
                 // Checked identity and empty capture admission are required
                 // before bypassing scheduler allocation. Never execute a
@@ -2322,6 +2340,8 @@ public final class OresEvalRootNode extends RootNode {
                             launchAuthority.parentScopeEpoch());
             task.initialBlockEnv = transfer.environment();
             try {
+                if (dynamicCount != null)
+                    task.initialBlockEnv.define(taskExpr.dynamicCountName(), dynamicCount, Ast.BindingKind.CONST);
                 TaskScope structuredScope = env.structuredTaskScope();
                 // An actor Task must use the actor's mailbox-backed scheduler;
                 // selecting the VM root scheduler here would place ordinary

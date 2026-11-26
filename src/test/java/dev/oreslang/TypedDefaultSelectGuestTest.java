@@ -225,6 +225,49 @@ final class TypedDefaultSelectGuestTest {
         }
     }
 
+    @Test void dynamicCountSnapshotAndZeroGuestExecute() throws Exception {
+        assertEquals("6|10|26|99|0|42",run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(4);
+                  writech incoming, 3; writech incoming, 5;
+                  writech incoming, 13; writech incoming, 99;
+                  let int count = 3;
+                  val Future<Array<int>> pending = select<int>(count) {
+                    when readch incoming: int n -> { return n * 2; }
+                  };
+                  count = 1;
+                  val Array[int] result = await pending;
+                  stdio.stdout.write(result[0]); stdio.stdout.write("|");
+                  stdio.stdout.write(result[1]); stdio.stdout.write("|");
+                  stdio.stdout.write(result[2]); stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming); stdio.stdout.write("|");
+                  writech incoming, 42; count = 0;
+                  val Array[int] empty = await select(count) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  stdio.stdout.write(empty.size); stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming);
+                  return;
+                }
+                """));
+    }
+
+    @Test void dynamicCountInvalidBeforeTaskAdmission() {
+        for (String value : new String[]{"-1", "17", "9223372036854775807"}) {
+            var ex = assertThrows(org.graalvm.polyglot.PolyglotException.class, () -> run(
+                "pub async fnc main(): void { val int count = "+value+"; val Channel<int> incoming = Channel.new<int>(1); val Future<Array<int>> result = select<int>(count) { when readch incoming: int n -> { return n; } }; return; }"));
+            assertTrue(ex.getMessage().contains("SelectCountInvalid"), ex.getMessage());
+        }
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  val bool count = true;
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  val Future<Array<int>> bad = select<int>(count) { when readch incoming: int n -> { return n; } };
+                  return;
+                }
+                """));
+    }
+
     @Test void countedProjectionBudgetAndWrongPayloadRejected() {
         String projection = "n" + " + 1".repeat(64);
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(

@@ -7727,6 +7727,19 @@ public final class TypeChecker {
                         || !empty.arguments().isEmpty()
                         || findClass("Array") != null || importedValues.contains("Array"))
                     throw new IllegalArgumentException("invalid zero-count select lowering");
+            } else if (task.dynamicCountName() != null) {
+                Env.Binding countBinding = env.lookup(task.dynamicCountName());
+                if (countBinding == null || countBinding.type() != Primitive.INT)
+                    throw new IllegalArgumentException("counted select requires lexical int count");
+                if (task.body().size() != 4
+                        || !(task.body().get(2) instanceof Ast.LoopStmt loop)
+                        || loop.body().size() != 2
+                        || !(loop.body().get(1) instanceof Ast.SelectStmt selected)
+                        || selected.arms().size() != 1
+                        || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source)
+                        || findClass("Array") != null || importedValues.contains("Array"))
+                    throw new IllegalArgumentException("invalid dynamic counted select lowering");
+                sourceName = source.name();
             } else {
                 if (task.body().size() < 3
                         || !(task.body().get(1) instanceof Ast.SelectStmt selected)
