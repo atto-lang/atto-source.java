@@ -159,6 +159,51 @@ final class NamedAggregateTypeBinderTest {
         assertTrue(second.parameters().getFirst().type().isTupleType());
     }
 
+    @Test void computedAggregateConstructionUsesActualArgumentValues() throws Exception {
+        String source = MODULE_SHAPES + """
+                fnc process(int value): int {
+                    const Record<T1> arg=(a=false,b="abc",c=value);
+                    const Tuple<T2> result=(arg.a,arg.b,arg.c);
+                    return result[2];
+                }
+                pub fnc main(): void {
+                    stdio.println(process(42));
+                    stdio.println(process(7));
+                    return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(source));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID,source,"computed-aggregate.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("42\n7",out.toString(StandardCharsets.UTF_8).trim().replace("\r\n","\n"));
+    }
+
+    @Test void contextualAggregateTypesStillRejectInvalidFieldsAndSlots() {
+        for (String body : new String[]{
+                "const Record<T1> r=(a=false,b=\"abc\",c=true);",
+                "const Record<T1> r=(a=false,b=\"abc\",c=42,d=0);",
+                "const Record<T1> r=(a=false,c=42);",
+                "const Tuple<T2> t=(true,42);",
+                "const Tuple<T2> t=(42,\"abc\",true);"
+        }) assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                MODULE_SHAPES + "fnc main():int { " + body + " return 0; }")), body);
+    }
+
+    @Test void moduleAggregateDescriptorBudgetsAndWrongKind() {
+        String slots = String.join(",", java.util.Collections.nCopies(65, "1"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "const Tuple<infer T> t=(" + slots + ");"));
+        StringBuilder source = new StringBuilder();
+        for (int i=0; i<65; i++)
+            source.append("const Record<infer T").append(i).append("> r").append(i).append("=(a=1);\n");
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(source.toString()));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "const Record<infer R> r=(a=1); const Record<R> s=infer struct{a:1};"));
+    }
+
     @Test void wrapperParserActuallyDispatchesInsideCallableBody() {
         Ast.Program ast = Parser.parse("fnc main(): int { const Record<infer R> r=(a=1); "
                 + "const Record<R> other=(a=42); return other.a; }");
