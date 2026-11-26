@@ -3327,6 +3327,26 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.BindingStmt binding) {
+            if (binding.initializer() instanceof Ast.MemberExpr member
+                    && dev.oreslang.parser.Parser.isCallablePatternRoot(member.receiver())) {
+                // Prove a real statically visible data field before normal
+                // member checking. Contracts, dynamic objects, actors and
+                // non-Copy leaves require a separate typed projection plan.
+                Type source = deref(typeOf(member.receiver(), env, generics, self));
+                if (source instanceof Named named) {
+                    Ast.ClassDecl klass = findClass(named.name());
+                    if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException("callable field pattern requires an ordinary class/struct");
+                    }
+                } else if (!(source instanceof Record row) || row.kind() == AggregateKind.CONTRACT) {
+                    throw new IllegalArgumentException("callable field pattern requires a statically resolved data shape");
+                }
+                Type field = objectDestructureMemberType(source, member.member());
+                if (!callablePatternCopyScalar(field) || (binding.kind() != Ast.BindingKind.VAL && binding.kind() != Ast.BindingKind.LET)
+                        || binding.mutableReferent() || binding.declaredType() != null) {
+                    throw new IllegalArgumentException("callable field pattern currently requires an immutable Copy scalar field");
+                }
+            }
             String inferredName = binding.inferredTypeName() != null
                     ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);
             boolean namedInference = inferredName != null;
@@ -3507,7 +3527,18 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
-            Type source = deref(typeOf(destructure.initializer(), env, generics, self));
+            Type originalSource = typeOf(destructure.initializer(), env, generics, self);
+            if (dev.oreslang.parser.Parser.isCallablePatternRoot(destructure.initializer())) {
+                if (!(originalSource instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE
+                        || tuple.elements().size() != destructure.bindings().size()
+                        || tuple.elements().stream().anyMatch(t -> !callablePatternCopyScalar(t))
+                        || destructure.kind() != Ast.DestructureKind.SEQUENCE
+                        || destructure.bindings().stream().anyMatch(b -> b.rest()
+                                || b.mutableReferent() || (!b.isDiscard() && b.kind() != Ast.BindingKind.VAL && b.kind() != Ast.BindingKind.LET))) {
+                    throw new IllegalArgumentException("callable tuple pattern requires an exact-arity tuple of Copy scalars");
+                }
+            }
+            Type source = deref(originalSource);
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
                 for (int i = 0; i < destructure.bindings().size(); i++) {
@@ -8141,6 +8172,11 @@ public final class TypeChecker {
         env.define(binding.name(), type, binding.kind());
     }
 
+    private static boolean callablePatternCopyScalar(Type type) {
+        return type == Primitive.INT || type == Primitive.BOOL
+                || type == Primitive.FLOAT || type == Primitive.STRING;
+    }
+
     private List<Type> sequenceDestructureTypes(Type source, List<Ast.DestructureBinding> bindings) {
         source = sequenceDestructureSourceType(deref(source));
         int restIndex = restBindingIndex(bindings);
@@ -8394,6 +8430,17 @@ public final class TypeChecker {
                             "non-void pipeline block lambda must explicitly return on every path");
                 }
                 result = declaredResult;
+            } else if (dev.oreslang.parser.Parser.hasCallablePatternReturn(lambda.blockBody())) {
+                // The parser minted a one-root pattern prelude. Check all
+                // projections before inferring the terminal expression in
+                // that same scope. No untyped block inference is introduced.
+                if (arity != 1) throw new IllegalArgumentException("callable pattern lambda requires one root");
+                Env patternEnv = new Env(bodyEnv);
+                List<Ast.Stmt> prelude = lambda.blockBody().subList(0, lambda.blockBody().size() - 1);
+                checkStatementsInExistingScope(prelude, patternEnv, generics, Primitive.VOID, self);
+                Ast.ReturnStmt returned = (Ast.ReturnStmt) lambda.blockBody().getLast();
+                result = typeOf(returned.value(), patternEnv, generics, self);
+                checkCallableBlock(lambda.blockBody(), bodyEnv, generics, result, self);
             } else if (lambda.blockBody().size() == 1
                     && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
                     && returned.value() != null) {

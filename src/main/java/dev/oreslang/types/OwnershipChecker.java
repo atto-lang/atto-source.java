@@ -634,6 +634,16 @@ public final class OwnershipChecker {
                 return;
             }
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            if (dev.oreslang.parser.Parser.isCallablePatternRoot(destructure.initializer())) {
+                List<Ast.TypeRef> slots = staticPipelineTupleSlots(source.type);
+                if (slots == null || slots.size() != destructure.bindings().size()
+                        || slots.stream().anyMatch(t -> !isPrimitiveCopyType(t))
+                        || destructure.kind() != Ast.DestructureKind.SEQUENCE
+                        || destructure.bindings().stream().anyMatch(b -> b.rest() || b.mutableReferent()
+                                || (!b.isDiscard() && b.kind() != Ast.BindingKind.VAL && b.kind() != Ast.BindingKind.LET))) {
+                    throw error(E_UNSUPPORTED, "callable tuple pattern requires an exact tuple of proven Copy scalars");
+                }
+            }
             // Generic destructuring creates independent bindings without a
             // provenance-carrying scoped loan. The immediate tuple fast path
             // above individually checks lexical borrow bindings, but a
@@ -1216,6 +1226,13 @@ public final class OwnershipChecker {
             return;
         }
 
+        if (binding.initializer() instanceof Ast.MemberExpr member
+                && dev.oreslang.parser.Parser.isCallablePatternRoot(member.receiver())
+                && (value.kind != ValueKind.COPY || !isPrimitiveCopyType(value.type)
+                    || isBorrowValue(value) || binding.mutableReferent()
+                    || (binding.kind() != Ast.BindingKind.VAL && binding.kind() != Ast.BindingKind.LET) || binding.declaredType() != null)) {
+            throw error(E_UNSUPPORTED, "callable field pattern requires a proven immutable Copy scalar projection");
+        }
         boolean readonlyRecord = value.type.isReadonlyRecordType();
         if (readonlyRecord && binding.mutableReferent()) {
             throw error(E_MUTABILITY, "readonly structural records cannot gain mutable bindings or aliases");
@@ -4486,7 +4503,10 @@ public final class OwnershipChecker {
                 }
                 if (immediatePipelineStage) {
                     Ast.TypeRef resultType = lambda.declaredReturnType();
-                    if (resultType == null && lambda.blockBody().size() == 1
+                    if (resultType == null && dev.oreslang.parser.Parser.hasCallablePatternReturn(lambda.blockBody())) {
+                        Ast.ReturnStmt returned = (Ast.ReturnStmt) lambda.blockBody().getLast();
+                        resultType = syntacticType(returned.value(), closure);
+                    } else if (resultType == null && lambda.blockBody().size() == 1
                             && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
                             && returned.value() != null) {
                         resultType = syntacticType(returned.value(), closure);

@@ -1576,14 +1576,34 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "readonly structural parameters require a verified synchronous, immutable call");
                     }
-                    if (!(value instanceof OresObject source)) {
-                        throw new IllegalArgumentException(
-                                "readonly class shape cannot be forged or reborrowed from an unknown value");
+                    if (param.name().startsWith(Parser.CALLABLE_PATTERN_ROOT)
+                            && value instanceof ReadonlyRecordValue record
+                            && param.type().isReadonlyRecordType()
+                            && !param.structural()) {
+                        // A native immutable row is not a class loan. Admit
+                        // only genuine runtime-owned records and checked scalar
+                        // payloads in this bounded callable pattern profile.
+                        // Do not admit host maps, class proxies, mutable structs
+                        // or forged shape loans via this branch.
+                        for (Map.Entry<String, Ast.TypeRef> field : readonlyTarget.recordMembers().entrySet()) {
+                            if (!record.containsKey(field.getKey())
+                                    || !field.getValue().arguments().isEmpty()
+                                    || !certifiedWithScalarValue(field.getValue(), record.get(field.getKey()))) {
+                                throw new IllegalArgumentException(
+                                        "callable record pattern requires a verified readonly scalar field: "
+                                                + field.getKey());
+                            }
+                        }
+                    } else {
+                        if (!(value instanceof OresObject source)) {
+                            throw new IllegalArgumentException(
+                                    "readonly class shape cannot be forged or reborrowed from an unknown value");
+                        }
+                        ReadonlyShapeLoan loan =
+                                source.owner.checkedReadonlyShapeLoan(source, readonlyTarget, env);
+                        env.registerReadonlyShapeLoan(loan);
+                        value = loan;
                     }
-                    ReadonlyShapeLoan loan =
-                            source.owner.checkedReadonlyShapeLoan(source, readonlyTarget, env);
-                    env.registerReadonlyShapeLoan(loan);
-                    value = loan;
                 }
                 tuple.add(value);
                 env.define(

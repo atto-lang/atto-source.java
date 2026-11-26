@@ -15,6 +15,28 @@ public final class Parser {
     public static final String IMPORTS_NAMESPACE = "$imports$";
     /** Marker for `use default namespace(n);`, resolved against the source path. */
     public static final String DERIVED_NAMESPACE_PREFIX = "$default$";
+    // Unspellable root slots; leaf names never change callable ABI or arity.
+    public static final String CALLABLE_PATTERN_ROOT = "$param_pattern$";
+    private static final String CALLABLE_PATTERN_DISCARD = "$param_discard$";
+
+    public static boolean isCallablePatternRoot(Ast.Expr expression) {
+        return expression instanceof Ast.NameExpr name
+                && name.name().startsWith(CALLABLE_PATTERN_ROOT);
+    }
+
+    public static boolean isCallablePatternPrelude(Ast.Stmt statement) {
+        return statement instanceof Ast.DestructureStmt tuple
+                && isCallablePatternRoot(tuple.initializer())
+                || statement instanceof Ast.BindingStmt field
+                && field.initializer() instanceof Ast.MemberExpr member
+                && isCallablePatternRoot(member.receiver());
+    }
+
+    public static boolean hasCallablePatternReturn(List<Ast.Stmt> body) {
+        return body != null && body.size() > 1
+                && body.getLast() instanceof Ast.ReturnStmt ret && ret.value() != null
+                && body.subList(0, body.size() - 1).stream().allMatch(Parser::isCallablePatternPrelude);
+    }
 
     public enum AttoCallableVersion { V1, V2 }
 
@@ -94,6 +116,10 @@ public final class Parser {
         // Literal strings, template text and #unsafe symbols are data, not
         // executable identifier tokens.
         for (Token token : this.tokens) {
+            if (token.type() == IDENT && (token.lexeme().startsWith(CALLABLE_PATTERN_ROOT)
+                    || token.lexeme().startsWith(CALLABLE_PATTERN_DISCARD))) {
+                throw error(token, "compiler-owned callable pattern root is not a source identifier");
+            }
             if (token.type() == UNSAFE ||
                     (token.type() == IDENT && "unsafe".equals(token.lexeme()))) {
                 throw error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
@@ -1176,7 +1202,13 @@ public final class Parser {
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
-        List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
+        List<Ast.Stmt> patternPrelude = new ArrayList<>();
+        List<Ast.Param> params = applyStructuralAnnotations(
+                parseParametersUntil(RPAREN, structuralNames, patternPrelude), annotations);
+        if (!patternPrelude.isEmpty() && (modifiers.async || modifiers.suspends
+                || modifiers.generator || modifiers.trapped || actorKind != Ast.ActorKind.NONE)) {
+            throw error(previous(), "callable parameter patterns currently require an ordinary synchronous function");
+        }
         consume(RPAREN, "expected ')' after parameters");
         boolean arrowReturn = check(ARROW);
         Ast.TypeRef returnType = prefixReturnType == null
@@ -1187,7 +1219,7 @@ public final class Parser {
                 ? parseReturnFirstCallableBody(!effects.isEmpty())
                 : parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body, specs, effects);
+                returnType, annotations, prependCallablePatterns(patternPrelude, body), specs, effects);
     }
 
     /**
@@ -2587,6 +2619,7 @@ public final class Parser {
 
         Ast.TypeRef receiverType = null;
         List<Ast.Param> params;
+        List<Ast.Stmt> patternPrelude = new ArrayList<>();
         boolean mutableReceiver = check(MUT) && checkNext(SELF);
         if (mods.isStatic && (check(SELF) || mutableReceiver)) {
             throw error(peek(), "static class functions do not have a self receiver");
@@ -2642,17 +2675,17 @@ public final class Parser {
             if (inlineReceiverComma && check(RPAREN)) {
                 throw error(peek(), "receiver 'self' must be followed by a value parameter after ','");
             }
-            params = parseParametersUntil(RPAREN);
+            params = parseParametersUntil(RPAREN, java.util.Set.of(), patternPrelude);
             consume(RPAREN, "expected ')' after inline self receiver and method parameters");
         } else if (explicitReceiver) {
             consume(RPAREN, "expected ')' after explicit self receiver");
             consume(LPAREN, mutableReceiver
                     ? "explicit mutable receiver form is method(mut self)(params)"
                     : "explicit receiver form is method(self Type)(params)");
-            params = parseParametersUntil(RPAREN);
+            params = parseParametersUntil(RPAREN, java.util.Set.of(), patternPrelude);
             consume(RPAREN, "expected ')' after method parameters");
         } else {
-            params = parseParametersUntil(RPAREN);
+            params = parseParametersUntil(RPAREN, java.util.Set.of(), patternPrelude);
             consume(RPAREN, "expected ')' after method parameters");
         }
 
@@ -2672,6 +2705,9 @@ public final class Parser {
         if (check(SEMICOLON) && !mods.isAbstract && !enclosingAbstractClass) {
             throw error(peek(), "signature-only method '" + name
                     + "' requires an abstract class or explicit 'abstract' modifier");
+        }
+        if (!patternPrelude.isEmpty() && (mods.isAbstract || implicitAbstract || mods.async || mods.suspends)) {
+            throw error(peek(), "callable parameter patterns currently require an ordinary synchronous method body");
         }
         List<Ast.Stmt> body;
         if (prefixReturnType != null && (mods.isAbstract || implicitAbstract)) {
@@ -2702,7 +2738,7 @@ public final class Parser {
             consume(END, "expected 'end' after v2 statement method body");
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
-                receiverType, generics, params, returnType, annotations, body, effects);
+                receiverType, generics, params, returnType, annotations, prependCallablePatterns(patternPrelude, body), effects);
     }
 
     private String parseMethodName() {
@@ -3276,9 +3312,18 @@ public final class Parser {
     }
 
     private List<Ast.Param> parseParametersUntil(Token.Type terminator, java.util.Set<String> annotationStructuralNames) {
+        return parseParametersUntil(terminator, annotationStructuralNames, null);
+    }
+
+    private List<Ast.Param> parseParametersUntil(Token.Type terminator, java.util.Set<String> annotationStructuralNames,
+                                                  List<Ast.Stmt> patternPrelude) {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            if (patternPrelude != null && looksLikeCallablePattern()) {
+                params.add(parseCallablePattern(false, patternPrelude));
+                continue;
+            }
             boolean structural = matchContextualKeyword("structural") || match(TILDE);
 
             // Canonical type-first structural spelling: structural Foo y
@@ -3346,7 +3391,133 @@ public final class Parser {
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
         requireDistinctParameterNames(params);
+        if (patternPrelude != null) validateCallablePatternNames(params, patternPrelude);
         return params;
+    }
+
+    // Ordinary tuple/record *types* are followed by a parameter identifier.
+    // Patterns occupy a full slot and end at its delimiter or explicit type.
+    private boolean looksLikeCallablePattern() {
+        boolean nominal = check(IDENT) && checkNext(LBRACE);
+        if (!nominal && !check(LPAREN) && !check(LBRACE)) return false;
+        int start = nominal ? current + 1 : current;
+        Token.Type opener = tokens.get(start).type();
+        Token.Type closer = opener == LPAREN ? RPAREN : RBRACE;
+        int depth = 0;
+        for (int i = start; i < tokens.size(); i++) {
+            Token.Type t = tokens.get(i).type();
+            if (t == opener) depth++;
+            else if (t == closer && --depth == 0) {
+                if (i + 1 >= tokens.size()) return false;
+                Token.Type next = tokens.get(i + 1).type();
+                return next == COMMA || next == RPAREN || next == PIPE || next == COLON || next == AS;
+            }
+        }
+        return false;
+    }
+
+    // Initial executable candidate: flat, fixed bindings; the static and
+    // ownership passes independently gate scalar Copy projections.
+    private Ast.Param parseCallablePattern(boolean contextual, List<Ast.Stmt> prelude) {
+        String root = CALLABLE_PATTERN_ROOT + current;
+        Ast.TypeRef nominal = null;
+        if (check(IDENT) && checkNext(LBRACE)) nominal = Ast.TypeRef.simple(advance().lexeme());
+        boolean tuple = match(LPAREN);
+        if (!tuple) consume(LBRACE, "expected named-field parameter pattern");
+        Token.Type closer = tuple ? RPAREN : RBRACE;
+        List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        List<Ast.TypeRef> slots = new ArrayList<>();
+        java.util.Set<String> selectors = new java.util.HashSet<>();
+        int entries = 0;
+        boolean comma = false;
+        if (!tuple && check(closer)) throw error(peek(), "field pattern cannot be empty");
+        while (!check(closer)) {
+            if (++entries > 64) throw error(peek(), "callable pattern exceeds 64 bindings");
+            Ast.BindingKind kind = Ast.BindingKind.VAL;
+            boolean explicitKind = false;
+            if (tuple) {
+                if (match(LET)) { kind = Ast.BindingKind.LET; explicitKind = true; }
+                else if (match(VAL)) { explicitKind = true; }
+            }
+            String selected = consume(IDENT, "expected flat callable pattern binding").lexeme();
+            if (tuple) {
+                Ast.TypeRef slot = match(COLON) ? parseTypeRef() : null;
+                if (selected.equals("_") && (slot != null || explicitKind)) {
+                    throw error(previous(), "tuple discard has no binding modifier or type annotation; annotate the whole root instead");
+                }
+                slots.add(slot);
+                bindings.add(selected.equals("_") ? Ast.DestructureBinding.discard()
+                        : new Ast.DestructureBinding(kind, selected, false, false));
+            } else {
+                if (selected.equals("_") || !selectors.add(selected)) {
+                    throw error(previous(), "invalid or duplicate callable field selector '" + selected + "'");
+                }
+                String name = selected;
+                if (match(AS)) {
+                    if (match(LET)) { kind = Ast.BindingKind.LET; explicitKind = true; }
+                    else if (match(VAL)) { explicitKind = true; }
+                    name = consume(IDENT, "expected flat field alias").lexeme();
+                }
+                if (name.equals("_")) {
+                    if (explicitKind) throw error(previous(), "field discard cannot declare a local binding");
+                    // Still resolve and check the selected scalar, including
+                    // visibility. The result has no source-visible name.
+                    name = CALLABLE_PATTERN_DISCARD + root + "$" + entries;
+                }
+                prelude.add(new Ast.BindingStmt(kind, null, name,
+                        new Ast.MemberExpr(new Ast.NameExpr(root), selected), false));
+            }
+            if (!match(COMMA)) break;
+            comma = true;
+        }
+        consume(closer, "expected closing callable parameter pattern");
+        if (tuple && entries == 1 && !comma) throw error(previous(), "singleton tuple pattern requires trailing comma");
+        Ast.TypeRef explicit = match(COLON) ? (contextual ? parsePipeParameterType() : parseTypeRef()) : null;
+        if (nominal != null && explicit != null) throw error(previous(), "duplicate callable root type");
+        Ast.TypeRef type = nominal != null ? nominal : explicit;
+        if (tuple) {
+            boolean anyTyped = slots.stream().anyMatch(java.util.Objects::nonNull);
+            if (entries == 0 && type == null) type = Ast.TypeRef.tupleType(List.of());
+            if (anyTyped) {
+                if (type != null || slots.stream().anyMatch(java.util.Objects::isNull)) {
+                    throw error(previous(), "use either all typed tuple leaves or one root annotation");
+                }
+                type = Ast.TypeRef.tupleType(slots);
+            }
+            prelude.add(new Ast.DestructureStmt(Ast.DestructureKind.SEQUENCE, bindings, new Ast.NameExpr(root)));
+        }
+        if (check(AS)) throw error(peek(), "callable root aliases need checked ownership lowering");
+        if (type == null) {
+            if (!contextual) throw error(previous(), "named callable pattern requires a static root type");
+            type = Ast.TypeRef.inferred();
+        }
+        return new Ast.Param(type, root, false, false);
+    }
+
+    private void validateCallablePatternNames(List<Ast.Param> params, List<Ast.Stmt> prelude) {
+        if (prelude.isEmpty()) return;
+        java.util.Set<String> names = new java.util.HashSet<>(java.util.Set.of("self", "arguments"));
+        for (Ast.Param param : params) {
+            if (!names.add(param.name())) throw error(previous(), "duplicate or reserved callable parameter '" + param.name() + "'");
+        }
+        for (Ast.Stmt stmt : prelude) {
+            List<String> leaves;
+            if (stmt instanceof Ast.DestructureStmt tuple) {
+                leaves = tuple.bindings().stream().filter(b -> !b.isDiscard()).map(Ast.DestructureBinding::name).toList();
+            } else if (stmt instanceof Ast.BindingStmt field) {
+                leaves = List.of(field.name());
+            } else throw new IllegalStateException("not a callable pattern prelude");
+            for (String leaf : leaves) {
+                if (!names.add(leaf)) throw error(previous(), "duplicate or reserved callable pattern binding '" + leaf + "'");
+            }
+        }
+    }
+
+    private static List<Ast.Stmt> prependCallablePatterns(List<Ast.Stmt> prelude, List<Ast.Stmt> body) {
+        if (prelude.isEmpty()) return body;
+        List<Ast.Stmt> combined = new ArrayList<>(prelude);
+        combined.addAll(body);
+        return combined;
     }
 
     private java.util.Set<String> structuralAnnotationNames(List<Ast.Annotation> annotations) {
@@ -7827,11 +7998,17 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            // Lambda lookahead has already run. Empty and singleton tuples
+            // are real value shapes, not zero-argument calls or grouping.
+            if (match(RPAREN)) return new Ast.TupleExpr(List.of());
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
                 items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
+                while (!check(RPAREN)) {
+                    items.add(parseExpression());
+                    if (!match(COMMA)) break;
+                }
                 consume(RPAREN, "expected ')' after tuple");
                 return new Ast.TupleExpr(items);
             }
@@ -8023,8 +8200,14 @@ public final class Parser {
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, boolean inlinePipelineStage) {
         consume(PIPE, "expected '|'");
         List<Ast.Param> params = new ArrayList<>();
+        List<Ast.Stmt> patternPrelude = new ArrayList<>();
         if (!check(PIPE)) {
             do {
+                if (looksLikeCallablePattern()) {
+                    if (!inlinePipelineStage) throw error(peek(), "callable parameter patterns currently require a contextual pipeline lambda");
+                    params.add(parseCallablePattern(true, patternPrelude));
+                    continue;
+                }
                 // Bare 'mut s' changes the local parameter binding, whereas
                 // 'borrow mut s' is a fixed, exclusive mutable-borrow view.
                 // Both shorthand forms need a contextual callable signature to
@@ -8066,7 +8249,15 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
-        return parseLambdaBody(params, nonLexical, inlinePipelineStage);
+        Ast.LambdaExpr lambda = parseLambdaBody(params, nonLexical, inlinePipelineStage);
+        if (patternPrelude.isEmpty()) return lambda;
+        validateCallablePatternNames(params, patternPrelude);
+        if (params.size() != 1 || lambda.expressionBody() == null) {
+            throw error(previous(), "initial pipeline pattern slice requires one root and an expression body");
+        }
+        return new Ast.LambdaExpr(params, null,
+                prependCallablePatterns(patternPrelude, List.of(new Ast.ReturnStmt(lambda.expressionBody()))),
+                nonLexical);
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
