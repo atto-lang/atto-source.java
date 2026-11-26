@@ -52,6 +52,32 @@ final class SuspensionEffectAliasTest {
         }
     }
 
+    @Test void everyAliasRunsNestedTaskContinuationAndDefer() throws Exception {
+        String fixture = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "tests", "fixtures", "suspends-await-v1", "inline-nested-defer.atto"),
+                StandardCharsets.UTF_8);
+        for (String spelling : ALIASES) {
+            String code = fixture.replace("suspends fnc", spelling + " fnc");
+            assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(code), spelling);
+            var output = new ByteArrayOutputStream();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(output).build()) {
+                context.eval(Source.newBuilder(OresLanguage.ID, code, "alias-nested-defer.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).build());
+            }
+            assertEquals("defer:42|root", output.toString(StandardCharsets.UTF_8), spelling);
+        }
+    }
+
+    @Test void everyPairOfAliasesIsADuplicateEffect() {
+        for (String first : ALIASES) {
+            for (String second : ALIASES) {
+                String code = first + " " + second + " fnc bad(): void { return; }";
+                assertThrows(IllegalArgumentException.class, () -> Parser.parse(code), code);
+            }
+        }
+    }
+
     @Test void allAliasesExecuteTheSameGuest() throws Exception {
         for (String spelling : ALIASES) {
             String code = """
