@@ -89,12 +89,25 @@ define module telemetry as
   // exact W3C 32/16 hex character lengths and nonzero IDs.
   pub fnc is_lower_hex(String input): bool {
     if input == ""; do return false; fi
+    // The alphabet is fixed: do not create a scheduler continuation in a
+    // synchronous constructor. Keep the sixteen exact literal operations.
     let String rest = input;
-    for (const digit of arr[
-        "0", "1", "2", "3", "4", "5", "6", "7",
-        "8", "9", "a", "b", "c", "d", "e", "f"]) {
-      rest = rest.replace_literal(digit, "");
-    }
+    rest = rest.replace_literal("0", "");
+    rest = rest.replace_literal("1", "");
+    rest = rest.replace_literal("2", "");
+    rest = rest.replace_literal("3", "");
+    rest = rest.replace_literal("4", "");
+    rest = rest.replace_literal("5", "");
+    rest = rest.replace_literal("6", "");
+    rest = rest.replace_literal("7", "");
+    rest = rest.replace_literal("8", "");
+    rest = rest.replace_literal("9", "");
+    rest = rest.replace_literal("a", "");
+    rest = rest.replace_literal("b", "");
+    rest = rest.replace_literal("c", "");
+    rest = rest.replace_literal("d", "");
+    rest = rest.replace_literal("e", "");
+    rest = rest.replace_literal("f", "");
     return rest == "";
   }
 
@@ -105,13 +118,24 @@ define module telemetry as
   // The trusted runtime bridge independently validates IDs without splits.
   pub fnc is_exact_lower_hex(String input, int expected_length): bool {
     if !is_lower_hex(input) || expected_length < 1; do return false; fi
+    // Fixed sixteen counts; no loop-driven SourceTask inside construction.
     let int count = 0;
-    for (const digit of arr[
-        "0", "1", "2", "3", "4", "5", "6", "7",
-        "8", "9", "a", "b", "c", "d", "e", "f"]) {
-      val pieces = input.split_literal(digit);
-      count = count + pieces.size - 1;
-    }
+    count = count + input.split_literal("0").size - 1;
+    count = count + input.split_literal("1").size - 1;
+    count = count + input.split_literal("2").size - 1;
+    count = count + input.split_literal("3").size - 1;
+    count = count + input.split_literal("4").size - 1;
+    count = count + input.split_literal("5").size - 1;
+    count = count + input.split_literal("6").size - 1;
+    count = count + input.split_literal("7").size - 1;
+    count = count + input.split_literal("8").size - 1;
+    count = count + input.split_literal("9").size - 1;
+    count = count + input.split_literal("a").size - 1;
+    count = count + input.split_literal("b").size - 1;
+    count = count + input.split_literal("c").size - 1;
+    count = count + input.split_literal("d").size - 1;
+    count = count + input.split_literal("e").size - 1;
+    count = count + input.split_literal("f").size - 1;
     return count == expected_length && input.replace_literal("0", "") != "";
   }
 
