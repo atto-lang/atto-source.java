@@ -142,6 +142,56 @@ final class CallableAggregatePatternTest {
     }
 
     @Test
+    void emptyTupleIsOneFormalAndSingletonRequiresComma() throws Exception {
+        execute("""
+                fnc zero(()): int { return 7; }
+                fnc single((a: int,)): int { return a; }
+                pub routine main(): void {
+                    stdio.stdout.write(zero(()));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(() |> |()| -> 8);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(single((9,)));
+                    return;
+                }
+                """, "7:8:9");
+        assertThrows(IllegalArgumentException.class, () -> check(
+                "fnc bad(): int { return (1,) |> |()| -> 0; }"));
+    }
+
+    @Test
+    void rebindScalarLeafIsIndependentOfRootAndFieldDiscardChecksExistence() throws Exception {
+        execute("""
+                fnc total((let a: int, val b: int)): int { a = a + 1; return a+b; }
+                fnc fields({x as let a, y as _, z}: {x: int, y: int, z: int}): int {
+                    a = a + 1; return a+z;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(total((5, 8)));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(fields(record{x:5,y:99,z:8}));
+                    return;
+                }
+                """, "14:14");
+        assertThrows(IllegalArgumentException.class, () -> check(
+                "fnc bad({missing as _}: {x: int}): int { return 0; }"));
+        assertThrows(IllegalArgumentException.class, () -> check(
+                "fnc bad({x as _, x as a}: {x: int}): int { return a; }"));
+        assertThrows(IllegalArgumentException.class, () -> check(
+                "fnc bad((val a: int, b: int)): int { a = 0; return b; }"));
+    }
+
+    @Test
+    void discardCannotIntroduceBindingOrPretendToBeTyped() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc bad((_: int, a: int)): int { return a; }"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc bad((let _, a): (int,int)): int { return a; }"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc bad({x as let _}: {x: int}): int { return 0; }"));
+    }
+
+    @Test
     void explicitTupleTypeFormalRemainsOrdinary() {
         check("""
                 fnc ordinary((int, int) t): int { return t[0] + t[1]; }
