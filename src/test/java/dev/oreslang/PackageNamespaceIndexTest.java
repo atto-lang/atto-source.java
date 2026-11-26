@@ -53,6 +53,32 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void unnamespacedMembersRetainOwnershipWithoutAnyNamespaceExports() throws IOException {
+        Path root = temporary.resolve("checkout");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/billing.ores", "billing",
+                "pub fnc bill(): int { return 1; }");
+        for (String name : List.of("src/local0.ores", "src/local1.ores")) {
+            Path path=root.resolve(name);
+            String source="pub fnc local(): int { return 42; }\n";
+            Files.writeString(path,source);
+            sources.put(id(path),source);
+        }
+        Path manifest=manifest(root,"checkout",List.of("src/billing.ores","src/local0.ores","src/local1.ores"));
+        String owner=PackageNamespaceIndex.packageId(manifest,"checkout");
+        var index=PackageNamespaceIndex.load(List.of(manifest),sources,Map.of("checkout",owner));
+        String local=id(root.resolve("src/local0.ores"));
+        assertEquals(owner,index.ownerOf(local));
+        assertEquals(owner,index.ownerOf(id(root.resolve("src/local1.ores"))));
+        var billing=index.resolve(local,"+/","billing");
+        assertEquals(Set.of(id(root.resolve("src/billing.ores"))),billing.providerUnitIds());
+        assertEquals(1,billing.exports().size());
+        assertTrue(billing.exports().values().stream().noneMatch(v->v.name().equals("local")));
+        assertThrows(IllegalArgumentException.class,()->index.resolve(local,"+/","__root__"));
+        assertThrows(IllegalArgumentException.class,()->index.resolve(local,"+/","checkout"));
+    }
+
+    @Test
     void oneImportBindsFourManifestOwnedProvidersAndPreservesThreeNamespaces() throws IOException {
         Path checkout = temporary.resolve("checkout");
         Map<String, String> sources = new LinkedHashMap<>();

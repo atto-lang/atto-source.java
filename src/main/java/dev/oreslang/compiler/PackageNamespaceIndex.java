@@ -216,8 +216,12 @@ public final class PackageNamespaceIndex {
                         throw new IllegalArgumentException("manifest member not in admitted source snapshot: " + sourceId);
                     }
                     Ast.Program parsed = Parser.parse(source);
-                    if (parsed.namespace() == null || Parser.ROOT_MODULE.equals(parsed.namespace())) {
-                        throw new IllegalArgumentException("package member needs a nonreserved namespace: " + sourceId);
+                    // Manifest membership and namespace membership are distinct.
+                    // Unnamespaced files retain their physical package owner and
+                    // exact pinned bytes, but have no namespace export binding.
+                    if (parsed.namespace() == null) continue;
+                    if (Parser.ROOT_MODULE.equals(parsed.namespace())) {
+                        throw new IllegalArgumentException("reserved namespace: " + sourceId);
                     }
                     NamespaceKey ns = new NamespaceKey(packageId, parsed.namespace());
                     providers.computeIfAbsent(ns, unused -> new LinkedHashSet<>()).add(sourceId);
