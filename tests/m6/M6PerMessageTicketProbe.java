@@ -56,6 +56,35 @@ public final class M6PerMessageTicketProbe {
             var full = runtime.try_send_ticket(slow, 13, route(slow, 13));
             require(full.admission() == AttoM6Runtime.Admission.FULL && full.ticket() == null,
                 "full mailbox minted phantom ticket");
+            // Wrong tenant must be STALE, not FULL, while the valid ticket is pinned.
+            var foreign = new AttoM6Runtime.ReceiptRoute(1, 22, 77, targetId("slow"),
+                slow.generation(), 31, 6, 999, 1);
+            var attackFailure = new AtomicInteger();
+            var startAttack = new CountDownLatch(1);
+            List<Thread> attackers = new ArrayList<>();
+            for (int p = 0; p < 4; p++) {
+                Thread attacker = new Thread(() -> {
+                    try {
+                        if (!startAttack.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("attack start timeout");
+                        for (int i = 0; i < 64; i++) {
+                            var denied = runtime.try_send_ticket(slow, 99, foreign);
+                            require(denied.admission() == AttoM6Runtime.Admission.STALE &&
+                                denied.ticket() == null, "foreign tenant minted or masked ticket");
+                        }
+                    } catch (Throwable t) { attackFailure.incrementAndGet(); }
+                }, "foreign-proxy-admission-" + p);
+                attackers.add(attacker);
+                attacker.start();
+            }
+            startAttack.countDown();
+            for (Thread attacker : attackers) attacker.join(2_000);
+            require(attackers.stream().noneMatch(Thread::isAlive) && attackFailure.get() == 0,
+                "foreign admission race failed");
+            require(runtime.snapshot(slow).accepted() == 2, "foreign attack spent mailbox credit");
+            require(runtime.ticket_snapshot(queued).state() == AttoM6Runtime.TicketState.ADMITTED,
+                "foreign attack changed pending receipt");
+            System.out.println("M6_PROXY_FOREIGN_FULL_MAILBOX_256=PASS");
             var other = accept(runtime, fast, 70);
             var otherDone = await(runtime, other);
             require(otherDone.state() == AttoM6Runtime.TicketState.PROCESSED
