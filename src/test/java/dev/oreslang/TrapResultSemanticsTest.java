@@ -765,6 +765,57 @@ final class TrapResultSemanticsTest {
         assertEquals("CFafter", run(source));
     }
 
+    @Test
+    void twoOrdinaryUnwrapFailuresDuringDeferStillProduceErr() throws Exception {
+        String source = """
+                fnc cleanup(): void {
+                  stdio.stdout.write("D");
+                  val Result<int, String> failed = Err("cleanup");
+                  val int unused = failed.unwrap();
+                  return;
+                }
+                fnc body(): int {
+                  defer cleanup();
+                  val Option<int> missing = None;
+                  return missing.unwrap();
+                }
+                pub fnc main(): void {
+                  val Result<int, Error> outcome = trap! body();
+                  stdio.stdout.write(outcome.is_err());
+                  val Result<int, Error> next = trap! 42;
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(next.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("Dtrue:42", run(source));
+    }
+
+    @Test
+    void terminalExpectInDeferCannotBeCapturedByOrdinaryUnwrapTrap() throws Exception {
+        String source = """
+                fnc cleanup(): void {
+                  val Option<int> missing = None;
+                  val int unused = missing.expect("terminal cleanup");
+                  return;
+                }
+                fnc body(): int {
+                  defer cleanup();
+                  val Option<int> missing = None;
+                  return missing.unwrap();
+                }
+                pub fnc main(): void {
+                  val Result<int, Error> outcome = trap! body();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException failure = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(failure.getMessage().contains("terminal cleanup"), failure::getMessage);
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "trap-option.ores")
