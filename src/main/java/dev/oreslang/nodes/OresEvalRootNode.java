@@ -11623,7 +11623,8 @@ public final class OresEvalRootNode extends RootNode {
                 case "is_none" -> (Invokable) args -> { requireZero(args, "Option.is_none"); return !option.present(); };
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap");
-                    if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
+                    if (!option.present()) throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                            dev.oreslang.runtime.GuestErrorValue.optionUnwrap());
                     return option.value();
                 };
                 case "unwrap_all" -> (Invokable) args -> {
@@ -11726,7 +11727,8 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Result.unwrap");
                     if (!result.ok()) {
-                        throw new OresPanic("called Result::unwrap() on an Err value: " + display(result.value()));
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.resultUnwrap(result.value()));
                     }
                     return result.value();
                 };
