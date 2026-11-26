@@ -7898,9 +7898,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Sequence)) {
                     throw new IllegalArgumentException("E_COPY_UNPROVEN: typed sequence copy plan missing");
                 }
-                return executeDerivedCopyV1(plan, sequence,
-                        new java.util.IdentityHashMap<>(),
-                        new java.util.IdentityHashMap<>(), new int[]{0}, 0);
+                return executeRootCopyV1(plan, sequence);
             }
             if (!(value instanceof OresObject original)) {
                 return copyExplicitImmutableV1(value, 0);
@@ -7918,9 +7916,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!(plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Instance)) {
                 throw new IllegalArgumentException("E_COPY_UNPROVEN: expected class copy plan");
             }
-            return executeDerivedCopyV1(plan, original,
-                    new java.util.IdentityHashMap<>(),
-                    new java.util.IdentityHashMap<>(), new int[]{0}, 0);
+            return executeRootCopyV1(plan, original);
         }
 
         /**
@@ -7946,6 +7942,63 @@ public final class OresEvalRootNode extends RootNode {
                     "E_COPY_UNPROVEN: explicit copy cannot alias a mutable guest handle or untyped collection");
         }
 
+        /**
+         * Flat roots contain no mutable child identity, so no graph memo is
+         * necessary. Keep the same scalar checks, layout and work ceilings as
+         * the general executor; validate and allocate private storage only.
+         */
+        private Object executeRootCopyV1(
+                dev.oreslang.types.DerivedCopyPlanV1.Plan plan, Object value) {
+            if (plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Sequence sequence
+                    && sequence.element() instanceof dev.oreslang.types.DerivedCopyPlanV1.Scalar scalar
+                    && value instanceof TypedGuestSequence source) {
+                int size = source.size();
+                if (size > 8192) {
+                    throw new IllegalArgumentException("E_COPY_BUDGET: copy sequence budget exceeded");
+                }
+                var result = new TypedGuestSequence(source.type, size);
+                for (Object element : source) {
+                    result.add(copyScalarV1(scalar, element));
+                }
+                return result;
+            }
+            if (plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Instance instance
+                    && instance.fields().stream().allMatch(
+                            field -> field.plan() instanceof dev.oreslang.types.DerivedCopyPlanV1.Scalar)) {
+                if (!(value instanceof OresObject source) || source.owner != this
+                        || !source.klass.name().equals(instance.className())
+                        || source.klass.actorKind() != Ast.ActorKind.NONE
+                        || source.fields.size() != instance.fields().size()) {
+                    throw new IllegalArgumentException("E_COPY_TYPE: copied class must have exact owned concrete layout");
+                }
+                var fields = new LinkedHashMap<String, Object>();
+                for (var field : instance.fields()) {
+                    Object payload = source.fields.get(field.name());
+                    if (!source.fields.containsKey(field.name()) || payload == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException("E_COPY_TYPE: missing/uninitialized field " + field.name());
+                    }
+                    fields.put(field.name(), copyScalarV1(
+                            (dev.oreslang.types.DerivedCopyPlanV1.Scalar) field.plan(), payload));
+                }
+                return new OresObject(this, source.klass, fields);
+            }
+            return executeDerivedCopyV1(plan, value, new java.util.IdentityHashMap<>(),
+                    new java.util.IdentityHashMap<>(), new int[]{0}, 0);
+        }
+
+        private Object copyScalarV1(dev.oreslang.types.DerivedCopyPlanV1.Scalar scalar, Object value) {
+            boolean valid = switch (scalar.typeName()) {
+                case "string", "String" -> value instanceof String;
+                case "bool", "Bool" -> value instanceof Boolean;
+                default -> dev.oreslang.types.CopyScalarAdmission.isImmutableNumber(value);
+            };
+            if (!valid) {
+                throw new IllegalArgumentException(
+                        "E_COPY_TYPE: scalar payload does not match " + scalar.typeName());
+            }
+            return value;
+        }
+
         private Object executeDerivedCopyV1(
                 dev.oreslang.types.DerivedCopyPlanV1.Plan plan,
                 Object value,
@@ -7956,17 +8009,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("E_COPY_BUDGET: copy depth/node budget exceeded");
             }
             if (plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Scalar scalar) {
-                boolean valid = switch (scalar.typeName()) {
-                    case "string", "String" -> value instanceof String;
-                    case "bool", "Bool" -> value instanceof Boolean;
-                    default -> dev.oreslang.types.CopyScalarAdmission.isImmutableNumber(value);
-                };
-                if (!valid) {
-                    throw new IllegalArgumentException(
-                            "E_COPY_TYPE: scalar payload does not match " + scalar.typeName());
-                }
-                // Strings and boxed numbers/bools are immutable guest values.
-                return value;
+                return copyScalarV1(scalar, value);
             }
             // A repeated source reference may only reuse a clone under the
             // SAME statically proven logical layout. Otherwise an alias could
