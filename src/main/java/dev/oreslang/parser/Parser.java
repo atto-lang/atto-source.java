@@ -7875,7 +7875,7 @@ public final class Parser {
                 Token param = verifiedName("expected a parameter name in requires");
                 var type = verifiedLocals.get(param.lexeme());
                 if (type == null) throw error(param, "E_REFINEMENT_NAME: requires must name a parameter");
-                verifiedLocals.put(param.lexeme(), readVerifiedBound(type, readQuantityComparison()));
+                verifiedLocals.put(param.lexeme(), readVerifiedBound(type, match(NEQ,BANG_EQUAL) ? "!=" : readQuantityComparison()));
                 if(span!=null){if(current!=span[1])throw error(peek(),"E_REFINEMENT_CONTRACT: trailing annotation tokens");current=resume;}
             }
             List<RefinedQuantity> required = parameters.stream()
