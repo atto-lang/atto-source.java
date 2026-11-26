@@ -1497,7 +1497,7 @@ public final class Parser {
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
             if (explicitFnc && explicitMethod) {
-                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'mtd' markers");
             }
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
@@ -1508,14 +1508,14 @@ public final class Parser {
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
                 if (explicitMethod) {
-                    throw error(previous(), "static class functions use 'static fnc', not 'static method'");
+                    throw error(previous(), "static class functions use 'static fnc', not 'static mtd'");
                 }
                 if (!explicitFnc) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
                 }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
             }
-            // Legacy 'fnc name' and explicit 'method name' both describe instance
+            // Legacy 'fnc name' and explicit 'mtd name' both describe instance
             // methods. The AST's isStatic flag, not the spelling, controls binding.
             Ast.MethodDecl member = parseMethod(annotations, mods, isAbstract);
             // Newable's explicitly declared `fnc new` is a type-level
@@ -2105,14 +2105,14 @@ public final class Parser {
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
             if (explicitFnc && explicitMethod) {
-                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'mtd' markers");
             }
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
             if (mods.isStatic && explicitMethod) {
-                throw error(previous(), "static actor functions use 'static fnc', not 'static method'");
+                throw error(previous(), "static actor functions use 'static fnc', not 'static mtd'");
             }
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
@@ -8411,7 +8411,7 @@ public final class Parser {
         // may follow a semicolon-free field on a separate source line.
         Token.Type following = current + 1 < tokens.size()
                 ? tokens.get(current + 1).type() : EOF;
-        boolean markedMethod = (word.equals("method") || word.equals("mtd"))
+        boolean markedMethod = word.equals("mtd")
                 && (following == IDENT || following == LBRACKET
                     || isReservedCallableName(following)
                     || isContextualStatementCallableName(following)
@@ -8670,11 +8670,10 @@ public final class Parser {
         return true;
     }
 
-    // Both 'method' and 'mtd' are contextual class/actor markers, not global
-    // reserved tokens (the separate named-alias extension syntax also uses
-    // 'mtd'). Keep a member literally named method(...) or mtd(...) legal.
+    // Only 'mtd' is a contextual declaration marker. Neither 'mtd' nor
+    // 'method' is a reserved callable name; method(...) remains legal.
     private boolean matchExplicitMethodMarker() {
-        if (!isContextualIdentifier("method") && !isContextualIdentifier("mtd")) return false;
+        if (!isContextualIdentifier("mtd")) return false;
         // Permit the same callable names after a marker as bare methods, e.g.
         // mtd select(), mtd do(), mtd mtd(), and [Symbol.iterator]().
         // Otherwise adding an optional marker would change admissible names.
