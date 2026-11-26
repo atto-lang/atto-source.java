@@ -2376,15 +2376,15 @@ public final class Parser {
                         receiver.name(), methodName, memberModifiers.visibility, parameters, returns));
                 continue;
             }
-            if (!moduleContract && actorMethodHead) {
-                throw error(peek(), "actor receiver requirements belong only in module contracts");
-            }
             if (isLegacyFnSpelling()) {
-                throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
+                throw error(peek(), "interface functions accept 'fnc', not 'fn'");
             }
-            // Trait/interface signatures allow the canonical bare instance
-            // method form: get_future(): Future<T>;
-            if (match(FNC) || (check(IDENT) && checkNext(LPAREN))) {
+            // Keep the distinct module actor-receiver grammar above intact.
+            // A nominal signature has exactly one optional method introducer;
+            // an actor receiver followed by a second argument list is not one.
+            boolean explicitFnc = match(FNC);
+            boolean explicitMethod = !moduleContract && !explicitFnc && matchExplicitMethodMarker();
+            if (explicitFnc || explicitMethod || looksLikeBareInterfaceSignature()) {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
                 validateInterfaceCallableModifiers(memberModifiers);
                 CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);
@@ -2444,6 +2444,23 @@ public final class Parser {
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
         return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+    }
+
+    /** Distinguish name<T>(...) from type<T> field without consuming tokens. */
+    private boolean looksLikeBareInterfaceSignature() {
+        if (!check(IDENT)) return false;
+        if (checkNext(LPAREN)) return true;
+        if (!checkNext(LT)) return false;
+        int cursor = current + 2;
+        while (cursor < tokens.size() && tokens.get(cursor).type() == IDENT) {
+            cursor++;
+            if (cursor >= tokens.size()) return false;
+            if (tokens.get(cursor).type() == GT) {
+                return cursor + 1 < tokens.size() && tokens.get(cursor + 1).type() == LPAREN;
+            }
+            if (tokens.get(cursor++).type() != COMMA) return false;
+        }
+        return false;
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
