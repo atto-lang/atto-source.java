@@ -3617,7 +3617,7 @@ public final class TypeChecker {
             if (factory != null) {
                 Ast.LambdaExpr outer = (Ast.LambdaExpr) factory.callee();
                 Ast.LambdaExpr inner = (Ast.LambdaExpr) outer.expressionBody();
-                if (self != null || currentClassOwner != null
+                if (self != null || currentClassOwner != null || env.descendantsNonLexical()
                         || outer.nonLexical() || inner.nonLexical()
                         || inner.blockBody() == null || !inner.parameters().isEmpty()
                         || factory.arguments().size() != outer.parameters().size()) {
@@ -3648,6 +3648,9 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("defer factory requires fixed positional arguments");
                     }
                     Type actual = typeOfAgainstExpected(arg, params.get(i), env, generics, self);
+                    if (containsUnknown(actual) || actual instanceof Borrow) {
+                        throw new IllegalArgumentException("defer factory requires proven owned scalar arguments");
+                    }
                     requireAssignable(actual, params.get(i), "defer factory argument " + (i + 1));
                 }
                 return;
