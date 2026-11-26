@@ -605,10 +605,8 @@ public final class Parser {
 
     /** Validate after all declarations, so placement never changes binding. */
     private void validateExports(List<Ast.ExportDecl> exports, List<Ast.Decl> declarations) {
-        java.util.Set<String> exportedNames = new java.util.HashSet<>();
+        java.util.Map<String, Ast.ExportDecl> resolved = new java.util.LinkedHashMap<>();
         for (Ast.ExportDecl entry : exports) {
-            if (!exportedNames.add(entry.name()))
-                throw error(previous(), "duplicate export: " + entry.name());
             Ast.ExportKind kind = null;
             for (Ast.Decl decl : declarations) {
                 Ast.ExportKind found = null;
@@ -640,7 +638,20 @@ public final class Parser {
                 throw error(previous(), "export references undeclared file-root symbol: " + entry.name());
             if (entry.kind() != null && entry.kind() != kind)
                 throw error(previous(), "export declaration kind mismatch for " + entry.name());
+            Ast.ExportDecl prior = resolved.get(entry.name());
+            if (prior == null) {
+                resolved.put(entry.name(), entry);
+            } else {
+                if (prior.scope() != entry.scope())
+                    throw error(previous(), "conflicting export visibility: " + entry.name());
+                // Every directive has independently passed the declaration-kind
+                // check. Retain an explicit kind constraint in either order.
+                if (prior.kind() == null && entry.kind() != null)
+                    resolved.put(entry.name(), entry);
+            }
         }
+        exports.clear();
+        exports.addAll(resolved.values());
     }
 
     private static final String UNLINKED_PACKAGE_PREFIX = "pkg:";
