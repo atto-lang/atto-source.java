@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorFrameTestProbe;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import org.graalvm.polyglot.Context;
@@ -49,7 +50,7 @@ final class GuestScalarActorInvocationLanguageTest {
                     context.eval(source);
                 }
                 assertEquals("10", output.toString(StandardCharsets.UTF_8));
-                peak.set(ActorRuntime.currentActorFrameArena().peakBytes());
+                peak.set(ActorFrameTestProbe.currentPeakBytes());
                 turn.self().stop();
             });
             actor.send("execute");
