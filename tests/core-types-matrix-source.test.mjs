@@ -22,13 +22,13 @@ function evalSourceArg(value){
   return BigInt(value);
 }
 function verify(body){
-  assert.match(body,/import \* as ctypes from "\.\.\/\.\.\/\.\.\/library\/policy\/core\/ctypes\.atto";/);
+  assert.match(body,/import \* as ctypes from "\.\.\/\.\.\/\.\.\/library\/policy\/core\/types\.atto";/);
   assert.match(body,/pub fnc main\(\) -> int \{/);
   const expressions=[...body.matchAll(/^\s*if (!?)ctypes\.(fits_[iu](?:8|16|32|64))\(([^;\n]+)\); do return (\d+); fi$/gm)];
   assert.ok(expressions.length>=60,'guest must cover at least sixty cases');
   const source=body.replace(/\/\/[^\r\n]*/g,'');
   const withoutAssertions=source.replace(/^\s*if (!?)ctypes\.(fits_[iu](?:8|16|32|64))\(([^;\n]+)\); do return (\d+); fi$/gm,'')
-    .replace(/import \* as ctypes from "\.\.\/\.\.\/\.\.\/library\/policy\/core\/ctypes\.atto";/,'')
+    .replace(/import \* as ctypes from "\.\.\/\.\.\/\.\.\/library\/policy\/core\/types\.atto";/,'')
     .replace(/pub fnc main\(\) -> int \{/,'').replace(/return 0;/,'').replace(/\}/g,'').trim();
   assert.equal(withoutAssertions,'','unreviewed statement in guest matrix');
   const cases=new Map([...limits.keys()].map(key=>[key,{accepted:0,rejected:0}]));
