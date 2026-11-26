@@ -351,6 +351,78 @@ final class ActorOutputStreamTest {
         }
     }
 
+    @Test
+    void cancellingPendingOutputReadLeavesNextOutputForRetry() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("retained");
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+            var pending = ref.outputs().next();
+            assertTrue(pending.cancel(false));
+            assertTrue(pending.isCancelled());
+            ref.send("go");
+            var next = ref.outputs().next().join();
+            assertFalse(next.done());
+            assertEquals("retained", next.value().value());
+            assertEquals(0L, next.value().sequence());
+            ref.done().join();
+            assertTrue(ref.outputs().next().join().done());
+        }
+    }
+
+    @Test
+    void cancellationCannotStealCommittedOutputDuringShutdownArbitration() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var carrier = new java.util.concurrent.atomic.AtomicReference<Thread>();
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        carrier.set(Thread.currentThread());
+                        entered.countDown();
+                        if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                            throw new AssertionError("test release deadline");
+                        turn.runtime().emitCurrentActorOutput("committed");
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+            var pending = ref.outputs().next();
+            ref.send("go");
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            var field = ActorRuntime.class.getDeclaredField("runtimeLifecycleLock");
+            field.setAccessible(true);
+            synchronized (field.get(runtime)) {
+                release.countDown();
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                boolean committedCallback = false;
+                while (System.nanoTime() < deadline) {
+                    var frames = carrier.get().getStackTrace();
+                    if (carrier.get().getState() == Thread.State.BLOCKED
+                            && java.util.Arrays.stream(frames).anyMatch(frame ->
+                                frame.getClassName().contains("ActorRuntime$ActorOutputStream")
+                                    && frame.getMethodName().startsWith("lambda$next$"))) {
+                        committedCallback = true;
+                        break;
+                    }
+                    Thread.onSpinWait();
+                }
+                assertTrue(committedCallback,
+                        "channel receipt must be committed and callback blocked before cancellation");
+                assertFalse(pending.cancel(false),
+                        "cancel must lose to already-committed channel read");
+            }
+            var delivered = pending.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertFalse(delivered.done());
+            assertEquals("committed", delivered.value().value());
+            ref.done().join();
+            assertTrue(ref.outputs().next().join().done());
+        }
+    }
+
     private static boolean retainsOutputStream(
             ActorRuntime runtime, ActorRuntime.ActorOutputStream<?> stream) {
         try {
