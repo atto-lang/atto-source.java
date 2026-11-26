@@ -450,4 +450,47 @@ final class DerivedCopyPlanGuestTest {
                         Ast.TypeRef.simple("Array"), name -> null));
         assertTrue(raw.getMessage().contains("E_COPY_UNPROVEN"));
     }
+    @Test
+    void shallowLoanLayoutIdentifiesRetainedFieldsWithoutGrantingAuthority() {
+        var parsed = Parser.parse("""
+                define class Base as pub val Array<int> scores = new Array<int>(); end
+                define class Child extends Base as
+                    pub let int age = 25;
+                    pub val Array<int> other = new Array<int>();
+                end
+                """);
+        var classes = new java.util.HashMap<String, Ast.ClassDecl>();
+        for (var module : parsed.modules()) {
+            for (var declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass) classes.put(klass.name(), klass);
+            }
+        }
+        var layout = DerivedCopyPlanV1.deriveShallowLoanLayout(
+                Ast.TypeRef.simple("Child"), classes::get);
+        assertTrue(layout.requiresLoans());
+        assertEquals(java.util.List.of("scores", "other"), layout.retained().stream()
+                .map(edge -> assertInstanceOf(DerivedCopyPlanV1.RetainedField.class, edge).field())
+                .toList());
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                DerivedCopyPlanV1.deriveShallow(Ast.TypeRef.simple("Child"), classes::get));
+        assertTrue(error.getMessage().contains("E_COPY_SHALLOW_ALIAS"));
+    }
+
+    @Test
+    void shallowLoanLayoutDistinguishesFlatStorageFromNestedElementFamily() {
+        var scalar = Ast.TypeRef.simple("int");
+        var array = new Ast.TypeRef("Array", java.util.List.of(scalar), false);
+        var nested = new Ast.TypeRef("Array", java.util.List.of(array), false);
+        var flat = DerivedCopyPlanV1.deriveShallowLoanLayout(array, name -> null);
+        assertFalse(flat.requiresLoans());
+        assertEquals(flat.root(), DerivedCopyPlanV1.deriveShallow(array, name -> null));
+        var layout = DerivedCopyPlanV1.deriveShallowLoanLayout(nested, name -> null);
+        assertTrue(layout.requiresLoans());
+        assertEquals(1, layout.retained().size());
+        var edge = assertInstanceOf(DerivedCopyPlanV1.RetainedElements.class, layout.retained().getFirst());
+        assertInstanceOf(DerivedCopyPlanV1.Sequence.class, edge.target());
+        assertThrows(IllegalArgumentException.class, () ->
+                DerivedCopyPlanV1.deriveShallow(nested, name -> null));
+    }
+
 }
