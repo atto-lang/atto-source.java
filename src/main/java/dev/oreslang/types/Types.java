@@ -359,21 +359,19 @@ public final class Types {
             return isAssignable(source.result(), target.result());
         }
 
-        return numericWidening(from, to);
-    }
-
-    private static boolean numericWidening(Type from, Type to) {
-        if (from == Primitive.INT && (to == Primitive.FLOAT || to == Primitive.DECIMAL || to == Primitive.COMPLEX)) return true;
-        if ((from == Primitive.FLOAT || from == Primitive.DECIMAL) && to == Primitive.COMPLEX) return true;
+        // P0: every numeric representation change must be explicit. A
+        // contextual literal's exact type is handled before this relation;
+        // ordinary INT -> FLOAT/DECIMAL/COMPLEX is not assignment.
         return false;
     }
 
+    /**
+     * Source numeric expressions cannot silently widen either operand.
+     * Explicit checked casts produce matching types before reaching this
+     * operation. Division may have a language-defined output type.
+     */
     public static Type numericJoin(Type left, Type right) {
-        if (!isNumeric(left) || !isNumeric(right)) return Unknown.INSTANCE;
-        if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) return Primitive.COMPLEX;
-        if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) return Primitive.DECIMAL;
-        if (left == Primitive.FLOAT || right == Primitive.FLOAT) return Primitive.FLOAT;
-        return Primitive.INT;
+        return isNumeric(left) && left.equals(right) ? left : Unknown.INSTANCE;
     }
 
     public static Type unionOf(Type left, Type right) {

@@ -1,0 +1,67 @@
+{
+  "schema": "oreslang.language.strict-numeric-conversion-admission.v1",
+  "policy": "No implicit representation changes between int/float/decimal/complex on assignment or binary numeric expressions",
+  "validation": "NOT_EXECUTED: compiler fixture planned for Java/Graal, LLVM, .NET, WASM",
+  "cases": [
+    {
+      "id": "reject_int_to_float",
+      "expected": "REJECT",
+      "source": "pub routine main(): void { val float value = 3; return; }"
+    },
+    {
+      "id": "reject_int_to_decimal",
+      "expected": "REJECT",
+      "source": "pub routine main(): void { val decimal value = 3; return; }"
+    },
+    {
+      "id": "reject_float_to_complex",
+      "expected": "REJECT",
+      "source": "pub routine main(): void { val complex value = 3.0; return; }"
+    },
+    {
+      "id": "reject_float_to_int",
+      "expected": "REJECT",
+      "source": "pub routine main(): void { val int value = 3.5; return; }"
+    },
+    {
+      "id": "reject_mixed_add",
+      "expected": "REJECT",
+      "source": "pub routine main(): void { val float value = 3 + 1.5; return; }"
+    },
+    {
+      "id": "reject_mixed_multiply",
+      "expected": "REJECT",
+      "source": "pub routine main(): void { val float value = 3.0 * 2; return; }"
+    },
+    {
+      "id": "reject_mixed_order",
+      "expected": "REJECT",
+      "source": "pub routine main(): void { val bool value = 3.0 < 4; return; }"
+    },
+    {
+      "id": "reject_mixed_equality",
+      "expected": "REJECT",
+      "source": "pub routine main(): void { val bool value = 3 == 3.0; return; }"
+    },
+    {
+      "id": "accept_int_add",
+      "expected": "ADMIT",
+      "source": "pub routine main(): void { val int value = 3 + 4; return; }"
+    },
+    {
+      "id": "accept_float_add",
+      "expected": "ADMIT",
+      "source": "pub routine main(): void { val float value = 3.0 + 4.0; return; }"
+    },
+    {
+      "id": "accept_int_less",
+      "expected": "ADMIT",
+      "source": "pub routine main(): void { val bool value = 3 < 4; return; }"
+    },
+    {
+      "id": "accept_float_equality",
+      "expected": "ADMIT",
+      "source": "pub routine main(): void { val bool value = 3.0 == 4.0; return; }"
+    }
+  ]
+}

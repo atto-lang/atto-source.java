@@ -1,0 +1,7 @@
+// Candidate semantic rejection: readonly record may be an alias to mutable backing.
+pub async fnc main(): void {
+  const Profile view = infer record{value: 41};
+  let Future<int> worker = task { return view.value + 1; };
+  stdio.stdout.write(await worker);
+  return;
+}

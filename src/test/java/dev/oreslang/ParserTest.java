@@ -464,7 +464,7 @@ final class ParserTest {
         String source = """
                 define module math
                   fnc z(): complex {
-                    return 3 + 4i;
+                    return 3i + 4i;
                   }
                 end
 
@@ -521,9 +521,7 @@ final class ParserTest {
 
         Parser.ParseResult parsed = Parser.parseWithWarnings(source);
         assertDoesNotThrow(() -> TypeChecker.check(parsed.program()));
-        assertEquals(2, parsed.warnings().size());
-        assertTrue(parsed.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
+        assertTrue(parsed.warnings().isEmpty(), () -> parsed.warnings().toString());
     }
 
     @Test
@@ -685,7 +683,7 @@ final class ParserTest {
     }
 
     @Test
-    void conditionalDoProducesDeprecationWarningsButThenDoesNot() {
+    void canonicalDoAndCompatibilityThenProduceNoDeprecationWarnings() {
         Parser.ParseResult legacy = Parser.parseWithWarnings("""
                 define module app as
                   fnc choose(bool first, bool second): int {
@@ -699,9 +697,7 @@ final class ParserTest {
                   }
                 end
                 """);
-        assertEquals(2, legacy.warnings().size());
-        assertTrue(legacy.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
+        assertTrue(legacy.warnings().isEmpty(), () -> legacy.warnings().toString());
 
         Parser.ParseResult canonical = Parser.parseWithWarnings("""
                 define module app as
@@ -1321,7 +1317,7 @@ final class ParserTest {
     }
 
     @Test
-    void rejectsPointerSigilsAndLegacyMutableBorrowSyntaxAtParseTime() {
+    void rejectsPointerSigilsAndPointerIntrinsicsAtParseTime() {
         List<String> invalid = List.of(
                 """
                 pub fnc main(): void {
@@ -1357,13 +1353,6 @@ final class ParserTest {
                 """
                 pub fnc main(): void {
                   val value = 1;
-                  val loan = rt borrow mut value;
-                  return;
-                }
-                """,
-                """
-                pub fnc main(): void {
-                  val value = 1;
                   val pointer = rt ref value;
                   return;
                 }
@@ -1392,8 +1381,26 @@ final class ParserTest {
                 """
         );
         for (String source : invalid) {
-            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
         }
+    }
+
+    @Test
+    void legacyMutableBorrowOrderMatchesCanonicalCheckedAst() {
+        String canonical = "pub fnc main(): void { val value = 1; val loan = rt mut borrow value; return; }";
+        String compatibility = canonical.replace("rt mut borrow", "rt borrow mut");
+        assertEquals(Parser.parse(canonical), Parser.parse(compatibility));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(compatibility)));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(canonical.replace("rt mut borrow", "rt mut borrow mut")));
+    }
+
+    @Test
+    void mixedNumericOperandsRemainRejectedWithoutExplicitConversion() {
+        String mixed = "pub fnc z(): complex { return 3 + 4i; }";
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(mixed)));
+        assertTrue(error.getMessage().contains("identical numeric operand types"), error::getMessage);
     }
 
     private static List<List<String>> permutations(String... tokens) {
@@ -1448,10 +1455,33 @@ final class ParserTest {
 
         assertEquals(4, statement.branches().size());
         assertFalse(statement.elseBody().isEmpty());
-        assertEquals(2, parsed.warnings().size());
-        assertTrue(parsed.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
+        assertTrue(parsed.warnings().isEmpty(), () -> parsed.warnings().toString());
     }
 
+
+
+    @Test
+    void canonicalRemainderSourceRejectsLegacyPercentWithoutTouchingComments() {
+        for (String expression : List.of(
+                "7 % 3", "-7 % -3", "(8 % 3) * 2",
+                "-9223372036854775808 % -1",
+                "Integer.bitXor(7 % 3, 5)")) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("pub fnc main(): int { return " + expression + "; }"));
+            assertTrue(rejected.getMessage().contains("noncanonical '%' source operator"),
+                    rejected::toString);
+        }
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): int {
+                  return 7 * 6;
+                }
+                """));
+        // Lexical comments may contain percent signs without creating an
+        // arithmetic operator or modifying the parsed executable AST.
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc main(): int { return 42; } // removed % operator"));
+    }
 
 }

@@ -22,8 +22,62 @@ public final class OresCompiler {
         return ProtectedScalarMirV1.lower(Parser.parse(source));
     }
 
+    /**
+     * Opt-in source-AST -> actor-owned scalar state MIR. Only the verified
+     * single-field/single-critical-method subset may construct the executor.
+     * This is NOT general critical lowering, a runnable guest main(), or AOT.
+     */
+    public static dev.oreslang.runtime.SealedActorScalarMirV1.Plan
+            compileSealedActorScalarI64(String source) {
+        return dev.oreslang.runtime.SealedActorScalarMirV1.lower(source);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
-        return analyze(Parser.parse(source));
+        return parseAndTypeCheckNumericProfile(source,
+                dev.oreslang.runtime.AttoCheckedI64Profile.select(source));
+    }
+
+    /** Numeric profile is selected by the trusted source boundary, independently
+     * of the stricter source syntax/effect admission lane. */
+    public static Ast.Program parseAndTypeCheckNumericProfile(String source, boolean checkedI64) {
+        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(
+                Parser.parse(source), false, dev.oreslang.types.AutomaticPrelude.Profile.HOSTED, checkedI64);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /** Compile-time target profile for the automatic core/alloc prelude. */
+    public static Ast.Program parseAndTypeCheck(
+            String source, dev.oreslang.types.AutomaticPrelude.Profile preludeProfile) {
+        return analyze(Parser.parse(source), preludeProfile);
+    }
+
+    /**
+     * Opt-in AST and conservative ownership/effect check ONLY. This returns
+     * declaration metadata, never executable bytecode or runtime authority.
+     * parseAndTypeCheck continues rejecting singleton source.
+     */
+    public static java.util.List<Ast.SingletonDecl> checkSingletonDeclarationsOnly(String source) {
+        return SingletonCheckOnly.check(Parser.parseSingletonsCheckOnly(source));
+    }
+
+    /**
+     * Opt-in source compiler bridge for deeply immutable singleton literals.
+     * The checked code-unit identity must come from trusted module resolution.
+     * This does NOT enable ordinary guest singleton execution, mutable state,
+     * or implicit cross-isolate sharing. Normal parseAndTypeCheck stays closed.
+     */
+    public static SingletonSnapshotCompilerV1.Compiled compileSingletonSnapshotOnly(
+            String source, String checkedCodeUnitId) {
+        return SingletonSnapshotCompilerV1.compile(source, checkedCodeUnitId);
+    }
+
+    /**
+     * Inspect member-selection syntax only after normal type/ownership admission.
+     * No physical layout or performance conclusion is implied.
+     */
+    public static TypedLayoutAccessEvidence.Report inspectLayoutAccesses(String source) {
+        return TypedLayoutAccessEvidence.inspectSource(source);
     }
 
     /**
@@ -106,6 +160,14 @@ public final class OresCompiler {
         return new IncrementalCompiler().compileStrictAtto(sources, importResolutions);
     }
 
+    /**
+     * Compile a restricted source-checked affine transfer/drop instruction
+     * plan. The result is compiler IR, not native code or runtime admission.
+     */
+    public static AffineDropPlanV1.Plan elaborateAffineDropsStrictAtto(String source) {
+        return AffineDropPlanV1.lowerChecked(parseAndTypeCheckStrictAtto(source));
+    }
+
     /** Strict source-profile front end for closed-world build optimization. */
     public static TreeShaker.Result compileForBuildStrictAtto(
             String source, BuildOptions options) {
@@ -119,6 +181,15 @@ public final class OresCompiler {
         return checked.program();
     }
 
+    /** Runs type and ownership admission using the explicitly selected prelude profile. */
+    public static Ast.Program analyze(
+            Ast.Program program, dev.oreslang.types.AutomaticPrelude.Profile preludeProfile) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(program, preludeProfile);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
     /** Imported module contracts participate in type proofs, not runtime declarations. */
     public static Ast.Program analyze(
             Ast.Program program, java.util.Map<String, Ast.InterfaceDecl> importedContracts) {
@@ -127,6 +198,63 @@ public final class OresCompiler {
                         program, java.util.Map.of(), java.util.Map.of(), importedContracts);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return checked.program();
+    }
+
+    /**
+     * Minted only by OresCompiler after Oreslang type and ownership admission.
+     * Unlike AnalysisResult (a presentation value), this class has no public
+     * constructor and must not be decoded or synthesized from cache contents.
+     *
+     * Currently local-only: a cross-file admitted snapshot must instead be
+     * constructed by the future trusted SCC linker after linked resolution.
+     */
+    public static final class CheckedProgram {
+        private final Ast.Program program;
+        private final java.util.Map<String, TypeChecker.PublicNominalOrigin> nominalOrigins;
+        private final java.util.List<String> warnings;
+
+        private CheckedProgram(TypeChecker.CheckedPublicNominals verified) {
+            this.program = verified.program();
+            this.nominalOrigins = java.util.Map.copyOf(verified.resolvedNames());
+            this.warnings = java.util.List.copyOf(verified.warnings());
+        }
+
+        public Ast.Program program() { return program; }
+        public java.util.Map<String, TypeChecker.PublicNominalOrigin> nominalOrigins() {
+            return nominalOrigins;
+        }
+        public java.util.List<String> warnings() { return warnings; }
+    }
+
+    /** Local, no-import front-end admission with an unforgeable checked token. */
+    public static CheckedProgram admitLocal(Ast.Program program) {
+        return new CheckedProgram(TypeChecker.checkTypesAndSnapshotPublicNominals(program));
+    }
+
+    public static CheckedProgram parseAndAdmitLocal(String source) {
+        return admitLocal(Parser.parse(source));
+    }
+
+    /**
+     * Trusted source-text entry point for the restricted VerifiedScc v0
+     * semantic checker. Parsing is deliberately done inside the compiler,
+     * before immutable AST preflight, declaration staging and all-unit
+     * type/ownership verification. This does not perform runtime linking
+     * or grant permission to reuse native compiled objects.
+     */
+    public static VerifiedSccAdmission.VerifiedGraph parseAndVerifySccSources(
+            java.util.Map<String, String> sources,
+            java.util.Map<String, ExportInterfaceCodec.Header> environments,
+            java.util.Map<String, java.util.Map<String, String>> importOverrides) {
+        java.util.Objects.requireNonNull(sources, "source text map");
+        java.util.Map<String, String> frozen =
+                java.util.Map.copyOf(sources);
+        java.util.Map<String, Ast.Program> parsed = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, String> source : frozen.entrySet()) {
+            parsed.put(source.getKey(), Parser.parse(source.getValue()));
+        }
+        return VerifiedSccAdmission.verifyGraph(
+                parsed, environments, importOverrides);
     }
 
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */

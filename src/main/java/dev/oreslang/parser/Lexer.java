@@ -9,6 +9,8 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
+    // Bound hostile source while scanning, not only after constructing a name.
+    private static final int MAX_QUOTED_SYMBOL_UNITS = 1_024;
 
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
@@ -149,7 +151,7 @@ public final class Lexer {
                 else if (match('*')) blockComment();
                 else add(SLASH);
             }
-            case ' ', '\t' -> { }
+            case ' ', '\t', '\u000b', '\f' -> { }
             case '\r' -> { match('\n'); newline(); }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
@@ -202,6 +204,9 @@ public final class Lexer {
                 };
             }
             value.append(ch);
+            if (value.length() > MAX_QUOTED_SYMBOL_UNITS) {
+                throw error("quoted Symbol name exceeds normalization budget");
+            }
         }
         if (isAtEnd()) throw error("unterminated quoted Symbol literal");
         advance();
@@ -330,9 +335,27 @@ public final class Lexer {
         }
     }
 
+    private static boolean isBangKeyword(String text) {
+        return switch (text) {
+            case "trap", "throw", "raise", "panic", "copy", "take", "move",
+                 "borrow", "share", "pin", "drop", "pipe", "rpipe", "stop", "expand" -> true;
+            default -> false;
+        };
+    }
+
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
+        // Keep contextual bare identifiers and inequality tokens unchanged.
+        if (isBangKeyword(text)
+                && peek() == '!' && peekNext() != '='
+                && !(source.startsWith("!eq", current)
+                    && (current + 3 == source.length() || !isIdentPart(source.charAt(current + 3))))) {
+            int after = current + (text.equals("copy") && peekNext() == '!' ? 2 : 1);
+            if (after >= source.length() || " \t\r\n\u000b\f".indexOf(source.charAt(after)) < 0) {
+                throw error("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword");
+            }
+        }
 
         // Both 'nb' and 'select' are already reserved, so this spelling cannot
         // change the meaning of a legal subtraction expression. Critical and
@@ -349,7 +372,17 @@ public final class Lexer {
             tokens.add(new Token(SELECT, "select", line, keywordColumn));
             return;
         }
-        add(KEYWORDS.getOrDefault(text, IDENT));
+        Token.Type type = KEYWORDS.getOrDefault(text, IDENT);
+        // Bang-suffixed exceptional control is a single contiguous keyword.
+        // Preserve != and !eq, and do not consume an unrelated logical-not.
+        if ((type == TRAP || type == THROW || type == RAISE || type == PANIC)
+                && peek() == '!' && peekNext() != '='
+                && !(source.startsWith("!eq", current)
+                    && (current + 3 == source.length()
+                        || !isIdentPart(source.charAt(current + 3))))) {
+            advance();
+        }
+        add(type);
     }
 
     private boolean isAtEnd() { return current >= source.length(); }

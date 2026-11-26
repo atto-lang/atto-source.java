@@ -2,13 +2,15 @@
 //! This does NOT replace compiler admission, sandboxing, or runtime capability checks.
 use std::{collections::HashSet, env, fs, path::Path, process};
 
-const MAX_FILE: u64 = 2 * 1024 * 1024;
+// Match CoreLibrarySources.MAX_SOURCE_BYTES (1 MiB), including the boundary.
+const MAX_FILE: u64 = 1024 * 1024;
 const MAX_FILES: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Kind {
     Name,
     Literal,
+    TemplateLiteral,
     Symbol(char),
 }
 #[derive(Clone, Debug)]
@@ -90,7 +92,9 @@ fn lex(s: &str) -> Result<Vec<Token>, String> {
                     ));
                 }
                 out.push(Token {
-                    kind: Kind::Literal,
+                    // Template syntax may be valid in expressions but cannot
+                    // be a compiler-owned library import path.
+                    kind: if quote == 96 { Kind::TemplateLiteral } else { Kind::Literal },
                     text: value.into(),
                     line: initial,
                 });
@@ -119,6 +123,29 @@ fn lex(s: &str) -> Result<Vec<Token>, String> {
         }
     }
     Ok(out)
+}
+
+fn is_safe_library_import(name: &str, allowed_root: &str) -> bool {
+    let Some(relative) = name.strip_prefix(allowed_root) else {
+        return false;
+    };
+    // Java bounds the FULL path including std/ or ores.core/, not just the suffix.
+    if relative.is_empty() || name.len() > 4096 || relative.contains("..") {
+        return false;
+    }
+    let segments: Vec<_> = relative.split('/').collect();
+    if segments.len() > 32 {
+        return false;
+    }
+    segments.into_iter().all(|segment| {
+        let bytes = segment.as_bytes();
+        bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+            && bytes.iter().all(|b| {
+                b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-' || *b == b'.'
+            })
+            && !segment.ends_with(".atto.ores")
+            && !segment.ends_with(".ores.atto")
+    })
 }
 
 fn inspect(source: &str) -> Result<(), String> {
@@ -152,22 +179,22 @@ fn inspect_with_root(source: &str, allowed_root: &str) -> Result<(), String> {
                 return Err(format!("line {}: oversized import", t.line));
             }
             let statement = &rest[..size];
+            // A source import must have exactly one, unspliced literal path.
+            // The compiler still owns the final syntax and type decision.
+            let mut source_at = None;
             for (j, part) in statement.iter().enumerate() {
                 if part.name("from") {
-                    let src = &statement[j + 1..];
-                    if src.is_empty() {
-                        return Err(format!("line {}: missing import source", part.line));
-                    }
-                    let name = src.iter().map(|t| t.text.as_str()).collect::<String>();
-                    if !name.starts_with(allowed_root)
-                        || name.contains("..")
-                        || name.starts_with('/')
-                        || name.contains(':')
-                        || name.contains('\\')
-                    {
-                        return Err(format!("line {}: unsafe stdlib import source", part.line));
+                    if source_at.replace(j).is_some() {
+                        return Err(format!("line {}: multiple import sources", t.line));
                     }
                 }
+            }
+            let at = source_at.ok_or_else(|| format!("line {}: import without from", t.line))?;
+            if at + 2 != statement.len() || statement[at + 1].kind != Kind::Literal {
+                return Err(format!("line {}: import must have one literal source", t.line));
+            }
+            if !is_safe_library_import(&statement[at + 1].text, allowed_root) {
+                return Err(format!("line {}: unsafe stdlib import source", t.line));
             }
         }
     }
@@ -281,7 +308,7 @@ mod tests {
         assert!(inspect_core("import module n from 'ores.std/core';").is_err());
         assert!(inspect_core("do java { System.exit(0); }").is_err());
         assert!(inspect_core("import class Runtime from 'java:java.lang.Runtime';").is_err());
-        assert!(inspect_core("// java {}\\nfnc f(): void {}").is_ok());
+        assert!(inspect_core("// java {}\nfnc f(): void {}").is_ok());
     }
 
     #[test]
@@ -296,8 +323,56 @@ mod tests {
         assert!(scan_core(&root).is_err());
         fs::remove_file(root.join("numeric.ores")).unwrap();
         fs::write(root.join("numeric.atto"),
-            "import module A from 'std/core';\\ndefine module numeric as end").unwrap();
+            "import module A from 'std/core';\ndefine module numeric as end").unwrap();
         assert!(scan_core(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn import_sources_must_be_single_unambiguous_literals() {
+        assert!(inspect("import module core from 'std/core';").is_ok());
+        assert!(inspect_core("import module n from 'ores.core/numeric.atto';").is_ok());
+        for invalid in [
+            "import module core;",
+            "import module core from;",
+            "import module core from 'std/core' + 'extra';",
+            "import module core from `std/core`;",
+            "import module core from 'std/core' from 'std/assert';",
+            "import module core from 'std//core';",
+            "import module core from 'std/%2e%2e/core';",
+            "import module core from 'std/core.atto.ores';",
+            "import module core from 'std/../core';",
+            "import module core from 'ores.core/numeric';",
+        ] {
+            assert!(inspect(invalid).is_err(), "{invalid}");
+        }
+        assert!(inspect_core("import module n from 'std/core';").is_err());
+        assert!(inspect_core("import module n from 'ores.core//numeric';").is_err());
+    }
+
+    #[test]
+    fn full_path_limit_matches_java_and_templates_cannot_name_libraries() {
+        let admitted = format!("std/{}", "a".repeat(4096 - "std/".len()));
+        let oversized = format!("std/{}", "a".repeat(4097 - "std/".len()));
+        assert_eq!(admitted.len(), 4096);
+        assert_eq!(oversized.len(), 4097);
+        assert!(is_safe_library_import(&admitted, "std/"));
+        assert!(!is_safe_library_import(&oversized, "std/"));
+        assert!(inspect("let x = `std/core`;").is_ok());
+        assert!(inspect("import module core from `std/core`;").is_err());
+    }
+
+    #[test]
+    fn packaged_source_budget_matches_java_classpath_admission() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = env::temp_dir().join(format!("atto-source-quota-{}-{stamp}", process::id()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("numeric.atto");
+        fs::write(&path, "a".repeat(MAX_FILE as usize)).unwrap();
+        assert_eq!(scan_core(&root).unwrap(), 1, "exactly 1 MiB is permitted");
+        fs::write(&path, "a".repeat(MAX_FILE as usize + 1)).unwrap();
+        assert!(scan_core(&root).is_err(), "oversized guest source must be rejected");
         fs::remove_dir_all(root).unwrap();
     }
 

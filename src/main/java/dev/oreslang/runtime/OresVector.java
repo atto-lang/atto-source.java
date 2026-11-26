@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Objects;
 
@@ -87,8 +88,13 @@ public final class OresVector extends ArrayList<Object> {
     @Override
     public boolean addAll(Collection<?> values) {
         Objects.requireNonNull(values, "Vector.addAll values");
+        // size() is not an authority: a caller may supply a Collection whose
+        // toArray() contains more elements than its reported size. Snapshot
+        // first, then check the actual pending insertion count before mutating.
         admitAdditional(values.size());
-        boolean changed = super.addAll(values);
+        Object[] snapshot = values.toArray().clone();
+        admitAdditional(snapshot.length);
+        boolean changed = super.addAll(Arrays.asList(snapshot));
         if (changed) recordGrowth();
         return changed;
     }
@@ -97,7 +103,9 @@ public final class OresVector extends ArrayList<Object> {
     public boolean addAll(int index, Collection<?> values) {
         Objects.requireNonNull(values, "Vector.addAll values");
         admitAdditional(values.size());
-        boolean changed = super.addAll(index, values);
+        Object[] snapshot = values.toArray().clone();
+        admitAdditional(snapshot.length);
+        boolean changed = super.addAll(index, Arrays.asList(snapshot));
         if (changed) recordGrowth();
         return changed;
     }

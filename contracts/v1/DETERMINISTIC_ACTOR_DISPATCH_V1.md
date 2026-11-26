@@ -4,7 +4,7 @@
 
 ## Scope
 
-This revision adds a package-private `ActorRuntime.DispatcherFactoryForTesting` constructor seam. Only Java host-runtime tests in `dev.oreslang.runtime` may opt into a bounded, manually driven `ExecutorService`. Production constructors continue constructing the exact same private/shared/untrusted actor dispatchers with no injected overhead. The test does not expose scheduler authority to .atto guest code or accept guest-written trace files.
+This revision adds a package-private `ActorRuntime.DispatcherFactoryForTesting` constructor seam. Only Java host-runtime tests in `dev.oreslang.runtime` may opt into a bounded, manually driven `ExecutorService` for trusted private/shared lanes only. Production constructors continue constructing the exact same private/shared/untrusted actor dispatchers with no injected overhead. The test does not expose scheduler authority to .atto guest code or accept guest-written trace files.
 
 `DeterministicActorDispatchTest` drives the actual `ActorRuntime` mailbox scheduling/dispatch lifecycle, physical-turn checks, `TurnExecutor` callback and `ActorRef` API. Two shared actors each receive one admitted message, assert real actor context/generation, and terminate from the receiver. A separate FIFO regression sends two messages to one actor and checks in-order delivery across physically controlled turns. The test driver queues accepted physical turns and selects their order explicitly without invoking guest code on producer or scheduler callbacks.
 
@@ -12,7 +12,7 @@ The test proves *bounded host-runtime order controllability*, not end-to-end det
 
 ## Safety and fail-closed contract
 
-- The injected factory is package-private, never a public language/runtime capability. Normal constructors are unchanged.
+- The injected factory is package-private, never a public language/runtime capability. Adversarial runtime construction rejects injection, and the untrusted dispatcher is never replaced. Normal constructors are unchanged.
 - A controlled executor enqueues, never runs work inline from `execute()`. The test driver selects one eligible runnable at a time; a selected runnable passes through the real physical actor turn lease and is never recursively re-entered.
 - The test driver bounds per-kind queued callbacks, total steps and runs all pending turns to completion before closing the runtime. The underlying production startup checks are not claimed for this test-only executor.
 - Trace decisions record the **complete enabled ticket set**, selected ticket and observed actor-message prefix. Replay rejects mutated enabled sets, nonexistent choices, missing/excess decisions and changed effects rather than silently falling back to a random scheduler.

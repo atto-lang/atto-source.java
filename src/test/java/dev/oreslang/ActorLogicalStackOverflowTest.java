@@ -125,8 +125,10 @@ final class ActorLogicalStackOverflowTest {
                 """);
         assertNotNull(run.failure);
         assertTrue(run.failure.getMessage().contains("StackOverflow: logical stack"), run.failure::getMessage);
-        // main + (quota - 1) dive frames each ran their defer exactly once.
-        assertEquals(LogicalStackQuota.segmentFrames() - 1, run.output.length(),
+        // A recursive callee runs as a heap-held source continuation (#2657),
+        // charged against the heap-frame quota: main + (quota - 1) dive frames
+        // each ran their defer exactly once.
+        assertEquals(LogicalStackQuota.heapFrames() - 1, run.output.length(),
                 "every live frame's defer must run exactly once during overflow unwind");
         assertTrue(run.output.chars().allMatch(ch -> ch == 'c'));
     }
