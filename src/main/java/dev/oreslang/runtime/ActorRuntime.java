@@ -72,6 +72,9 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    /** Receive invocation identity exists only during its admitted source handler. */
+    private static final ThreadLocal<ActorReceiveInvocation> CURRENT_RECEIVE_INVOCATION =
+            new ThreadLocal<>();
     /** Current actor-owned source task's logical quota, never a carrier's quota. */
     private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
             new ThreadLocal<>();
@@ -223,6 +226,12 @@ public final class ActorRuntime implements AutoCloseable {
     static ActorFrameArena currentActorFrameArena() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.frameArena();
+    }
+
+    /** Source compiler seam: never grants a receive stack to host callbacks. */
+    static ActorReceiveInvocation currentReceiveInvocation() {
+        ActorReceiveInvocation invocation = CURRENT_RECEIVE_INVOCATION.get();
+        return currentActorFrameArena() == null ? null : invocation;
     }
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
@@ -2560,6 +2569,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         future.whenCompleteRuntime((ignored, failure) -> {
             if (!enqueueContinuation(cell.ref.id(), () -> {
+                // This is the authenticated serialized actor continuation lane,
+                // never the Future completion thread. Release the same logical
+                // receive stack only after the handler has physically exited.
+                ActorReceiveInvocation invocation = cell.activeReceiveInvocation;
+                if (invocation != null) {
+                    cell.activeReceiveInvocation = null;
+                    invocation.completeSuspended();
+                }
                 long completedSequence;
                 synchronized (cell.lifecycleLock) {
                     completedSequence = cell.activeMail == null
@@ -7767,6 +7784,8 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        /** One persistent source receive stack until its asynchronous completion. */
+        private ActorReceiveInvocation activeReceiveInvocation;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -8711,10 +8730,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new GuestCallDepthExceededException(
                             GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
                 }
-                if (frameArena.isPoisoned()) {
-                    throw new ActorFrameArena.BudgetExceeded(
-                            "actor-owned frame byte quota exhausted");
-                }
+                frameArena.checkTerminalBudgetFailure();
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput()
@@ -8772,6 +8788,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
+                            if (codeExecutor != null) {
+                                if (activeReceiveInvocation != null) {
+                                    throw new IllegalStateException(
+                                            "source receive stack already belongs to live invocation");
+                                }
+                                activeReceiveInvocation = ActorReceiveInvocation.begin(frameArena);
+                                CURRENT_RECEIVE_INVOCATION.set(activeReceiveInvocation);
+                            }
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -8794,6 +8818,19 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
+                                CURRENT_RECEIVE_INVOCATION.remove();
+                                if (activeReceiveInvocation != null) {
+                                    if (sourceReceiveSuspended) {
+                                        // A suspended source receive retains its own
+                                        // execution-ID stack and aggregate byte charge.
+                                        activeReceiveInvocation.suspendAfterHandlerExit();
+                                    } else {
+                                        ActorReceiveInvocation completed = activeReceiveInvocation;
+                                        activeReceiveInvocation = null;
+                                        if (frameArena.isPoisoned()) completed.cancelAfterFailure();
+                                        else completed.finish();
+                                    }
+                                }
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
@@ -8814,10 +8851,7 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new GuestCallDepthExceededException(
                                 GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
                     }
-                    if (frameArena.isPoisoned()) {
-                        throw new ActorFrameArena.BudgetExceeded(
-                                "actor-owned frame byte quota exhausted");
-                    }
+                    frameArena.checkTerminalBudgetFailure();
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.
                     if (!envelope.isContinuation() && !sourceReceiveSuspended) {

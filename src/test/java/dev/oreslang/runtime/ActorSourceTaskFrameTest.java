@@ -2,6 +2,8 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -289,7 +291,7 @@ final class ActorSourceTaskFrameTest {
                         assertThrows(IllegalStateException.class,
                                 () -> taskFrame.bindLexicalScalar(77, "shadow", 12L),
                                 "task-root scalar slots cannot alias an active nested call chain");
-                        assertFalse(owner.isPoisoned(),
+                        assertFalse(arena.get().isPoisoned(),
                                 "rejected root/call-frame alias must not poison the actor");
                         return OresScheduler.await(gate);
                     }
