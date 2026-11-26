@@ -866,24 +866,22 @@ public final class ChannelRuntime {
      * This deliberately conservative Copy gate is not a substitute for
      * compile-time ownership and lifetime checking.
      */
+    private static boolean isExactImmutableScalar(Object value) {
+        if (value == null) return false;
+        Class<?> type = value.getClass();
+        return type == String.class || type == Boolean.class
+                || type == Character.class || type == Byte.class
+                || type == Short.class || type == Integer.class
+                || type == Long.class || type == Float.class
+                || type == Double.class || type == java.math.BigInteger.class
+                || type == java.math.BigDecimal.class || type == OresSymbol.class;
+    }
+
     private static void requireReusableCase(SelectCase selectCase) {
-        if (selectCase instanceof WriteCase<?> write) {
-            Object value = write.value();
-            if (!(value instanceof String
-                    || value instanceof Boolean
-                    || value instanceof Character
-                    || value instanceof Byte
-                    || value instanceof Short
-                    || value instanceof Integer
-                    || value instanceof Long
-                    || value instanceof Float
-                    || value instanceof Double
-                    || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal
-                    || value instanceof OresSymbol)) {
-                throw new IllegalArgumentException(
-                        "reusable select write requires an immutable Copy payload");
-            }
+        if (selectCase instanceof WriteCase<?> write
+                && !isExactImmutableScalar(write.value())) {
+            throw new IllegalArgumentException(
+                    "reusable select write requires an immutable Copy payload");
         }
     }
 
@@ -1000,13 +998,7 @@ public final class ChannelRuntime {
          */
         private static void requireStableKey(Object key) {
             Objects.requireNonNull(key, "key");
-            Class<?> type = key.getClass();
-            if (type != String.class && type != Boolean.class
-                    && type != Character.class && type != Byte.class
-                    && type != Short.class && type != Integer.class
-                    && type != Long.class && type != Float.class
-                    && type != Double.class && type != java.math.BigInteger.class
-                    && type != java.math.BigDecimal.class && type != OresSymbol.class) {
+            if (!isExactImmutableScalar(key)) {
                 throw new IllegalArgumentException(
                         "dynamic select key requires immutable scalar identity");
             }
