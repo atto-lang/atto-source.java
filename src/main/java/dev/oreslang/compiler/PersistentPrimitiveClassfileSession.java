@@ -39,7 +39,71 @@ public final class PersistentPrimitiveClassfileSession {
     }
     public Build compile(String source,String entry,int arity,RealtimePrimitiveCompiler.Budget budget,
                          byte[] ledger,byte[] pin,byte[] master,boolean cold)throws IOException{
-        String key=key(source,entry,arity,budget);Path name=Path.of("slot-"+key.charAt(0));
+        return compileKey(key(source,entry,arity,budget),source,null,entry,arity,budget,ledger,pin,master,cold);
+    }
+
+    /** Trusted host approved closed i32 provider inventory. No implicit
+     * narrowing of Atto int, general namespace linking or typed AST storage.
+     * Host must serialize authority epoch rotation and protect filesystem.
+     */
+    public record ProviderInput(String path,String namespace,String symbol,int arity,String source){}
+    private static boolean identifier(String s){return s!=null&&s.matches("[A-Za-z_][A-Za-z0-9_]{0,127}");}
+    private static IllegalArgumentException denied(String detail){return new IllegalArgumentException("E_NAMESPACE_INVENTORY: "+detail);}
+    public Build compileBoundProvider(List<ProviderInput> inventory,String expectedManifest,String expectedSources,
+            String namespace,String symbol,int arity,RealtimePrimitiveCompiler.Budget budget,
+            byte[] ledger,byte[] pin,byte[] master,boolean cold)throws IOException{
+        byte[] authority=CompilerCacheLedger.admit(scope,ledger,pin,master);
+        Arrays.fill(authority,(byte)0);
+        if(inventory==null||inventory.isEmpty()||inventory.size()>128||budget==null)throw denied("member budget");
+        var ordered=new TreeMap<String,ProviderInput>();var names=new HashSet<String>();
+        for(var p:List.copyOf(inventory)){
+            if(p.path()==null||p.path().length()>256||!p.path().matches("[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*\\.atto")||
+                !identifier(p.namespace())||!identifier(p.symbol())||p.arity()<0||p.arity()>4||
+                p.source()==null||p.source().length()>4096||!StandardCharsets.UTF_8.newEncoder().canEncode(p.source())||
+                p.source().getBytes(StandardCharsets.UTF_8).length>4096||p.source().indexOf(0)>=0||
+                ordered.putIfAbsent(p.path(),p)!=null||!names.add(p.namespace()+"."+p.symbol()))
+                throw denied("invalid or duplicate member");
+        }
+        var manifest=new StringBuilder("atto.java.i32-provider-inventory.v1\n");
+        var sources=new StringBuilder("atto.java.i32-provider-sources.v1\n");
+        for(var p:ordered.values()){
+            manifest.append(p.path()).append('\n').append(p.namespace()).append('\n').append(p.symbol()).append('\n').append(p.arity()).append('\n');
+            sources.append(p.path()).append('\n').append(digest(p.source())).append('\n');
+        }
+        String manifestHash=digest(manifest.toString());
+        if(!manifestHash.equals(expectedManifest)||!digest(sources.toString()).equals(expectedSources))
+            throw new IllegalArgumentException("E_NAMESPACE_PIN: inventory mismatch");
+        ProviderInput selected=null;dev.oreslang.ast.Ast.Program checked=null;
+        for(var p:ordered.values()){
+            // Exact header and a single explicitly typed public provider.
+            // No substitution of i32 for int; original body is type checked.
+            String prefix="namespace "+p.namespace()+";\n";
+            if(!p.source().startsWith(prefix))throw denied("explicit namespace required");
+            String body=p.source().substring(prefix.length());
+            var pattern=java.util.regex.Pattern.compile("pub fnc "+java.util.regex.Pattern.quote(p.symbol())+
+                "\\(([^\\n()]*)\\): i32 \\{ return ([A-Za-z_0-9+*() -]{1,1024}); \\}\\n");
+            var match=pattern.matcher(body);
+            if(!match.matches())throw denied("closed i32 declaration required");
+            var params=match.group(1).isEmpty()?new String[0]:match.group(1).split(", ",-1);
+            if(params.length!=p.arity()||Arrays.stream(params).anyMatch(x->!x.matches("i32 [A-Za-z_][A-Za-z0-9_]{0,127}")))
+                throw denied("exact i32 parameters");
+            var program=OresCompiler.parseAndTypeCheck(body);
+            RealtimePrimitiveCompiler.analyze(program,p.symbol(),p.arity(),budget);
+            if(p.namespace().equals(namespace)&&p.symbol().equals(symbol)){
+                if(p.arity()!=arity)throw new IllegalArgumentException("E_NAMESPACE_ARITY: incompatible selected call");
+                selected=p;checked=program;
+            }
+        }
+        if(selected==null)throw new IllegalArgumentException("E_NAMESPACE_SYMBOL: selected provider absent");
+        String key=CompilerCacheKey.encode(new CompilerCacheKey.Input("jvm-i32-provider-bound-input-v2",scope,"source-unit",selected.path(),
+            compiler,toolchain,digest("jvm-classfile8"),digest("closed-i32-provider-v1:"+budget.maxSourceSteps()+":"+budget.maxCallDepth()),
+            digest(selected.source()),digest(namespace+"\n"+symbol+"\n"+arity+"\n"+selected.path()),null,
+            List.of(new CompilerCacheKey.Dependency("provider-inventory",manifestHash))));
+        return compileKey(key,null,checked,symbol,arity,budget,ledger,pin,master,cold);
+    }
+    private Build compileKey(String key,String source,dev.oreslang.ast.Ast.Program checked,String entry,int arity,
+            RealtimePrimitiveCompiler.Budget budget,byte[] ledger,byte[] pin,byte[] master,boolean cold)throws IOException{
+        Path name=Path.of("slot-"+key.charAt(0));
         byte[] secret=CompilerCacheLedger.admit(scope,ledger,pin,master);
         try(var dir=Directory.open(root)){
             if(!identity.equals(dir.identity.fileKey()))throw new IOException("E_CACHE_PATH: root changed");
@@ -56,7 +120,7 @@ public final class PersistentPrimitiveClassfileSession {
             // checker and post-lowering classfile audit remain authoritative.
             Path work=Files.createTempDirectory(root,"compiler-",PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
             try{
-                var artifact=OresCompiler.compileRealtimePrimitive(source,entry,arity,budget,work);
+                var artifact=checked==null?OresCompiler.compileRealtimePrimitive(source,entry,arity,budget,work):RealtimePrimitiveCompiler.compile(checked,entry,arity,budget,work);
                 byte[] bytes;
                 try(var input=Files.newInputStream(artifact.classFile(),LinkOption.NOFOLLOW_LINKS)){
                     bytes=input.readNBytes(CompilerArtifactReceipt.MAX_ARTIFACT+1);
