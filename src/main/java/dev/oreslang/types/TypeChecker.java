@@ -3627,7 +3627,18 @@ public final class TypeChecker {
                     validateLambdaAgainstExpected(lambda,
                             new Function(List.of(), Primitive.VOID), env, generics, self);
                 } else {
-                    typeOf(defer.expression(), env, generics, self);
+                    Type result = typeOf(defer.expression(), env, generics, self);
+                    // The current evaluator delays ordinary expressions. It
+                    // cannot bind a callable result at registration or invoke
+                    // that result on exit. Never silently drop such a callback.
+                    if (result instanceof Function) {
+                        throw new IllegalArgumentException(
+                                "defer callable values and factories require checked registration-time lowering");
+                    }
+                    if (result instanceof Named named && named.name().equals("Result")) {
+                        throw new IllegalArgumentException(
+                                "defer must handle a fallible Result explicitly");
+                    }
                 }
             } finally {
                 // Defer executes later; checking its expression now must not
