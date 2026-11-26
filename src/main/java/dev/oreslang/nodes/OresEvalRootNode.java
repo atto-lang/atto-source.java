@@ -2861,7 +2861,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env parent,
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
+            ArrayDeque<RegisteredDefer> defers = new ArrayDeque<>();
             SourceCleanupFrame cleanup = task.registerSourceCleanup(
                     (owner, finished) -> runOneDefer(
                             owner, env, defers,
@@ -2917,7 +2917,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 List<Ast.Stmt> statements,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 int index,
                 SourceFlowCont continuation) {
             if (index >= statements.size()) {
@@ -3055,7 +3055,7 @@ public final class OresEvalRootNode extends RootNode {
         private void finishBlock(
                 SourceTask task,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlow initialFlow,
                 SourceFlowCont continuation) {
             if (defers.isEmpty()) {
@@ -3079,14 +3079,32 @@ public final class OresEvalRootNode extends RootNode {
                     continuation);
         }
 
+        // Runtime-owned registration, not a guest-visible callable token.
+        // A delayed expression retains its lexical environment via the block;
+        // a bound factory has already produced its owned callback value.
+        private record RegisteredDefer(Ast.Expr delayed, Invokable bound) {
+            private RegisteredDefer {
+                if ((delayed == null) == (bound == null)) {
+                    throw new IllegalArgumentException("exactly one defer registration form required");
+                }
+            }
+        }
+
+        private RegisteredDefer bindDeferredFactory(Object value) {
+            if (!(value instanceof Invokable callable)) {
+                throw new IllegalStateException("checked defer factory did not produce a callable");
+            }
+            return new RegisteredDefer(null, callable);
+        }
+
         private void runOneDefer(
                 SourceTask task,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlow currentFlow,
                 SourceFlowCont continuation) {
-            Ast.Expr defer = defers.pollFirst();
-            if (defer == null) {
+            RegisteredDefer registration = defers.pollFirst();
+            if (registration == null) {
                 SourceFlow completed = currentFlow;
                 try {
                     env.releaseMutexGuards(
@@ -3098,6 +3116,19 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            if (registration.bound() != null) {
+                SourceFlow flow = currentFlow;
+                try {
+                    invoke(invokableInvocation(registration.bound(), List.of()));
+                } catch (RuntimeException | Error failure) {
+                    flow = mergeCleanupFailure(currentFlow, failure);
+                }
+                SourceFlow next = flow;
+                task.dispatchImmediateSourceCallback(
+                        () -> runOneDefer(task, env, defers, next, continuation));
+                return;
+            }
+            Ast.Expr defer = registration.delayed();
             evalSuspendableExpr(
                     task,
                     defer instanceof Ast.LambdaExpr
@@ -3127,7 +3158,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Stmt stmt,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlowCont continuation) {
             try {
                 if (stmt instanceof Ast.UsingBorrowStmt) {
@@ -3297,8 +3328,27 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.DeferStmt defer) {
-                    defers.push(defer.expression());
-                    continuation.accept(task, SourceFlow.normal());
+                    if (defer.boundFactory() != null) {
+                        evalSuspendableExpr(task, defer.boundFactory(), env,
+                                (owner, value, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(owner, SourceFlow.throwing(failure));
+                                        return;
+                                    }
+                                    RegisteredDefer registration;
+                                    try {
+                                        registration = bindDeferredFactory(value);
+                                    } catch (RuntimeException | Error invalid) {
+                                        continuation.accept(owner, SourceFlow.throwing(invalid));
+                                        return;
+                                    }
+                                    defers.push(registration);
+                                    continuation.accept(owner, SourceFlow.normal());
+                                });
+                    } else {
+                        defers.push(new RegisteredDefer(defer.expression(), null));
+                        continuation.accept(task, SourceFlow.normal());
+                    }
                     return;
                 }
 
@@ -7495,7 +7545,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+            ArrayDeque<RegisteredDefer> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             Throwable pendingFailure = null;
             try {
@@ -7513,11 +7563,16 @@ public final class OresEvalRootNode extends RootNode {
                 // Always run the entire LIFO cleanup stack. In particular,
                 // a failed defer must not prevent remaining resource cleanup.
                 while (!deferred.isEmpty()) {
-                    Ast.Expr cleanup = deferred.pop();
+                    RegisteredDefer registration = deferred.pop();
                     try {
-                        eval(cleanup instanceof Ast.LambdaExpr
-                                ? new Ast.CallExpr(cleanup, List.of())
-                                : cleanup, env);
+                        if (registration.bound() != null) {
+                            invoke(invokableInvocation(registration.bound(), List.of()));
+                        } else {
+                            Ast.Expr cleanup = registration.delayed();
+                            eval(cleanup instanceof Ast.LambdaExpr
+                                    ? new Ast.CallExpr(cleanup, List.of())
+                                    : cleanup, env);
+                        }
                     } catch (RuntimeException | Error failure) {
                         pendingFailure = selectCleanupFailure(pendingFailure, failure);
                     }
@@ -7542,7 +7597,7 @@ public final class OresEvalRootNode extends RootNode {
         private void executeStatement(
                 Ast.Stmt stmt,
                 Env env,
-                ArrayDeque<Ast.Expr> deferred,
+                ArrayDeque<RegisteredDefer> deferred,
                 boolean inheritedTailBarrier) {
             // Defense in depth: source can reach this evaluator through host
             // adapters that do not run the normal TypeChecker on every call.
@@ -7644,7 +7699,13 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
-            if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.DeferStmt defer) {
+                RegisteredDefer registration = defer.boundFactory() == null
+                        ? new RegisteredDefer(defer.expression(), null)
+                        : bindDeferredFactory(eval(defer.boundFactory(), env));
+                deferred.push(registration);
+                return;
+            }
             if (stmt instanceof Ast.BlockStmt block) {
                 executeBlock(
                         block.body(),
