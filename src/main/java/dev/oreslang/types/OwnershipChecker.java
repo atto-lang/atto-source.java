@@ -1358,6 +1358,9 @@ public final class OwnershipChecker {
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
         }
+        if (isBorrowValue(value) && !storedType.isBorrow()) {
+            throw error(E_LIFETIME, "borrowed value cannot be bound as an owned type; preserve the borrowed type and lifetime");
+        }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error(E_GUARD, "guard-bearing values are linear and cannot use let; bind them once with val");
         }
@@ -1778,6 +1781,16 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            // Forward-port the ownership boundary from #644. Optional
+            // wrapping cannot convert a live borrow into an owned payload.
+            if (cast.mode() == Ast.CastMode.OPTIONAL && isBorrowValue(source)) {
+                throw error(E_LIFETIME, "optional cast of borrowed value cannot acquire ownership or escape its lifetime");
+            }
+            // A cast is not a move, copy or lifetime conversion. Preserve
+            // the non-owning capability rather than manufacturing an owner.
+            if (isBorrowValue(source) && !cast.targetType().isBorrow()) {
+                throw error(E_LIFETIME, "borrowed value cannot be bound as an owned type or cast into owned data");
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
