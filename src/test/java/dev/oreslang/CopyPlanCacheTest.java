@@ -20,6 +20,39 @@ final class CopyPlanCacheTest {
     }
 
     @Test
+    void concurrentMissesPublishOnePlanAndRespectBothLimits() throws Exception {
+        var cache = new CopyPlanCache<Object>(64, 128);
+        var same = new Object();
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+            var barrier = new java.util.concurrent.CyclicBarrier(8);
+            var results = new java.util.ArrayList<java.util.concurrent.Future<Object>>();
+            for (int i = 0; i < 8; i++) {
+                results.add(pool.submit(() -> cache.getOrCompute(same, () -> {
+                    try {
+                        barrier.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (Exception failure) {
+                        throw new IllegalStateException(failure);
+                    }
+                    return new Object();
+                }, p -> 2)));
+            }
+            Object plan = results.getFirst().get(10, java.util.concurrent.TimeUnit.SECONDS);
+            for (var result : results) {
+                assertSame(plan, result.get(10, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            assertEquals(1, cache.size());
+            assertEquals(2, cache.weight());
+            var other = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int i = 0; i < 256; i++) {
+                other.add(pool.submit(() -> cache.getOrCompute(new Object(), Object::new, p -> 2)));
+            }
+            for (var result : other) result.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(64, cache.size());
+            assertEquals(128, cache.weight());
+        }
+    }
+
+    @Test
     void weightAndEntryLimitsAndFailuresNeverPoisonCache() {
         var cache = new CopyPlanCache<String>(2, 4);
         var key = new Object();
