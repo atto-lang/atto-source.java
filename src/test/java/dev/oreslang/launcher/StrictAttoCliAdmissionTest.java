@@ -1,6 +1,4 @@
-package dev.oreslang;
-
-import dev.oreslang.launcher.OresMain;
+package dev.oreslang.launcher;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
