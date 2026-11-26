@@ -119,6 +119,23 @@ final class SelectFormParserGuardTest {
     }
 
     @Test
+    void countedSelectCannotBypassTrackedFutureAdmission() {
+        for (String prefix : new String[] {"select", "nb select", "await select", "await nb select"}) {
+            for (String generic : new String[] {"", "<int>"}) {
+                for (String count : new String[] {"(0)", "(1)", "(3)", "(-1)", "(true)", "(1 + 2)"}) {
+                    for (String body : new String[] {" { when readch ch: int n -> { return n; } }",
+                            " over when readch ch: int n -> { return n; } end"}) {
+                        String source = "fnc bad(Channel<int> ch): int { return " + prefix + generic + count + body + "; }";
+                        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                                () -> OresCompiler.parseAndTypeCheck(source), source);
+                        assertTrue(failure.getMessage().contains("tracked Future result lowering"), failure::getMessage);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void overDelimiterDoesNotAdmitDoTrySelect() {
         String source = """
                 pub fnc main(): void {

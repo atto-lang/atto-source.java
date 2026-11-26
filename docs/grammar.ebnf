@@ -359,8 +359,9 @@ catch_header    = "(" [ IDENT | "Error" IDENT ] ")" ;
    Braced tries do not use end; arm styles cannot mix within one try. *)
 
 (* Implemented legacy admission below; canonical static expression target is
-   [ "nb" ] "select" [ "<" type_ref ">" ] [ select_policy ] select_static_body,
-   producing Future<T>. Unary await consumes that Future; nb is deprecated.
+   [ "nb" ] "select" [ "<" type_ref ">" ] [ "(" expression ")" ] [ select_policy ] select_static_body,
+   producing Future<T>, or Future<Array<T>> with an explicit count.
+   Unary await consumes that Future; nb is deprecated.
    Not currently lowered; see contracts/v1/static-select-result-and-return.md. *)
 select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
                   "select" [ select_policy ] select_static_body ;

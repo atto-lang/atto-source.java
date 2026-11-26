@@ -7132,6 +7132,9 @@ public final class Parser {
         // Static select expressions will return a tracked Future, including
         // explicit select<T>. Do not lower them as legacy blocking/detached
         // statements or pretend that parsing a generic admits the feature.
+        if (check(LPAREN)) {
+            throw error(peek(), "counted select requires tracked Future result lowering and bounded batch storage");
+        }
         if (check(LT)) {
             throw error(peek(), "typed static select<T> requires tracked Future result lowering");
         }

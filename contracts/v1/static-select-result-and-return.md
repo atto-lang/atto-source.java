@@ -50,6 +50,19 @@ further decision about its spelling. Dynamic select-from migration remains
 separately coordinated, rather than changing existing Option-valued APIs
 without an edition/compatibility plan.
 
+## Counted selection target
+
+`select(n)` and `select<T>(n)` return Future<Array<T>>; ordinary await
+returns Array<T>. The count is evaluated once before source registration.
+A successful batch contains exactly n results, ordered by sequential
+winner commit; zero is empty with no source effects. Bound count/bytes and
+allow one pending round, retire one-shot Future aliases, advance fair
+rotation, and fail rather than return a short array on exhaustion. Default,
+write, try-count and do-count are initially unsupported. See the language
+specification counted-select-v1 for lifecycle and streaming proposal.
+This is not currently lowered by Java; explicit admission diagnostics
+protect the unsupported boundary.
+
 ## Semantic audit and hardening requirements
 
 1. **Static expression typing.** All reachable winning arms of `select`
