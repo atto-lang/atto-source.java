@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.IdentityHashMap;
 import java.util.Objects;
 
 /**
@@ -24,7 +23,9 @@ final class ActorContinuationLedger {
     record Snapshot(long generation, long lastSequence, int queued, int running) { }
 
     private final int capacity;
-    private final IdentityHashMap<Admission, Boolean> live = new IdentityHashMap<>();
+    // Non-reusable receipt identity and state already protect each transition.
+    private int queued;
+    private int running;
     private long generation = 1L;
     private long lastSequence;
     private boolean ordinarySealed;
@@ -53,13 +54,13 @@ final class ActorContinuationLedger {
         if (allSealed || (lane == Lane.ORDINARY && ordinarySealed)) {
             throw new IllegalStateException("actor continuation ledger admission sealed");
         }
-        if (live.size() >= capacity) {
+        if (queued + running >= capacity) {
             throw new IllegalStateException("actor continuation ledger at capacity");
         }
         long sequence = Math.addExact(lastSequence, 1L);
         Admission receipt = new Admission(lane, generation, sequence, callback, codeLease);
         lastSequence = sequence;
-        live.put(receipt, Boolean.TRUE);
+        queued++;
         return receipt;
     }
 
@@ -90,12 +91,6 @@ final class ActorContinuationLedger {
     }
 
     synchronized Snapshot snapshot() {
-        int queued = 0;
-        int running = 0;
-        for (Admission receipt : live.keySet()) {
-            if (receipt.state == State.QUEUED) queued++;
-            if (receipt.state == State.RUNNING) running++;
-        }
         return new Snapshot(generation, lastSequence, queued, running);
     }
 
@@ -142,7 +137,7 @@ final class ActorContinuationLedger {
                         && (ordinarySealed || admittedGeneration != generation))) {
                     callback = null;
                     state = State.DISCARDED;
-                    live.remove(this);
+                    queued--;
                     discardedCodeLease = codeLease;
                     codeLease = null;
                     admittedCallback = null;
@@ -152,6 +147,8 @@ final class ActorContinuationLedger {
                     // A foreign close() cannot retire this RUNNING receipt.
                     callback = null;
                     state = State.RUNNING;
+                    queued--;
+                    running++;
                     discardedCodeLease = null;
                 }
             }
@@ -171,7 +168,7 @@ final class ActorContinuationLedger {
                 final AutoCloseable completedCodeLease;
                 synchronized (ActorContinuationLedger.this) {
                     state = State.RETIRED;
-                    live.remove(this);
+                    running--;
                     completedCodeLease = codeLease;
                     codeLease = null;
                 }
@@ -195,7 +192,7 @@ final class ActorContinuationLedger {
                 if (state == State.QUEUED) {
                     callback = null;
                     state = State.DISCARDED;
-                    live.remove(this);
+                    queued--;
                     discardedCodeLease = codeLease;
                     codeLease = null;
                 } else {
