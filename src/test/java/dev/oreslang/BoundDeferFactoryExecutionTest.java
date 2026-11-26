@@ -73,7 +73,7 @@ final class BoundDeferFactoryExecutionTest {
                     return 42;
                 }
                 """;
-        var program = TypeChecker.check(Parser.parse(source));
+        var program = TypeChecker.checkTypes(Parser.parse(source));
         RuntimeException failure = assertThrows(RuntimeException.class, () -> OwnershipChecker.check(program));
         assertTrue(failure.getMessage().contains("explicit scalar parameters"), failure::toString);
     }
