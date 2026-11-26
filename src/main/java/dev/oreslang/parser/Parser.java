@@ -5411,8 +5411,8 @@ public final class Parser {
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
-        if (canonicalAttoSource && !explicitImperative) {
-            consume(THEN, "bare keyword if requires 'then'");
+        if (canonicalAttoSource && !explicitImperative && !check(DO)) {
+            consume(THEN, "bare keyword if requires 'do' for statements or 'then' for values");
             if (check(RETURN) || check(CARET)) {
                 Ast.Expr value = parseConditionalValueArm();
                 if (match(FI)) {
@@ -5429,13 +5429,13 @@ public final class Parser {
         }
 
         // Canonical keyword-delimited form:
-        //   if condition; then
-        //   elif condition; then
+        //   if condition do
+        //   elif condition do
         //   else
         //   fi
         //
         // Compatibility forms remain accepted while source migrates:
-        // - 'if ... do' / 'elseif ... do' are deprecated spellings.
+        // - 'if ... do' / 'elif ... do' are canonical imperative spellings.
         // - 'elseif' aliases canonical 'elif'.
         // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
@@ -5501,16 +5501,10 @@ public final class Parser {
     }
 
     private void consumeConditionalThen(String branch) {
-        if (match(THEN)) return;
-        if (match(DO)) {
-            Token deprecated = previous();
-            warnings.add(new SyntaxWarning(
-                    deprecated.line(),
-                    deprecated.column(),
-                    "conditional 'do' is deprecated; use 'then'"));
-            return;
-        }
-        throw error(peek(), "expected 'then' after " + branch + " condition");
+        // Suffix do is canonical for statements; then remains a migration
+        // delimiter on paths already classified as imperative.
+        if (match(DO, THEN)) return;
+        throw error(peek(), "expected 'do' after " + branch + " condition");
     }
 
     private boolean matchConditionalBranch() {
