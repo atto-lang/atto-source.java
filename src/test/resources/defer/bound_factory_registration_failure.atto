@@ -1,0 +1,11 @@
+fnc seed(): int {
+    stdio.println("factory");
+    return 1 % 0;
+}
+
+pub fnc main(): int {
+    defer stdio.println("older");
+    defer (|int value| -> || -> { stdio.println("INVALID"); })(seed());
+    stdio.println("INVALID-body");
+    return 42;
+}
