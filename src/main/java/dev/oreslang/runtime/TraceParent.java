@@ -14,17 +14,11 @@ import java.util.Optional;
  */
 public record TraceParent(String traceId, String spanId, int flags) {
     private static final int HEADER_LENGTH = 55;
-    // Avoid storing a seeded provider in the Native Image heap. Lazily
-    // publish the runtime provider on first trusted HTTP boundary use.
-    private static final java.util.concurrent.atomic.AtomicReference<SecureRandom> RANDOM =
-            new java.util.concurrent.atomic.AtomicReference<>();
-
-    private static SecureRandom runtimeRandom() {
-        SecureRandom existing = RANDOM.get();
-        if (existing != null) return existing;
-        SecureRandom candidate = new SecureRandom();
-        if (RANDOM.compareAndSet(null, candidate)) return candidate;
-        return RANDOM.get();
+    // Entropy must be obtained in the running process, never captured in a
+    // Native Image build heap. All native profiles explicitly defer this
+    // holder's initialization; header parsing itself never needs entropy.
+    private static final class RuntimeEntropy {
+        private static final SecureRandom RANDOM = new SecureRandom();
     }
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
@@ -84,7 +78,7 @@ public record TraceParent(String traceId, String spanId, int flags) {
     private static String randomHex(int bytes) {
         byte[] entropy = new byte[bytes];
         for (int attempt = 0; attempt < 16; attempt++) {
-            runtimeRandom().nextBytes(entropy);
+            RuntimeEntropy.RANDOM.nextBytes(entropy);
             boolean anyNonzero = false;
             for (byte b : entropy) anyNonzero |= b != 0;
             if (!anyNonzero) continue;

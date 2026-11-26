@@ -279,7 +279,7 @@ public final class IncrementalCompiler {
                                         normalizedImportResolutions),
                                 linkedImportedFunctions(id, parsed.get(id), parsed,
                                         normalizedImportResolutions),
-                                strictAtto);
+                                strictAtto, dev.oreslang.runtime.AttoCheckedI64Profile.select(normalized.get(id), id));
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.ownershipClasses(), analysis.shortInferredAliases());

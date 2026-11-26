@@ -2290,6 +2290,70 @@ public final class OresEvalRootNode extends RootNode {
                         "checked Task capture admission execution domain does not match TaskExpr");
             }
 
+            Long dynamicCount = null;
+            List<Ast.Stmt> taskBody = taskExpr.body();
+            if (taskExpr.dynamicCountName() != null) {
+                String name = taskExpr.dynamicCountName();
+                if (!taskExpr.typedCountedSelectI64())
+                    throw new IllegalStateException("invalid checked dynamic count admission");
+                var otherCaptures = new LinkedHashMap<>(admitted);
+                long number;
+                if (name.equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
+                    if (taskBody.size() != 5
+                            || !(taskBody.getFirst() instanceof Ast.BindingStmt snapshot)
+                            || snapshot.kind() != Ast.BindingKind.VAL || snapshot.mutableReferent()
+                            || !snapshot.name().equals(name)
+                            || !Ast.TypeRef.simple("int").equals(snapshot.declaredType()))
+                        throw new IllegalStateException("invalid checked count snapshot");
+                    var names = dev.oreslang.ast.CountedSelectCount.names(snapshot.initializer());
+                    taskBody = List.copyOf(taskBody.subList(1, taskBody.size()));
+                    var bodyReferences = dev.oreslang.ast.TaskCaptureNames.referencedIn(taskBody);
+                    for (String operand : names) {
+                        if (otherCaptures.get(operand) != Ast.TaskCaptureTransfer.COPY
+                                || bodyReferences.contains(operand))
+                            throw new IllegalStateException("invalid checked count operand admission");
+                    }
+                    try {
+                        number = dev.oreslang.ast.CountedSelectCount.evaluate(snapshot.initializer(), operand -> {
+                            Object value = env.lookup(operand);
+                            if (!(value instanceof Long scalar))
+                                throw new IllegalArgumentException("SelectCountInvalid");
+                            return scalar;
+                        });
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalArgumentException("SelectCountInvalid", overflow);
+                    }
+                    names.forEach(otherCaptures::remove);
+                } else {
+                    if (otherCaptures.remove(name) != Ast.TaskCaptureTransfer.COPY)
+                        throw new IllegalStateException("invalid checked dynamic count admission");
+                    Object countValue = env.lookup(name);
+                    if (!(countValue instanceof Long scalar))
+                        throw new IllegalArgumentException("SelectCountInvalid");
+                    number = scalar;
+                }
+                if (number < 0 || number > 16)
+                    throw new IllegalArgumentException("SelectCountInvalid");
+                dynamicCount = number;
+                if (number == 0L)
+                    return SourceTaskHandles.completedWithoutWork(new NativeAttoSequence("Array"));
+                admitted = otherCaptures;
+            }
+            if (taskExpr.zeroCountSourceName() != null) {
+                // Checked identity and empty capture admission are required
+                // before bypassing scheduler allocation. Never execute a
+                // retained body, look up the witness, or create a waiter.
+                if (!taskExpr.typedCountedSelectI64() || !admitted.isEmpty()
+                        || !syntactic.isEmpty() || taskExpr.body().size() != 1
+                        || !(taskExpr.body().getFirst() instanceof Ast.ReturnStmt ret)
+                        || !(ret.value() instanceof Ast.NewExpr empty)
+                        || !empty.type().equals(new Ast.TypeRef(
+                                "Array", List.of(Ast.TypeRef.simple("int")), false))
+                        || !empty.arguments().isEmpty())
+                    throw new IllegalStateException("invalid checked zero-count selection");
+                return SourceTaskHandles.completedWithoutWork(new NativeAttoSequence("Array"));
+            }
+
             TaskLaunchAuthority launchAuthority =
                     new TaskLaunchAuthority(
                             allocateTaskLaunchId(),
@@ -2298,7 +2362,7 @@ public final class OresEvalRootNode extends RootNode {
                             admission.domain());
             SourceTask task =
                     new SourceTask(
-                            taskExpr.body(),
+                            taskBody,
                             true,
                             launchAuthority);
             Env.DetachedTaskSnapshot transfer =
@@ -2307,6 +2371,8 @@ public final class OresEvalRootNode extends RootNode {
                             launchAuthority.parentScopeEpoch());
             task.initialBlockEnv = transfer.environment();
             try {
+                if (dynamicCount != null)
+                    task.initialBlockEnv.define(taskExpr.dynamicCountName(), dynamicCount, Ast.BindingKind.CONST);
                 TaskScope structuredScope = env.structuredTaskScope();
                 // An actor Task must use the actor's mailbox-backed scheduler;
                 // selecting the VM root scheduler here would place ordinary
@@ -8861,8 +8927,8 @@ public final class OresEvalRootNode extends RootNode {
             long right = integralLong(values.get(1));
             if (checkedI64Arithmetic && right == 0
                     && (operation.equals("rem") || operation.equals("mod"))) {
-                throw new ArithmeticException(
-                        "ORES_I64_DIVISION_BY_ZERO: checked signed i64 denominator");
+                throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                        dev.oreslang.runtime.GuestErrorValue.divisionByZero());
             }
             return switch (operation) {
                 case "rem" -> dev.oreslang.runtime.StrictIntegerArithmetic.rem(left, right);
@@ -8872,8 +8938,8 @@ public final class OresEvalRootNode extends RootNode {
                         yield dev.oreslang.runtime.StrictIntegerArithmetic.pow(left, right);
                     } catch (ArithmeticException overflow) {
                         if (checkedI64Arithmetic) {
-                            throw new ArithmeticException(
-                                    "ORES_I64_OVERFLOW: checked signed i64 power");
+                            throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                    dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                         }
                         throw overflow;
                     }
@@ -12977,6 +13043,10 @@ public final class OresEvalRootNode extends RootNode {
                 return structuralRecordMatches(value, target);
             }
             String name = target.name();
+            if (value instanceof dev.oreslang.runtime.GuestErrorValue error
+                    && target.arguments().isEmpty()
+                    && (name.equals("Error") || name.equals(error.nominalType()))) return true;
+            if (name.equals("ArithmeticOverflowError") || name.equals("DivisionByZeroError")) return false;
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
                     || name.equals("i64") || name.equals("u8") || name.equals("u16")
                     || name.equals("u32") || name.equals("u64") || name.equals("uint")
@@ -13021,6 +13091,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String oresRuntimeTypeName(Object value) {
+            if (value instanceof dev.oreslang.runtime.GuestErrorValue error) return error.nominalType();
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -13092,8 +13163,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
-                case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
-                case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
+                case "<", "<=", ">", ">=" -> orderedCompare(left, right, op);
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
@@ -13290,9 +13360,17 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
-            boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
+            boolean integral = isIntegral(a) && isIntegral(b) && (op != '/' || checkedI64Arithmetic);
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                if (op == '/') {
+                    if (y == 0) throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                            dev.oreslang.runtime.GuestErrorValue.divisionByZero());
+                    if (x == Long.MIN_VALUE && y == -1)
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
+                    return dev.oreslang.runtime.StrictIntegerArithmetic.div(x, y);
+                }
                 // An implicit VM fast-throw exception may have suppression disabled,
                 // which would discard source-boundary diagnostics after warm-up.
                 if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
@@ -13305,8 +13383,8 @@ public final class OresEvalRootNode extends RootNode {
                             default -> throw new AssertionError("unreachable checked operator");
                         };
                     } catch (ArithmeticException overflow) {
-                        throw new ArithmeticException(
-                                "ORES_I64_OVERFLOW: checked signed i64 operator " + op);
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                     }
                 }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -13338,8 +13416,8 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         return Math.negateExact(operand);
                     } catch (ArithmeticException overflow) {
-                        throw new ArithmeticException(
-                                "ORES_I64_OVERFLOW: checked signed i64 unary negation");
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                     }
                 }
                 return -operand;
@@ -13348,14 +13426,20 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unary - requires a number");
         }
 
-        private int compare(Object left, Object right) {
+        private boolean orderedCompare(Object left, Object right, String op) {
             if (left instanceof Number a && right instanceof Number b) {
-                if (isIntegral(a) && isIntegral(b)) {
-                    return Long.compare(a.longValue(), b.longValue());
-                }
-                return Double.compare(a.doubleValue(), b.doubleValue());
+                return dev.oreslang.types.NumericValueOrdering.ordered(a, b, op);
             }
-            if (left instanceof String a && right instanceof String b) return a.compareTo(b);
+            if (left instanceof String a && right instanceof String b) {
+                int c = a.compareTo(b);
+                return switch (op) {
+                    case "<" -> c < 0;
+                    case "<=" -> c <= 0;
+                    case ">" -> c > 0;
+                    case ">=" -> c >= 0;
+                    default -> throw new IllegalArgumentException("not an ordering operator");
+                };
+            }
             throw new IllegalArgumentException("values are not comparable");
         }
 
