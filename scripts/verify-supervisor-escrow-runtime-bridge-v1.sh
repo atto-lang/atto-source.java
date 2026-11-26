@@ -20,7 +20,7 @@ verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRace
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java 31e72b7afa224d6d9351be478bf9dd03d0943186
 
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1.java 600bdd6e7b6fac7a3de29041fcdc210317bc29f3
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1Standalone.java aa007218749826af9bfca935d2b5c7616dbb60b5
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1Standalone.java 05d729d8d51c39a61c3fdd576d02ad0267065dd7
 
 # The existing dependency-free saturated-allocation host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
