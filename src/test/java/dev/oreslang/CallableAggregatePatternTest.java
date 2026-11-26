@@ -27,7 +27,8 @@ final class CallableAggregatePatternTest {
         Source source = Source.newBuilder(OresLanguage.ID, program, "callable-aggregate-pattern.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).out(output).err(diagnostics).build()) {
+                .allowAllAccess(false).option("engine.WarnInterpreterOnly", "false")
+                .out(output).err(diagnostics).build()) {
             context.eval(source);
         }
         assertEquals(expected, output.toString(StandardCharsets.UTF_8));
