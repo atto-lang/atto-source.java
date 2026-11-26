@@ -5681,9 +5681,9 @@ public final class Parser {
                 defaultArm = match(DEFAULT);
                 if (!defaultArm) {
                     if (seenDefault) throw error(peek(), "default match arm must be last");
-                    if (!matchContextualIdentifier("on")) {
+                    if (!matchContextualIdentifier("on") && !check(IS)) {
                         if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
-                        throw error(peek(), "every explicit match arm must start with 'on'");
+                        throw error(peek(), "match arm must start with 'on' or 'is'");
                     }
                     // Accept legacy fallback spelling as a final wildcard.
                     defaultArm = match(DEFAULT);
@@ -5732,7 +5732,7 @@ public final class Parser {
         else consume(END, "expected 'end' to close match");
         if (arms.isEmpty()) {
             throw error(previous(), canonicalOver
-                    ? "match requires at least one 'on' arm"
+                    ? "match requires at least one match arm"
                     : "match requires at least one arm");
         }
 
@@ -5804,9 +5804,9 @@ public final class Parser {
             boolean defaultArm = match(DEFAULT);
             if (!defaultArm) {
                 if (seenDefault) throw error(peek(), "default match arm must be last");
-                if (!matchContextualIdentifier("on")) {
+                if (!matchContextualIdentifier("on") && !check(IS)) {
                     if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
-                    throw error(peek(), "every explicit match arm must start with 'on'");
+                    throw error(peek(), "match arm must start with 'on' or 'is'");
                 }
                 // Historical 'on default' is an input-only alias of final 'default'.
                 defaultArm = match(DEFAULT);
@@ -5900,7 +5900,7 @@ public final class Parser {
         else consume(END, "expected 'end' to close value match");
 
         if (valueArms.isEmpty()) {
-            throw error(previous(), "value match requires at least one 'on' arm");
+            throw error(previous(), "value match requires at least one match arm");
         }
         return new Ast.MatchExpr(subject, valueArms, declaredResult,
                 canonicalFirst || legacyFirst);
