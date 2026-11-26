@@ -80,9 +80,76 @@ final class CountedSelectReadCursorTest {
         assertTrue(ch.tryWrite(1L)); c.beginRound(); assertTrue(c.retireRound());
         c.beginRound(); ch.close(); assertTrue(c.retireRound());
         assertEquals(CountedSelectReadCursor.State.FAILED,c.state());
-        assertInstanceOf(ChannelRuntime.ChannelClosedException.class,c.failure());
+        assertInstanceOf(CountedSelectReadCursor.SelectExhausted.class,c.failure());
         assertThrows(IllegalStateException.class,c::result);
         assertEquals(0,ch.pendingRegistrations());
+    }
+    @Test void gracefulEofRetiresAliasesButKeepsOtherLiveChannel() {
+        var a = new ChannelRuntime.Channel<Long>(1);
+        var b = new ChannelRuntime.Channel<Long>(2);
+        a.close();
+        assertTrue(b.tryWrite(21L)); assertTrue(b.tryWrite(42L));
+        var c = new CountedSelectReadCursor(2, List.of(a.output(),a.output(),b.output()), ChannelRuntime.SelectPolicy.FAIR);
+        c.beginRound(); assertTrue(c.retireRound()); // EOF, no value
+        assertEquals(CountedSelectReadCursor.State.READY,c.state());
+        c.beginRound(); assertTrue(c.retireRound());
+        c.beginRound(); assertTrue(c.retireRound());
+        assertEquals(List.of(21L,42L),c.result());
+        assertEquals(0,a.pendingRegistrations());
+        assertEquals(0,b.pendingRegistrations());
+    }
+    @Test void closedBufferedChannelDrainsBeforeEof() {
+        var a = new ChannelRuntime.Channel<Long>(1);
+        var b = new ChannelRuntime.Channel<Long>(1);
+        assertTrue(a.tryWrite(1L)); a.close();
+        assertTrue(b.tryWrite(2L));
+        var c = new CountedSelectReadCursor(2,List.of(a.output(),b.output()),ChannelRuntime.SelectPolicy.PRIORITY);
+        c.beginRound(); assertTrue(c.retireRound()); // 1
+        c.beginRound(); assertTrue(c.retireRound()); // EOF
+        c.beginRound(); assertTrue(c.retireRound()); // 2
+        assertEquals(List.of(1L,2L),c.result());
+    }
+    @Test void oneShotFutureAliasesRetireAndDoNotDuplicateResult() {
+        var f = OresFuture.completed(21L);
+        var g = new OresFuture<Long>();
+        var c = new CountedSelectReadCursor(2,List.of(),List.of(f,f,g),ChannelRuntime.SelectPolicy.FAIR);
+        c.beginRound(); assertTrue(c.retireRound());
+        var round = c.beginRound();
+        assertFalse(round.isDone());
+        assertEquals(1,g.pendingRuntimeWaiterCount());
+        assertTrue(g.completeFromRuntime(42L));
+        assertTrue(c.retireRound());
+        assertEquals(List.of(21L,42L),c.result());
+        assertEquals(0,g.pendingRuntimeWaiterCount());
+    }
+    @Test void exhaustedFuturesDoNotRepeatOrPublishPartialBatch() {
+        var f = OresFuture.completed(1L);
+        var c = new CountedSelectReadCursor(2,List.of(),List.of(f,f),ChannelRuntime.SelectPolicy.FAIR);
+        c.beginRound(); assertTrue(c.retireRound());
+        assertInstanceOf(CountedSelectReadCursor.SelectExhausted.class,c.failure());
+        assertThrows(IllegalStateException.class,c::result);
+    }
+    @Test void errorCloseIsNotGracefulEofAndOrdinarySelectIsUnchanged() {
+        var a = new ChannelRuntime.Channel<Long>(1);
+        var b = new ChannelRuntime.Channel<Long>(1);
+        var cause = new IllegalStateException("producer failed");
+        a.close(cause); assertTrue(b.tryWrite(42L));
+        var c = new CountedSelectReadCursor(1,List.of(a.output(),b.output()),ChannelRuntime.SelectPolicy.FAIR);
+        c.beginRound(); assertTrue(c.retireRound());
+        assertSame(cause,c.failure().getCause());
+        assertEquals(42L,b.tryRead().orElseThrow());
+        b.close();
+        var failed = ChannelRuntime.SelectSet.of(ChannelRuntime.read(b)).selectAsync();
+        assertThrows(java.util.concurrent.CompletionException.class,failed::join);
+    }
+    @Test void cancellationDetachesPendingFutureWithoutCancellingProducer() {
+        var f = new OresFuture<Long>();
+        var c = new CountedSelectReadCursor(1,List.of(),List.of(f),ChannelRuntime.SelectPolicy.FAIR);
+        c.beginRound();
+        assertTrue(c.cancel()); assertTrue(c.retireRound());
+        assertEquals(0,f.pendingRuntimeWaiterCount());
+        assertFalse(f.isDone());
+        assertTrue(f.completeFromRuntime(42L));
     }
     @Test void foreignThreadCannotDriveOwnerCursor() throws Exception {
         var ch = new ChannelRuntime.Channel<Long>(1);

@@ -8,14 +8,17 @@ The existing arbiter preserves read registration, fair rotation and
 cancellation-versus-commit semantics. The owner retires a round only after
 the Future notification-drain receipt; it cannot start another round earlier.
 The cursor does not return a guest Future<Array<T>> and does not run arm code.
-It supports immutable Long reads only, no Future/write/default arms. A closed
-winning source fails the batch, not a complete all-source exhaustion policy.
+It supports immutable Long channel reads and one-shot Future results; no write/default arms.
+Graceful EOF retires all aliases of a channel without counting an event. Future
+aliases retire on a successful commit. All-source exhaustion fails without a
+partial array; error-close and failed Future propagate failure. Ordinary select
+closed-channel behavior is unchanged. FAIR rotation survives source retirement.
 The thread confinement is deliberately not an actor affinity implementation.
 Do not wire this into compiler output until an actor-owned continuation,
 typed capture/cleanup, quotas and physical retirement are verified.
 
 Tests: exact three fair reads, no fourth, zero/invalid count, actual pending
 read registration and resumption, cancellation on either side of commit,
-close after prefix and foreign-thread rejection. Run focused JUnit with
+close after prefix, graceful EOF, alias retirement, producer errors and foreign-thread rejection. Run focused JUnit with
 CountedSelectReadCursorTest and FutureChannelSelectTest. No guest or native
 image parity claimed.

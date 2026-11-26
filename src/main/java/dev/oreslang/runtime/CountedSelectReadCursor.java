@@ -6,21 +6,19 @@ import java.util.Objects;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Host-only counted-selection driver for immutable i64 reads. A serialized,
- * non-migrating owner drives rounds; the existing SelectSet is the sole
- * channel arbiter. A scheduler may await the round Future and then retire it.
- * No guest execution, arbitrary callbacks, implicit ownership conversion or
- * Future<Array<T>> source lowering is admitted by this class.
- */
+/** Host-only immutable i64 counted selection. Not compiler lowering. */
 final class CountedSelectReadCursor {
     static final int MAX_COUNT = 1024;
     enum State { READY, WAITING, STOPPING, SUCCESS, CANCELLED, FAILED }
+    static final class SelectExhausted extends IllegalStateException {
+        SelectExhausted() { super("all counted selection sources exhausted"); }
+    }
     private final Thread owner = Thread.currentThread();
     private final int count;
-    private final ChannelRuntime.SelectSet set;
     private final ChannelRuntime.SelectPolicy policy;
     private final ArrayList<Long> values;
+    private final ArrayList<ChannelRuntime.SelectCase> live = new ArrayList<>();
+    private int cursor;
     private State state;
     private OresFuture<ChannelRuntime.SelectResult> active;
     private AtomicBoolean drained;
@@ -29,23 +27,28 @@ final class CountedSelectReadCursor {
 
     CountedSelectReadCursor(int count, List<ChannelRuntime.ReadChannel<Long>> sources,
             ChannelRuntime.SelectPolicy policy) {
+        this(count, sources, List.of(), policy);
+    }
+
+    CountedSelectReadCursor(int count, List<ChannelRuntime.ReadChannel<Long>> sources,
+            List<OresFuture<Long>> futures, ChannelRuntime.SelectPolicy policy) {
         if (count < 0 || count > MAX_COUNT)
             throw new IllegalArgumentException("SelectCountInvalid");
         this.count = count;
         this.policy = Objects.requireNonNull(policy);
         values = new ArrayList<>(count);
         if (count == 0) {
-            set = null;
             state = State.SUCCESS;
-        } else {
-            Objects.requireNonNull(sources);
-            if (sources.isEmpty() || sources.size() > ChannelRuntime.MAX_SELECT_CASES)
-                throw new IllegalArgumentException("invalid counted read source count");
-            var cases = new ArrayList<ChannelRuntime.SelectCase>(sources.size());
-            for (var source : sources) cases.add(ChannelRuntime.read(source));
-            set = new ChannelRuntime.SelectSet(cases);
-            state = State.READY;
+            return;
         }
+        Objects.requireNonNull(sources);
+        Objects.requireNonNull(futures);
+        long total = (long)sources.size() + futures.size();
+        if (total == 0 || total > ChannelRuntime.MAX_SELECT_CASES)
+            throw new IllegalArgumentException("invalid counted source count");
+        for (var source : sources) live.add(ChannelRuntime.read(source));
+        for (var future : futures) live.add(ChannelRuntime.await(future));
+        state = State.READY;
     }
 
     private void checkOwner() {
@@ -55,24 +58,66 @@ final class CountedSelectReadCursor {
 
     State state() { checkOwner(); return state; }
 
-    // Never call until the previous round has been physically retired.
     OresFuture<ChannelRuntime.SelectResult> beginRound() {
         checkOwner();
         if (state != State.READY) throw new IllegalStateException("round not ready");
         driving = true;
         try {
-            state = State.WAITING;
+            var set = ChannelRuntime.SelectSet.countedReads(live, cursor);
             drained = new AtomicBoolean();
             active = set.selectAsync(policy);
             AtomicBoolean receipt = drained;
             active.whenNotificationsDrainedRuntime(() -> receipt.set(true));
+            state = State.WAITING;
             return active;
+        } catch (RuntimeException exception) {
+            fail(exception);
+            throw exception;
         } finally { driving = false; }
     }
 
-    // Returns false if the owner has not yet observed physical notification
-    // retirement. The owner must schedule/resume, not spin. No join on a pending
-    // Future and no callback execution under an application lock.
+    // A graceful EOF is a retirement receipt, not an event. A completed
+    // Future contributes exactly one event across all identity aliases.
+    // Preserve the next lexical FAIR source even when aliases disappear.
+    private void advance(int index, boolean removeAliases) {
+        var winner = live.get(index);
+        int oldSize = live.size();
+        int next = (index + 1) % oldSize;
+        if (!removeAliases) {
+            cursor = next;
+            return;
+        }
+        var remaining = new ArrayList<ChannelRuntime.SelectCase>(oldSize);
+        ChannelRuntime.SelectCase nextCase = null;
+        for (int k = 0; k < oldSize; k++) {
+            var candidate = live.get((next + k) % oldSize);
+            if (!sameSource(candidate, winner)) { nextCase = candidate; break; }
+        }
+        for (var candidate : live)
+            if (!sameSource(candidate, winner)) remaining.add(candidate);
+        live.clear();
+        live.addAll(remaining);
+        cursor = 0;
+        for (int i = 0; i < live.size(); i++)
+            if (live.get(i) == nextCase) { cursor = i; break; }
+    }
+
+    private static boolean sameSource(ChannelRuntime.SelectCase a, ChannelRuntime.SelectCase b) {
+        if (a instanceof ChannelRuntime.ReadCase<?> x && b instanceof ChannelRuntime.ReadCase<?> y)
+            return x.channel() == y.channel();
+        if (a instanceof ChannelRuntime.FutureCase<?> x && b instanceof ChannelRuntime.FutureCase<?> y)
+            return x.future() == y.future();
+        return false;
+    }
+
+    private void fail(Throwable exception) {
+        failure = exception instanceof CompletionException && exception.getCause() != null
+                ? exception.getCause() : exception;
+        values.clear();
+        live.clear();
+        state = State.FAILED;
+    }
+
     boolean retireRound() {
         checkOwner();
         if (state != State.WAITING && state != State.STOPPING)
@@ -82,23 +127,30 @@ final class CountedSelectReadCursor {
         try {
             if (stopping) {
                 values.clear();
+                live.clear();
                 state = State.CANCELLED;
             } else {
                 var result = active.join();
-                if (result.operation() != ChannelRuntime.SelectOperation.READ
-                        || !(result.value() instanceof Long number))
-                    throw new IllegalStateException("counted scalar read received non-i64 result");
-                values.add(number);
-                state = values.size() == count ? State.SUCCESS : State.READY;
+                if (result.operation() == ChannelRuntime.SelectOperation.READ
+                        && result.value() == ChannelRuntime.CountedReadEnd.EOF) {
+                    advance(result.index(), true);
+                } else {
+                    if ((result.operation() != ChannelRuntime.SelectOperation.READ
+                            && result.operation() != ChannelRuntime.SelectOperation.FUTURE)
+                            || !(result.value() instanceof Long number))
+                        throw new IllegalStateException("counted scalar selection received non-i64 result");
+                    values.add(number);
+                    advance(result.index(), result.operation() == ChannelRuntime.SelectOperation.FUTURE);
+                }
+                if (values.size() == count) {
+                    live.clear();
+                    state = State.SUCCESS;
+                } else if (live.isEmpty()) {
+                    fail(new SelectExhausted());
+                } else state = State.READY;
             }
         } catch (RuntimeException exception) {
-            // The underlying single-round arbiter reports a selected closed
-            // source as failure. This restricted profile fails the whole batch
-            // rather than falsely claiming all-source retirement/exhaustion.
-            failure = exception instanceof CompletionException && exception.getCause() != null
-                    ? exception.getCause() : exception;
-            values.clear();
-            state = State.FAILED;
+            fail(exception);
         } finally {
             active = null;
             drained = null;
@@ -110,6 +162,7 @@ final class CountedSelectReadCursor {
         checkOwner();
         if (state == State.READY) {
             values.clear();
+            live.clear();
             state = State.CANCELLED;
             return true;
         }
@@ -117,9 +170,6 @@ final class CountedSelectReadCursor {
         state = State.STOPPING;
         driving = true;
         try {
-            // Cancellation may lose to a committed read. In that case the
-            // committed scalar is discarded only after physical retirement;
-            // channel ownership is never rolled back.
             active.cancel(false);
         } finally { driving = false; }
         return true;
