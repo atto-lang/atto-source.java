@@ -454,7 +454,7 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
                 validateCopyPolicyClassAnnotations(annotations);
                 validateClassModifiers(modifiers);
-                rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
+                rootDeclarations.add(preserveVisibility(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations), modifiers));
                 continue;
             }
 
@@ -466,7 +466,7 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                rootDeclarations.add(parseContract(modifiers.visibility));
+                rootDeclarations.add(preserveVisibility(parseContract(modifiers.visibility), modifiers));
                 continue;
             }
 
@@ -478,7 +478,7 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "interfaces");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                rootDeclarations.add(parseDefinedInterface(modifiers.visibility, INTERFACE));
+                rootDeclarations.add(preserveVisibility(parseDefinedInterface(modifiers.visibility, INTERFACE), modifiers));
                 continue;
             }
 
@@ -501,7 +501,7 @@ public final class Parser {
                 rejectUnloweredRuntimeEntityDeclaration();
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
-                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
+                    rootDeclarations.add(preserveVisibility(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix), modifiers));
                     continue;
                 }
                 if (modifiers.shared) {
@@ -521,7 +521,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "contracts");
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                    rootDeclarations.add(parseContract(modifiers.visibility));
+                    rootDeclarations.add(preserveVisibility(parseContract(modifiers.visibility), modifiers));
                     continue;
                 }
                 if (match(CLASS)) {
@@ -529,7 +529,7 @@ public final class Parser {
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     validateCopyPolicyClassAnnotations(annotations);
                     validateClassModifiers(modifiers);
-                    rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
+                    rootDeclarations.add(preserveVisibility(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations), modifiers));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -538,7 +538,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                    rootDeclarations.add(parseDefinedInterface(modifiers.visibility, declarationKind));
+                    rootDeclarations.add(preserveVisibility(parseDefinedInterface(modifiers.visibility, declarationKind), modifiers));
                     continue;
                 }
                 if (match(TYPE)) {
@@ -546,7 +546,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "type aliases");
                     rejectCallableStructuralAnnotation(annotations, "type aliases");
                     rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-                    rootDeclarations.add(parseTypeAlias(modifiers.visibility));
+                    rootDeclarations.add(preserveVisibility(parseTypeAlias(modifiers.visibility), modifiers));
                     continue;
                 }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
@@ -603,6 +603,17 @@ public final class Parser {
         return new Ast.ExportDecl(name, scope, kind);
     }
 
+    // Identity, not leaf spelling: nested declarations and overloads must
+    // never lend or steal the written-private marker of a file-root symbol.
+    private final java.util.Set<Ast.Decl> writtenPrivate =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    private <D extends Ast.Decl> D preserveVisibility(D declaration, Modifiers modifiers) {
+        if (modifiers.visibilitySeen && modifiers.visibility == Ast.Visibility.PRIVATE)
+            writtenPrivate.add(declaration);
+        return declaration;
+    }
+
     /** Validate after all declarations, so placement never changes binding. */
     private void validateExports(List<Ast.ExportDecl> exports, List<Ast.Decl> declarations) {
         java.util.Map<String, Ast.ExportDecl> resolved = new java.util.LinkedHashMap<>();
@@ -628,6 +639,8 @@ public final class Parser {
                             ? Ast.ExportKind.TRAIT : Ast.ExportKind.INTERFACE;
                 }
                 if (!entry.name().equals(name)) continue;
+                if (writtenPrivate.contains(decl))
+                    throw error(previous(), "explicit private declaration cannot be exported: " + entry.name());
                 if (kind != null && kind != found)
                     throw error(previous(), "ambiguous export target: " + entry.name());
                 if (entry.scope() == Ast.ExportScope.PACKAGE && visibility == Ast.Visibility.PUBLIC)
@@ -1052,7 +1065,7 @@ public final class Parser {
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            return preserveVisibility(parseActorClass(actorKind, modifiers.visibility), modifiers);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -1105,21 +1118,21 @@ public final class Parser {
             validateOnlyVisibilityModifiers(modifiers, "contracts");
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-            return parseContract(modifiers.visibility);
+            return preserveVisibility(parseContract(modifiers.visibility), modifiers);
         }
         if (match(INTERFACE, TRAIT)) {
             Token.Type declarationKind = previous().type();
             validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
             rejectCallableStructuralAnnotation(annotations, "interface/trait declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "interface/trait declarations");
-            return parseDefinedInterface(modifiers.visibility, declarationKind);
+            return preserveVisibility(parseDefinedInterface(modifiers.visibility, declarationKind), modifiers);
         }
         if (match(TYPE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             validateOnlyVisibilityModifiers(modifiers, "type aliases");
             rejectCallableStructuralAnnotation(annotations, "type aliases");
             rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-            return parseTypeAlias(modifiers.visibility);
+            return preserveVisibility(parseTypeAlias(modifiers.visibility), modifiers);
         }
         if (isBindingKind(peek().type())) {
             validateOnlyVisibilityModifiers(modifiers, "module bindings");
@@ -1181,8 +1194,8 @@ public final class Parser {
                     : parseTypeRef();
             Ast.EffectSpec effects = parseCheckedEffects();
             List<Ast.Stmt> body = parseBlock();
-            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, returnType, annotations, body, specs, effects);
+            return preserveVisibility(new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
+                    generics, params, returnType, annotations, body, specs, effects), modifiers);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -1197,8 +1210,8 @@ public final class Parser {
         List<Ast.Stmt> body = prefixReturnType != null
                 ? parseReturnFirstCallableBody(!effects.isEmpty())
                 : parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body, specs, effects);
+        return preserveVisibility(new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
+                returnType, annotations, body, specs, effects), modifiers);
     }
 
     /**
