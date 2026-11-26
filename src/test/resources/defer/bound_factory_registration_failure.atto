@@ -1,6 +1,6 @@
 fnc seed(int divisor): int {
     stdio.println("factory");
-    return 1 % divisor;
+    return Integer.rem(1, divisor);
 }
 
 pub fnc main(): int {
