@@ -22,7 +22,9 @@ final class PackageNamespaceImportSyntaxTest {
         assertEquals(b,first("import namespace bar.shop.cart as cart from pkg 'checkout';"));
         var e=assertThrows(IllegalArgumentException.class,()->ImportRules.validate(a));
         assertTrue(e.getMessage().startsWith("E_NAMESPACE_LINK_REQUIRED:"));
-        assertThrows(IllegalArgumentException.class,()->ImportRules.validate(first("import * as x from 'pkg:namespace:checkout:billing';")));
+        assertThrows(IllegalArgumentException.class,()->first("import * as x from 'pkg:namespace:checkout:billing';"));
+        assertThrows(IllegalArgumentException.class,()->first("import pkg 'namespace:checkout:billing' as x;"));
+        assertThrows(IllegalArgumentException.class,()->first("import * as x from pkg 'namespace:checkout:billing';"));
         System.out.println("JAVA_NAMESPACE_SELECTOR|typed-selector|linker-required");
     }
     @Test void namespaceSelectorMalformedAndAliasCollisionReject(){

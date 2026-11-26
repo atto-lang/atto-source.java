@@ -42,7 +42,7 @@ public final class PinnedNamespaceInventory {
     private static TomlTable table(TomlTable t,String key){var v=t.getTable(List.of(key));if(v==null)throw deny("missing table "+key);return v;}
     public static Selection admit(Ast.ImportDecl selector,String consumerManifest,String providerManifest,Map<String,String> sourceSnapshot){
         if(selector==null||selector.kind()!=Ast.ImportKind.ALL||!selector.wildcard()||!selector.names().isEmpty()||
-           selector.namespace()==null||!selector.path().startsWith(ImportRules.NAMESPACE_PACKAGE_PREFIX))throw deny("selector required");
+           selector.namespace()==null||!selector.namespace().matches("[A-Za-z_][A-Za-z0-9_]{0,127}")||selector.path()==null||!selector.path().startsWith(ImportRules.NAMESPACE_PACKAGE_PREFIX))throw deny("selector required");
         String[] parts=selector.path().substring(ImportRules.NAMESPACE_PACKAGE_PREFIX.length()).split(":",-1);
         if(parts.length!=2||!parts[1].matches("[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*"))throw deny("namespace selector");
         String alias=name(parts[0]),ns=parts[1];var consumer=manifest(consumerManifest);

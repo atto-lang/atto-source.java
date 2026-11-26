@@ -650,6 +650,7 @@ public final class Parser {
         // Until the package graph linker is implemented, ImportRules rejects
         // this tag before any filesystem or host-class resolution.
         if (identity == null || identity.isBlank() || identity.length() > 4096
+                || identity.startsWith("namespace:")
                 || identity.contains("..") || identity.endsWith(".")
                 || identity.indexOf('\\') >= 0
                 || identity.chars().anyMatch(Character::isISOControl)) {
@@ -771,6 +772,9 @@ public final class Parser {
         if (isPackage) advance();
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
+        if (path.startsWith(dev.oreslang.imports.ImportRules.NAMESPACE_PACKAGE_PREFIX)
+                || (isPackage && path.startsWith("namespace:")))
+            throw error(previous(),"reserved namespace selector cannot be supplied as an import path");
         if (isPackage) path = packageImportPath(path);
         consume(SEMICOLON, "expected ';' after import");
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);

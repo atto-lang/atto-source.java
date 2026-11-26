@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/compiler/CompilerCacheKey.java'
       - 'src/main/java/dev/oreslang/compiler/PinnedNamespaceInventory.java'
+      - 'src/main/java/dev/oreslang/runtime/PinnedScalarNamespaceSession.java'
       - 'src/test/java/dev/oreslang/PinnedNamespaceInventoryTest.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/imports/ImportRules.java'
