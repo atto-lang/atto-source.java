@@ -7682,7 +7682,7 @@ public final class Parser {
 
     private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType) {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
-        java.util.Set<String> constantStringKeys = new java.util.HashSet<>();
+        java.util.Map<String, Integer> constantStringKeyKinds = new java.util.HashMap<>();
         do {
             if (check(ELLIPSIS)) {
                 throw error(peek(), "map spreads require explicit source-ownership "
@@ -7690,8 +7690,10 @@ public final class Parser {
             }
             Ast.Expr key;
             Ast.Expr value;
+            int itemKind = 0; // legacy arrow entry
             if (inlineProductFactory("Pair") || inlineProductFactory("Entry")) {
                 boolean pair = inlineProductFactory("Pair");
+                itemKind = pair ? 1 : 2;
                 openInlineProductFactory();
                 // A literal-only Pair key is deliberately narrower than the
                 // target contract; never silently admit an untyped key.
@@ -7711,12 +7713,13 @@ public final class Parser {
                 consume(FAT_ARROW, "map literals require '=>' between key and value");
                 value = parseExpression();
             }
-            // Compare decoded literal string keys across arrow, Pair and Entry
-            // forms before constructing the aggregate. Dynamic keys still
-            // require checked runtime Hash/Eq and duplicate-key semantics.
-            if (key instanceof Ast.LiteralExpr literal && literal.value() instanceof String stringKey
-                    && !constantStringKeys.add(stringKey)) {
-                throw error(previous(), "duplicate constant key in Map.of");
+            // Reject mixed-kind constant duplicates in the new factory syntax.
+            // Preserve legacy homogeneous arrow duplicate detection at runtime.
+            if (key instanceof Ast.LiteralExpr literal && literal.value() instanceof String stringKey) {
+                Integer previousKind = constantStringKeyKinds.putIfAbsent(stringKey, itemKind);
+                if (previousKind != null && (previousKind != 0 || itemKind != 0)) {
+                    throw error(previous(), "duplicate constant key in Map.of");
+                }
             }
             entries.add(new Ast.MapLiteralEntry(key, value));
             if (entries.size() > 4096) {
