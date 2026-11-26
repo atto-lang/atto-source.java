@@ -25,7 +25,14 @@ final class NativeTelemetryScopeGuestTest {
         assertFalse(parsed.hasJavaSource());
         assertFalse(source.contains("java:"));
         assertFalse(source.contains("stdio."));
-        assertFalse(source.contains("await "));
+        // Only explicit export may suspend; the disabled provider and batch
+        // construction must remain synchronous and free of HTTP calls.
+        int exporter = source.indexOf("pub async fnc post_otlp_json_async(");
+        assertTrue(exporter > 0);
+        String localOnly = source.substring(0, exporter);
+        assertFalse(localOnly.contains("await "));
+        assertFalse(localOnly.contains("http.request("));
+        assertTrue(source.substring(exporter).contains("await http.request("));
     }
 
     @Test
@@ -95,8 +102,8 @@ final class NativeTelemetryScopeGuestTest {
             ByteArrayOutputStream stderr = new ByteArrayOutputStream();
             LinkedProgramRunner.run(guest, IsolatePolicy.developer(),
                     ExecutionProfile.serverJit(), stdout, stderr);
-            assertEquals("true\\ntrue\\nfalse\\n2\\n1\\n1111111111111111",
-                    stdout.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+            assertEquals("true\ntrue\nfalse\n2\n1\n1111111111111111",
+                    stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> stderr.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(guest);

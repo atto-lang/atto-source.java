@@ -6161,7 +6161,30 @@ public final class TypeChecker {
                     expandFixedCallArguments(
                             call.arguments(), env, generics, self,
                             "function value call");
-            if (fn.parameters().size() != expanded.size()) throw new IllegalArgumentException("call arity mismatch");
+            // The native HTTP bridge admits an optional fourth String/Bytes
+            // body. Restrict the overload to the unshadowed builtin direct
+            // call; do not widen arbitrary function values or user modules.
+            boolean httpBody = expanded.size() == 4 && fn.parameters().size() == 3
+                    && call.callee() instanceof Ast.MemberExpr httpMember
+                    && httpMember.member().equals("request")
+                    && httpMember.receiver() instanceof Ast.NameExpr httpName
+                    && httpName.name().equals("http")
+                    && env.lookup("http") == null && !modules.containsKey("http")
+                    && !importedValues.contains("http")
+                    && findClass("http") == null
+                    && fn.equals(builtinIoMember(new Named("http", List.of()), "request"));
+            if (httpBody) {
+                ExpandedCallArgument body = expanded.get(3);
+                Type actual = expandedCallArgumentType(body, Primitive.STRING, env, generics, self);
+                if (actual instanceof Named bytes && bytes.name().equals("Bytes")
+                        && bytes.arguments().isEmpty()) {
+                    requireAssignable(actual, new Named("Bytes", List.of()), "http.request body");
+                } else {
+                    requireAssignable(actual, Primitive.STRING, "http.request body");
+                }
+            } else if (fn.parameters().size() != expanded.size()) {
+                throw new IllegalArgumentException("call arity mismatch");
+            }
             for (int i = 0; i < fn.parameters().size(); i++) {
                 ExpandedCallArgument argument = expanded.get(i);
                 if (argument.expression() != null) {
