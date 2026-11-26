@@ -40,6 +40,9 @@ public final class Parser {
     private final Map<String, RefinedQuantity> verifiedLocals = new HashMap<>();
     private final Map<String, Set<String>> verifiedUpperBounds = new HashMap<>();
     private final Map<String, RefinedQuantity> strictMutable = new HashMap<>();
+    private final Map<String,List<QuantityTerm>> strictArrays=new HashMap<>();
+    private int strictArrayCells;
+    private static final String STRICT_CELL_PREFIX="__atto_strict_cell_";
     private boolean verifiedCallable;
     private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
@@ -7524,7 +7527,7 @@ public final class Parser {
 
     private Token verifiedName(String description) {
         Token name = consume(IDENT, description);
-        if (name.type() != IDENT)
+        if (name.type() != IDENT || (strictVerifiedI64 && name.lexeme().startsWith(STRICT_CELL_PREFIX)))
             throw error(name, description);
         return name;
     }
@@ -7824,6 +7827,7 @@ public final class Parser {
             verifiedLocals.clear();
             verifiedUpperBounds.clear();
             strictMutable.clear();
+            strictArrays.clear();strictArrayCells=0;
             consume(LPAREN, "expected '('");
             List<Ast.Param> parameters = new ArrayList<>();
             if (!check(RPAREN)) {
@@ -8004,7 +8008,34 @@ public final class Parser {
             } else {
                 type=readRefinedType(first);key=verifiedName("expected immutable binding name").lexeme();
             }
-            consume(EQUAL,"expected '='");var value=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
+            if(key.startsWith(STRICT_CELL_PREFIX)||strictArrays.containsKey(key))
+                throw error(first,"E_VERIFY_UNSUPPORTED: reserved or reused array binding");
+            consume(EQUAL,"expected '='");
+            if(check(IDENT)&&peek().lexeme().equals("Array")){
+                if(type!=null||verifiedLocals.containsKey(key))
+                    throw error(first,"E_VERIFY_UNSUPPORTED: fixed array requires fresh inferred val");
+                advance();consume(DOT,"expected '.'");
+                if(!peek().lexeme().equals("of"))throw error(peek(),"E_VERIFY_UNSUPPORTED: expected Array.of");
+                advance();
+                consume(LPAREN,"expected '('");
+                var cells=new ArrayList<QuantityTerm>();var statements=new ArrayList<Ast.Stmt>();
+                do{
+                    if(cells.size()>=16||strictArrayCells>=64)throw error(first,"E_UNIT_LIMIT: fixed array cell budget");
+                    var cell=parseVerifiedExpression(0);
+                    if(!cell.unit().equals(VerifiedQuantityUnit.SCALAR))throw error(first,"E_UNIT_DIMENSION: scalar array cell");
+                    String generated=STRICT_CELL_PREFIX+(strictArrayCells++);
+                    statements.add(new Ast.BindingStmt(Ast.BindingKind.VAL,VERIFIED_CARRIER,generated,cell.expression(),false));
+                    cells.add(new QuantityTerm(new Ast.NameExpr(generated),cell.type(),0));
+                }while(match(COMMA));
+                consume(RPAREN,"expected ')'");consume(SEMICOLON,"expected ';'");
+                var range=cells.get(0).type().range();
+                for(var cell:cells)range=range.join(cell.type().range());
+                verifiedLocals.put(key,new RefinedQuantity(VerifiedQuantityUnit.SCALAR,range,false));
+                verifiedUpperBounds.put(key,Set.of());strictArrays.put(key,List.copyOf(cells));
+                statements.addAll(strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1));
+                return statements;
+            }
+            var value=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
             if(type!=null)type.require(value.type(),"E_REFINEMENT_BINDING","immutable binding "+key);
             var fact=type==null?value.type():new RefinedQuantity(type.unit(),value.type().range(),type.i32());
             if(verifiedLocals.putIfAbsent(key,fact)!=null)
@@ -8021,6 +8052,7 @@ public final class Parser {
             consume(EQUAL,"expected '='");var value=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
             type.require(value.type(),"E_REFINEMENT_BINDING","mutable binding "+local.lexeme());
             var key=local.lexeme();
+            if(strictArrays.containsKey(key))throw error(local,"E_VERIFY_UNSUPPORTED: reused array binding");
             if(verifiedLocals.putIfAbsent(key,new RefinedQuantity(type.unit(),value.type().range(),type.i32()))!=null)
                 throw error(local,"E_REFINEMENT_DUPLICATE: duplicate binding");
             strictMutable.put(key,type);verifiedUpperBounds.put(key,value.upperBounds());
@@ -8142,6 +8174,23 @@ public final class Parser {
         if (!match(LPAREN)) {
             var type = verifiedLocals.get(name.lexeme());
             if (type == null) throw error(name, "E_REFINEMENT_NAME: unknown immutable value");
+            var cells=strictArrays.get(name.lexeme());
+            if(cells!=null){
+                if(!match(LBRACKET))throw error(name,"E_VERIFY_UNSUPPORTED: array cannot escape or be used as scalar");
+                var index=parseVerifiedExpression(depth+1);consume(RBRACKET,"expected ']'");
+                if(!index.unit().equals(VerifiedQuantityUnit.SCALAR))throw error(name,"E_UNIT_DIMENSION: scalar index required");
+                long lo=index.type().range().minimum(),hi=index.type().range().maximum();
+                if(lo<0||hi>=cells.size())throw error(name,"E_VERIFY_UNPROVEN: index not proved within receiver bounds");
+                if(!(index.expression() instanceof Ast.NameExpr||index.expression() instanceof Ast.LiteralExpr))
+                    throw error(name,"E_VERIFY_UNSUPPORTED: fixed index requires local or literal");
+                Ast.Expr value=cells.get((int)hi).expression();
+                var range=cells.get((int)hi).type().range();
+                for(long k=hi-1;k>=lo;k--){
+                    var cell=cells.get((int)k);range=range.join(cell.type().range());
+                    value=new Ast.ConditionalExpr(new Ast.BinaryExpr("==",index.expression(),new Ast.LiteralExpr(k)),cell.expression(),value);
+                }
+                return new QuantityTerm(value,new RefinedQuantity(VerifiedQuantityUnit.SCALAR,range,false),depth+1);
+            }
             return new QuantityTerm(new Ast.NameExpr(name.lexeme()), type, 0, verifiedUpperBounds.get(name.lexeme()));
         }
         var function = verifiedFunctions.get(name.lexeme());
