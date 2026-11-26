@@ -133,7 +133,7 @@ final class AffineNativeSlotIntegrationTest {
     void checkedSourceBranchesRetireOnlyTheUnreturnedOwner() {
         var plan = OresCompiler.elaborateAffineDropsStrictAtto("""
                 fnc compute(Array<int> a, Array<int> b, bool flag): Array<int> {
-                    do if flag then return rt take a; else return rt take b; fi;
+                    do if flag then return rt take a; else return rt take b; fi
                 }
                 """);
         assertEquals(new Outcome(List.of(2L), 1L), execute(plan, true));
