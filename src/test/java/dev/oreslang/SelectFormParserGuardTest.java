@@ -103,6 +103,39 @@ final class SelectFormParserGuardTest {
 
 
     @Test
+    void futureDefaultExpressionFormsFailClosedUntilTrackedLoweringExists() {
+        for (String prefix : new String[] {"select", "nb select", "await select", "await nb select"}) {
+            for (String generic : new String[] {"", "<Future<int>>"}) {
+                for (String body : new String[] {" { default: -> { return 42; } }",
+                        " over default: -> { return 42; } end"}) {
+                    String source = "pub fnc main(): int { return " + prefix + generic + body + "; }";
+                    IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                            () -> OresCompiler.parseAndTypeCheck(source), source);
+                    assertTrue(error.getMessage().contains("tracked Future result lowering"),
+                            error::getMessage);
+                }
+            }
+        }
+    }
+
+    @Test
+    void countedSelectCannotBypassTrackedFutureAdmission() {
+        for (String prefix : new String[] {"select", "nb select", "await select", "await nb select"}) {
+            for (String generic : new String[] {"", "<int>"}) {
+                for (String count : new String[] {"(0)", "(1)", "(3)", "(-1)", "(true)", "(1 + 2)"}) {
+                    for (String body : new String[] {" { when readch ch: int n -> { return n; return n; } }",
+                            " over when readch ch: int n -> { return n; return n; } end"}) {
+                        String source = "fnc bad(Channel<int> ch): int { return " + prefix + generic + count + body + "; }";
+                        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                                () -> OresCompiler.parseAndTypeCheck(source), source);
+                        assertTrue(failure.getMessage().contains("tracked Future result lowering"), failure::getMessage);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void overDelimiterDoesNotAdmitDoTrySelect() {
         String source = """
                 pub fnc main(): void {

@@ -2217,10 +2217,59 @@ public final class Ast {
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
     public enum TaskCaptureTransfer { COPY, MOVE }
-    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) implements Expr {
+    // Static type witnesses are deliberately not executable AST children.
+    public record CountedZeroWitness(String name, ChannelOperation operation) {
+        public CountedZeroWitness {
+            if (name == null || name.isBlank() || name.startsWith("$")
+                    || (operation != ChannelOperation.READ && operation != ChannelOperation.AWAIT))
+                throw new IllegalArgumentException("invalid counted zero source witness");
+        }
+    }
+    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                           boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                           String zeroCountSourceName, String dynamicCountName,
+                           List<CountedZeroWitness> zeroCountWitnesses) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
+            if ((typedDefaultSelectI64 || typedCountedSelectI64) && domain != ExecutionDomain.CPU)
+                throw new IllegalArgumentException("typed select requires CPU task authority");
+            if (typedDefaultSelectI64 && typedCountedSelectI64)
+                throw new IllegalArgumentException("inconsistent typed select result");
+            if (zeroCountSourceName != null && (!typedCountedSelectI64 || zeroCountSourceName.isBlank()))
+                throw new IllegalArgumentException("invalid zero-count select type witness");
+            zeroCountWitnesses = List.copyOf(zeroCountWitnesses);
+            if (zeroCountWitnesses.size() > 8 || (!zeroCountWitnesses.isEmpty() && !typedCountedSelectI64)
+                    || (zeroCountSourceName != null && !zeroCountWitnesses.equals(
+                            List.of(new CountedZeroWitness(zeroCountSourceName, ChannelOperation.READ)))))
+                throw new IllegalArgumentException("invalid counted zero witness set");
+            if (dynamicCountName != null && (!typedCountedSelectI64
+                    || !zeroCountWitnesses.isEmpty() || dynamicCountName.isBlank()))
+                throw new IllegalArgumentException("invalid dynamic counted select witness");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName, String dynamicCountName) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, dynamicCountName, zeroCountSourceName == null ? List.of()
+                        : List.of(new CountedZeroWitness(zeroCountSourceName, ChannelOperation.READ)));
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, false);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) {
+            this(domain, body, legacyNb, false, false);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body) {
             this(domain, body, false);
