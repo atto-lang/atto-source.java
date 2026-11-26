@@ -62,6 +62,7 @@ public final class TypeChecker {
 
     /** Strict source-profile flag is local to this checker; never process-global. */
     private boolean strictAttoEquality;
+    private boolean checkedI64Arithmetic;
     /** Selected lexical prelude profile; defaults to hosted Java for compatibility. */
     private AutomaticPrelude.Profile preludeProfile = AutomaticPrelude.Profile.HOSTED;
     /** Exact return spelling scoped to the checked source callable. */
@@ -418,6 +419,12 @@ public final class TypeChecker {
     public static TypeCheckResult checkTypesWithDiagnostics(
             Ast.Program program, boolean strictAttoEquality,
             AutomaticPrelude.Profile preludeProfile) {
+        return checkTypesWithDiagnostics(program, strictAttoEquality, preludeProfile, strictAttoEquality);
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, boolean strictAttoEquality,
+            AutomaticPrelude.Profile preludeProfile, boolean checkedI64Arithmetic) {
         if (preludeProfile == null) {
             throw new IllegalArgumentException("prelude profile cannot be null");
         }
@@ -431,6 +438,7 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
+        checker.checkedI64Arithmetic = checkedI64Arithmetic || strictAttoEquality;
         checker.preludeProfile = preludeProfile;
         checker.validateImports(program);
         checker.collect(program);
@@ -650,6 +658,17 @@ public final class TypeChecker {
             Map<String, Ast.ModuleDecl> linkedModules,
             Map<String, Ast.FunctionDecl> linkedImportFunctions,
             boolean strictAttoEquality) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(program, linkedClasses, linkedAliases,
+                linkedContracts, linkedModules, linkedImportFunctions, strictAttoEquality, strictAttoEquality);
+    }
+
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, Ast.ModuleDecl> linkedModules,
+            Map<String, Ast.FunctionDecl> linkedImportFunctions,
+            boolean strictAttoEquality, boolean checkedI64Arithmetic) {
         if (linkedImportFunctions == null) {
             throw new IllegalArgumentException("linked import functions cannot be null");
         }
@@ -688,6 +707,7 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
+        checker.checkedI64Arithmetic = checkedI64Arithmetic || strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
@@ -3244,7 +3264,7 @@ public final class TypeChecker {
         }
         String name = ref.name();
         if (generics.contains(name) || GENERIC_DEFAULT_BUILTINS.contains(name)
-                || Set.of("Object", "Any", "Unknown", "Error", "Symbol",
+                || Set.of("Object", "Any", "Unknown", "Error", "ArithmeticOverflowError", "DivisionByZeroError", "Symbol",
                         "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
                 || findClass(name) != null || findInterface(name) != null
                 || findTypeAlias(name) != null || modules.containsKey(name)
@@ -4473,12 +4493,10 @@ public final class TypeChecker {
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
                 case "-", "*", "%" -> numericJoin(left, right, binary.operator());
                 case "/" -> {
-                    // OresEvalRootNode.numeric evaluates real division as a Double,
-                    // even for int/int. The result cannot be assigned to int without
-                    // an explicit conversion. Complex/decimal joins retain their
-                    // existing representation pending dedicated numeric contracts.
                     Type result = numericJoin(left, right, "/");
-                    yield result == Primitive.INT ? Primitive.FLOAT : result;
+                    // Preserve historical .ores real division; canonical checked
+                    // i64 uses signed truncation and the same integral carrier.
+                    yield result == Primitive.INT && !checkedI64Arithmetic ? Primitive.FLOAT : result;
                 }
                 default -> Unknown.INSTANCE;
             };
@@ -10366,6 +10384,10 @@ public final class TypeChecker {
      * identity relation, while open nominal types may share a future/common
      * subtype and therefore cannot be declared disjoint without a proof.
      */
+    private static boolean isNumericErrorName(String name) {
+        return name.equals("ArithmeticOverflowError") || name.equals("DivisionByZeroError");
+    }
+
     private boolean typesMayOverlap(Type a, Type b) {
         if (a == Unknown.INSTANCE || b == Unknown.INSTANCE
                 || a instanceof Generic || b instanceof Generic) return true;
@@ -10383,6 +10405,9 @@ public final class TypeChecker {
         }
 
         if (a instanceof Named an && b instanceof Named bn) {
+            if (checkedI64Arithmetic && an.arguments().isEmpty() && bn.arguments().isEmpty()
+                    && ((an.name().equals("Error") && isNumericErrorName(bn.name()))
+                        || (bn.name().equals("Error") && isNumericErrorName(an.name())))) return true;
             boolean aNominal = findClass(an.name()) != null || findInterface(an.name()) != null;
             boolean bNominal = findClass(bn.name()) != null || findInterface(bn.name()) != null;
             if (aNominal && bNominal) {
@@ -11847,7 +11872,8 @@ public final class TypeChecker {
             return common;
         }
         if (expr instanceof Ast.BinaryExpr arithmetic
-                && Set.of("+", "-", "*").contains(arithmetic.operator())) {
+                && (Set.of("+", "-", "*").contains(arithmetic.operator())
+                    || (checkedI64Arithmetic && arithmetic.operator().equals("/")))) {
             String left = strictNumericSource(arithmetic.left(), env);
             String right = strictNumericSource(arithmetic.right(), env);
             return left != null && left.equals(right) ? left : null;
