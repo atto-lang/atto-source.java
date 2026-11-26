@@ -445,6 +445,33 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void dynamicStringPairKeyEvaluatesExactlyOnceInMapSourceOrder() {
+        String source = """
+            fnc key(): string { stdio.println(1); return "first-name"; }
+            fnc value(): int { stdio.println(2); return 42; }
+            pub fnc main(): void {
+                const m = Map.of<string,int>(Pair.of(key(), value()), "b" => 7);
+                stdio.println(m.size);
+                return;
+            }
+            """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("1\n2\n2\n", guestStdout(source));
+    }
+
+    @Test
+    void dynamicPairKeyStillRequiresStringAndStaticRecordProvenance() {
+        for (String body : new String[]{
+            "const key = 42; const x = Map.of<string,int>(Pair.of(key, 1));",
+            "const key = true; const x = Map.of<string,int>(Pair.of(key, 1));",
+            "const key = #ready; const x = Map.of<Symbol,int>(Pair.of(key, 1));",
+            "const key = \"a\"; const x = Record.of(Pair.of(key, 1));",
+            "const key = \"a\"; const x = Map.of_entries<string,int>(Pair.of(key, 1));"
+        }) assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck(program(body)), body);
+    }
+
+    @Test
     void shadowedPairCannotBeConsumedAsStaticRecordField() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
             "define class Pair as end\n" + program("const r = Record.of(Pair.of(\"a\", 1));")));
