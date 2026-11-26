@@ -7865,17 +7865,26 @@ public final class Parser {
                 if (body.size() >= 128) throw error(peek(), "E_REFINEMENT_LIMIT: too many immutable bindings");
                 Token first = consume(IDENT, "expected a binding type or name");
                 String localName;
-                RefinedQuantity type;
+                RefinedQuantity type = null;
                 if (match(COLON)) {
                     localName = first.lexeme();
                     type = readRefinedType(consume(IDENT, "expected a binding type"));
+                } else if (check(EQUAL)) {
+                    localName = first.lexeme();
                 } else {
                     type = readRefinedType(first);
                     localName = verifiedName("expected a binding name").lexeme();
                 }
+                if (verifiedLocals.containsKey(localName) || refinementAliases.containsKey(localName) ||
+                        Set.of("int", "i64", "i32", "self", "main", "infer", "_").contains(localName))
+                    throw error(first, "E_REFINEMENT_DUPLICATE: reserved or duplicate binding");
                 consume(EQUAL, "expected '=' before immutable initializer");
                 var term = parseVerifiedExpression(0);
-                type.require(term.type(), "E_REFINEMENT_BINDING", "binding " + localName);
+                if (type == null) type = term.type();
+                else {
+                    type.unit().requireCompatible(term.type().unit());
+                    type.require(term.type(), "E_REFINEMENT_BINDING", "binding " + localName);
+                }
                 consume(SEMICOLON, "expected ';' after immutable binding");
                 var localType = new RefinedQuantity(type.unit(), term.type().range(), type.i32());
                 if (verifiedLocals.putIfAbsent(localName, localType) != null)
