@@ -102,7 +102,7 @@ final class TrapResultSemanticsTest {
         String program = """
                 trap fnc panics(): int {
                   val Option<int> missing = None;
-                  return missing.unwrap();
+                  return missing.expect("explicit panic control");
                 }
 
                 pub fnc main(): void {
@@ -114,7 +114,7 @@ final class TrapResultSemanticsTest {
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
         PolyglotException thrown = assertThrows(PolyglotException.class, () -> run(program));
-        assertTrue(thrown.getMessage().contains("Option::unwrap"));
+        assertTrue(thrown.getMessage().contains("explicit panic control"));
     }
 
     @Test
@@ -319,11 +319,11 @@ final class TrapResultSemanticsTest {
     }
 
     @Test
-    void trapDoesNotSwallowResultUnwrapPanic() throws Exception {
+    void trapDoesNotSwallowResultExpectPanic() throws Exception {
         String source = """
                 trap fnc panics(): int {
                   val Result<int, String> invalid = Err("missing");
-                  return invalid.unwrap();
+                  return invalid.expect("explicit panic control");
                 }
                 pub fnc main(): void {
                   val Result<int, Error> ignored = panics();
@@ -333,7 +333,7 @@ final class TrapResultSemanticsTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         PolyglotException thrown = assertThrows(PolyglotException.class, () -> run(source));
-        assertTrue(thrown.getMessage().contains("Result::unwrap"));
+        assertTrue(thrown.getMessage().contains("explicit panic control"));
     }
 
     @Test
@@ -364,7 +364,7 @@ final class TrapResultSemanticsTest {
     }
 
     @Test
-    void aDeferredOrdinaryCastErrorCannotDowngradeUnwrapPanic() throws Exception {
+    void aDeferredOrdinaryCastErrorCannotDowngradeExpectPanic() throws Exception {
         String source = """
                 define class Animal as
                 end
@@ -381,7 +381,7 @@ final class TrapResultSemanticsTest {
                 trap fnc panic_then_cleanup(Animal animal): int {
                   defer deferred_cast(animal);
                   val Option<int> absent = None;
-                  return absent.unwrap();
+                  return absent.expect("explicit panic control");
                 }
 
                 pub fnc main(): void {
@@ -392,11 +392,11 @@ final class TrapResultSemanticsTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
-        assertTrue(panic.getMessage().contains("Option::unwrap"));
+        assertTrue(panic.getMessage().contains("explicit panic control"));
     }
 
     @Test
-    void deferredUnwrapPanicOverridesRecoverableBodyCastError() throws Exception {
+    void deferredExpectPanicOverridesRecoverableBodyCastError() throws Exception {
         String source = """
                 define class Animal as
                 end
@@ -407,7 +407,7 @@ final class TrapResultSemanticsTest {
 
                 fnc deferred_panic(): void {
                   val Option<int> absent = None;
-                  val int invalid = absent.unwrap();
+                  val int invalid = absent.expect("explicit panic control");
                   return;
                 }
 
@@ -425,11 +425,11 @@ final class TrapResultSemanticsTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
-        assertTrue(panic.getMessage().contains("Option::unwrap"));
+        assertTrue(panic.getMessage().contains("explicit panic control"));
     }
 
     @Test
-    void finallyCastErrorCannotDowngradeAnUnwrapPanic() throws Exception {
+    void finallyCastErrorCannotDowngradeAnExpectPanic() throws Exception {
         String source = """
                 define class Animal as
                 end
@@ -441,7 +441,7 @@ final class TrapResultSemanticsTest {
                 trap fnc panic_with_finally(Animal animal): int {
                   try {
                     val Option<int> absent = None;
-                    return absent.unwrap();
+                    return absent.expect("explicit panic control");
                   } catch (err) {
                     return 7;
                   } finally {
@@ -457,11 +457,11 @@ final class TrapResultSemanticsTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
-        assertTrue(panic.getMessage().contains("Option::unwrap"));
+        assertTrue(panic.getMessage().contains("explicit panic control"));
     }
 
     @Test
-    void suspendableTryFinallyCannotDowngradeUnwrapPanic() throws Exception {
+    void suspendableTryFinallyCannotDowngradeExpectPanic() throws Exception {
         String source = """
                 define class Animal as
                 end
@@ -476,7 +476,7 @@ final class TrapResultSemanticsTest {
                   val Animal animal = new Cat();
                   try {
                     val Option<int> absent = None;
-                    return absent.unwrap();
+                    return absent.expect("explicit panic control");
                   } catch (err) {
                     return received;
                   } finally {
@@ -491,7 +491,7 @@ final class TrapResultSemanticsTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
-        assertTrue(panic.getMessage().contains("Option::unwrap"));
+        assertTrue(panic.getMessage().contains("explicit panic control"));
     }
 
     @Test
@@ -569,7 +569,7 @@ final class TrapResultSemanticsTest {
                   try {
                     defer stdio.stdout.write("D");
                     val Option<int> absent = None;
-                    return absent.unwrap();
+                    return absent.expect("explicit panic control");
                   } catch (err) {
                     stdio.stdout.write("C");
                     return seed;
@@ -591,7 +591,7 @@ final class TrapResultSemanticsTest {
                 .allowAllAccess(false).out(output).build()) {
             PolyglotException panic = assertThrows(
                     PolyglotException.class, () -> context.eval(program));
-            assertTrue(panic.getMessage().contains("Option::unwrap"));
+            assertTrue(panic.getMessage().contains("explicit panic control"));
         }
         assertEquals("DF", output.toString(StandardCharsets.UTF_8));
     }
@@ -633,6 +633,62 @@ final class TrapResultSemanticsTest {
         assertTrue(output.contains("Error("), output);
         assertFalse(output.contains("at dev.") || output.contains("at java.")
                 || output.contains("Exception:"), "no host stack or exception text: " + output);
+    }
+
+    @Test
+    void checkedUnwrapFailuresAreCaughtAsResultAndNormalValuesSurvive() throws Exception {
+        String source = """
+                fnc option_case(bool present): int {
+                  let mut Option<int> state = None;
+                  if present then
+                    state = Some(42);
+                  fi
+                  return state.unwrap();
+                }
+                fnc result_case(bool present): int {
+                  let mut Result<int, String> state = Err("original");
+                  if present then
+                    state = Ok(42);
+                  fi
+                  return state.unwrap();
+                }
+                pub fnc main(): void {
+                  val Result<int, Error> a = trap! option_case(false);
+                  val Result<int, Error> b = trap! result_case(false);
+                  val Result<int, Error> c = trap! option_case(true);
+                  val Result<int, Error> d = trap result_case(true);
+                  stdio.stdout.write(a.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(b.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(c.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(d.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:true:42:42", run(source));
+    }
+
+    @Test
+    void checkedUnwrapRunsCleanupAndDoesNotExecuteLaterStatements() throws Exception {
+        String source = """
+                fnc fail(): int {
+                  defer stdio.stdout.write("D");
+                  val Option<int> missing = None;
+                  val int ignored = missing.unwrap();
+                  stdio.stdout.write("unreachable");
+                  return ignored;
+                }
+                pub fnc main(): void {
+                  val Result<int, Error> outcome = trap! fail();
+                  stdio.stdout.write(outcome.is_err());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("Dtrue", run(source));
     }
 
     private static String run(String program) throws Exception {
