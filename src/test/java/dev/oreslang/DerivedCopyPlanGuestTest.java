@@ -110,7 +110,7 @@ final class DerivedCopyPlanGuestTest {
                   pub let int n = 10;
                 end
                 define class Person as
-                  pub let Scores scores = new Scores();
+                  pub let mut Scores scores = new Scores();
                 end
                 pub fnc main(): void {
                   let mut Person a = new Person();
