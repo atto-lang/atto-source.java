@@ -342,6 +342,8 @@ final class RecoveryHandlerChain<T> {
 
     private static boolean isTerminal(Throwable failure) {
         return failure instanceof Error
+                // Stack exhaustion is panic-class: no recover callback may consume it.
+                || failure instanceof LogicalStackOverflowException
                 || failure instanceof CancellationException
                 || failure instanceof InterruptedException
                 || failure instanceof RejectedExecutionException

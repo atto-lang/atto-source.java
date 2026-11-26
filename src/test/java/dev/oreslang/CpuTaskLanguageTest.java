@@ -90,7 +90,7 @@ final class CpuTaskLanguageTest {
                           pub let int value = 1;
                         end
                         pub async fnc main(): void {
-                          let original = new Box();
+                          val original = new Box();
                           let Future<int> t = cpu task {
                             original.value = 99;
                             return original.value;
@@ -103,6 +103,23 @@ final class CpuTaskLanguageTest {
         assertTrue(failure.getMessage().contains("moved")
                         || failure.getMessage().contains("capture"),
                 failure::getMessage);
+    }
+
+    @Test void movedMutableObjectIsUsableOnlyInsideTask() throws Exception {
+        assertEquals("99", run("""
+                define class Box as
+                  pub let int value = 1;
+                end
+                pub async fnc main(): void {
+                  val original = new Box();
+                  val Future<int> t = cpu task {
+                    original.value = 99;
+                    return original.value;
+                  };
+                  stdio.stdout.write(await t);
+                  return;
+                }
+                """));
     }
 
     @Test void taskCannotCaptureALiveMutexGuard() {

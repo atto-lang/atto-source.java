@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.TelemetrySpanScope;
 import dev.oreslang.types.TypeChecker;
@@ -216,6 +217,39 @@ final class TelemetryUsingSpanLanguageTest {
             }, "must reject borrowed lexical span handle through: " + statement);
             assertTrue(rejected.getMessage().contains("telemetry span"),
                     () -> statement + ": " + rejected.getMessage());
+        }
+    }
+
+    @Test
+    void hostFlagSwitchesExistingGuestSpanSitesOnTheSameCallTarget() throws Exception {
+        String program = """
+                pub fnc trace_once(): bool {
+                  using telemetry.span("switch.checkout") as span {
+                    return span.recording();
+                  }
+                  return false;
+                }
+                """;
+        Source source = Source.newBuilder(OresLanguage.ID, program, "toggle-span.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        TelemetrySpanScope.disableExistingSites();
+        long beforeStarts = TelemetrySpanScope.startedCount();
+        long beforeEnds = TelemetrySpanScope.endedCount();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            var target = context.parse(source);
+            String invokePublic = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
+            assertFalse(target.execute(invokePublic, "trace_once").asBoolean());
+            TelemetrySpanScope.enableExistingSites(100, 10_000, "other.");
+            assertFalse(target.execute(invokePublic, "trace_once").asBoolean(),
+                    "a nonmatching prefix does not record");
+            TelemetrySpanScope.enableExistingSites(100, 10_000, "switch.");
+            assertTrue(target.execute(invokePublic, "trace_once").asBoolean());
+            TelemetrySpanScope.disableExistingSites();
+            assertFalse(target.execute(invokePublic, "trace_once").asBoolean());
+            assertEquals(beforeStarts + 1, TelemetrySpanScope.startedCount());
+            assertEquals(beforeEnds + 1, TelemetrySpanScope.endedCount());
+        } finally {
+            TelemetrySpanScope.disableExistingSites();
         }
     }
 

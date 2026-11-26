@@ -1,0 +1,15 @@
+// Compiled guest must consume the Atto-owned signed-key hash set.
+import class IntHashSet from "atto.alloc/set";
+
+pub fnc main(): int {
+  let mut IntHashSet keys = new IntHashSet(4);
+  if !keys.insert(-1) || !keys.insert(3) ||
+     keys.insert(-1) || !keys.contains(3) ||
+     !keys.remove(-1) || keys.contains(-1) ||
+     !keys.insert(7) || !keys.contains(7) ||
+     keys.len() != 2; do
+    return 1;
+  fi
+  keys.clear();
+  return keys.is_empty() && !keys.contains(7) ? 42 : 2;
+}

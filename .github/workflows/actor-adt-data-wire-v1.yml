@@ -1,0 +1,39 @@
+name: Java actor ADT DATA wire v1 (host-only)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorAdtDataWireV1.java'
+      - 'tests/ActorAdtDataWireV1Smoke.java'
+      - '.github/workflows/actor-adt-data-wire-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-head-java-data-wire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate exact tested head and source tree
+        env:
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
+          git rev-parse HEAD^{tree}
+      - name: Compile Java 17+ bounded ADT host codec and execute all wire vectors
+        run: |
+          set -euo pipefail
+          javac -version
+          mkdir -p "$RUNNER_TEMP/atto-adt-java"
+          javac --release 17 -d "$RUNNER_TEMP/atto-adt-java" \
+            src/main/java/dev/oreslang/runtime/ActorAdtDataWireV1.java \
+            tests/ActorAdtDataWireV1Smoke.java
+          java -ea -cp "$RUNNER_TEMP/atto-adt-java" ActorAdtDataWireV1Smoke \
+            | tee "$RUNNER_TEMP/adt-java.log"
+          grep -Fx 'JAVA_ADT_DATA_WIRE_V1_PASS|profiles=6|control_authority=none|guest_execution=no' \
+            "$RUNNER_TEMP/adt-java.log"
+      - name: Confirm source not modified
+        run: test -z "$(git status --porcelain)"

@@ -28,8 +28,10 @@ final class AttoLibraryNamespaceResolutionTest {
                 CoreLibrarySources.oresCoreUnitId("ores.core/numeric.ores"));
         assertEquals(CoreLibrarySources.oresCoreSource("atto.core/numeric"),
                 CoreLibrarySources.oresCoreSource("ores.core/numeric"));
-        assertEquals(CoreLibrarySources.unitId("atto.std/testing.atto"),
+        assertEquals(CoreLibrarySources.unitId("atto.std/testing"),
                 CoreLibrarySources.unitId("std/testing.ores"));
+        assertEquals(CoreLibrarySources.unitId("atto.std/core.atto"),
+                CoreLibrarySources.unitId("std/core.ores"));
         assertEquals(CoreLibrarySources.source("atto.std/testing"),
                 CoreLibrarySources.source("ores.std/testing.ores"));
     }
@@ -69,6 +71,14 @@ final class AttoLibraryNamespaceResolutionTest {
                 () -> CoreLibrarySources.oresCoreUnitId("atto.core//numeric"));
         assertThrows(IllegalArgumentException.class,
                 () -> CoreLibrarySources.source("atto.std/../testing"));
+        for (String malformed : new String[]{"atto.core/numeric/", "atto.core/numeric/.atto", "ores.core/numeric/"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.oresCoreUnitId(malformed), malformed);
+        }
+        for (String malformed : new String[]{"atto.std/testing/", "atto.std/testing/.ores", "std/testing/"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.unitId(malformed), malformed);
+        }
         assertFalse(CoreLibrarySources.isReservedOresLibraryImport("./atto.core/numeric"));
     }
 }

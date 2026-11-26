@@ -35,9 +35,14 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
+    private final AsyncStdioLogs asyncStdio;
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
+    // One trusted WAL shard registry per OresContext; not guest-exposed.
+    private final DbWalTrustedGrantRegistry dbWalGrants;
+    DbWalTrustedGrantRegistry dbWalGrants() { return dbWalGrants; }
+    private final SourceActorPubSub actorPubSub;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
@@ -90,6 +95,14 @@ public final class OresContext implements AutoCloseable {
     private final RuntimePermissions runtimePermissions;
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
+    // Compiler/runtime-only numeric probe recorder; never a userland OTel SDK.
+    private final AutoTraceRecorder autoTrace = new AutoTraceRecorder(
+            AutoTraceRecorder.DEFAULT_CAPACITY, false);
+    // Bounded semantic span staging; separate from core numeric diagnostics
+    // and not an OTLP exporter. Off path allocates no per-request span.
+    private final SemanticTraceBuffer semanticTrace =
+            new SemanticTraceBuffer(autoTrace, 4096);
+    private final boolean autoTraceReceipt;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
@@ -122,6 +135,7 @@ public final class OresContext implements AutoCloseable {
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in(), StandardCharsets.UTF_8));
         this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
+        this.asyncStdio = new AsyncStdioLogs(this.output);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         // No host workflow service may enter an adversarial VM context.
         // Consume a one-shot provision even when forbidden so it cannot leak
@@ -133,6 +147,39 @@ public final class OresContext implements AutoCloseable {
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
                 env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
+        // Host-provisioned application args only. Unknown/malformed tracing
+        // controls fail closed; no guest instruction or OTel environment
+        // variable grants exporter or logging permissions.
+        boolean calls = false;
+        boolean receipt = false;
+        for (String arg : env.getApplicationArguments()) {
+            if (arg.startsWith("--ores-telemetry=")) {
+                String mode = arg.substring("--ores-telemetry=".length());
+                if (!mode.equals("off") && !mode.equals("calls")) {
+                    throw new IllegalArgumentException("unsupported telemetry mode: " + mode);
+                }
+                calls = mode.equals("calls");
+            } else if (arg.startsWith("--ores-telemetry-receipt=")) {
+                String value = arg.substring("--ores-telemetry-receipt=".length());
+                if (!value.equals("stderr") && !value.equals("none")) {
+                    throw new IllegalArgumentException("unsupported telemetry receipt: " + value);
+                }
+                receipt = value.equals("stderr");
+            }
+        }
+        if ((calls || receipt) && (isolatePolicy.adversarial()
+                || !isolatePolicy.capabilities().contains(IsolatePolicy.Capability.STDOUT))) {
+            throw new SecurityException(
+                    "automatic call diagnostics require trusted stdout-enabled isolate");
+        }
+        if (receipt && !calls) {
+            throw new IllegalArgumentException(
+                    "telemetry receipt requires --ores-telemetry=calls");
+        }
+        if (calls && !autoTrace.reconfigureCalls(true)) {
+            throw new IllegalStateException("compiled call telemetry sites unavailable");
+        }
+        this.autoTraceReceipt = receipt;
         // UNTRUSTED contexts admit one guest thread and the isolate's JNI
         // scope belongs to the calling thread. Root task turns retain that
         // admission while runtime CONTROL carriers remain prestarted.
@@ -162,6 +209,10 @@ public final class OresContext implements AutoCloseable {
                     this::executeActorTurn,
                     vm::executeControl,
                     vm::executePhysicalStop);
+            // Trusted host opt-in only. Actor mail carries immutable metadata
+            // independently of payload; no third-party exporter is installed.
+            actors.configureTracePropagation(autoTrace.enabled());
+            if (autoTrace.enabled()) actors.configureTraceSpanBuffer(semanticTrace);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             // Install BEFORE publishing this actor runtime to any guest.
@@ -173,6 +224,8 @@ public final class OresContext implements AutoCloseable {
 
             this.vm = vm;
             this.actors = actors;
+            this.dbWalGrants = new DbWalTrustedGrantRegistry(actors);
+            this.actorPubSub = new SourceActorPubSub(actors);
             this.asyncRuntime = async;
             this.garbageCollector = gc;
         } catch (RuntimeException | Error failure) {
@@ -183,6 +236,7 @@ public final class OresContext implements AutoCloseable {
                 try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            try { asyncStdio.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
         CorePerf.end(CorePerf.CONTEXT_STARTUP, contextPerf);
@@ -196,8 +250,10 @@ public final class OresContext implements AutoCloseable {
     public TruffleLanguage.Env env() { return env; }
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
+    public AsyncStdioLogs asyncStdio() { return asyncStdio; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+    public SourceActorPubSub actorPubSub() { return actorPubSub; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -205,6 +261,10 @@ public final class OresContext implements AutoCloseable {
     public RuntimePermissions runtimePermissions() { return runtimePermissions; }
     public PermissionCheckMode permissionCheckMode() { return permissionCheckMode; }
     public ExecutionProfile executionProfile() { return executionProfile; }
+    /** Internal compiler-generated probe entry; no source guest export. */
+    public AutoTraceRecorder autoTrace() { return autoTrace; }
+    /** Internal trusted span-lifecycle hook; not guest-accessible telemetry. */
+    public SemanticTraceBuffer semanticTrace() { return semanticTrace; }
 
     public Object lookupHostSymbol(String className) {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host import " + className);
@@ -235,6 +295,16 @@ public final class OresContext implements AutoCloseable {
             String api) {
         requireCapability(permission.capability(), api);
         runtimePermissions.require(permission, resource, api);
+    }
+
+    /**
+     * Authorize lexical filesystem scope before walking path components. Still
+     * requires the independent canonical permission check before actual I/O.
+     */
+    public void requireLexicalFilesystemPermission(
+            RuntimePermissions.Permission permission, String resource, String api) {
+        requireCapability(permission.capability(), api);
+        runtimePermissions.requireLexicalFilesystemPath(permission, resource, api);
     }
 
     static void requireEffectiveCapability(
@@ -356,6 +426,10 @@ public final class OresContext implements AutoCloseable {
      * the terminal Future.
      */
     public Object runRootMain(Callable<?> main) {
+        return runRootMain(null, main);
+    }
+
+    public Object runRootMain(Node location, Callable<?> main) {
         if (vm.isRootSchedulerCurrent()) {
             try {
                 return main.call();
@@ -407,8 +481,9 @@ public final class OresContext implements AutoCloseable {
                         "root main scheduler task resumed after terminal state");
             }
         });
-        if (isolatedRootTurns != null) {
-            while (!task.isDone()) {
+        try {
+            if (isolatedRootTurns != null) {
+                while (!task.isDone()) {
                 Runnable turn = isolatedRootTurns.poll();
                 if (turn == null) {
                     // Waiting is outside guest execution. Re-entering on this
@@ -423,10 +498,28 @@ public final class OresContext implements AutoCloseable {
                         }
                     });
                 }
-                if (turn != null) turn.run();
+                    if (turn != null) turn.run();
+                }
+            } else if (location != null && !task.isDone()) {
+                // The host entry thread, not a CONTROL carrier, is waiting.
+                // Register an interruptible Truffle blocked region so a
+                // context interrupt/cancel can deliver its thread-local action.
+                var settled = new java.util.concurrent.CountDownLatch(1);
+                var registration = task.whenCompleteRuntimeCancellable(
+                        (value, failure) -> settled.countDown());
+                try {
+                    com.oracle.truffle.api.TruffleSafepoint.setBlockedThreadInterruptible(
+                            location, java.util.concurrent.CountDownLatch::await, settled);
+                } finally {
+                    registration.detach();
+                }
             }
+            return task.join();
+        } finally {
+            // On interrupted guest entry, revoke the root task rather than
+            // leave an observer parked on an abandoned scheduler continuation.
+            if (!task.isDone()) task.cancel(true);
         }
-        return task.join();
     }
 
     private void executeRootTurn(Runnable turn) {
@@ -527,9 +620,15 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        // Revoke new WAL shard-grant admission before actors/physical I/O
+        // begin their shutdown joins. Keep issued grants through quiescence.
+        dbWalGrants.seal();
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+        // Do not seal stdout yet: actor stop hooks and physical native-I/O
+        // retirement can still emit final telemetry. The bounded record queue
+        // remains live until all producer shutdown phases have completed.
         guestTimers.close();
         // Revoke workflow admission and drain callbacks before JNI teardown.
         // On timeout, retain the context rather than freeing live host state.
@@ -544,7 +643,12 @@ public final class OresContext implements AutoCloseable {
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
-            output.flush();
+            // Physical retirement is incomplete: reject new output without
+            // waiting for (or re-entering) the potentially blocked sink.
+            // Quarantine retains the context, native I/O, actors, and worker.
+            asyncStdio.sealAdmission();
+            // A blocked async writer owns PrintWriter's monitor; do not re-enter
+            // that lock on an already-failed physical retirement path.
             throw new IllegalStateException(
                     "Oreslang context cleanup incomplete; physical state quarantined",
                     incomplete);
@@ -561,6 +665,17 @@ public final class OresContext implements AutoCloseable {
             if (failure == null) failure = asyncFailure;
             else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
         }
+        // Both actor/native-I/O joins completed, and all auxiliary producers
+        // were asked to stop. Only now close stdout admission and drain the
+        // accepted records. The seal and timed join never acquire writer locks.
+        // On a stalled sink, preserve the context quarantine.
+        asyncStdio.sealAdmission();
+        try {
+            asyncStdio.close();
+        } catch (RuntimeException stdioFailure) {
+            if (failure == null) failure = stdioFailure;
+            else if (failure != stdioFailure) failure.addSuppressed(stdioFailure);
+        }
         try {
             vm.close();
         } catch (RuntimeException vmFailure) {
@@ -568,7 +683,7 @@ public final class OresContext implements AutoCloseable {
             else if (failure != vmFailure) failure.addSuppressed(vmFailure);
         }
         if (failure != null) {
-            output.flush();
+            // Never attempt synchronous reflush after a failed bounded drain.
             throw new IllegalStateException(
                     "Oreslang context auxiliary shutdown incomplete; context quarantined",
                     failure);
@@ -579,8 +694,18 @@ public final class OresContext implements AutoCloseable {
             linkedImportResolutions.clear();
             sharedCodeImages.close();
         }
+        actorPubSub.close();
         garbageCollector.close();
-        output.flush();
+        // The final PrintWriter flush was performed on the bounded daemon
+        // drain, including when no async record was ever admitted. Never
+        // reenter the host sink monitor on the closing actor/carrier thread.
+        // Cold-only, explicit operator diagnostic receipt; no synchronous
+        // exporter, no guest hot-path I/O, and never enabled by default.
+        if (autoTraceReceipt) {
+            java.io.PrintWriter diagnostics = new java.io.PrintWriter(
+                    new OutputStreamWriter(env.err(), StandardCharsets.UTF_8), true);
+            autoTrace.dumpNumericReceipt(diagnostics);
+        }
         QUARANTINED_CONTEXTS.remove(this);
     }
 }

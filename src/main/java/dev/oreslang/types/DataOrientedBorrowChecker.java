@@ -34,9 +34,20 @@ public final class DataOrientedBorrowChecker {
         }
     }
 
+    /** Largest write granule accepted; matches the AoSoA lane / tile cap. */
+    public static final long MAX_WRITE_GRANULE = 1024;
+
     /**
      * Null archetype/component/field is the whole parent place. Epoch fences
      * relocation, compaction and explicit relayout.
+     *
+     * <p>{@code granule} is the number of consecutive rows a writer may touch as
+     * one unit: the AoSoA lane count for tile-wide stores, the vector width for
+     * unmasked SIMD stores over SoA columns, or 1 for scalar row access. Two row
+     * ranges that are logically disjoint but split a granule are NOT
+     * independently writable: a full-tile vector store to rows [8,16) clobbers
+     * rows [12,16) owned by another task. Write conflicts are therefore decided
+     * on ranges widened to granule boundaries.</p>
      */
     public record Place(
             Layout layout,
@@ -45,8 +56,19 @@ public final class DataOrientedBorrowChecker {
             String component,
             String field,
             Range rows,
-            long epoch) {
+            long epoch,
+            long granule) {
+        /** Scalar (granule 1) place; kept for existing callers. */
+        public Place(Layout layout, String store, String archetype, String component,
+                     String field, Range rows, long epoch) {
+            this(layout, store, archetype, component, field, rows, epoch, 1);
+        }
+
         public Place {
+            if (granule < 1 || granule > MAX_WRITE_GRANULE || (granule & (granule - 1)) != 0) {
+                throw new IllegalArgumentException(
+                        "DOP write granule must be a power of two in 1.." + MAX_WRITE_GRANULE);
+            }
             Objects.requireNonNull(layout, "layout");
             if (store == null || store.isBlank()) {
                 throw new IllegalArgumentException("DOP place requires store identity");
@@ -106,7 +128,12 @@ public final class DataOrientedBorrowChecker {
         }
     }
 
+    /** Logical aliasing: do the two places name any common cell? */
     public static boolean overlaps(Place left, Place right) {
+        return overlaps(left, right, 1);
+    }
+
+    private static boolean overlaps(Place left, Place right, long granule) {
         if (!left.store().equals(right.store())) return false;
         if (left.epoch() != right.epoch()) {
             throw new IllegalArgumentException(
@@ -117,12 +144,28 @@ public final class DataOrientedBorrowChecker {
         if (!sameOrWhole(left.component(), right.component())) return false;
         if (!sameOrWhole(left.field(), right.field())) return false;
         return left.rows() == null || right.rows() == null
-                || left.rows().overlaps(right.rows());
+                || widen(left.rows(), granule).overlaps(widen(right.rows(), granule));
     }
 
+    /**
+     * Read/read never conflicts. When either side writes, ranges are compared at
+     * the coarser of the two write granules (powers of two, so the larger is a
+     * multiple of the smaller and covers both tilings).
+     */
     public static boolean conflicts(Loan left, Loan right) {
-        return overlaps(left.place(), right.place())
-                && (left.access() == Access.WRITE || right.access() == Access.WRITE);
+        boolean writes = left.access() == Access.WRITE || right.access() == Access.WRITE;
+        long granule = writes ? Math.max(left.place().granule(), right.place().granule()) : 1;
+        // Always run the overlap test first so stale epochs still fail closed.
+        return overlaps(left.place(), right.place(), granule) && writes;
+    }
+
+    private static Range widen(Range range, long granule) {
+        if (granule == 1) return range;
+        long start = range.start() - Math.floorMod(range.start(), granule);
+        long rem = Math.floorMod(range.end(), granule);
+        long end = rem == 0 ? range.end()
+                : (range.end() > Long.MAX_VALUE - (granule - rem) ? Long.MAX_VALUE : range.end() + (granule - rem));
+        return new Range(start, end);
     }
 
     public static boolean canRunConcurrently(List<Loan> left, List<Loan> right) {

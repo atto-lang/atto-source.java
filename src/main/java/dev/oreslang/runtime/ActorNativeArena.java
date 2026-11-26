@@ -49,6 +49,12 @@ public final class ActorNativeArena implements AutoCloseable {
         Runnable reserve(int bytes);
     }
 
+    /** Package-local pre-allocation fault injector; cannot return unsafe buffers. */
+    @FunctionalInterface
+    interface NativeAdmissionProbe {
+        void beforeAllocate(int bytes);
+    }
+
     /**
      * Weak keys with identity (not equals/hashCode) semantics. Native facades
      * such as Fields may have structural Map equality, so WeakHashMap would be
@@ -134,6 +140,7 @@ public final class ActorNativeArena implements AutoCloseable {
 
     private final Runnable checkOwner;
     private final Budget budget;
+    private final NativeAdmissionProbe nativeAdmissionProbe;
     private final long limit;
     private final ArrayList<ByteBuffer> slabs = new ArrayList<>();
     private final ArrayList<Long> slabBases = new ArrayList<>();
@@ -165,10 +172,16 @@ public final class ActorNativeArena implements AutoCloseable {
     private ActorLinearMemory linearMemory;
 
     ActorNativeArena(long limit, Runnable checkOwner, Budget budget) {
+        this(limit, checkOwner, budget, bytes -> { });
+    }
+
+    ActorNativeArena(long limit, Runnable checkOwner, Budget budget,
+                     NativeAdmissionProbe nativeAdmissionProbe) {
         if (limit <= 0) throw new IllegalArgumentException("native arena limit must be positive");
         this.limit = limit;
         this.checkOwner = Objects.requireNonNull(checkOwner);
         this.budget = Objects.requireNonNull(budget);
+        this.nativeAdmissionProbe = Objects.requireNonNull(nativeAdmissionProbe);
     }
 
     /** Fixed field names are layout metadata; values are stored only in native slots. */
@@ -405,9 +418,10 @@ public final class ActorNativeArena implements AutoCloseable {
         return cell;
     }
 
-    public final class ValueCell implements NativeValue {
+    public final class ValueCell implements NativeValue, AutoCloseable {
         private final long slot;
         private final Object uninitialized;
+        private boolean retired;
 
         private ValueCell(long slot, Object uninitialized) {
             this.slot = slot;
@@ -416,16 +430,21 @@ public final class ActorNativeArena implements AutoCloseable {
 
         @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
 
+        private void checkLive() {
+            checkAccess();
+            if (retired) throw new IllegalStateException("native lexical value cell was retired");
+        }
+
         @Override public long nativeOffset() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 return slot;
             }
         }
 
         public Object get() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 return loadValue(slot, uninitialized);
             }
         }
@@ -437,10 +456,68 @@ public final class ActorNativeArena implements AutoCloseable {
          */
         public boolean trySet(Object value) {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 if (!supportsValue(value, uninitialized)) return false;
                 storeValue(slot, value, uninitialized);
                 return true;
+            }
+        }
+
+        /**
+         * Restricted lexical reference move into a preallocated empty cell.
+         * This is a storage operation, not proof of guest ownership or loan
+         * retirement. Callers must separately prove exclusive guest access.
+         * Registry accounting stays unchanged: one reference slot is replaced
+         * by another under the same arena monitor. No payload allocation,
+         * facade reconstruction, or registry insertion is needed.
+         */
+        void moveReferenceTo(ValueCell target) {
+            synchronized (ActorNativeArena.this) {
+                checkLive();
+                if (target == null || target.nativeArena() != ActorNativeArena.this) {
+                    throw new IllegalArgumentException("move requires a same-arena destination");
+                }
+                target.checkLive();
+                if (target == this) throw new IllegalArgumentException("cannot move to same cell");
+                if (read(target.slot, 0) != NULL || read(target.slot, 8) != 0
+                        || read(target.slot, 16) != 0) {
+                    throw new IllegalStateException("move requires an empty destination");
+                }
+                if (read(slot, 0) != REFERENCE || read(slot, 16) != 0) {
+                    throw new IllegalStateException("move requires a native reference");
+                }
+                long bits = read(slot, 8);
+                long address = ActorCompressed32Reference.decodeStored(bits);
+                NativeValue payload = referencesByOffset.get(address);
+                if (!(payload instanceof NativeList)
+                        || !Integer.valueOf(1).equals(referenceRefCounts.get(address))) {
+                    throw new IllegalStateException("move requires one registered native list reference");
+                }
+                // Validate all locations before publication. Cell storage is
+                // immutable in location and the arena is owner-locked and live.
+                // Do not call guest or facade code after this point.
+                write(target.slot, 8, bits);
+                write(target.slot, 16, 0);
+                write(target.slot, 0, REFERENCE);
+                write(slot, 8, 0);
+                write(slot, 16, 0);
+                write(slot, 0, NULL);
+                retired = true;
+            }
+        }
+
+        /**
+         * Explicit owner-authorized lexical slot retirement. Clears existing
+         * reference/capability accounting through the current-main store path.
+         * The physical slab remains actor-lifetime; no per-slot byte refund.
+         * The compiler must separately prove that no loan or access survives.
+         */
+        @Override public void close() {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                if (retired) return;
+                storeValue(slot, null, uninitialized);
+                retired = true;
             }
         }
     }
@@ -767,17 +844,24 @@ public final class ActorNativeArena implements AutoCloseable {
         pendingBudgetRefunds.ensureCapacity(pendingBudgetRefunds.size() + 1);
         Runnable release = budget.reserve(bytes);
         ByteBuffer memory = null;
+        Region staged = null;
+        final long priorOffset = nextActorOffset;
         try {
+            nativeAdmissionProbe.beforeAllocate(bytes);
             NativeCarrierExecutor.ensureNativeLibraryLoaded();
             memory = allocateNative(bytes);
             if (memory == null) throw new OutOfMemoryError("native actor region allocation failed");
             long baseOffset = reserveActorOffset(bytes, Long.BYTES);
-            Region region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
-            regions.add(region);
+            staged = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
+            regions.add(staged);
             committed += bytes;
             allocated += bytes;
-            return region;
+            return staged;
         } catch (RuntimeException | Error failure) {
+            // A failed never-published region must not burn a logical offset.
+            // The enclosing actor arena monitor excludes concurrent reservations.
+            if (staged != null) regions.remove(staged);
+            nextActorOffset = priorOffset;
             if (memory != null) releaseNative(memory);
             retainFailedAdmissionRefund(release, failure);
             throw failure;
@@ -1098,13 +1182,17 @@ public final class ActorNativeArena implements AutoCloseable {
             pendingBudgetRefunds.ensureCapacity(pendingBudgetRefunds.size() + 1);
             Runnable release = budget.reserve(capacity);
             ByteBuffer slab = null;
+            final long priorOffset = nextActorOffset;
+            final int oldSlabCount = slabs.size();
+            final int oldBaseCount = slabBases.size();
+            final int oldReleaseCount = releases.size();
             try {
-                // Grow both metadata arrays before owning native bytes, so an
-                // OOME cannot leave a freed slab published in only one list.
+                // Grow all metadata arrays before staging native ownership.
                 slabs.ensureCapacity(slabs.size() + 1);
                 slabBases.ensureCapacity(slabBases.size() + 1);
                 releases.ensureCapacity(releases.size() + 1);
                 long slabBase = reserveActorOffset(capacity, Long.BYTES);
+                nativeAdmissionProbe.beforeAllocate(capacity);
                 NativeCarrierExecutor.ensureNativeLibraryLoaded();
                 slab = allocateNative(capacity);
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
@@ -1113,6 +1201,12 @@ public final class ActorNativeArena implements AutoCloseable {
                 slabBases.add(slabBase);
                 releases.add(release);
             } catch (RuntimeException | Error failure) {
+                // A failed new slab cannot leave phantom logical addresses or
+                // partially published metadata. Existing slabs remain live.
+                while (slabs.size() > oldSlabCount) slabs.remove(slabs.size() - 1);
+                while (slabBases.size() > oldBaseCount) slabBases.remove(slabBases.size() - 1);
+                while (releases.size() > oldReleaseCount) releases.remove(releases.size() - 1);
+                nextActorOffset = priorOffset;
                 if (slab != null) releaseNative(slab);
                 retainFailedAdmissionRefund(release, failure);
                 throw failure;
@@ -1223,7 +1317,8 @@ public final class ActorNativeArena implements AutoCloseable {
             // may throw or report a different address after the original
             // slot was stored. Looking up the existing slot identity is only
             // allowed during overwrite; a regular get() remains fail-closed.
-            NativeValue previous = referencesByOffset.get(read(slot, 8));
+            NativeValue previous = referencesByOffset.get(
+                    ActorCompressed32Reference.decodeStored(read(slot, 8)));
             if (previous == null) {
                 throw new SecurityException("stale actor-native slot reference has no registry entry");
             }
@@ -1245,8 +1340,11 @@ public final class ActorNativeArena implements AutoCloseable {
         if (tag == DOUBLE) return Double.longBitsToDouble(bits);
         if (tag == CHARACTER) return (char) bits;
         if (tag == REFERENCE) {
-            NativeValue value = referencesByOffset.get(bits);
-            if (value == null || value.nativeArena() != this || value.nativeOffset() != bits) {
+            // The slot holds an unsigned compressed32 actor-relative word, not
+            // a host pointer or raw 64-bit offset; nonzero high bits fail closed.
+            long offset = ActorCompressed32Reference.decodeStored(bits);
+            NativeValue value = referencesByOffset.get(offset);
+            if (value == null || value.nativeArena() != this || value.nativeOffset() != offset) {
                 throw new SecurityException("stale or moved actor resource reference");
             }
             return value;
@@ -1323,9 +1421,12 @@ public final class ActorNativeArena implements AutoCloseable {
             if (occupant != null && occupant != v) {
                 throw new SecurityException("duplicate actor-relative native address");
             }
+            // Encode before publishing either registry entry, so an unaligned or
+            // unrepresentable address never leaves a half-published alias.
+            // Cross-backend word (LLVM/.NET/Wasm): 0 = null, offset/8 + 1.
+            bits = Integer.toUnsignedLong(ActorCompressed32Reference.encode(address));
             referenceOffsets.putIfAbsent(v, address);
             referencesByOffset.putIfAbsent(address, v);
-            bits = address;
         } else {
             throw new IllegalArgumentException("actor field requires native value lowering for "
                     + value.getClass().getName() + "; managed guest payload fallback is disabled");
@@ -1358,13 +1459,14 @@ public final class ActorNativeArena implements AutoCloseable {
                 tag == REFERENCE && (oldTag != REFERENCE || oldBits != bits);
         boolean newCapabilityReference =
                 tag == CAPABILITY && (oldTag != CAPABILITY || oldBits != bits);
-        if (newNativeReference) referenceRefCounts.merge(bits, 1, Math::addExact);
+        if (newNativeReference) referenceRefCounts.merge(
+                ActorCompressed32Reference.decodeStored(bits), 1, Math::addExact);
         if (newCapabilityReference) capabilityRefCounts.merge(bits, 1, Math::addExact);
         write(slot, 8, bits);
         write(slot, 16, length);
         write(slot, 0, tag);
         if (oldTag == REFERENCE && (tag != REFERENCE || oldBits != bits)) {
-            releaseNativeReference(oldBits);
+            releaseNativeReference(ActorCompressed32Reference.decodeStored(oldBits));
         }
         if (oldTag == CAPABILITY && (tag != CAPABILITY || oldBits != bits)) {
             releaseCapabilityReference(oldBits);

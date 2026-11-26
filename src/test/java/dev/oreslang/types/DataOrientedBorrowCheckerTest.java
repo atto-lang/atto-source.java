@@ -127,6 +127,67 @@ final class DataOrientedBorrowCheckerTest {
         assertDoesNotThrow(() ->
                 new DataOrientedBorrowChecker.Place(SOA, "\u00a0", null, null, null, null, 0));
     }
+
+    private static DataOrientedBorrowChecker.Place tiled(long start, long end, long granule) {
+        return new DataOrientedBorrowChecker.Place(AOSOA, "world", "moving", "Position", "x",
+                new DataOrientedBorrowChecker.Range(start, end), 7, granule);
+    }
+
+    @Test
+    void writesThatSplitAnAosoaTileConflictEvenWhenRowsAreDisjoint() {
+        // 8-lane tiles: rows 12..15 share tile [8,16) with rows 8..11.
+        var low = loan(tiled(0, 12, 8), WRITE);
+        var high = loan(tiled(12, 24, 8), WRITE);
+        assertFalse(DataOrientedBorrowChecker.overlaps(low.place(), high.place()),
+                "logically the rows are disjoint");
+        assertTrue(DataOrientedBorrowChecker.conflicts(low, high));
+        assertFalse(DataOrientedBorrowChecker.canRunConcurrently(List.of(low), List.of(high)));
+        // A tile-split write against a read is still a conflict.
+        assertTrue(DataOrientedBorrowChecker.conflicts(low, loan(tiled(12, 24, 8), READ)));
+    }
+
+    @Test
+    void tileAlignedWritePartitionsStayIndependent() {
+        assertFalse(DataOrientedBorrowChecker.conflicts(
+                loan(tiled(0, 16, 8), WRITE), loan(tiled(16, 32, 8), WRITE)));
+        assertFalse(DataOrientedBorrowChecker.conflicts(
+                loan(tiled(0, 16, 16), WRITE), loan(tiled(16, 32, 16), WRITE)));
+    }
+
+    @Test
+    void coarserGranuleOfEitherSideDecides() {
+        // One side is scalar, the other writes 32-row vectors: [0,16) and [16,32)
+        // share the 32-row granule.
+        assertTrue(DataOrientedBorrowChecker.conflicts(
+                loan(tiled(0, 16, 1), WRITE), loan(tiled(16, 32, 32), WRITE)));
+        assertTrue(DataOrientedBorrowChecker.conflicts(
+                loan(tiled(16, 32, 32), READ), loan(tiled(0, 16, 1), WRITE)));
+    }
+
+    @Test
+    void readersNeverConflictButStaleEpochStillFailsClosed() {
+        assertFalse(DataOrientedBorrowChecker.conflicts(
+                loan(tiled(0, 12, 8), READ), loan(tiled(12, 24, 8), READ)));
+        var stale = new DataOrientedBorrowChecker.Place(AOSOA, "world", "moving", "Position", "x",
+                new DataOrientedBorrowChecker.Range(0, 8), 6, 8);
+        assertThrows(IllegalArgumentException.class, () -> DataOrientedBorrowChecker.conflicts(
+                loan(tiled(0, 8, 8), READ), loan(stale, READ)));
+    }
+
+    @Test
+    void granuleWideningSaturatesAtTheTopOfTheRowSpace() {
+        long top = Long.MAX_VALUE;
+        assertTrue(DataOrientedBorrowChecker.conflicts(
+                loan(tiled(top - 3, top, 1024), WRITE), loan(tiled(top - 1030, top - 1020, 1024), WRITE)));
+    }
+
+    @Test
+    void malformedGranulesAreRejected() {
+        for (long g : new long[] {0, -1, 3, 12, 2048, Long.MIN_VALUE}) {
+            assertThrows(IllegalArgumentException.class, () -> tiled(0, 8, g), Long.toString(g));
+        }
+        assertEquals(1, place(SOA, null, null, null, null).granule(), "legacy constructor is scalar");
+    }
     @Test
     void conflictingLoansInsideOneWorksetCannotBeAdmittedAgainstEmptyPeer() {
         var region = place(SOA, "moving", "Position", "x", null);

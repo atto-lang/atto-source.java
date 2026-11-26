@@ -43,8 +43,8 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     const Row row = record{x: 1, y: 2};
-                    const string key = selector();
-                    const int value = row[key];
+                    val string key = selector();
+                    const value = row[key] as int;
                     stdio.println(value);
                     return;
                 }
@@ -58,8 +58,8 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     const pair = tuple(1, 2);
-                    const int index = selector();
-                    const int value = pair[index];
+                    val int index = selector();
+                    val int value = pair[index];
                     stdio.println(value);
                     return;
                 }
@@ -78,8 +78,8 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     const Point point = new Point();
-                    const string key = selector();
-                    const int value = point[key];
+                    val string key = selector();
+                    val int value = point[key];
                     stdio.println(value);
                     return;
                 }
@@ -93,7 +93,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     val Point point = infer struct{x: 1, y: 2};
-                    const string key = selector();
+                    val string key = selector();
                     point[key] = 9;
                     return;
                 }
@@ -112,7 +112,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     val Point point = new Point();
-                    const string key = selector();
+                    val string key = selector();
                     point[key] = 9;
                     return;
                 }
@@ -126,8 +126,8 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     val Point point = infer struct{x: 1, y: 2};
-                    const string key = selector();
-                    const int value = point[key];
+                    val string key = selector();
+                    val int value = point[key];
                     stdio.println(value);
                     return;
                 }
@@ -141,8 +141,8 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     const pair = tuple(1, 2);
-                    const int index = selector();
-                    const int value = pair[index];
+                    val int index = selector();
+                    val int value = pair[index];
                     stdio.println(value);
                     return;
                 }
@@ -172,7 +172,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     const Parent value = new Child();
-                    const string key = selector();
+                    val string key = selector();
                     stdio.println(read_through_parent(value, key));
                     return;
                 }
@@ -201,7 +201,7 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     val Child child = new Child();
-                    const string key = selector();
+                    val string key = selector();
                     stdio.println(child.write(key, 9));
                     return;
                 }
@@ -217,8 +217,8 @@ final class DynamicPropertyAccessRuntimeFailureTest {
 
                 pub fnc main(): void {
                     const pair = tuple(1, 2);
-                    const int index = selector();
-                    const int value = pair[index];
+                    val int index = selector();
+                    val int value = pair[index];
                     stdio.println(value);
                     return;
                 }

@@ -36,9 +36,9 @@ final class AttoUseNamespaceFileHeaderTest {
                 "pub routine use(): void { return; }\n"));
     }
 
-    @Test void rejectsDottedNamespaceAndMissingSemicolon() {
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("use namespace guest.other;\n" + MAIN));
+    @Test void acceptsDottedNamespaceAndRejectsMissingSemicolon() {
+        org.junit.jupiter.api.Assertions.assertEquals("guest.other",
+                Parser.parse("use namespace guest.other;\n" + MAIN).namespace());
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("use namespace guest\n" + MAIN));
     }
@@ -59,5 +59,55 @@ final class AttoUseNamespaceFileHeaderTest {
                 () -> Parser.parse("use module guest;\n" + MAIN));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("use namespace;\n" + MAIN));
+    }
+
+    @Test void strictAttoNamespaceHeaderIsNotAnOpenImport() {
+        var headerOnly = Parser.parseStrictAtto("use namespace storefront;\n" + MAIN);
+        assertEquals("storefront", headerOnly.namespace());
+        assertTrue(headerOnly.imports().isEmpty(),
+                "declaring a source namespace must not implicitly import modules");
+
+        var explicitlyImported = Parser.parseStrictAtto("""
+                use namespace storefront;
+                import module math from "./math.atto";
+                pub routine main(): void { return; }
+                """);
+        assertEquals("storefront", explicitlyImported.namespace());
+        assertEquals(1, explicitlyImported.imports().size(),
+                "module lookup requires a separate import declaration");
+    }
+
+    @Test void strictAttoSourceGraphKeepsModuleAndNamespaceIdentitiesSeparate() {
+        var graph = new java.util.LinkedHashMap<String, String>();
+        graph.put("math.atto", """
+                use namespace library;
+                define module math as
+                  pub fnc identity(int value): int { return value; }
+                end
+                """);
+        graph.put("main.atto", """
+                use namespace storefront;
+                import module math from "./math.atto";
+                pub routine main(): void { return; }
+                """);
+
+        var built = new IncrementalCompiler().compileStrictAtto(graph);
+        assertEquals("library", built.units().get("math.atto").namespace());
+        assertEquals("storefront", built.units().get("main.atto").namespace());
+        assertEquals("library", built.units().get("math.atto").packageId());
+        assertEquals("storefront", built.units().get("main.atto").packageId());
+    }
+
+    @Test void strictAttoRejectsOpenImportSpellingAndLateNamespaceHeader() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parseStrictAtto("""
+                use namespace storefront;
+                use +lib/math;
+                pub routine main(): void { return; }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parseStrictAtto("""
+                import module math from "./math.atto";
+                use namespace storefront;
+                pub routine main(): void { return; }
+                """));
     }
 }
