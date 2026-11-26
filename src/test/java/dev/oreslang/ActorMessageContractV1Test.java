@@ -79,12 +79,21 @@ final class ActorMessageContractV1Test {
                 bad::getMessage);
     }
 
-    @Test void headerOrderIsNotARecipientCount() {
+    @Test void canonicalHeaderOrderIsNotARecipientCount() {
         Ast.ActorMessageContract contract = actor("""
-                define actor Router sends int receives String as end
+                define actor Router receives String sends int as end
                 """).actorMessageContract();
         assertEquals("String", contract.receives().name());
         assertEquals("int", contract.sends().name());
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> actor("define actor Router sends int receives String as end"));
+        assertTrue(failure.getMessage().contains("E_ACTOR_CONTRACT"), failure::getMessage);
+    }
+
+    @Test void sendsVoidIsNotAnEmptyDataEffect() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> actor("define actor Router receives int sends void as end"));
+        assertTrue(failure.getMessage().contains("E_ACTOR_SEND_CONTRACT"), failure::getMessage);
     }
 
     @Test void duplicateClausesAreRejectedBeforeAnyLowering() {

@@ -1711,10 +1711,14 @@ public final class Parser {
             Token clause = advance();
             Ast.TypeRef payload = parseTypeRef();
             if (clause.lexeme().equals("receives")) {
-                if (receives != null) throw error(clause, "duplicate actor receives clause");
+                if (receives != null || sends != null)
+                    throw error(clause, "E_ACTOR_CONTRACT: duplicate or out-of-order actor receives clause");
                 receives = payload;
             } else {
-                if (sends != null) throw error(clause, "duplicate actor sends clause");
+                if (sends != null)
+                    throw error(clause, "E_ACTOR_CONTRACT: duplicate actor sends clause");
+                if (payload.name().equals("void"))
+                    throw error(clause, "E_ACTOR_SEND_CONTRACT: sends void is invalid; use sends never for an empty DATA effect");
                 sends = payload;
             }
         }
