@@ -368,6 +368,29 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void deepOverrideAndInheritedDenialCannotBeBypassedByDerivedPlan() {
+        for (String source : java.util.List.of(
+                """
+                define class Record as
+                  pub let int n = 1;
+                  pub copy_deep() -> Record { return self; }
+                end
+                fnc bad(Record value): Record { return copy!! value; }
+                """,
+                """
+                @NonCopyable
+                define class Base as pub val int n = 1; end
+                define class Child extends Base as pub val int m = 2; end
+                fnc bad(Child value): Child { return copy!! value; }
+                """)) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("E_COPY_OVERRIDE")
+                    || error.getMessage().contains("E_COPY_FORBIDDEN"), error::toString);
+        }
+    }
+
+    @Test
     void recursiveClassLayoutsFailClosedUntilGraphCopierIsVerified() {
         String source = """
                 define class Node as
