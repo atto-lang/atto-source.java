@@ -166,6 +166,25 @@ final class TildeRecordLiteralGuestTest {
     }
 
     @Test
+    void exactScalarSpreadCopiesWithoutChangingTheSource() {
+        String program = """
+                pub fnc main(): void {
+                    const base = Record.of(name: "Ada", count: 41);
+                    const row = Record.of(...base, count: 42);
+                    stdio.println(base.count);
+                    stdio.println(row.count);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
+            context.eval(OresLanguage.ID, program);
+        }
+        assertEquals("41\\n42\\n", out.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+    }
+
+    @Test
     void unsupportedSpreadStillFailsInTheOwnershipTypeGate() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(
