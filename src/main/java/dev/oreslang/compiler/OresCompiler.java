@@ -33,7 +33,17 @@ public final class OresCompiler {
     }
 
     public static Ast.Program parseAndTypeCheck(String source) {
-        return analyze(Parser.parse(source));
+        return parseAndTypeCheckNumericProfile(source,
+                dev.oreslang.runtime.AttoCheckedI64Profile.select(source));
+    }
+
+    /** Numeric profile is selected by the trusted source boundary, independently
+     * of the stricter source syntax/effect admission lane. */
+    public static Ast.Program parseAndTypeCheckNumericProfile(String source, boolean checkedI64) {
+        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(
+                Parser.parse(source), false, dev.oreslang.types.AutomaticPrelude.Profile.HOSTED, checkedI64);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
     }
 
     /** Compile-time target profile for the automatic core/alloc prelude. */
