@@ -58,7 +58,7 @@ def main():
          "INLINE_TASK_DO_JAVA_PASS"),
         ("inline-early-conditional", "678821cc705b2637b755f4d8a04e5aa81df80c98",
          "INLINE_TASK_EARLY_CONDITIONAL_JAVA_PASS"),
-        ("inline-multi-conditional", "9511cefaafedaf820375912ac2c58c7e1136055a",
+        ("inline-multi-conditional", "131f0414ae6aba434a0f09553a907f4ec2c2506a",
          "INLINE_TASK_MULTI_CONDITIONAL_JAVA_PASS"),
         ("inline-shortcircuit-writeback", "adea3e544fd92d4b79387f7dc9881e36ecae65f3",
          "INLINE_TASK_SHORTCIRCUIT_JAVA_PASS"),
@@ -82,8 +82,8 @@ def main():
         run = None
         if check["exit"] == 0:
             run = invoke(command, ["--no-prompt", str(src)])
-        passed = (run is not None and run["exit"] == 0 and
-                  run["stdout"] == case["expected"] and src.read_bytes() == before)
+        passed = (run is not None and run["exit"] == int(case["expected"]) and
+                  run["stdout"] == "" and src.read_bytes() == before)
         if case["name"] in markers:
             if passed:
                 print(markers[case["name"]] + " 1/1", flush=True)

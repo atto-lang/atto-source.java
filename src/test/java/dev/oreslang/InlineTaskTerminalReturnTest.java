@@ -258,14 +258,14 @@ final class InlineTaskTerminalReturnTest {
 
     @Test void orderedEarlyReturnChainEvaluatesOnlySelectedBranch() throws Exception {
         String source = """
-                fnc matches(int value, int target): bool { return value eq target; }
+                fnc route_eq(int value, int target): bool { return value eq target; }
                 fnc choose(int route): int {
                   let int count = 0;
                   val int result = sync task<int> {
-                    if matches(route, 0) && count eq 0 do
+                    if route_eq(route, 0) && count eq 0 do
                       count = count + 2;
                       return 40;
-                    elif matches(route, 1) then
+                    elif route_eq(route, 1) then
                       count = count + 3;
                       return 39;
                     fi
