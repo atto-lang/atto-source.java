@@ -45,6 +45,13 @@ final class SuspensionEffectAliasTest {
         }
     }
 
+    @Test void awaitingCannotHideASuspendingCallFromTheEffectChecker() {
+        for (String spelling : ALIASES) {
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                    spelling + " fnc inner(): int { return 7; } fnc invalid(): int { return await inner(); }"), spelling);
+        }
+    }
+
     @Test void allAliasesExecuteTheSameGuest() throws Exception {
         for (String spelling : ALIASES) {
             String code = """
@@ -53,8 +60,8 @@ final class SuspensionEffectAliasTest {
                         let int value = await fetch();
                         return value + 1;
                     }
-                    pub fnc main(): void {
-                        stdio.stdout.write(await compute());
+                    pub %1$s fnc main(): void {
+                        stdio.stdout.write(compute());
                         return;
                     }
                     """.formatted(spelling);
