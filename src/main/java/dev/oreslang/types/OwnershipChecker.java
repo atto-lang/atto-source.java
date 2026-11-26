@@ -785,6 +785,21 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
+            Ast.CallExpr factory = defer.boundFactory();
+            if (factory != null) {
+                Ast.LambdaExpr outer = (Ast.LambdaExpr) factory.callee();
+                if (!collectCaptures(outer, scope, null).values.isEmpty()) {
+                    throw error(E_LIFETIME,
+                            "defer factory may capture only its explicit scalar parameters");
+                }
+                // Do not reinterpret a factory as a deferred borrow. Its
+                // arguments are evaluated once using the normal call rules.
+                ValueInfo produced = checkExpr(factory, scope, false);
+                if (isBorrowValue(produced) || containsMutexGuardType(produced.type)) {
+                    throw error(E_LIFETIME, "defer factory cannot retain a borrow or guard");
+                }
+                return;
+            }
             // A deferred lambda is executed synchronously at this lexical
             // scope's exit. Its captures must remain owned by the caller
             // until cleanup, rather than being moved into an escaping closure.
