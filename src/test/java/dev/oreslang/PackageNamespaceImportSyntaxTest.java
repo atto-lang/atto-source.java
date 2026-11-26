@@ -13,6 +13,27 @@ final class PackageNamespaceImportSyntaxTest {
         return Parser.parse(source + "\npub routine main(): void { return; }\n").imports().getFirst();
     }
 
+    @Test void explicitNamespaceSelectionPreservesPackageAndDottedIdentity(){
+        var a=first("import namespace billing as provider from \"checkout\";");
+        assertEquals(Ast.ImportKind.ALL,a.kind());assertTrue(a.wildcard());assertEquals(List.of(),a.names());
+        assertEquals("provider",a.namespace());assertEquals("pkg:namespace:checkout:billing",a.path());
+        var b=first("import namespace bar.shop.cart from \"checkout\";");
+        assertEquals("cart",b.namespace());assertEquals("pkg:namespace:checkout:bar.shop.cart",b.path());
+        assertEquals(b,first("import namespace bar.shop.cart as cart from pkg 'checkout';"));
+        var e=assertThrows(IllegalArgumentException.class,()->ImportRules.validate(a));
+        assertTrue(e.getMessage().startsWith("E_NAMESPACE_LINK_REQUIRED:"));
+        assertThrows(IllegalArgumentException.class,()->ImportRules.validate(first("import * as x from 'pkg:namespace:checkout:billing';")));
+        System.out.println("JAVA_NAMESPACE_SELECTOR|typed-selector|linker-required");
+    }
+    @Test void namespaceSelectorMalformedAndAliasCollisionReject(){
+        for(String bad:List.of("import namespace a..b from 'checkout';","import namespace a. from 'checkout';",
+            "import namespace a from '../checkout';","import namespace a from 'java:java.lang.System';",
+            "import namespace __root__ from 'checkout';","import namespace a as __root__ from 'checkout';",
+            "import namespace a from 'checkout'","import namespace a from '';",
+            "import namespace a as x from 'checkout'; import namespace b as x from 'checkout';")){
+            assertThrows(IllegalArgumentException.class,()->first(bad),bad);
+        }
+    }
     @Test
     void shorthandAndExplicitWildcardPkgHaveIdenticalBindingAst() {
         Ast.ImportDecl shortForm = first("import pkg 'z';");

@@ -9,6 +9,7 @@ import java.util.regex.Pattern;
 public final class ImportRules {
     public static final String JAVA_PREFIX = "java:";
     public static final String PACKAGE_PREFIX = "pkg:";
+    public static final String NAMESPACE_PACKAGE_PREFIX = "pkg:namespace:";
     private static final Pattern JAVA_BINARY_NAME =
             Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
 
@@ -77,6 +78,9 @@ public final class ImportRules {
         // Import grammar admission does not authorize linking. A synthetic
         // package identity must never fall through to a relative-file
         // resolver or host interop lookup.
+        if (imported.path().startsWith(NAMESPACE_PACKAGE_PREFIX)) {
+            throw new IllegalArgumentException("E_NAMESPACE_LINK_REQUIRED: namespace imports require a validated pinned multi-provider linker");
+        }
         if (imported.path().startsWith(PACKAGE_PREFIX)) {
             throw new IllegalArgumentException(
                     "package namespace imports require a validated package-export graph linker");
