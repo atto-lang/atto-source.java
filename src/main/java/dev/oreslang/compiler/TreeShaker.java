@@ -519,16 +519,10 @@ public final class TreeShaker {
         }
 
         private boolean constantEquals(Object left, Object right) {
+            if (left instanceof Number a && right instanceof Number b)
+                return dev.oreslang.types.NumericValueEquality.equals(a, b);
             if (left == right) return true;
             if (left == null || right == null) return false;
-            if (left instanceof Number a && right instanceof Number b) {
-                boolean aIntegral = a instanceof Byte || a instanceof Short
-                        || a instanceof Integer || a instanceof Long;
-                boolean bIntegral = b instanceof Byte || b instanceof Short
-                        || b instanceof Integer || b instanceof Long;
-                if (aIntegral && bIntegral) return a.longValue() == b.longValue();
-                return a.doubleValue() == b.doubleValue();
-            }
             return Objects.equals(left, right);
         }
 
@@ -551,7 +545,9 @@ public final class TreeShaker {
                 if (operand == UNKNOWN) return UNKNOWN;
                 if (unary.operator().equals("!") && operand instanceof Boolean value) return !value;
                 if (unary.operator().equals("+") && operand instanceof Number) return operand;
-                if (unary.operator().equals("-") && operand instanceof Long value) return -value;
+                // Never erase a possible checked overflow; leave it to runtime.
+                if (unary.operator().equals("-") && operand instanceof Long value)
+                    return value == Long.MIN_VALUE ? UNKNOWN : -value;
                 if (unary.operator().equals("-") && operand instanceof Double value) return -value;
                 return UNKNOWN;
             }
@@ -584,7 +580,8 @@ public final class TreeShaker {
 
         private Object compare(Object left, Object right, java.util.function.IntPredicate predicate) {
             if (left instanceof Number l && right instanceof Number r) {
-                return predicate.test(Double.compare(l.doubleValue(), r.doubleValue()));
+                int c = dev.oreslang.types.NumericValueOrdering.compare(l, r);
+                return c != dev.oreslang.types.NumericValueOrdering.UNORDERED && predicate.test(c);
             }
             if (left instanceof String l && right instanceof String r) {
                 return predicate.test(l.compareTo(r));
