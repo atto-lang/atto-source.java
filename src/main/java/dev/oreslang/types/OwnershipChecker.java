@@ -583,8 +583,98 @@ public final class OwnershipChecker {
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
         Scope scope = new Scope(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, scope, returnType);
+        int[] livenessFuel = {32_768};
+        for (int i = 0; i < body.size(); i++) {
+            Ast.Stmt stmt = body.get(i);
+            checkStatement(stmt, scope, returnType);
+            if (stmt instanceof Ast.BindingStmt binding) {
+                releaseUnusedDirectLoan(binding, body, i + 1, scope, livenessFuel);
+            }
+        }
         scope.close();
+    }
+
+    /**
+     * Bounded initial NLL slice: a newly created, named, direct whole-owner
+     * loan with no possible subsequent use cannot have escaped or been
+     * transferred by its binder. This is not general last-use inference.
+     * Unknown syntax, calls, control flow, closures and cleanup retain the
+     * lexical lease. Never release a loan inherited from an outer scope.
+     */
+    private void releaseUnusedDirectLoan(Ast.BindingStmt binding, List<Ast.Stmt> body,
+                                         int next, Scope scope, int[] fuel) {
+        Ast.Expr operand;
+        if (binding.initializer() instanceof Ast.RuntimeCallExpr rt
+                && rt.operation().equals("borrow") && rt.arguments().size() == 1) {
+            operand = rt.arguments().getFirst();
+        } else if (binding.initializer() instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            operand = unary.operand();
+        } else return;
+        if (!(operand instanceof Ast.NameExpr name)) return;
+        VarState loan = scope.locals.get(binding.name());
+        VarState owner = scope.lookup(name.name());
+        if (loan == null || owner == null || loan == owner
+                || loan.origin != Origin.LOCAL || owner.origin != Origin.LOCAL
+                || owner.kind != ValueKind.MOVE_ONLY || owner.aliasSource != null
+                || loan.aliasSource != null || loan.borrowSource != owner || !loan.borrowLease
+                || loan.moved || loan.rebindable
+                || (loan.kind != ValueKind.IMM_BORROW && loan.kind != ValueKind.MUT_BORROW)) return;
+        for (int i = next; i < body.size(); i++) {
+            if (!loanAbsentFromStatement(body.get(i), binding.name(), fuel, 0)) return;
+        }
+        // The same lease is released exactly once: scope.close observes
+        // borrowLease=false. Keep the binder's borrow provenance, and mark it
+        // unusable, never convert it into an owner.
+        if (loan.kind == ValueKind.MUT_BORROW) {
+            if (!owner.mutableBorrowed) throw new IllegalStateException("missing exclusive loan");
+            owner.mutableBorrowed = false;
+        } else {
+            if (owner.immutableBorrows <= 0) throw new IllegalStateException("missing shared loan");
+            --owner.immutableBorrows;
+        }
+        loan.borrowLease = false;
+        loan.moved = true;
+        shadowEvent("END_BORROW", owner);
+        if (borrowMirAudit != null) borrowMirAudit.unsupported("inferred loan expiry");
+    }
+
+    private static boolean loanAbsentFromStatement(Ast.Stmt stmt, String name,
+                                                    int[] fuel, int depth) {
+        if (depth > 64 || fuel[0] <= 0) return false;
+        --fuel[0];
+        if (stmt instanceof Ast.ReturnStmt ret)
+            return loanAbsentFromExpression(ret.value(), name, fuel, depth + 1);
+        if (stmt instanceof Ast.ExprStmt expr)
+            return loanAbsentFromExpression(expr.expression(), name, fuel, depth + 1);
+        if (stmt instanceof Ast.BindingStmt binding)
+            return !binding.name().equals(name)
+                    && loanAbsentFromExpression(binding.initializer(), name, fuel, depth + 1);
+        // Deliberately do not infer through nested or unfamiliar statement
+        // forms. In particular do not skip branch, loop or defer uses.
+        return false;
+    }
+
+    private static boolean loanAbsentFromExpression(Ast.Expr expr, String name,
+                                                     int[] fuel, int depth) {
+        if (depth > 64 || fuel[0] <= 0) return false;
+        --fuel[0];
+        if (expr == null || expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.NameExpr n) return !n.name().equals(name);
+        if (expr instanceof Ast.MemberExpr member)
+            return loanAbsentFromExpression(member.receiver(), name, fuel, depth + 1);
+        if (expr instanceof Ast.UnaryExpr unary)
+            return loanAbsentFromExpression(unary.operand(), name, fuel, depth + 1);
+        if (expr instanceof Ast.BinaryExpr binary)
+            return loanAbsentFromExpression(binary.left(), name, fuel, depth + 1)
+                    && loanAbsentFromExpression(binary.right(), name, fuel, depth + 1);
+        if (expr instanceof Ast.AssignExpr assign)
+            return loanAbsentFromExpression(assign.target(), name, fuel, depth + 1)
+                    && loanAbsentFromExpression(assign.value(), name, fuel, depth + 1);
+        if (expr instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("take")
+                && runtime.arguments().size() == 1)
+            return loanAbsentFromExpression(runtime.arguments().getFirst(), name, fuel, depth + 1);
+        return false;
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
