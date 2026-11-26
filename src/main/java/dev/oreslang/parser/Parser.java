@@ -39,6 +39,7 @@ public final class Parser {
     private final Map<String, VerifiedFunction> verifiedFunctions = new HashMap<>();
     private final Map<String, RefinedQuantity> verifiedLocals = new HashMap<>();
     private final Map<String, Set<String>> verifiedUpperBounds = new HashMap<>();
+    private final Map<String, RefinedQuantity> strictMutable = new HashMap<>();
     private boolean verifiedCallable;
     private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
@@ -7822,6 +7823,7 @@ public final class Parser {
             }
             verifiedLocals.clear();
             verifiedUpperBounds.clear();
+            strictMutable.clear();
             consume(LPAREN, "expected '('");
             List<Ast.Param> parameters = new ArrayList<>();
             if (!check(RPAREN)) {
@@ -7989,11 +7991,64 @@ public final class Parser {
     private List<Ast.Stmt> strictVerifiedReturns(RefinedQuantity declared,RefinedQuantity guaranteed,Token name,
             List<Integer> upperParameters,List<Ast.Param> parameters,List<RefinedQuantity> required,int depth) {
         if(depth>16)throw error(peek(),"E_VERIFY_UNSUPPORTED: strict return depth");
+        if(match(LET)) {
+            Token typeName=consume(IDENT,"expected mutable scalar type");
+            var type=readRefinedType(typeName);
+            Token local=verifiedName("expected mutable scalar name");
+            consume(EQUAL,"expected '='");var value=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
+            type.require(value.type(),"E_REFINEMENT_BINDING","mutable binding "+local.lexeme());
+            var key=local.lexeme();
+            if(verifiedLocals.putIfAbsent(key,new RefinedQuantity(type.unit(),value.type().range(),type.i32()))!=null)
+                throw error(local,"E_REFINEMENT_DUPLICATE: duplicate binding");
+            strictMutable.put(key,type);verifiedUpperBounds.put(key,value.upperBounds());
+            var tail=new ArrayList<>(strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1));
+            tail.add(0,new Ast.BindingStmt(Ast.BindingKind.LET,VERIFIED_CARRIER,key,value.expression(),false));
+            return tail;
+        }
+        if(check(IDENT)&&checkNext(EQUAL)) {
+            Token local=verifiedName("expected mutable binding");String key=local.lexeme();
+            var type=strictMutable.get(key);
+            if(type==null)throw error(local,"E_VERIFY_UNSUPPORTED: assignment requires mutable binding");
+            consume(EQUAL,"expected '='");var value=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
+            type.require(value.type(),"E_REFINEMENT_BINDING","assignment "+key);
+            verifiedLocals.put(key,new RefinedQuantity(type.unit(),value.type().range(),type.i32()));
+            verifiedUpperBounds.put(key,value.upperBounds());
+            var tail=new ArrayList<>(strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1));
+            tail.add(0,new Ast.ExprStmt(new Ast.AssignExpr(new Ast.NameExpr(key),value.expression())));
+            return tail;
+        }
+        if(match(WHILE)) {
+            int brace=current;
+            while(brace<tokens.size()&&tokens.get(brace).type()!=LBRACE&&tokens.get(brace).type()!=EOF)brace++;
+            if(brace+2>=tokens.size()||tokens.get(brace+1).type()!=IDENT||tokens.get(brace+2).type()!=EQUAL)
+                throw error(peek(),"E_VERIFY_UNSUPPORTED: strict while needs one direct mutable update");
+            String key=tokens.get(brace+1).lexeme();
+            var invariant=strictMutable.get(key);
+            if(invariant==null)throw error(peek(),"E_VERIFY_UNSUPPORTED: loop target not mutable");
+            invariant.require(verifiedLocals.get(key),"E_REFINEMENT_BINDING","loop entry "+key);
+            var header=new HashMap<>(verifiedLocals);header.put(key,invariant);
+            verifiedUpperBounds.put(key,Set.of());
+            var edges=strictCondition(header,0);
+            consume(LBRACE,"expected '{'");restoreStrictFacts(edges.yes());
+            if(!verifiedName("expected loop target").lexeme().equals(key))
+                throw error(peek(),"E_VERIFY_UNSUPPORTED: wrong loop target");
+            consume(EQUAL,"expected '='");var update=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
+            invariant.require(update.type(),"E_REFINEMENT_BINDING","loop backedge "+key);
+            if(!match(RBRACE))throw error(peek(),"E_VERIFY_UNSUPPORTED: one direct loop update only");
+            restoreStrictFacts(edges.no());
+            var tail=new ArrayList<>(strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1));
+            tail.add(0,new Ast.ForStmt(null,edges.test(),null,List.of(new Ast.ExprStmt(new Ast.AssignExpr(new Ast.NameExpr(key),update.expression())))));
+            return tail;
+        }
         if(match(IF)) {
             var p=strictCondition(new HashMap<>(verifiedLocals),0);
+            var savedBounds=new HashMap<>(verifiedUpperBounds);
+            var savedMutable=new HashMap<>(strictMutable);
             consume(LBRACE,"expected '{'");restoreStrictFacts(p.yes());
             var yes=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
             consume(RBRACE,"expected '}'");restoreStrictFacts(p.no());
+            verifiedUpperBounds.clear();verifiedUpperBounds.putAll(savedBounds);
+            strictMutable.clear();strictMutable.putAll(savedMutable);
             boolean hasElse=match(ELSE);if(hasElse)consume(LBRACE,"expected '{'");
             var no=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
             if(hasElse)consume(RBRACE,"expected '}'");
