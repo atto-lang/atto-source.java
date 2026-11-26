@@ -26,6 +26,38 @@ final class PipelineMatchExpressionTest {
     }
 
     @Test
+    void braceAndEndDelimitedMatchesProduceIdenticalAst() {
+        for (String type : new String[] {"", "<int>"}) {
+            var expected = returned("match" + type
+                    + " flag over on true -> 42, on false -> { return 1; }, end");
+            assertEquals(expected, returned("match" + type
+                    + " flag over { on true -> 42, on false -> { return 1; }, }"));
+            assertEquals(expected, returned("flag |> match" + type
+                    + " over { on true -> 42, on false -> { return 1; }, }"));
+            assertEquals(expected, returned("flag |> match" + type
+                    + " over { on true -> 42, on false -> { return 1; } }"));
+        }
+        assertEquals(
+                returned("match flag over on true -> 42, on false -> 1, end"),
+                returned("flag |> match over { on true { return 42; } on false -> 1 }"));
+    }
+
+    @Test
+    void braceDelimitedResultMatchContinuesPipeline() {
+        String source = """
+                fnc increment(int n): int { return n + 1; }
+                fnc choose(Result<int,int> result): int {
+                    return result
+                        |> match over {
+                            on Ok(value) -> value,
+                            on Err(error) -> 42,
+                        } |> increment;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(source));
+    }
+
+    @Test
     void matchStagesComposeWithOrdinaryCallsAndOtherMatches() {
         var expr = returned("flag |> match over on true -> 42, on false -> 1, end"
                 + " |> match<int> over on 42 -> 7, default -> 0, end |> increment");
@@ -40,6 +72,12 @@ final class PipelineMatchExpressionTest {
                 "flag |> match<int> flag over on true -> 1, on false -> 0, end",
                 "match<int> over on true -> 1, on false -> 0, end",
                 "flag |> match<int> over end",
+                "flag |> match over {}",
+                "flag |> match over { on true -> 1, on false -> 0, end",
+                "flag |> match over on true -> 1, on false -> 0, }",
+                "flag |> match over { on true 1, on false -> 0, }",
+                "flag |> match over { default -> 1, on true -> 0, }",
+                "flag |> match over { on true -> 1,, on false -> 0, }",
                 "flag |> match<int> over default -> 1, on true -> 0, end",
                 "flag |> match<int> over on true -> { if flag then return 1; fi return 2; }, on false -> 0, end"
         }) {
@@ -51,6 +89,8 @@ final class PipelineMatchExpressionTest {
     void normalTypeAndExhaustivenessChecksRemainInForce() {
         for (String invalid : new String[] {
                 "flag |> match<int> over on true -> 1, end",
+                "flag |> match<int> over { on true -> 1, }",
+                "flag |> match<int> over { on true -> 1, on false -> \"wrong\", }",
                 "flag |> match<int> over on true -> 1, on false -> \"wrong\", end"
         }) {
             assertThrows(IllegalArgumentException.class, () ->
@@ -68,16 +108,16 @@ final class PipelineMatchExpressionTest {
                 }
                 fnc increment(int n): int { return n + 1; }
                 fnc choose(Option<int> value): int {
-                    return value |> match<int> over
+                    return value |> match<int> over {
                         on Some(n) -> n,
                         on None -> { return 7; },
-                    end |> increment;
+                    } |> increment;
                 }
                 pub routine main(): void {
-                    val int n = input() |> match over
+                    val int n = input() |> match over {
                         on true -> { defer stdio.stdout.write("D"); return 41; },
                         on false -> 0,
-                    end |> increment;
+                    } |> increment;
                     stdio.stdout.write(n);
                     stdio.stdout.write(choose(Some(41)));
                     stdio.stdout.write(choose(None));
