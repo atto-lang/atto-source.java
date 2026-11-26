@@ -83,6 +83,35 @@ final class VirtualActorSupervisorDirectoryTest {
     }
 
     @Test
+    void onePhysicalWorkerCannotBackTwoLogicalIdentities() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var group = runtime.createActorGroup(supervisor);
+                 var directory = supervisor.virtualActorDirectory(TENANT, 8, 4)) {
+                var first = spawnManaged(group);
+                var second = spawnManaged(group);
+                try {
+                    var a = directory.resolve("Cart", "one");
+                    var b = directory.resolve("Cart", "two");
+                    long firstGeneration = directory.bindActivation(a, first);
+                    var rejected = directory.prepareActivation(b, "default");
+                    long burned = rejected.descriptor().logicalGeneration();
+                    assertThrows(IllegalStateException.class,
+                            () -> directory.publishActivation(rejected, first));
+                    long secondGeneration = directory.bindActivation(b, second);
+                    assertTrue(secondGeneration > burned);
+                    assertTrue(secondGeneration > firstGeneration);
+                } finally {
+                    first.stop();
+                    second.stop();
+                    first.done().get(5, TimeUnit.SECONDS);
+                    second.done().get(5, TimeUnit.SECONDS);
+                }
+            }
+        }
+    }
+
+    @Test
     void activationBindingRejectsWorkerOwnedByAnotherSupervisor() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var expected = runtime.createSupervisor();
