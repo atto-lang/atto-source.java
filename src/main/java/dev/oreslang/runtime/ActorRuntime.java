@@ -3222,7 +3222,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime runtime = originatingRuntime.get();
             ActorCell<?> cell = runtime == null ? null : currentCell(runtime);
             return cell != null && cell.codeGeneration == codeGeneration
-                    && runtime.enqueueContinuation(cell, continuation);
+                    && runtime.enqueueContinuation(cell, codeGeneration, continuation);
         }
     }
 
@@ -3807,10 +3807,16 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private boolean enqueueContinuation(ActorCell<?> cell, Runnable continuation) {
+        return enqueueContinuation(cell, cell.codeGeneration, continuation);
+    }
+
+    private boolean enqueueContinuation(ActorCell<?> cell, long expectedGeneration,
+            Runnable continuation) {
         Objects.requireNonNull(cell, "cell");
         Objects.requireNonNull(continuation, "continuation");
         ActorId actorId = cell.ref.id();
-        if (actors.get(actorId) != cell || cell.stopped.get() || closed.get()) return false;
+        if (actors.get(actorId) != cell || cell.stopped.get() || closed.get()
+                || cell.codeGeneration != expectedGeneration) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -3821,7 +3827,8 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()
-                        || actors.get(actorId) != cell) return false;
+                        || actors.get(actorId) != cell
+                        || cell.codeGeneration != expectedGeneration) return false;
                 ActorContinuationLedger.Admission receipt = cell.continuationLedger.admit(
                         ActorContinuationLedger.Lane.ORDINARY, continuation);
                 boolean published = false;
