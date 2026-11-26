@@ -351,7 +351,7 @@ final class InlineTaskTerminalReturnTest {
 
     @Test void voidTaskRejectsNonlocalTransfersAndValueReturns() {
         for (String body : new String[] {
-                "return 42;", "return; rt cooperate;", "if true do return; fi"
+                "return 42;", "return; rt cooperate;", "if true do return 42; fi", "loop { return; }"
         }) {
             String source = "pub fnc main(): int { do sync task<void> { "
                     + body + " } return 42; }";
@@ -396,5 +396,90 @@ final class InlineTaskTerminalReturnTest {
                     "inline-task-cleanup.atto").mimeType(OresLanguage.MIME_TYPE).build()).asLong());
         }
         assertEquals("inner|joined|outer|caller", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void conditionalVoidReturnsSkipSuffixAndResumeCaller() throws Exception {
+        assertEquals(42L, run("""
+                fnc choose(bool early): int {
+                  let int count = 0;
+                  do sync task<void> {
+                    if early then
+                      count = 42;
+                      return;
+                    fi
+                    count = 42;
+                  }
+                  return count;
+                }
+                pub fnc main(): int {
+                  guard choose(true) eq 42, choose(false) eq 42 { return 1; }
+                  let int count = 0;
+                  do sync task<void> {
+                    if true then
+                      count = 40;
+                      return;
+                    fi
+                    count = 99;
+                  }
+                  return count + 2;
+                }
+                """));
+    }
+
+    @Test void nestedValueReturnsKeepBothBranchScopesAndSkipSuffixes() throws Exception {
+        assertEquals(42L, run("""
+                fnc choose(int route): int {
+                  let int count = 0;
+                  val int result = sync task<int> {
+                    if route neq 0 then
+                      val int local = 40;
+                      if route eq 1 then
+                        count = 2;
+                        return local;
+                      fi
+                      count = 3;
+                      return local - 1;
+                    fi
+                    count = 4;
+                    return 38;
+                  };
+                  return result + count;
+                }
+                pub fnc main(): int {
+                  guard choose(0) eq 42, choose(1) eq 42, choose(2) eq 42 { return 1; }
+                  return 42;
+                }
+                """));
+    }
+
+    @Test void nestedEarlyReturnsUnwindBothDefersOnce() throws Exception {
+        String source = """
+                pub fnc main(): int {
+                  do sync task<void> {
+                    defer stdio.stdout.write("outer|");
+                    if true then
+                      defer stdio.stdout.write("branch|");
+                      if true then
+                        defer stdio.stdout.write("inner|");
+                        rt cooperate;
+                        return;
+                      fi
+                      stdio.stdout.write("bad-branch|");
+                      return;
+                    fi
+                    stdio.stdout.write("bad-outer|");
+                  }
+                  stdio.stdout.write("caller");
+                  return 42;
+                }
+                """;
+        OresCompiler.parseAndTypeCheckStrictAtto(source);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, source,
+                    "inline-early-cleanup.atto").mimeType(OresLanguage.MIME_TYPE).build()).asLong());
+        }
+        assertEquals("inner|branch|outer|caller", output.toString(StandardCharsets.UTF_8));
     }
 }
