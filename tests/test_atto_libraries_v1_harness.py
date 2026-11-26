@@ -27,6 +27,8 @@ class LibraryRunnerTests(unittest.TestCase):
         self.assertTrue(runner.check_rejection(result(1, "type error"), ["type error"]))
         self.assertFalse(runner.check_rejection(result(0, "type error"), ["type error"]))
         self.assertFalse(runner.check_rejection(result(-9, "type error"), ["type error"]))
+        for status in (128, 137, 139, 255):
+            self.assertFalse(runner.check_rejection(result(status, "type error"), ["type error"]))
         self.assertFalse(runner.check_rejection(result(1, ""), []))
         self.assertFalse(runner.check_rejection(result(1, "other"), ["type error"]))
 
