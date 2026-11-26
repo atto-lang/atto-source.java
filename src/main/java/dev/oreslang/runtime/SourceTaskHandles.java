@@ -34,6 +34,11 @@ public final class SourceTaskHandles {
         return result;
     }
 
+    /** Compiler/runtime only: a fresh empty counted result has no work to schedule. */
+    public static <T> OresFuture<T> completedWithoutWork(T value) {
+        return register(TaskHandle.completedWithoutWork(value));
+    }
+
     /** The owning handle, or null when the Future was not made by {@code task { }}. */
     public static TaskHandle<?> lookup(OresFuture<?> future) {
         return future == null ? null : future.sourceTaskHandle();

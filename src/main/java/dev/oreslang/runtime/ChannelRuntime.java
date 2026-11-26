@@ -63,6 +63,9 @@ public final class ChannelRuntime {
         DEFAULT
     }
 
+    // Private-to-runtime marker, never a guest value or a channel payload.
+    enum CountedReadEnd { EOF }
+
     public record SelectResult(
             int index,
             SelectOperation operation,
@@ -614,6 +617,7 @@ public final class ChannelRuntime {
     public static final class SelectSet {
         private final List<SelectCase> cases;
         private final AtomicLong fairCursor;
+        private final boolean countedReadEnd;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -635,7 +639,24 @@ public final class ChannelRuntime {
         private SelectSet(
                 Collection<? extends SelectCase> cases,
                 AtomicLong sharedFairCursor) {
+            this(cases, sharedFairCursor, false);
+        }
+
+        // Host-only opt-in. Ordinary selects retain their closed-channel error
+        // semantics. A counted read needs an identifiable graceful EOF so it
+        // can retire that source without counting an event.
+        static SelectSet countedReads(Collection<? extends SelectCase> cases, long cursor) {
+            for (var candidate : cases) {
+                if (!(candidate instanceof ReadCase<?> || candidate instanceof FutureCase<?>))
+                    throw new SelectAdmissionException("counted selection requires read/Future cases");
+            }
+            return new SelectSet(cases, new AtomicLong(cursor), true);
+        }
+
+        private SelectSet(Collection<? extends SelectCase> cases,
+                          AtomicLong sharedFairCursor, boolean countedReadEnd) {
             Objects.requireNonNull(cases, "cases");
+            this.countedReadEnd = countedReadEnd;
             this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
@@ -1472,10 +1493,12 @@ public final class ChannelRuntime {
                     }
 
                     if (channel.closed) {
-                        commitFailureLocked(
-                                chosen,
-                                channel.closedFailure(),
-                                completions);
+                        if (selection.set.countedReadEnd && channel.closeCause == null) {
+                            commitSingleLocked(chosen, new SelectResult(chosen.index,
+                                    SelectOperation.READ, CountedReadEnd.EOF), completions);
+                        } else {
+                            commitFailureLocked(chosen, channel.closedFailure(), completions);
+                        }
                         progressed = true;
                         break;
                     }
