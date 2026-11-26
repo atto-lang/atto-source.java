@@ -41,6 +41,26 @@ public final class RefinementProofs {
         public Interval times(Interval b) {
             return multiply(b, false);
         }
+        /** Universal operation safety, distinct from clipped normal-result bounds. */
+        public boolean provesArithmetic(String op, Interval b) {
+            Objects.requireNonNull(b);
+            try {
+                switch (op) {
+                    case "+" -> plus(b);
+                    case "-" -> minus(b);
+                    case "*" -> times(b);
+                    case "/" -> {
+                        return (b.minimum > 0 || b.maximum < 0)
+                                && !(minimum == Long.MIN_VALUE && b.minimum <= -1 && b.maximum >= -1);
+                    }
+                    default -> { return false; }
+                }
+                return true;
+            } catch (IllegalArgumentException overflow) {
+                return false;
+            }
+        }
+        public boolean provesNegation() { return minimum != Long.MIN_VALUE; }
         public boolean nonnegative() { return minimum >= 0; }
         public boolean positive() { return minimum > 0; }
         public boolean nonpositive() { return maximum <= 0; }
