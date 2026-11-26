@@ -184,6 +184,38 @@ public final class PersistentClassfileCacheTest {
         assertFalse(apiBuild(different,B,false).reused());
         System.out.println("JAVA_RESTRICTED_API|guest=42/43|restart|rollback|toolchain-fence");
     }
+    @Test void authenticatedClassfileSnapshotRejectsMalformedPayload(@TempDir Path root)throws Exception {
+        var session=api(root);
+        var cold=apiBuild(session,A,true);
+        byte[] exposed=cold.bytes();
+        exposed[0]^=1;
+        assertNotEquals(exposed[0],cold.bytes()[0]);
+        execute(root,cold.bytes(),42);
+        var warm=apiBuild(session,A,false);
+        assertTrue(warm.reused());
+        assertArrayEquals(cold.bytes(),warm.bytes());
+        Path cacheSlot;
+        try(var paths=Files.list(root)){
+            cacheSlot=paths.filter(p->p.getFileName().toString().startsWith("slot-")).findFirst().orElseThrow();
+        }
+        byte[] original=Files.readAllBytes(cacheSlot);
+        String actual=HexFormat.of().formatHex(original,8,40);
+        byte[] record=CompilerCacheLedger.record("tenant/api",2,MASTER);
+        byte[] secret=CompilerCacheLedger.admit("tenant/api",record,hash(record),MASTER);
+        try {
+            byte[] malformed=cold.bytes();malformed[0]^=1;
+            // Fixture-owned publisher signs altered bytes to exercise structure,
+            // not HMAC failure. The malformed class is never loaded.
+            byte[] envelope=CompilerArtifactReceipt.seal(actual,malformed,secret);
+            assertArrayEquals(malformed,CompilerArtifactReceipt.verify(actual,envelope,secret));
+            Files.write(cacheSlot,envelope);
+            var denied=assertThrows(IllegalArgumentException.class,()->apiBuild(session,A,false));
+            assertTrue(denied.getMessage().contains("bad classfile magic"));
+            assertArrayEquals(envelope,Files.readAllBytes(cacheSlot));
+        }finally{Arrays.fill(secret,(byte)0);Files.write(cacheSlot,original);}
+        var restored=apiBuild(session,A,false);assertTrue(restored.reused());execute(root,restored.bytes(),42);
+        System.out.println("JAVA_PINNED_CLASSFILE|defensive_copy=YES|authenticated_malformed=DENIED|restored_guest=42");
+    }
     public static void main(String[] args)throws Exception{
         if(args.length==2&&args[1].equals("api")){
             Path root=Path.of(args[0]);var warm=apiBuild(api(root),A,false);assertTrue(warm.reused());execute(root,warm.bytes(),42);
