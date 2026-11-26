@@ -45,19 +45,24 @@ pub routine main(): void {
   stdio.println(partial.remaining());
 
   // AOT typed codecs: schema ID and version must both match.
-  let bool_wire = zorde.encode_bool_frame(42, 2, true).unwrap();
+  let bool_wire_result = zorde.encode_bool_frame(42, 2, true);
+  let bool_wire = bool_wire_result.unwrap();
   let zorde_case_2 = zorde.decode_bool_frame(42, 2, bool_wire);
   stdio.println(zorde_case_2.unwrap());
-  let bool_mismatch = zorde.encode_bool_frame(42, 2, true).unwrap();
+  let bool_mismatch_result = zorde.encode_bool_frame(42, 2, true);
+  let bool_mismatch = bool_mismatch_result.unwrap();
   let zorde_case_3 = zorde.decode_bool_frame(42, 3, bool_mismatch);
   stdio.println(zorde_case_3.is_err());
-  let schema_mismatch = zorde.encode_bool_frame(42, 2, false).unwrap();
+  let schema_mismatch_result = zorde.encode_bool_frame(42, 2, false);
+  let schema_mismatch = schema_mismatch_result.unwrap();
   let zorde_case_4 = zorde.decode_bool_frame(43, 2, schema_mismatch);
   stdio.println(zorde_case_4.is_err());
-  let lower_i31 = zorde.encode_i31_frame(10, 4, -1073741824).unwrap();
+  let lower_i31_result = zorde.encode_i31_frame(10, 4, -1073741824);
+  let lower_i31 = lower_i31_result.unwrap();
   let zorde_case_5 = zorde.decode_i31_frame(10, 4, lower_i31);
   stdio.println(zorde_case_5.unwrap());
-  let upper_i31 = zorde.encode_i31_frame(10, 4, 1073741823).unwrap();
+  let upper_i31_result = zorde.encode_i31_frame(10, 4, 1073741823);
+  let upper_i31 = upper_i31_result.unwrap();
   let zorde_case_6 = zorde.decode_i31_frame(10, 4, upper_i31);
   stdio.println(zorde_case_6.unwrap());
   let zorde_case_7 = zorde.encode_i31_frame(10, 4, -1073741825);
@@ -89,7 +94,8 @@ pub routine main(): void {
   stdio.println(limited.size());
 
   // Bad external octets must yield Err rather than a Reader constructor trap.
-  let valid_frame = zorde.encode_bool_frame(9, 1, true).unwrap();
+  let valid_frame_result = zorde.encode_bool_frame(9, 1, true);
+  let valid_frame = valid_frame_result.unwrap();
   let mut Array<int> invalid_frame = new Array<int>();
   for (let int i = 0; i < valid_frame.size; i = i + 1) {
     invalid_frame.add(valid_frame.get(i));
@@ -99,7 +105,8 @@ pub routine main(): void {
   stdio.println(zorde_case_9.is_err());
   let mut Array<int> invalid_bool_payload = new Array<int>();
   invalid_bool_payload.add(2);
-  let invalid_bool_wire = zorde.encode_frame(42, 2, invalid_bool_payload).unwrap();
+  let invalid_bool_wire_result = zorde.encode_frame(42, 2, invalid_bool_payload);
+  let invalid_bool_wire = invalid_bool_wire_result.unwrap();
   let zorde_case_10 = zorde.decode_bool_frame(42, 2, invalid_bool_wire);
   stdio.println(zorde_case_10.is_err());
 
