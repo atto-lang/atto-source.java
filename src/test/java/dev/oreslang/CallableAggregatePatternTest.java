@@ -56,7 +56,7 @@ final class CallableAggregatePatternTest {
     @Test
     void tuplePipelineAndNamedCallableExecuteOnce() throws Exception {
         execute("""
-                fnc values(): (int, int, int) {
+                fnc values(): Tuple[int, int, int] {
                     stdio.stdout.write("once:");
                     return (5, 3, 5);
                 }
@@ -186,7 +186,7 @@ final class CallableAggregatePatternTest {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
                 "fnc bad((_: int, a: int)): int { return a; }"));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
-                "fnc bad((let _, a): (int,int)): int { return a; }"));
+                "fnc bad((let _, a): Tuple[int,int]): int { return a; }"));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
                 "fnc bad({x as let _}: {x: int}): int { return 0; }"));
     }
@@ -194,7 +194,7 @@ final class CallableAggregatePatternTest {
     @Test
     void explicitTupleTypeFormalRemainsOrdinary() {
         check("""
-                fnc ordinary((int, int) t): int { return t[0] + t[1]; }
+                fnc ordinary(Tuple[int, int] t): int { return t[0] + t[1]; }
                 fnc use(): int { return ordinary((5, 8)); }
                 """);
     }
@@ -306,7 +306,7 @@ final class CallableAggregatePatternTest {
                 }
                 body.append("return ").append(expression).append(";");
                 result.add(new GeneratedPattern(n, code, "case_" + n + "_" + code,
-                        tupleSyntax(leaves), tupleSyntax(types), tupleSyntax(values),
+                        tupleSyntax(leaves), "Tuple[" + String.join(", ", types) + "]", tupleSyntax(values),
                         body.toString(), expected));
             }
         }
@@ -333,8 +333,15 @@ final class CallableAggregatePatternTest {
             Ast.FunctionDecl f = assertInstanceOf(Ast.FunctionDecl.class, declarations.get(k));
             assertEquals(p.name(), f.name());
             assertEquals(2, f.parameters().size(), p.name());
-            assertTrue(f.parameters().getFirst().type().isTupleType(), p.name());
-            assertEquals(p.arity(), f.parameters().getFirst().type().arguments().size(), p.name());
+            Ast.TypeRef rootType = f.parameters().getFirst().type();
+            if (rootType.isTupleType()) {
+                assertEquals(p.arity(), rootType.arguments().size(), p.name());
+            } else {
+                assertEquals("Tuple", rootType.name(), p.name());
+                assertEquals(1, rootType.arguments().size(), p.name());
+                assertTrue(rootType.arguments().getFirst().isSequenceShape(), p.name());
+                assertEquals(p.arity(), rootType.arguments().getFirst().arguments().size(), p.name());
+            }
             assertEquals("tail", f.parameters().get(1).name());
             Ast.DestructureStmt d = assertInstanceOf(Ast.DestructureStmt.class, f.body().getFirst());
             assertEquals(Ast.DestructureKind.SEQUENCE, d.kind());
