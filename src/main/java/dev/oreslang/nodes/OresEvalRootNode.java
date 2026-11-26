@@ -52,6 +52,8 @@ public final class OresEvalRootNode extends RootNode {
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
+    public static final String REGISTER_NAMESPACE_PROVIDER_COMMAND =
+            "__ores_internal_register_namespace_provider__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -87,6 +89,17 @@ public final class OresEvalRootNode extends RootNode {
                 && arguments[1] instanceof String importPath
                 && arguments[2] instanceof String targetCodeUnitId) {
             context.registerLinkedImportResolution(codeUnitId, importPath, targetCodeUnitId);
+            return null;
+        }
+        if (arguments.length == 6
+                && REGISTER_NAMESPACE_PROVIDER_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof String localAlias
+                && arguments[2] instanceof String member
+                && arguments[3] instanceof Number arity
+                && arguments[4] instanceof String kind
+                && arguments[5] instanceof String providerId) {
+            context.registerLinkedNamespaceProvider(
+                    codeUnitId, localAlias, member, Math.toIntExact(arity.longValue()), kind, providerId);
             return null;
         }
 
@@ -249,8 +262,10 @@ public final class OresEvalRootNode extends RootNode {
                 // wildcard alias when directly evaluating a guest program.
                 // Only a verified multi-provider runtime linker may admit it.
                 if (imported.sourceNamespace() != null) {
-                    throw new IllegalArgumentException(
-                            "import namespace requires manifest-verified multi-file runtime binding");
+                    // The caller must install an exact per-member route table
+                    // before the evaluator may materialize this alias.
+                    namespaceImports.put(imported.namespace(), imported);
+                    continue;
                 }
                 if (ImportRules.isJavaPath(imported.path())) {
                     indexHostImport(imported);
@@ -5359,6 +5374,10 @@ public final class OresEvalRootNode extends RootNode {
                         args);
             }
 
+            if (receiver instanceof VerifiedPackageNamespace namespace) {
+                return namespace.importer().prepareVerifiedNamespaceInvocation(
+                        namespace.alias(), member.member(), args);
+            }
             if (receiver instanceof ImportedNamespace namespace) {
                 return namespace.owner().prepareImportedInvocation(
                         namespace.kind(),
@@ -7088,6 +7107,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
 
+                if (receiver instanceof VerifiedPackageNamespace namespace) {
+                    return namespace.importer().prepareVerifiedNamespaceInvocation(
+                            namespace.alias(), methodCall.member(), args);
+                }
                 if (receiver instanceof ImportedNamespace namespace) {
                     return namespace.owner().prepareImportedInvocation(
                             namespace.kind(), methodCall.member(), args);
@@ -8372,6 +8395,9 @@ public final class OresEvalRootNode extends RootNode {
                         "overloaded builtin BooleanOps." + name
                                 + " must be called so arity can select the scalar or list overload");
             }
+            if (receiver instanceof VerifiedPackageNamespace namespace) {
+                return namespace.importer().verifiedNamespaceMember(namespace.alias(), name);
+            }
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
             if (receiver instanceof ClassFacade klass) {
@@ -8932,8 +8958,76 @@ public final class OresEvalRootNode extends RootNode {
                         .exportValue(direct.declaration().kind(), direct.sourceName());
             }
             Ast.ImportDecl namespace = namespaceImports.get(name);
-            if (namespace != null) return new ImportedNamespace(importedTarget(namespace), namespace.kind());
+            if (namespace != null) {
+                if (namespace.sourceNamespace() != null) {
+                    if (context.linkedNamespaceProviders(codeUnitId, name).isEmpty()) {
+                        throw new IllegalStateException(
+                                "import namespace has no verified provider routes: " + name);
+                    }
+                    return new VerifiedPackageNamespace(this, name);
+                }
+                return new ImportedNamespace(importedTarget(namespace), namespace.kind());
+            }
             return Env.MISSING;
+        }
+
+        private Evaluator verifiedProvider(String alias, String member, String kind, int arity) {
+            var members = context.linkedNamespaceProviders(codeUnitId, alias);
+            var provider = members.get(kind + ":" + member + ":" + arity);
+            if (provider == null) {
+                throw new IllegalArgumentException(
+                        "namespace '" + alias + "' has no admitted " + kind + " '" + member
+                                + "' with arity " + arity);
+            }
+            Object linked = context.linkedCodeUnit(provider.providerId());
+            if (!(linked instanceof Evaluator other)) {
+                throw new IllegalStateException(
+                        "namespace member provider is not linked: " + provider.providerId());
+            }
+            return other;
+        }
+
+        private Invocation prepareVerifiedNamespaceInvocation(
+                String alias, String member, List<Object> args) {
+            // The manifest export index only exposes top-level declarations.
+            // Never silently bind a matching function inside a named module.
+            Evaluator provider = verifiedProvider(alias, member, "function", args.size());
+            Ast.FunctionDecl fn = provider.findFunction(
+                    Parser.ROOT_MODULE + "." + member, args.size());
+            if (fn == null || !isSupportedNamespaceFnc(fn)) {
+                throw new SecurityException(
+                        "namespace callable lacks a verified public file-root synchronous fnc: "
+                                + alias + "." + member + "/" + args.size());
+            }
+            return provider.functionInvocation(fn, args);
+        }
+
+        private static boolean isSupportedNamespaceFnc(Ast.FunctionDecl fn) {
+            if (fn.visibility() != Ast.Visibility.PUBLIC
+                    || "init".equals(fn.name())
+                    || fn.kind() != Ast.CallableKind.FNC
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || fn.async() || fn.suspends() || fn.generator()
+                    || !fn.genericParameters().isEmpty() || !fn.effects().isEmpty()
+                    || !isPortableNamespaceType(fn.returnType())) {
+                return false;
+            }
+            for (Ast.Param param : fn.parameters()) {
+                if (param.mutable() || !isPortableNamespaceType(param.type())) return false;
+            }
+            return true;
+        }
+
+        private static boolean isPortableNamespaceType(Ast.TypeRef type) {
+            return type != null && type.arguments().isEmpty() && !type.isBorrow()
+                    && Set.of("int", "uint", "float", "bool", "String", "string", "void")
+                            .contains(type.name());
+        }
+
+        private Object verifiedNamespaceMember(String alias, String member) {
+            throw new IllegalArgumentException(
+                    "package namespace member extraction is not supported: "
+                            + alias + "." + member);
         }
 
         private Evaluator importedTarget(Ast.ImportDecl imported) {
@@ -11098,6 +11192,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
+    private record VerifiedPackageNamespace(Evaluator importer, String alias) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }

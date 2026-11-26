@@ -29,6 +29,10 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // Not part of CompiledUnit's public ABI: a unit's imported namespace
+    // routes are host manifest authority and must be refreshed even when
+    // the provider file set and exported source ABIs remain identical.
+    private final Map<String, String> namespaceBindingFingerprints = new LinkedHashMap<>();
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -50,7 +54,11 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions,
             PackageNamespaceIndex namespaceIndex) {
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
-        if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
+        if (sources.isEmpty()) {
+            cache.clear();
+            namespaceBindingFingerprints.clear();
+            return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
+        }
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
@@ -81,6 +89,11 @@ public final class IncrementalCompiler {
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(),
                         normalizedImportResolutions, namespaceIndex);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
+        LinkedHashMap<String, String> resolvedNamespaceBindings = new LinkedHashMap<>();
+        for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+            resolvedNamespaceBindings.put(entry.getKey(),
+                    namespaceBindingFingerprint(entry.getKey(), entry.getValue(), namespaceIndex));
+        }
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
@@ -91,7 +104,9 @@ public final class IncrementalCompiler {
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id))
                     || !previous.packageId().equals(currentPackageId);
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
+            boolean namespaceBindingChanged = !resolvedNamespaceBindings.get(id).equals(
+                    namespaceBindingFingerprints.getOrDefault(id, ""));
+            if (sourceChanged || depsChanged || namespaceBindingChanged) dirty.add(id);
             if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
         }
 
@@ -128,11 +143,13 @@ public final class IncrementalCompiler {
                     id, parsed.get(id), parsed, normalizedImportResolutions);
             Map<String, Ast.InterfaceDecl> contracts = linkedImportedContracts(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
+            Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>> namespaceSignatures =
+                    linkedNamespaceSignatures(id, parsed.get(id), parsed, namespaceIndex);
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                                 Parser.parse(normalized.get(id)),
-                                linked.classes(), linked.aliases(), contracts);
+                                linked.classes(), linked.aliases(), contracts, namespaceSignatures);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.classes(), analysis.shortInferredAliases());
@@ -156,11 +173,125 @@ public final class IncrementalCompiler {
 
         cache.keySet().retainAll(normalized.keySet());
         cache.putAll(next);
+        namespaceBindingFingerprints.keySet().retainAll(normalized.keySet());
+        namespaceBindingFingerprints.putAll(resolvedNamespaceBindings);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    private static String namespaceBindingFingerprint(
+            String importerId, Ast.Program importer, PackageNamespaceIndex index) {
+        StringBuilder routes = new StringBuilder("package-namespace-binding-v1\n");
+        for (Ast.ImportDecl use : importer.imports()) {
+            if (use.sourceNamespace() == null) continue;
+            if (index == null) throw new IllegalArgumentException(
+                    "import namespace requires verified package identity");
+            PackageNamespaceIndex.Binding binding =
+                    index.resolve(importerId, use.path(), use.sourceNamespace());
+            routes.append("import ").append(use.namespace()).append(" from ")
+                    .append(use.path()).append(" namespace ")
+                    .append(use.sourceNamespace()).append(" owner ")
+                    .append(binding.packageId()).append('\n');
+            binding.exports().entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> routes.append(entry.getKey()).append(" -> ")
+                            .append(entry.getValue().sourceUnitId())
+                            .append('\n'));
+            binding.providerUnitIds().stream().sorted()
+                    .forEach(provider -> routes.append("provider ")
+                            .append(provider).append('\n'));
+        }
+        return digest(routes.toString());
+    }
+
+    /**
+     * Bind source-namespace function names to exact verified provider
+     * signatures. The source declaring the function, not the importer's
+     * textual namespace spelling, determines overload identity and authority.
+     */
+    private static Map<String, Map<String, Map<Integer, Ast.FunctionDecl>>> linkedNamespaceSignatures(
+            String importerId, Ast.Program importer,
+            Map<String, Ast.Program> programs, PackageNamespaceIndex index) {
+        LinkedHashMap<String, Map<String, Map<Integer, Ast.FunctionDecl>>> aliases =
+                new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : importer.imports()) {
+            if (imported.sourceNamespace() == null) continue;
+            if (index == null) throw new IllegalArgumentException(
+                    "import namespace requires a verified package index");
+            var binding = index.resolve(importerId, imported.path(), imported.sourceNamespace());
+            LinkedHashMap<String, Map<Integer, Ast.FunctionDecl>> functions = new LinkedHashMap<>();
+            for (var symbol : binding.exports().values()) {
+                if (!"function".equals(symbol.kind())) continue;
+                Ast.Program provider = programs.get(symbol.sourceUnitId());
+                if (provider == null) throw new IllegalArgumentException(
+                        "unlinked namespace source provider " + symbol.sourceUnitId());
+                Ast.FunctionDecl declaration = null;
+                for (Ast.ModuleDecl module : provider.modules()) {
+                    if (!Parser.ROOT_MODULE.equals(module.name())) continue;
+                    for (Ast.Decl exported : module.declarations()) {
+                        if (exported instanceof Ast.FunctionDecl fn
+                                && fn.name().equals(symbol.name())
+                                && fn.parameters().size() == symbol.arity()
+                                && fn.visibility() == Ast.Visibility.PUBLIC) {
+                            if (declaration != null) throw new IllegalArgumentException(
+                                    "ambiguous callable signature from namespace provider");
+                            declaration = fn;
+                        }
+                    }
+                }
+                if (declaration == null) throw new IllegalArgumentException(
+                        "namespace signature lacks matching public declaration: " + symbol.name());
+                // Namespace membership is wider than this runtime slice:
+                // unsupported async/actor/generic/nominal exports remain in
+                // the symbol index, but do not poison otherwise valid imports.
+                // A direct call to one of them is rejected by the checker
+                // because no verified callable signature is published.
+                if (!isPortableNamespaceCallable(declaration)) continue;
+                functions.computeIfAbsent(symbol.name(), ignored -> new LinkedHashMap<>())
+                        .put(symbol.arity(), declaration);
+            }
+            if (aliases.putIfAbsent(imported.namespace(), Map.copyOf(functions)) != null) {
+                throw new IllegalArgumentException("duplicate namespace import alias: "
+                        + imported.namespace());
+            }
+        }
+        LinkedHashMap<String, Map<String, Map<Integer, Ast.FunctionDecl>>> frozen = new LinkedHashMap<>();
+        for (var alias : aliases.entrySet()) {
+            LinkedHashMap<String, Map<Integer, Ast.FunctionDecl>> family = new LinkedHashMap<>();
+            for (var entry : alias.getValue().entrySet()) {
+                family.put(entry.getKey(), Map.copyOf(entry.getValue()));
+            }
+            frozen.put(alias.getKey(), Map.copyOf(family));
+        }
+        return Map.copyOf(frozen);
+    }
+
+    private static final Set<String> NAMESPACE_SCALAR_TYPES = Set.of(
+            "int", "uint", "float", "bool", "String", "string", "void");
+
+    private static boolean portableNamespaceType(Ast.TypeRef type) {
+        return type != null && type.arguments().isEmpty()
+                && !type.isBorrow() && NAMESPACE_SCALAR_TYPES.contains(type.name());
+    }
+
+    private static boolean isPortableNamespaceCallable(Ast.FunctionDecl fn) {
+        if (fn.visibility() != Ast.Visibility.PUBLIC
+                || "init".equals(fn.name()) // lifecycle hook, not a cross-package callable
+                || fn.kind() != Ast.CallableKind.FNC
+                || fn.actorKind() != Ast.ActorKind.NONE
+                || fn.async() || fn.suspends() || fn.generator()
+                || !fn.genericParameters().isEmpty()
+                || !fn.effects().isEmpty()
+                || !portableNamespaceType(fn.returnType())) {
+            return false;
+        }
+        for (Ast.Param param : fn.parameters()) {
+            if (!portableNamespaceType(param.type()) || param.mutable()) return false;
+        }
+        return true;
     }
 
     private record LinkedClasses(

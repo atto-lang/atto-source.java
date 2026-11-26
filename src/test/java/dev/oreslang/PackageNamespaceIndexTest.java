@@ -53,6 +53,32 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void unnamespacedMembersRetainOwnershipWithoutAnyNamespaceExports() throws IOException {
+        Path root = temporary.resolve("checkout");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/billing.ores", "billing",
+                "pub fnc bill(): int { return 1; }");
+        for (String name : List.of("src/local0.ores", "src/local1.ores")) {
+            Path path=root.resolve(name);
+            String source="pub fnc local(): int { return 42; }\n";
+            Files.writeString(path,source);
+            sources.put(id(path),source);
+        }
+        Path manifest=manifest(root,"checkout",List.of("src/billing.ores","src/local0.ores","src/local1.ores"));
+        String owner=PackageNamespaceIndex.packageId(manifest,"checkout");
+        var index=PackageNamespaceIndex.load(List.of(manifest),sources,Map.of("checkout",owner));
+        String local=id(root.resolve("src/local0.ores"));
+        assertEquals(owner,index.ownerOf(local));
+        assertEquals(owner,index.ownerOf(id(root.resolve("src/local1.ores"))));
+        var billing=index.resolve(local,"+/","billing");
+        assertEquals(Set.of(id(root.resolve("src/billing.ores"))),billing.providerUnitIds());
+        assertEquals(1,billing.exports().size());
+        assertTrue(billing.exports().values().stream().noneMatch(v->v.name().equals("local")));
+        assertThrows(IllegalArgumentException.class,()->index.resolve(local,"+/","__root__"));
+        assertThrows(IllegalArgumentException.class,()->index.resolve(local,"+/","checkout"));
+    }
+
+    @Test
     void oneImportBindsFourManifestOwnedProvidersAndPreservesThreeNamespaces() throws IOException {
         Path checkout = temporary.resolve("checkout");
         Map<String, String> sources = new LinkedHashMap<>();
@@ -93,6 +119,41 @@ final class PackageNamespaceIndexTest {
         var again = compiler.compile(sources, Map.of(), index);
         assertTrue(again.reused(clientId));
         assertEquals(11, again.reusedUnits().size());
+    }
+
+    @Test
+    void changingPackageInstanceInvalidatesConsumerWithIdenticalProviderFilesAndAbi()
+            throws IOException {
+        Map<String, String> sources = new LinkedHashMap<>();
+        Path root = temporary.resolve("checkout");
+        add(sources, root, "src/charge.ores", "billing",
+                "pub fnc charge(): int { return 1; }");
+        Path importer = temporary.resolve("client/main.ores");
+        add(sources, temporary.resolve("client"), "main.ores", "client", """
+                import namespace billing as payments from "checkout";
+                pub fnc answer(): int { return payments.charge(); }
+                """);
+        String importerId = id(importer);
+        Path m = manifest(root, "first", List.of("src/charge.ores"));
+        String first = PackageNamespaceIndex.packageId(m, "first");
+        var indexA = PackageNamespaceIndex.load(List.of(m), sources, Map.of("checkout", first));
+        var compiler = new IncrementalCompiler();
+
+        var initial = compiler.compile(sources, Map.of(), indexA);
+        assertTrue(initial.rebuilt(importerId));
+        var unchanged = compiler.compile(sources, Map.of(), indexA);
+        assertTrue(unchanged.reused(importerId));
+
+        // Same real source file and ABI; only manifest package identity
+        // and the exact alias -> PackageInstanceId resolution change.
+        manifest(root, "second", List.of("src/charge.ores"));
+        String second = PackageNamespaceIndex.packageId(m, "second");
+        assertNotEquals(first, second);
+        var indexB = PackageNamespaceIndex.load(List.of(m), sources, Map.of("checkout", second));
+        var relinked = compiler.compile(sources, Map.of(), indexB);
+        assertTrue(relinked.rebuilt(importerId));
+        assertTrue(relinked.reusedUnits().isEmpty());
+        assertEquals(second, indexB.resolve(importerId, "checkout", "billing").packageId());
     }
 
     @Test
@@ -281,6 +342,194 @@ final class PackageNamespaceIndexTest {
     }
 
     @Test
+    void directAndSnapshotIndexRejectSymlinkBeforeDotDotInManifestPath() throws IOException {
+        Path project = temporary.resolve("direct-dotdot-real");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, project, "src/file.ores", "billing",
+                "pub fnc charge(): int { return 1; }");
+        Path genuine = manifest(project, "checkout", List.of("src/file.ores"));
+
+        Path elsewhere = temporary.resolve("index-jump-target/inside");
+        Files.createDirectories(elsewhere);
+        Path alias = temporary.resolve("direct-dotdot-jump");
+        try {
+            Files.createSymbolicLink(alias, elsewhere);
+        } catch (UnsupportedOperationException | IOException | SecurityException denied) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not support symlink fixture");
+        }
+        // Lexical normalization points at genuine, but actual filesystem
+        // traversal follows the alias before '..'.
+        Path disguised = alias.resolve("../direct-dotdot-real/.ores.pkg.toml");
+        assertEquals(genuine, disguised.toAbsolutePath().normalize());
+        SecurityException direct = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.load(List.of(disguised), sources, Map.of()));
+        assertTrue(direct.getMessage().contains("unaliased path"), direct.getMessage());
+        SecurityException snapshot = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.loadFromSnapshots(
+                        Map.of(disguised, Files.readString(genuine)), sources, Map.of()));
+        assertTrue(snapshot.getMessage().contains("unaliased path"), snapshot.getMessage());
+    }
+
+    @Test
+    void directAndSnapshotIndexRejectAliasedAdmittedSourceKeys() throws IOException {
+        Path project = temporary.resolve("exact-admitted-source-identity");
+        Map<String, String> admitted = new LinkedHashMap<>();
+        add(admitted, project, "src/file.ores", "billing",
+                "pub fnc answer(): int { return 42; }");
+        Path provider = project.resolve("src/file.ores").toRealPath();
+        Path owner = manifest(project, "checkout", List.of("src/file.ores"));
+        String sourceText = admitted.get(id(provider));
+
+        // A genuine canonical member is accepted by both API entry points.
+        var direct = PackageNamespaceIndex.load(List.of(owner), admitted, Map.of());
+        assertEquals(PackageNamespaceIndex.packageId(owner, "checkout"),
+                direct.ownerOf(id(provider)));
+        var frozen = PackageNamespaceIndex.loadFromSnapshots(
+                Map.of(owner, Files.readString(owner)), admitted, Map.of());
+        assertEquals(direct.ownerOf(id(provider)), frozen.ownerOf(id(provider)));
+
+        // Leaf symlinks and intermediate symlink/.. aliases used to be silently
+        // collapsed by toRealPath(), laundering a noncanonical source-map key.
+        Path leafAlias = project.resolve("src/alias.ores");
+        Path jump = temporary.resolve("source-key-jump");
+        Path elsewhere = temporary.resolve("source-key-elsewhere");
+        Files.createDirectories(elsewhere);
+        try {
+            Files.createSymbolicLink(leafAlias, provider.getFileName());
+            Files.createSymbolicLink(jump, elsewhere);
+        } catch (UnsupportedOperationException | IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink fixtures");
+        }
+        Path parentAlias = jump.resolve("../exact-admitted-source-identity/src/file.ores");
+        assertTrue(Files.isRegularFile(leafAlias));
+        assertTrue(Files.isRegularFile(parentAlias));
+        for (Path alias : List.of(leafAlias, parentAlias)) {
+            Map<String, String> aliased = Map.of(alias.toString(), sourceText);
+            SecurityException directDenied = assertThrows(SecurityException.class,
+                    () -> PackageNamespaceIndex.load(List.of(owner), aliased, Map.of()));
+            assertTrue(directDenied.getMessage().contains("namespace admitted source path"),
+                    directDenied.getMessage());
+            SecurityException snapshotDenied = assertThrows(SecurityException.class,
+                    () -> PackageNamespaceIndex.loadFromSnapshots(
+                            Map.of(owner, Files.readString(owner)), aliased, Map.of()));
+            assertTrue(snapshotDenied.getMessage().contains("namespace admitted source path"),
+                    snapshotDenied.getMessage());
+        }
+        Path dotted = provider.getParent().resolve("./file.ores");
+        SecurityException dotDenied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.load(List.of(owner),
+                        Map.of(dotted.toString(), sourceText), Map.of()));
+        assertTrue(dotDenied.getMessage().contains("absolute and canonical"),
+                dotDenied.getMessage());
+
+        // Path.of() collapses repeated separators; verify the original map
+        // string, not only the parsed Path, so it cannot invent an authority.
+        String repeated = provider.getParent() + "//file.ores";
+        SecurityException repeatedDenied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.load(List.of(owner),
+                        Map.of(repeated, sourceText), Map.of()));
+        assertTrue(repeatedDenied.getMessage().contains("absolute and canonical"),
+                repeatedDenied.getMessage());
+    }
+
+    @Test
+    void directIndexRejectsOversizedAndMalformedUtf8ManifestBeforeParsing() throws IOException {
+        Path directory = temporary.resolve("direct-manifest-budget");
+        Path ownedManifest = manifest(directory, "checkout", List.of("src/file.ores"));
+        Files.write(ownedManifest, new byte[1024 * 1024 + 1]);
+        IllegalArgumentException oversized = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(ownedManifest), Map.of(), Map.of()));
+        assertTrue(oversized.getMessage().contains("exceeds byte budget"));
+
+        Files.write(ownedManifest, new byte[] {(byte) 0xC3, (byte) 0x28});
+        IllegalArgumentException malformed = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(ownedManifest), Map.of(), Map.of()));
+        assertTrue(malformed.getMessage().contains("valid UTF-8"));
+    }
+
+    @Test
+    void directIndexRejectsSymlinkedManifestEntryWithoutCanonicalizingAwayAlias()
+            throws IOException {
+        Path original = manifest(temporary.resolve("direct-manifest-real"),
+                "checkout", List.of("src/file.ores"));
+        Path alias = temporary.resolve("direct-manifest-alias/.ores.pkg.toml");
+        Files.createDirectories(alias.getParent());
+        try {
+            Files.createSymbolicLink(alias, original);
+        } catch (UnsupportedOperationException | IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "filesystem does not permit creating symlink test fixture");
+        }
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> PackageNamespaceIndex.load(List.of(alias), Map.of(), Map.of()));
+        assertTrue(denied.getMessage().contains("unaliased path"));
+    }
+
+    @Test
+    void sameSourceCannotBeClaimedByTwoManifestPackages() throws IOException {
+        Path root = temporary.resolve("overlapping-owner-inventory");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/billing.ores", "billing",
+                "pub fnc answer(): int { return 42; }");
+        Path owned = manifest(root, "first", List.of("src/billing.ores"));
+        Files.writeString(owned, Files.readString(owned)
+                + "[packages.second]\nfiles = [\"src/billing.ores\"]\n");
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(owned), sources, Map.of()));
+        assertTrue(denied.getMessage().contains("multiple/duplicate packages"),
+                denied.getMessage());
+    }
+
+    @Test
+    void privateNamespaceFunctionsNeverBecomePublicExports() throws IOException {
+        Path root = temporary.resolve("private-provider-export");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/visible.ores", "billing",
+                "pub fnc visible(): int { return 42; }");
+        add(sources, root, "src/hidden.ores", "billing",
+                "fnc hidden(): int { return 99; }");
+        Path owned = manifest(root, "checkout",
+                List.of("src/visible.ores", "src/hidden.ores"));
+        var binding = PackageNamespaceIndex.load(List.of(owned), sources, Map.of())
+                .resolve(id(root.resolve("src/visible.ores")), "+/", "billing");
+        assertEquals(2, binding.providerUnitIds().size());
+        assertTrue(binding.exports().containsKey("function:visible:0"));
+        assertTrue(!binding.exports().containsKey("function:hidden:0"));
+    }
+
+    @Test
+    void sameNameDifferentValueAritiesRemainDistinctNamespaceExports() throws IOException {
+        Path root = temporary.resolve("namespace-arity-identities");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/zero.ores", "billing",
+                "pub fnc charge(): int { return 10; }");
+        add(sources, root, "src/one.ores", "billing",
+                "pub fnc charge(int amount): int { return amount; }");
+        Path owned = manifest(root, "checkout", List.of("src/zero.ores", "src/one.ores"));
+        var binding = PackageNamespaceIndex.load(List.of(owned), sources, Map.of())
+                .resolve(id(root.resolve("src/zero.ores")), "+/", "billing");
+        assertEquals(2, binding.exports().size());
+        assertTrue(binding.exports().containsKey("function:charge:0"));
+        assertTrue(binding.exports().containsKey("function:charge:1"));
+    }
+
+    @Test
+    void dependencyAliasCannotResolveToUnadmittedPackageIdentity() throws IOException {
+        Path root = temporary.resolve("stale-dependency-alias");
+        Map<String, String> sources = new LinkedHashMap<>();
+        add(sources, root, "src/provider.ores", "billing",
+                "pub fnc answer(): int { return 42; }");
+        Path owned = manifest(root, "checkout", List.of("src/provider.ores"));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> PackageNamespaceIndex.load(List.of(owned), sources,
+                        Map.of("checkout", "pkg:/unverified/.ores.pkg.toml#checkout")));
+        assertTrue(denied.getMessage().contains("dependency alias is not pinned"),
+                denied.getMessage());
+    }
+
+    @Test
     void runtimeLoaderRejectsNamespaceImportsWithoutVerifiedManifest() throws IOException {
         Path entry = temporary.resolve("entry.ores");
         Files.writeString(entry, """
@@ -290,11 +539,10 @@ final class PackageNamespaceIndexTest {
                 """);
         IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
                 () -> LinkedProgramRunner.validate(entry));
-        // The index-only stage rejects as unimplemented; the stacked runtime
-        // linker rejects because no authenticated v2 manifest was provided.
-        // Both must fail closed instead of silently treating the dependency
-        // alias as a filesystem path or an ambient namespace.
-        assertTrue(rejection.getMessage().contains("runtime linking")
+        // The intermediate index and subsequent runtime linker may use
+        // different diagnostics; both must reject manifest-less imports.
+        assertTrue(rejection.getMessage().contains("package index")
+                || rejection.getMessage().contains("runtime linking")
                 || rejection.getMessage().contains("explicit v2 package manifest"));
     }
 

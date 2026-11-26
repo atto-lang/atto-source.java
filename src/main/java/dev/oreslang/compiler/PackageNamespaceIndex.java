@@ -59,12 +59,52 @@ public final class PackageNamespaceIndex {
             List<Path> manifests,
             Map<String, String> sources,
             Map<String, String> pinnedDependencyAliases) throws IOException {
-        if (manifests == null || sources == null || pinnedDependencyAliases == null) {
+        if (manifests == null) throw new IllegalArgumentException("manifests cannot be null");
+        LinkedHashMap<Path, String> snapshots = new LinkedHashMap<>();
+        for (Path manifest : manifests) {
+            Path canonical = checkedManifestPath(manifest);
+            // Bound the read itself, not a previous stat: manifests can grow
+            // concurrently and Files.readString() allocates without a limit.
+            byte[] bytes;
+            try (var input = Files.newInputStream(canonical, LinkOption.NOFOLLOW_LINKS)) {
+                bytes = input.readNBytes(1024 * 1024 + 1);
+            }
+            if (bytes.length > 1024 * 1024) {
+                throw new IllegalArgumentException("namespace manifest exceeds byte budget");
+            }
+            String content;
+            try {
+                content = java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                        .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+            } catch (java.nio.charset.CharacterCodingException malformed) {
+                throw new IllegalArgumentException("namespace manifest must be valid UTF-8", malformed);
+            }
+            String previous = snapshots.putIfAbsent(canonical, content);
+            if (previous != null) throw new IllegalArgumentException("duplicate package manifest");
+        }
+        return loadFromSnapshots(snapshots, sources, pinnedDependencyAliases);
+    }
+
+    /**
+     * Link only manifest text authenticated during workspace discovery.
+     * Filesystem checks below still reject invalid member paths, but neither
+     * package ownership nor provider membership is reparsed from mutable disk.
+     */
+    public static PackageNamespaceIndex loadFromSnapshots(
+            Map<Path, String> manifestSnapshots,
+            Map<String, String> sources,
+            Map<String, String> pinnedDependencyAliases) throws IOException {
+        if (manifestSnapshots == null || sources == null || pinnedDependencyAliases == null) {
             throw new IllegalArgumentException("namespace index inputs cannot be null");
         }
-        if (manifests.size() > 128 || sources.size() > 4096) {
+        if (manifestSnapshots.size() > 128 || sources.size() > 4096) {
             throw new IllegalArgumentException("namespace admission budget exceeded");
         }
+        // Capture the map structure as well as its immutable String values.
+        // A caller cannot retarget a provider halfway through the index pass.
+        Map<Path, String> fixedSnapshots = new LinkedHashMap<>(manifestSnapshots);
 
         Map<String, String> admittedSources = new LinkedHashMap<>();
         long sourceBytes = 0;
@@ -75,7 +115,10 @@ public final class PackageNamespaceIndex {
             if (unitBytes > 8 * 1024 * 1024 || sourceBytes > 64L * 1024 * 1024) {
                 throw new IllegalArgumentException("namespace source snapshot exceeds byte budget");
             }
-            String canonical = unitId(Path.of(source.getKey()).toRealPath());
+            // A caller must supply the exact admitted file identity, not an
+            // alias silently canonicalized through toRealPath(). Otherwise
+            // source-key authority depends on mutable symlink traversal.
+            String canonical = checkedSourceUnitId(source.getKey());
             if (admittedSources.putIfAbsent(canonical, source.getValue()) != null) {
                 throw new IllegalArgumentException("source path alias/duplicate: " + canonical);
             }
@@ -85,12 +128,15 @@ public final class PackageNamespaceIndex {
         Map<NamespaceKey, Map<String, Symbol>> exports = new LinkedHashMap<>();
         Map<NamespaceKey, Set<String>> providers = new LinkedHashMap<>();
         Set<String> packageIds = new LinkedHashSet<>();
-        for (Path manifest : manifests) {
-            Path manifestReal = manifest.toRealPath();
-            if (!".ores.pkg.toml".equals(manifestReal.getFileName().toString())) {
-                throw new IllegalArgumentException("expected .ores.pkg.toml: " + manifest);
+        for (Map.Entry<Path, String> snapshot : fixedSnapshots.entrySet()) {
+            // A directly supplied snapshot must satisfy the same raw-path
+            // checks as the standalone index loader.
+            Path manifestReal = checkedManifestPath(snapshot.getKey());
+            String content = snapshot.getValue();
+            if (content == null || content.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024 * 1024) {
+                throw new IllegalArgumentException("invalid immutable namespace manifest text");
             }
-            TomlParseResult toml = Toml.parse(manifestReal);
+            TomlParseResult toml = Toml.parse(content);
             if (!toml.errors().isEmpty()) {
                 throw new IllegalArgumentException("invalid package manifest: " + toml.errors().getFirst());
             }
@@ -103,10 +149,9 @@ public final class PackageNamespaceIndex {
             if (!Files.isDirectory(root)) {
                 throw new IllegalArgumentException("package project root is not a directory: " + root);
             }
-            // The index is also callable without PackageNamespaceWorkspace.
-            // Never let a nested manifest (including a dangling symlink
-            // marker) silently reassign ownership anywhere between the
-            // manifest directory and its explicit project.root.
+            // The package index also accepts immutable manifest snapshots
+            // directly. Preserve package authority even if callers bypass
+            // the workspace admission helper.
             for (Path cursor = root; !cursor.equals(manifestDir); cursor = cursor.getParent()) {
                 if (Files.exists(cursor.resolve(".ores.pkg.toml"), LinkOption.NOFOLLOW_LINKS)) {
                     throw new IllegalArgumentException(
@@ -114,7 +159,7 @@ public final class PackageNamespaceIndex {
                 }
             }
             Object packageObject = toml.get("packages");
-            if (!(packageObject instanceof TomlTable packageTable) || packageTable.isEmpty()) {
+            if (!(packageObject instanceof TomlTable packageTable) || packageTable.size() == 0) {
                 throw new IllegalArgumentException("manifest must declare [packages.<key>].files");
             }
 
@@ -127,7 +172,7 @@ public final class PackageNamespaceIndex {
                     throw new IllegalArgumentException("invalid package key: " + packageKey);
                 }
                 if (definition.size() != 1 || !(definition.get("files") instanceof TomlArray files)
-                        || files.isEmpty() || files.size() > 4096) {
+                        || files.size() == 0 || files.size() > 4096) {
                     throw new IllegalArgumentException("package must declare bounded explicit files: " + packageKey);
                 }
                 String packageId = packageId(manifestReal, packageKey);
@@ -171,8 +216,12 @@ public final class PackageNamespaceIndex {
                         throw new IllegalArgumentException("manifest member not in admitted source snapshot: " + sourceId);
                     }
                     Ast.Program parsed = Parser.parse(source);
-                    if (parsed.namespace() == null || Parser.ROOT_MODULE.equals(parsed.namespace())) {
-                        throw new IllegalArgumentException("package member needs a nonreserved namespace: " + sourceId);
+                    // Manifest membership and namespace membership are distinct.
+                    // Unnamespaced files retain their physical package owner and
+                    // exact pinned bytes, but have no namespace export binding.
+                    if (parsed.namespace() == null) continue;
+                    if (Parser.ROOT_MODULE.equals(parsed.namespace())) {
+                        throw new IllegalArgumentException("reserved namespace: " + sourceId);
                     }
                     NamespaceKey ns = new NamespaceKey(packageId, parsed.namespace());
                     providers.computeIfAbsent(ns, unused -> new LinkedHashSet<>()).add(sourceId);
@@ -279,6 +328,61 @@ public final class PackageNamespaceIndex {
             throw new IllegalArgumentException("ambiguous exported namespace symbol " + key
                     + " from " + old.sourceUnitId() + " and " + symbol.sourceUnitId());
         }
+    }
+
+    private static String checkedSourceUnitId(String submitted) throws IOException {
+        if (submitted == null || submitted.isBlank()) {
+            throw new IllegalArgumentException("namespace admitted source path missing");
+        }
+        Path source = Path.of(submitted);
+        // Path.of() can erase repeated separators, so compare the exact
+        // textual unit ID as well as the normalized Path object.
+        if (!source.isAbsolute() || !source.equals(source.normalize())
+                || !submitted.equals(unitId(source))) {
+            throw new SecurityException("namespace admitted source path must be absolute and canonical: " + submitted);
+        }
+        Path cursor = source.getRoot();
+        if (cursor == null) throw new SecurityException("namespace admitted source has no filesystem root");
+        for (Path part : source) {
+            cursor = cursor.resolve(part);
+            if (Files.isSymbolicLink(cursor)) {
+                throw new SecurityException("namespace admitted source path is symlinked: " + cursor);
+            }
+        }
+        if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
+                || !source.equals(source.toRealPath())) {
+            throw new SecurityException("namespace admitted source path is not an unaliased file: " + submitted);
+        }
+        return unitId(source);
+    }
+
+    private static Path checkedManifestPath(Path manifest) throws IOException {
+        // Checking only after normalize() erases a hostile alias/.. component.
+        Path raw = manifest.toAbsolutePath();
+        Path cursor = raw.getRoot();
+        if (cursor == null) throw new SecurityException("namespace manifest has no filesystem root");
+        for (Path part : raw) {
+            String name = part.toString();
+            if (".".equals(name)) continue;
+            if ("..".equals(name)) {
+                cursor = cursor.getParent();
+                if (cursor == null) {
+                    throw new SecurityException("namespace manifest path traverses filesystem root");
+                }
+                continue;
+            }
+            cursor = cursor.resolve(part);
+            if (Files.isSymbolicLink(cursor)) {
+                throw new SecurityException("namespace manifest is not a regular unaliased path: " + cursor);
+            }
+        }
+        Path canonical = raw.normalize();
+        if (!".ores.pkg.toml".equals(canonical.getFileName().toString())
+                || !Files.isRegularFile(canonical, LinkOption.NOFOLLOW_LINKS)
+                || !canonical.equals(canonical.toRealPath())) {
+            throw new SecurityException("namespace manifest is not a regular unaliased path");
+        }
+        return canonical;
     }
 
     private static Path boundedRelative(Path base, String value, Path boundary) throws IOException {
