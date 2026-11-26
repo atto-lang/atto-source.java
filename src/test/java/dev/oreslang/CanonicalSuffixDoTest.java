@@ -1,7 +1,6 @@
 package dev.oreslang;
 
-import dev.oreslang.parser.Parser;
-import dev.oreslang.types.TypeChecker;
+import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -9,10 +8,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class CanonicalSuffixDoTest {
     private static long run(String code) throws Exception {
-        TypeChecker.check(Parser.parseStrictAtto(code));
-        try (var ctx = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+        // Execute the exact strict-checked AST, not a second parse under the
+        // legacy unversioned guest profile. The lease checks source identity.
+        var checked = OresCompiler.parseAndTypeCheckStrictAtto(code);
+        try (var ctx = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build();
+             var lease = OresLanguage.openPrecheckedProgram("suffix-do.atto", code, checked)) {
             return ctx.eval(Source.newBuilder(OresLanguage.ID, code, "suffix-do.atto")
-                    .mimeType(OresLanguage.MIME_TYPE).build()).asLong();
+                    .mimeType(OresLanguage.MIME_TYPE).cached(false).build()).asLong();
         }
     }
     @Test void imperativeReturnExitsFunction() throws Exception {

@@ -358,6 +358,11 @@ catch_header    = "(" [ IDENT | "Error" IDENT ] ")" ;
    admit the built-in Error; subclass matching must be explicitly lowered.
    Braced tries do not use end; arm styles cannot mix within one try. *)
 
+(* Implemented legacy admission below; canonical static expression target is
+   [ "nb" ] "select" [ "<" type_ref ">" ] [ "(" expression ")" ] [ select_policy ] select_static_body,
+   producing Future<T>, or Future<Array<T>> with an explicit count.
+   Unary await consumes that Future; nb is deprecated.
+   Not currently lowered; see contracts/v1/static-select-result-and-return.md. *)
 select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
                   "select" [ select_policy ] select_static_body ;
 select_static_body
@@ -619,15 +624,16 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    an expression is accepted.
 
    Semantic restrictions:
-   - Channel/select waiting has three distinct modes. Plain readch/writech/select
+   - Legacy implemented channel/select waiting has three distinct modes. Plain readch/writech/select
      is suspending; nb registers and returns a Future or arms a legacy detached
      static continuation; try probes once without leaving a waiter.
      Blocking "do select" is procedural: a selected arm's return exits the
      containing callable and a valid break/continue targets its outer loop.
      Legacy "do nb select" instead runs in a detached continuation scope:
      arm returns cannot escape the caller, which has already continued.
-     Static result-producing select and Future<T> lowering remain distinct
-     unimplemented milestones. Dynamic "select from" remains an Option-valued
+     Canonical static expression target is Future<T> by default, select<T>
+     checks the arm result, await explicitly suspends, nb select is deprecated.
+     Tracked static expression lowering remains unimplemented. Dynamic "select from" remains an Option-valued
      expression, and dynamic "nb select from" returns Future<Option<SelectResult>>.
      "cb select" and "nb cb select" are rejected; nb cb writech retains
      its separate literal callback syntax. Static select defaults to deterministic
