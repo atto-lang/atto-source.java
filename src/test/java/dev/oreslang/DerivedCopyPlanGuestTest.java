@@ -31,7 +31,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void ordinaryClassArrayFieldsAreClonedNotAliased() throws Exception {
         assertEquals("10|99", run("""
-                define class Person as
+                define class Person implements DeepCopyable<Person> as
                   pub let string name = "Alice";
                   pub val Array<int> scores = new Array<int>();
                 end
@@ -117,10 +117,10 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void flatDeepCopyRetainsInheritedFieldsWithoutAliasing() throws Exception {
         assertEquals("42|99|7", run("""
-                define class Base as
+                define class Base implements DeepCopyable<Base> as
                   pub let int value = 42;
                 end
-                define class Child extends Base as
+                define class Child extends Base implements DeepCopyable<Child> as
                   pub let int tag = 7;
                 end
                 pub fnc main(): void {
@@ -147,7 +147,7 @@ final class DerivedCopyPlanGuestTest {
         assertThrows(IllegalArgumentException.class, () ->
                 Parser.parse(template.formatted("copy!!!x")));
         assertEquals("10|77", run("""
-                define class Person as
+                define class Person implements DeepCopyable<Person> as
                   pub val Array<int> scores = new Array<int>();
                 end
                 pub fnc main(): void {
@@ -166,7 +166,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void doubleBangStillRejectsUnprovedCyclicLayout() {
         String source = """
-                define class Node as
+                define class Node implements DeepCopyable<Node> as
                   pub let Node next;
                 end
                 fnc bad(Node value): Node {
@@ -245,7 +245,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void rootTypedArrayOfClassesCopiesNestedObjects() throws Exception {
         assertEquals("10|88", run("""
-                define class Child as
+                define class Child implements DeepCopyable<Child> as
                   pub let int value = 10;
                 end
                 pub fnc main(): void {
@@ -291,10 +291,10 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void nestedClassesAreRecursivelyCloned() throws Exception {
         assertEquals("7|42", run("""
-                define class Child as
+                define class Child implements DeepCopyable<Child> as
                   pub let int value = 7;
                 end
-                define class Parent as
+                define class Parent implements DeepCopyable<Parent> as
                   pub val Child child = new Child();
                 end
 
@@ -313,10 +313,10 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void compilerDerivesInheritanceWithoutSlicing() throws Exception {
         assertEquals("5|12|99", run("""
-                define class Base as
+                define class Base implements DeepCopyable<Base> as
                   pub let int base_value = 5;
                 end
-                define class Child extends Base as
+                define class Child extends Base implements DeepCopyable<Child> as
                   pub let int own_value = 12;
                 end
 
@@ -337,7 +337,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void derivedPlanRejectsNestedResourceNotShallowCopy() {
         String source = """
-                define class Connection as
+                define class Connection implements DeepCopyable<Connection> as
                   pub let Channel<int> chan;
                 end
                 fnc bad(Connection value): Connection {
@@ -352,7 +352,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void handwrittenCopyCannotBypassUnverifiedOverride() {
         String source = """
-                define class Record as
+                define class Record implements DeepCopyable<Record> as
                   pub let int n = 1;
                   pub copy() -> Record {
                     return self;
@@ -393,7 +393,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void recursiveClassLayoutsFailClosedUntilGraphCopierIsVerified() {
         String source = """
-                define class Node as
+                define class Node implements DeepCopyable<Node> as
                   pub let Node next;
                 end
                 fnc bad(Node value): Node {
