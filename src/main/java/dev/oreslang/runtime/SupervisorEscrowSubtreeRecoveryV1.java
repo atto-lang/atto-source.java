@@ -77,7 +77,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     /** Attach-before-activation is enforced by ActorRuntime, not by a guest. */
     long attach(ActorRuntime.ActorRef<?> ref, ActorRuntime.ActorRef<?> supervisor) {
         runtime.requireSupervisorShutdownAuthority("attach supervisor recovery actor");
-        if (controlFault.get() != null) throw new IllegalStateException("CONTROL fault");
+        if (currentControlFault() != null) throw new IllegalStateException("CONTROL fault");
         // The bridge now publishes the coordinator ref INSIDE its ledger
         // admission transaction. A concurrent supervisor failure cannot
         // observe a registered ledger node without this physical ActorRef.
@@ -92,7 +92,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
      */
     void registerSpawnedChildFromRuntime(long nodeId, ActorRuntime.ActorRef<?> ref) {
         synchronized (lock) {
-            if (controlFault.get() != null) {
+            if (currentControlFault() != null) {
                 throw new IllegalStateException("CONTROL coordinator is faulted");
             }
             if (refs.putIfAbsent(nodeId, ref) != null) {
@@ -117,7 +117,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
                 controlFault.compareAndSet(null, pendingRoots.capacityFailure());
                 return;
             }
-            if (!scheduled && controlFault.get() == null) {
+            if (!scheduled && currentControlFault() == null) {
                 scheduled = true;
                 submit = true;
             }
@@ -126,6 +126,11 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     }
 
     private void submitControl() {
+        if (control instanceof SupervisorEmergencyControlV1) {
+            try { control.execute(controlWake); }
+            catch (RuntimeException | Error rejected) { controlFault.compareAndSet(null, rejected); }
+            return;
+        }
         // An inline executor is forbidden: its body would run while actor
         // lifecycleLock is held by the failing actor. Fail closed instead.
         submitting.set(Boolean.TRUE);
@@ -142,7 +147,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             "supervision CONTROL executed inline or on an actor carrier");
 
     private void runControlWake() {
-        if (Boolean.TRUE.equals(submitting.get())
+        if ((!(control instanceof SupervisorEmergencyControlV1) && Boolean.TRUE.equals(submitting.get()))
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             controlFault.compareAndSet(null, invalidCarrier);
@@ -152,7 +157,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     }
 
     private void drain() {
-        while (controlFault.get() == null) {
+        while (currentControlFault() == null) {
             final long root;
             synchronized (lock) {
                 root = pendingRoots.poll();
@@ -223,7 +228,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
      * ACK of all affected failures and separate physical-release evidence. */
     RestartBlocker restartBlocker(long nodeId) {
         runtime.requireSupervisorShutdownAuthority("inspect supervisor restart safety");
-        if (controlFault.get() != null) return RestartBlocker.CONTROL_FAILED;
+        if (currentControlFault() != null) return RestartBlocker.CONTROL_FAILED;
         var states = bridge.snapshot();
         var root = states.get(nodeId);
         if (root == null || nodeId == 1) return RestartBlocker.UNKNOWN_NODE;
@@ -320,8 +325,16 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         return newNode;
     }
 
+    private Throwable currentControlFault() {
+        if (control instanceof SupervisorEmergencyControlV1 reserved) {
+            Throwable failure = reserved.failure();
+            if (failure != null) controlFault.compareAndSet(null, failure);
+        }
+        return controlFault.get();
+    }
+
     Throwable controlFault() {
         runtime.requireSupervisorShutdownAuthority("inspect supervisor CONTROL failure");
-        return controlFault.get();
+        return currentControlFault();
     }
 }

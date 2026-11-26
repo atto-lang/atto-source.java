@@ -241,6 +241,38 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
     }
 
     @Test
+    void prestartedEmergencyCarrierCancelsDescendantAndPreservesSibling() throws Exception {
+        CountDownLatch siblingProgress = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = new SupervisorEmergencyControlV1()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ignored -> false);
+            ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { throw new IllegalStateException("injected"); });
+            ActorRuntime.ActorRef<String> child = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            ActorRuntime.ActorRef<String> sibling = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> siblingProgress.countDown());
+            long root = recovery.attach(supervisor, null);
+            recovery.attach(child, supervisor);
+            recovery.attach(sibling, null);
+            supervisor.getReady().get(5, TimeUnit.SECONDS);
+            supervisor.send("panic");
+            assertThrows(ExecutionException.class,
+                    () -> supervisor.done().get(5, TimeUnit.SECONDS));
+            assertTrue(child.awaitTermination(5, TimeUnit.SECONDS));
+            sibling.send("healthy");
+            assertTrue(siblingProgress.await(5, TimeUnit.SECONDS));
+            assertNull(recovery.controlFault());
+            assertEquals(1, bridge.pendingCount());
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(root), () -> { }));
+            assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.PHYSICAL_RELEASE_UNVERIFIED,
+                    recovery.restartBlocker(root));
+        }
+    }
+
+    @Test
     void inlineControlExecutorFailsClosedInsteadOfRunningUnderActorLock()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
