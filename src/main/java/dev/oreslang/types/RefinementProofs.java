@@ -16,17 +16,40 @@ import java.util.Set;
 public final class RefinementProofs {
     private RefinementProofs() { }
 
-    public record Interval(long minimum, long maximum) {
+    public record Interval(long minimum, long maximum, int holes) {
+        public Interval(long minimum,long maximum) { this(minimum,maximum,0); }
         public Interval {
+            if ((holes & ~3)!=0) throw new IllegalArgumentException("unsupported interval holes");
+            while ((holes & bit(minimum))!=0) minimum++;
+            while ((holes & bit(maximum))!=0) maximum--;
             if (minimum > maximum) {
                 throw new IllegalArgumentException("empty refinement interval");
             }
+        }
+        private static int bit(long n) { return n==0?1:n==-1?2:0; }
+        public boolean has(long n) { return minimum<=n&&n<=maximum&&(holes&bit(n))==0; }
+        public Interval join(Interval b) {
+            return new Interval(Math.min(minimum,b.minimum),Math.max(maximum,b.maximum),
+                (!has(0)&&!b.has(0)?1:0)|(!has(-1)&&!b.has(-1)?2:0));
+        }
+        public Interval restrict(String op,long n) {
+            try {
+                if(op.equals("!=")) {
+                    if(!has(n)) return this;
+                    if(n==minimum) return n==Long.MAX_VALUE?this:new Interval(n+1,maximum,holes);
+                    if(n==maximum) return n==Long.MIN_VALUE?this:new Interval(minimum,n-1,holes);
+                    return new Interval(minimum,maximum,holes|bit(n));
+                }
+                var r=constrain(op.equals("==")?"eq":op,n);
+                return new Interval(r.minimum,r.maximum,holes);
+            } catch(IllegalArgumentException contradiction) { return this; }
         }
         public static Interval exactly(long n) { return new Interval(n, n); }
         public static Interval anyI64() { return new Interval(Long.MIN_VALUE, Long.MAX_VALUE); }
         public boolean entails(Interval expected) {
             Objects.requireNonNull(expected);
-            return minimum >= expected.minimum && maximum <= expected.maximum;
+            return minimum >= expected.minimum && maximum <= expected.maximum
+                    && (!has(0)||expected.has(0)) && (!has(-1)||expected.has(-1));
         }
         public Interval plus(Interval b) {
             Objects.requireNonNull(b);
@@ -50,8 +73,7 @@ public final class RefinementProofs {
                     case "-" -> minus(b);
                     case "*" -> times(b);
                     case "/" -> {
-                        return (b.minimum > 0 || b.maximum < 0)
-                                && !(minimum == Long.MIN_VALUE && b.minimum <= -1 && b.maximum >= -1);
+                        return !b.has(0) && !(has(Long.MIN_VALUE)&&b.has(-1));
                     }
                     default -> { return false; }
                 }
