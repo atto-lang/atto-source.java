@@ -184,7 +184,55 @@ public final class PersistentClassfileCacheTest {
         assertFalse(apiBuild(different,B,false).reused());
         System.out.println("JAVA_RESTRICTED_API|guest=42/43|restart|rollback|toolchain-fence");
     }
+    private static List<PersistentPrimitiveClassfileSession.ProviderInput> providers(boolean edit,boolean unrelated){
+        return List.of(new PersistentPrimitiveClassfileSession.ProviderInput("src/billing.atto","billing","tick",1,
+            "namespace billing;\npub fnc tick(i32 x): i32 { return x + "+(edit?2:1)+"; }\n"),
+            new PersistentPrimitiveClassfileSession.ProviderInput("src/identity.atto","identity","other",0,
+            "namespace identity;\npub fnc other(): i32 { return "+(unrelated?901:900)+"; }\n"));
+    }
+    private static String[] pins(List<PersistentPrimitiveClassfileSession.ProviderInput> inputs)throws Exception{
+        var m=new StringBuilder("atto.java.i32-provider-inventory.v1\n");
+        var s=new StringBuilder("atto.java.i32-provider-sources.v1\n");
+        for(var p:inputs.stream().sorted(Comparator.comparing(PersistentPrimitiveClassfileSession.ProviderInput::path)).toList()){
+            m.append(p.path()).append('\n').append(p.namespace()).append('\n').append(p.symbol()).append('\n').append(p.arity()).append('\n');
+            s.append(p.path()).append('\n').append(digest(p.source())).append('\n');
+        }
+        return new String[]{digest(m.toString()),digest(s.toString())};
+    }
+    private static PersistentPrimitiveClassfileSession.Build providerBuild(Path root,List<PersistentPrimitiveClassfileSession.ProviderInput> inputs,String[] pins,int arity,byte[] override,boolean cold)throws Exception{
+        byte[] record=CompilerCacheLedger.record("tenant/api",2,MASTER);
+        return api(root).compileBoundProvider(inputs,pins[0],pins[1],"billing","tick",arity,new RealtimePrimitiveCompiler.Budget(200,3),record,override==null?hash(record):override,MASTER,cold);
+    }
+    @Test void persistentI32Provider(@TempDir Path root)throws Exception{
+        var inputs=providers(false,false);var pin=pins(inputs);
+        var cold=providerBuild(root,inputs,pin,1,null,true);assertFalse(cold.reused());execute(root,cold.bytes(),42);
+        assertArrayEquals(compile(root,A),cold.bytes());
+        var local=providers(false,true);var localPins=pins(local);
+        var warm=providerBuild(root,local,localPins,1,null,false);assertTrue(warm.reused());assertArrayEquals(cold.bytes(),warm.bytes());
+        assertThrows(IllegalArgumentException.class,()->providerBuild(root,local,pin,1,null,false));
+        assertThrows(IllegalArgumentException.class,()->providerBuild(root,local,localPins,2,null,false));
+        assertThrows(IllegalArgumentException.class,()->providerBuild(root,local,localPins,1,new byte[32],false));
+        var bad=List.of(local.getFirst(),new PersistentPrimitiveClassfileSession.ProviderInput("src/identity.atto","identity","other",0,
+            "namespace identity;\npub fnc other(): i32 { return missing; }\n"));
+        assertThrows(IllegalArgumentException.class,()->providerBuild(root,bad,pins(bad),1,null,false));
+        var wide=List.of(local.getFirst(),new PersistentPrimitiveClassfileSession.ProviderInput("src/identity.atto","identity","other",0,
+            "namespace identity;\npub fnc other(): int { return 1; }\n"));
+        assertThrows(IllegalArgumentException.class,()->providerBuild(root,wide,pins(wide),1,null,false));
+        assertThrows(IllegalArgumentException.class,()->providerBuild(root,List.of(local.getFirst(),local.getFirst()),localPins,1,null,false));
+        var cp=System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"));
+        var child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),"-cp",cp,
+            PersistentClassfileCacheTest.class.getName(),root.toString(),"provider").inheritIO().start();
+        assertTrue(child.waitFor(90,java.util.concurrent.TimeUnit.SECONDS));assertEquals(0,child.exitValue());
+        var edit=providers(true,true);var next=providerBuild(root,edit,pins(edit),1,null,false);assertFalse(next.reused());execute(root,next.bytes(),43);assertArrayEquals(compile(root,B),next.bytes());
+        var p=edit.get(1);var rename=List.of(edit.getFirst(),new PersistentPrimitiveClassfileSession.ProviderInput("src/renamed.atto",p.namespace(),p.symbol(),p.arity(),p.source()));
+        var changed=providerBuild(root,rename,pins(rename),1,null,false);assertFalse(changed.reused());assertArrayEquals(next.bytes(),changed.bytes());
+        System.out.println("JAVA_I32_BOUND_PROVIDER|42/42/43|unrelated-edit-hit|restart-hit|manifest-miss|clean-equivalent|wide-denied");
+    }
     public static void main(String[] args)throws Exception{
+        if(args.length==2&&args[1].equals("provider")){
+            Path root=Path.of(args[0]);var local=providers(false,true);var warm=providerBuild(root,local,pins(local),1,null,false);
+            assertTrue(warm.reused());execute(root,warm.bytes(),42);System.out.println("JAVA_I32_BOUND_CHILD|hit|guest=42");return;
+        }
         if(args.length==2&&args[1].equals("api")){
             Path root=Path.of(args[0]);var warm=apiBuild(api(root),A,false);assertTrue(warm.reused());execute(root,warm.bytes(),42);
             System.out.println("JAVA_RESTRICTED_CHILD|hit|guest=42");return;
