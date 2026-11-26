@@ -7,6 +7,8 @@ on:
       - 'src/main/java/dev/oreslang/types/GraphCopyTransaction.java'
       - 'src/main/java/dev/oreslang/types/GraphTopology.java'
       - 'src/main/java/dev/oreslang/types/CopyScalarAdmission.java'
+      - 'src/main/java/dev/oreslang/types/CopyPlanCache.java'
+      - 'src/test/java/dev/oreslang/CopyPlanCacheTest.java'
       - 'tests/graph-topology-host/CopyScalarAdmissionTest.java'
       - 'tests/graph-topology-host/TopologyTest.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
@@ -70,7 +72,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=DerivedCopyPlanGuestTest,CopyPolicyCompilerTest,OwnershipAndClosureTest,DerivedGraphCopyPlanTest,GraphCopyTransactionTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -ntp -Dtest=DerivedCopyPlanGuestTest,CopyPolicyCompilerTest,OwnershipAndClosureTest,DerivedGraphCopyPlanTest,GraphCopyTransactionTest,CopyPlanCacheTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
       - name: Capture executed Surefire receipts
         if: always()
         shell: bash
