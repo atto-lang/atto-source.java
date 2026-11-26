@@ -62,6 +62,8 @@ final class BareAwaitPipelineTest {
                 stdio.stdout.write(f2);
                 stdio.stdout.write(f3);
                 stdio.stdout.write(prefixed(42));
+                const f4 = 42 |> |x| -> await x |> |x| -> x;
+                stdio.stdout.write(f4);
                 return;
             }
             """;
@@ -72,7 +74,7 @@ final class BareAwaitPipelineTest {
              Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(output).build()) {
             context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
         }
-        assertEquals("424242", output.toString(StandardCharsets.UTF_8));
+        assertEquals("42424242", output.toString(StandardCharsets.UTF_8));
         assertThrows(IllegalArgumentException.class, () ->
             OresCompiler.parseAndTypeCheckStrictAtto("pub fnc main(): int { return 42 |> std.await; }"));
     }
