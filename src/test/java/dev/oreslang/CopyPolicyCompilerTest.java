@@ -539,4 +539,34 @@ final class CopyPolicyCompilerTest {
         }
     }
 
+    @Test
+    void linkedMetadataCannotHideReservedDeepMarkerUnderAnotherName() {
+        Ast.Program forgedProvider = Parser.parse("define pub class DeepCopyable as end");
+        Ast.ClassDecl forged = (Ast.ClassDecl) forgedProvider.modules().getFirst()
+                .declarations().getFirst();
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithImportedClasses(
+                        Parser.parse("pub fnc main(): int { return 42; }"),
+                        java.util.Map.of("Foreign", forged), java.util.Map.of()));
+        assertTrue(error.getMessage().contains("DeepCopyable"), error::toString);
+    }
+
+    @Test
+    void standaloneDeepPlannerRejectsShadowedCoreMarker() {
+        Ast.Program parsed = Parser.parse("""
+                define class DeepCopyable as end
+                define class Flat implements DeepCopyable<Flat> as pub let int value = 42; end
+                """);
+        java.util.Map<String, Ast.ClassDecl> classes = new java.util.HashMap<>();
+        for (var module : parsed.modules()) {
+            for (var declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass) classes.put(klass.name(), klass);
+            }
+        }
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.types.DerivedCopyPlanV1.deriveDeep(
+                        Ast.TypeRef.simple("Flat"), classes::get));
+        assertTrue(error.getMessage().contains("E_COPY_OPT_IN_REQUIRED"), error::toString);
+    }
+
 }
