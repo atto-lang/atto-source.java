@@ -8861,8 +8861,8 @@ public final class OresEvalRootNode extends RootNode {
             long right = integralLong(values.get(1));
             if (checkedI64Arithmetic && right == 0
                     && (operation.equals("rem") || operation.equals("mod"))) {
-                throw new ArithmeticException(
-                        "ORES_I64_DIVISION_BY_ZERO: checked signed i64 denominator");
+                throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                        dev.oreslang.runtime.GuestErrorValue.divisionByZero());
             }
             return switch (operation) {
                 case "rem" -> dev.oreslang.runtime.StrictIntegerArithmetic.rem(left, right);
@@ -8872,8 +8872,8 @@ public final class OresEvalRootNode extends RootNode {
                         yield dev.oreslang.runtime.StrictIntegerArithmetic.pow(left, right);
                     } catch (ArithmeticException overflow) {
                         if (checkedI64Arithmetic) {
-                            throw new ArithmeticException(
-                                    "ORES_I64_OVERFLOW: checked signed i64 power");
+                            throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                    dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                         }
                         throw overflow;
                     }
@@ -12975,6 +12975,10 @@ public final class OresEvalRootNode extends RootNode {
                 return structuralRecordMatches(value, target);
             }
             String name = target.name();
+            if (value instanceof dev.oreslang.runtime.GuestErrorValue error
+                    && target.arguments().isEmpty()
+                    && (name.equals("Error") || name.equals(error.nominalType()))) return true;
+            if (name.equals("ArithmeticOverflowError") || name.equals("DivisionByZeroError")) return false;
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
                     || name.equals("i64") || name.equals("u8") || name.equals("u16")
                     || name.equals("u32") || name.equals("u64") || name.equals("uint")
@@ -13019,6 +13023,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String oresRuntimeTypeName(Object value) {
+            if (value instanceof dev.oreslang.runtime.GuestErrorValue error) return error.nominalType();
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -13291,7 +13296,14 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && (op != '/' || checkedI64Arithmetic);
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
-                if (op == '/') return dev.oreslang.runtime.StrictIntegerArithmetic.div(x, y);
+                if (op == '/') {
+                    if (y == 0) throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                            dev.oreslang.runtime.GuestErrorValue.divisionByZero());
+                    if (x == Long.MIN_VALUE && y == -1)
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
+                    return dev.oreslang.runtime.StrictIntegerArithmetic.div(x, y);
+                }
                 // An implicit VM fast-throw exception may have suppression disabled,
                 // which would discard source-boundary diagnostics after warm-up.
                 if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
@@ -13304,8 +13316,8 @@ public final class OresEvalRootNode extends RootNode {
                             default -> throw new AssertionError("unreachable checked operator");
                         };
                     } catch (ArithmeticException overflow) {
-                        throw new ArithmeticException(
-                                "ORES_I64_OVERFLOW: checked signed i64 operator " + op);
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                     }
                 }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -13337,8 +13349,8 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         return Math.negateExact(operand);
                     } catch (ArithmeticException overflow) {
-                        throw new ArithmeticException(
-                                "ORES_I64_OVERFLOW: checked signed i64 unary negation");
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                     }
                 }
                 return -operand;
