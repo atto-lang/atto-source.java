@@ -384,7 +384,7 @@ final class NamespaceRuntimeIntegrationTest {
         billing(project);
         Files.writeString(project.resolve("src/billing/refund.ores"), """
                 namespace billing;
-                pub fnc init(): void {
+                fnc init(): void {
                   stdio.println("PROVIDER_INIT");
                   return;
                 }
@@ -415,7 +415,7 @@ final class NamespaceRuntimeIntegrationTest {
         Path project = temp.resolve("checkout");
         billing(project);
         source(project, "src/unrelated.ores", "telemetry", """
-                pub fnc init(): void {
+                fnc init(): void {
                   stdio.println("UNRELATED_INIT_MUST_NOT_RUN");
                   return;
                 }
@@ -441,11 +441,28 @@ final class NamespaceRuntimeIntegrationTest {
     }
 
     @Test
+    void publicNamespaceInitCannotBeAdmittedAsLifecycleHook() throws Exception {
+        Path project = temp.resolve("public-init-denial");
+        Path main=source(project,"src/main.ores","app",
+                "pub fnc init(): void { return; }\npub fnc main(): void { return; }");
+        Files.writeString(project.resolve(".ores.pkg.toml"),"""
+                schema_version = "2"
+                [project]
+                root = "."
+                [packages.app]
+                files = ["src/main.ores"]
+                """);
+        IllegalArgumentException denied=assertThrows(IllegalArgumentException.class,
+                ()->LinkedProgramRunner.validate(main));
+        assertTrue(denied.getMessage().contains("init hook must be a private"),denied.getMessage());
+    }
+
+    @Test
     void lifecycleInitCannotBeCalledViaNamespaceQualification() throws Exception {
         Path project = temp.resolve("checkout");
         billing(project);
         Path init = source(project, "src/billing/startup.ores", "billing", """
-                pub fnc init(): void {
+                fnc init(): void {
                   stdio.println("INIT_ONLY_AT_STARTUP");
                   return;
                 }
@@ -983,7 +1000,7 @@ final class NamespaceRuntimeIntegrationTest {
         }
         SecurityException denied = assertThrows(SecurityException.class,
                 () -> PackageNamespaceWorkspace.verifyRootManifestSnapshot(admitted));
-        assertTrue(denied.getMessage().contains("root namespace manifest changed"));
+        assertTrue(denied.getMessage().contains("namespace manifest file identity changed during admission"), denied.getMessage());
     }
 
     @Test
