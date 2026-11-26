@@ -7148,7 +7148,7 @@ public final class Parser {
     // Restricted executable source slice. A single lexical Channel<int>
     // and pure integer projection need no mixed-source rotation. Each round
     // uses the real checked procedural select arbiter on the Task lane.
-    // Literal/constant counts and lexical int counts are supported. Multiple
+    // Literal/constant and pure lexical i64 arithmetic counts are supported. Multiple
     // sources, general dynamic expressions, Future and arbitrary arm bodies
     // still fail closed until general aggregate lowering exists.
     private Ast.Expr parseRestrictedCountedSelect() {
@@ -7162,14 +7162,20 @@ public final class Parser {
             dynamicCount = name.name();
             if (dynamicCount.startsWith("$")) throw error(countStart, unsupported);
         } else {
-            // Pure constant integer expressions only: checked arithmetic, no
-            // evaluation or captures in the parser, bounded traversal.
+            // The restricted count plan is pure checked lexical i64 arithmetic.
+            // No calls, global lookups, assignment or suspension are admitted.
             try {
-                count = foldCountedConstant(countExpression, new int[]{64});
+                var names = dev.oreslang.ast.CountedSelectCount.names(countExpression);
+                if (names.isEmpty()) {
+                    count = foldCountedConstant(countExpression, new int[]{64});
+                    if (count < 0 || count > 16)
+                        throw new IllegalArgumentException("count out of range");
+                } else {
+                    dynamicCount = dev.oreslang.ast.CountedSelectCount.SNAPSHOT;
+                }
             } catch (ArithmeticException | IllegalArgumentException invalid) {
-                throw error(countStart, unsupported + ": invalid or unsupported constant count expression");
+                throw error(countStart, unsupported + ": invalid or unsupported count expression");
             }
-            if (count < 0 || count > 16) throw error(countStart, unsupported);
         }
         Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.BLOCKING, true);
         if (selected.policy() == Ast.SelectPolicy.RANDOM || selected.arms().size() != 1)
@@ -7203,9 +7209,17 @@ public final class Parser {
             var round = new Ast.SelectStmt(Ast.WaitMode.BLOCKING, selected.policy(),
                     List.of(new Ast.SelectArm(Ast.ChannelOperation.READ, new Ast.NameExpr(source.name()),
                             null, arm.bindingKind(), arm.bindingName(), List.of(add), false, arm.bindingType())), true);
-            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
-                    List.of(result, reserve, new Ast.LoopStmt(List.of(stop, round)),
-                            new Ast.ReturnStmt(new Ast.NameExpr(output))),
+            List<Ast.Stmt> body = new ArrayList<>();
+            if (dynamicCount.equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
+                // Type/ownership passes check this synthetic initializer.
+                // Runtime evaluates it in the caller and injects the snapshot
+                // rather than executing the initializer again on the task lane.
+                body.add(new Ast.BindingStmt(Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
+                        dynamicCount, countExpression));
+            }
+            body.addAll(List.of(result, reserve, new Ast.LoopStmt(List.of(stop, round)),
+                    new Ast.ReturnStmt(new Ast.NameExpr(output))));
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, body,
                     false, false, true, null, dynamicCount);
         }
         if (count == 0) {

@@ -7728,11 +7728,27 @@ public final class TypeChecker {
                         || findClass("Array") != null || importedValues.contains("Array"))
                     throw new IllegalArgumentException("invalid zero-count select lowering");
             } else if (task.dynamicCountName() != null) {
-                Env.Binding countBinding = env.lookup(task.dynamicCountName());
-                if (countBinding == null || countBinding.type() != Primitive.INT)
-                    throw new IllegalArgumentException("counted select requires lexical int count");
-                if (task.body().size() != 4
-                        || !(task.body().get(2) instanceof Ast.LoopStmt loop)
+                int offset = 0;
+                if (task.dynamicCountName().equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
+                    if (task.body().size() != 5
+                            || !(task.body().getFirst() instanceof Ast.BindingStmt snapshot)
+                            || snapshot.kind() != Ast.BindingKind.CONST
+                            || !snapshot.name().equals(task.dynamicCountName())
+                            || !Ast.TypeRef.simple("int").equals(snapshot.declaredType()))
+                        throw new IllegalArgumentException("invalid counted select count snapshot");
+                    for (String name : dev.oreslang.ast.CountedSelectCount.names(snapshot.initializer())) {
+                        Env.Binding binding = env.lookup(name);
+                        if (binding == null || binding.type() != Primitive.INT)
+                            throw new IllegalArgumentException("counted select requires lexical int count operands");
+                    }
+                    offset = 1;
+                } else {
+                    Env.Binding countBinding = env.lookup(task.dynamicCountName());
+                    if (countBinding == null || countBinding.type() != Primitive.INT)
+                        throw new IllegalArgumentException("counted select requires lexical int count");
+                }
+                if (task.body().size() != 4 + offset
+                        || !(task.body().get(2 + offset) instanceof Ast.LoopStmt loop)
                         || loop.body().size() != 2
                         || !(loop.body().get(1) instanceof Ast.SelectStmt selected)
                         || selected.arms().size() != 1
