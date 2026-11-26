@@ -82,6 +82,15 @@ final class TypedValueMatchParameterTest {
     }
 
     @Test
+    void strictAttoMixedNumericLiteralPatternStillRejects() {
+        String source = "pub fnc main(): int { val int x = 1; return x |> match<int> over "
+                + "on 1.0: int -> 1, on _: int -> 42, end; }";
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheckStrictAtto(source));
+        assertTrue(failure.getMessage().contains("literal pattern type"), failure::getMessage);
+    }
+
+    @Test
     void positionalAndNamedReturnTypeRemainArmLocal() throws Exception {
         String guest = """
             fnc value(bool selected): int {
