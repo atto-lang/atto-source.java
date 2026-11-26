@@ -193,6 +193,28 @@ final class CountedSelectReadCursorTest {
                 ChannelRuntime.SelectPolicy.FAIR).result());
     }
 
+    @Test void fairRetirementPreservesRepeatedCaseObjectOccurrence() {
+        var a = new ChannelRuntime.Channel<Long>(2);
+        var b = new ChannelRuntime.Channel<Long>(2);
+        var c = new ChannelRuntime.Channel<Long>(1);
+        a.tryWrite(10L); a.tryWrite(40L);
+        b.tryWrite(20L); b.tryWrite(99L); c.tryWrite(50L);
+        var aCase = ChannelRuntime.read(a.output());
+        var future = OresFuture.completed(30L);
+        var batch = new CountedSelectBatch(5, List.of(aCase,
+                ChannelRuntime.read(b.output()), ChannelRuntime.await(future),
+                aCase, ChannelRuntime.read(c.output())),
+                ChannelRuntime.SelectPolicy.FAIR);
+        for (int i = 0; i < 5; i++) {
+            assertTrue(batch.pump()); assertTrue(batch.pump());
+        }
+        assertEquals(List.of(10L,20L,30L,40L,50L), batch.completion().join());
+        assertEquals(99L, b.tryRead().orElseThrow());
+        assertEquals(0, a.pendingRegistrations());
+        assertEquals(0, b.pendingRegistrations());
+        assertEquals(0, c.pendingRegistrations());
+    }
+
     @Test void aggregateFuturePublishesOnlyAfterExactCardinalityAndRetirement() {
         var ch = new ChannelRuntime.Channel<Long>(4);
         ch.tryWrite(10L); ch.tryWrite(20L); ch.tryWrite(30L); ch.tryWrite(40L);

@@ -77,9 +77,11 @@ final class CountedSelectReadCursor {
         this(count, policy, runtime);
         if (count == 0) return;
         Objects.requireNonNull(cases);
-        if (cases.isEmpty() || cases.size() > ChannelRuntime.MAX_SELECT_CASES)
+        int length = cases.size();
+        if (length < 1 || length > ChannelRuntime.MAX_SELECT_CASES)
             throw new IllegalArgumentException("invalid counted source count");
-        for (var candidate : cases) {
+        for (int i = 0; i < length; i++) {
+            var candidate = cases.get(i);
             if (!(candidate instanceof ChannelRuntime.ReadCase<?> ||
                     candidate instanceof ChannelRuntime.FutureCase<?>))
                 throw new IllegalArgumentException("counted selection requires read/Future cases");
@@ -167,18 +169,26 @@ final class CountedSelectReadCursor {
             return;
         }
         var remaining = new ArrayList<ChannelRuntime.SelectCase>(oldSize);
-        ChannelRuntime.SelectCase nextCase = null;
+        int nextIndex = -1;
         for (int k = 0; k < oldSize; k++) {
-            var candidate = live.get((next + k) % oldSize);
-            if (!sameSource(candidate, winner)) { nextCase = candidate; break; }
+            int indexAfterWinner = (next + k) % oldSize;
+            if (!sameSource(live.get(indexAfterWinner), winner)) {
+                nextIndex = indexAfterWinner;
+                break;
+            }
         }
-        for (var candidate : live)
-            if (!sameSource(candidate, winner)) remaining.add(candidate);
+        // The same case object may appear more than once. Preserve its
+        // lexical occurrence, not the first matching object identity.
+        cursor = 0;
+        for (int i = 0; i < oldSize; i++) {
+            var candidate = live.get(i);
+            if (!sameSource(candidate, winner)) {
+                if (i < nextIndex) cursor++;
+                remaining.add(candidate);
+            }
+        }
         live.clear();
         live.addAll(remaining);
-        cursor = 0;
-        for (int i = 0; i < live.size(); i++)
-            if (live.get(i) == nextCase) { cursor = i; break; }
     }
 
     private static boolean sameSource(ChannelRuntime.SelectCase a, ChannelRuntime.SelectCase b) {
