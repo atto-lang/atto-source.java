@@ -8,6 +8,7 @@ on:
       - 'src/test/java/dev/oreslang/compiler/CompilerArtifactReceiptTest.java'
       - 'src/main/java/dev/oreslang/compiler/CompilerCacheLedger.java'
       - 'src/test/java/dev/oreslang/compiler/CompilerCacheLedgerTest.java'
+      - 'src/test/java/dev/oreslang/compiler/PersistentClassfileCacheTest.java'
       - 'src/test/java/dev/oreslang/IncrementalGuestDifferentialTest.java'
       - 'src/test/java/dev/oreslang/IncrementalPackageLayoutIsolationTest.java'
       - 'src/main/java/dev/oreslang/compiler/PackageLayout.java'
@@ -39,4 +40,4 @@ jobs:
           set -eu
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export PATH="$JAVA_HOME/bin:$PATH"
-          mvn -B -Dtest=CompilerCacheKeyTest,CompilerArtifactReceiptTest,CompilerCacheLedgerTest,IncrementalFileFallbackV1Test,IncrementalGuestDifferentialTest,IncrementalPackageLayoutIsolationTest -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -Dtest=CompilerCacheKeyTest,CompilerArtifactReceiptTest,CompilerCacheLedgerTest,PersistentClassfileCacheTest,IncrementalFileFallbackV1Test,IncrementalGuestDifferentialTest,IncrementalPackageLayoutIsolationTest -Dsurefire.failIfNoSpecifiedTests=true test
