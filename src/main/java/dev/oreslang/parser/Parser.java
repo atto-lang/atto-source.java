@@ -73,6 +73,7 @@ public final class Parser {
     // available: preserving ordinary CallExpr beats inventing guest authority.
     private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
     private int current;
+    private int activeKeywordIf;
     // A long chain of contextual ownership prefixes must not exhaust the JVM
     // call stack before the compiler can issue a deterministic parse error.
     // This budget also covers other recursive unary and parenthesized forms.
@@ -5428,8 +5429,8 @@ public final class Parser {
         Ast.Expr condition = introducer == IF
                 ? head.predicate() : new Ast.UnaryExpr("!", head.predicate());
 
-        // '{' is the braced spelling of 'then'. Intermediate branches close
-        // with '} elif/else'; fi closes the final branch and the whole chain.
+        // Canonical braces delimit every arm. Legacy fi remains optional
+        // only when no enclosing keyword conditional owns that token.
         if (check(LBRACE)) {
             branches.add(new Ast.IfBranch(condition, parseConditionalBraceBody()));
             while (matchConditionalBranch()) {
@@ -5441,7 +5442,7 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseConditionalBraceBody();
-            consume(FI, "expected 'fi' to close if");
+            if (!canonicalAttoSource && activeKeywordIf == 0) match(FI);
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
@@ -5457,7 +5458,7 @@ public final class Parser {
         // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
         consumeConditionalThen(introducer == IF ? "if" : introducer == IFNOT ? "ifnot" : "unless");
-        List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
+        List<Ast.Stmt> body = parseKeywordIfBody(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
         while (matchConditionalBranch()) {
@@ -5466,26 +5467,35 @@ public final class Parser {
             condition = head.predicate();
             match(SEMICOLON);
             consumeConditionalThen("elif");
-            body = parseUntil(ELSEIF, ELSE, FI);
+            body = parseKeywordIfBody(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
         }
 
         List<Ast.Stmt> elseBody = List.of();
-        if (match(ELSE)) elseBody = parseUntil(FI);
+        if (match(ELSE)) elseBody = parseKeywordIfBody(FI);
         consume(FI, "expected 'fi' to close if");
         return lowerConditionBindings(branches, bindings, elseBody);
     }
 
+    private List<Ast.Stmt> parseKeywordIfBody(Token.Type... terminators) {
+        int previousDepth = activeKeywordIf;
+        activeKeywordIf = Math.addExact(previousDepth, 1);
+        try {
+            return parseUntil(terminators);
+        } finally {
+            activeKeywordIf = previousDepth;
+        }
+    }
+
     private List<Ast.Stmt> parseConditionalBraceBody() {
+        if (canonicalAttoSource || activeKeywordIf != 0) return parseBlock();
         consume(LBRACE, "expected '{' before conditional branch");
         List<Ast.Stmt> body = parseUntil(RBRACE, FI);
-        if (match(RBRACE) && check(FI)) {
-            Token redundant = previous();
-            warnings.add(new SyntaxWarning(redundant.line(), redundant.column(),
-                    "redundant '}' before 'fi'; fi closes the final conditional branch"));
+        if (!match(RBRACE)) {
+            // Historical unclosed final brace was explicitly closed by fi.
+            // Never permit this spelling to consume an outer delimiter.
+            if (!check(FI)) throw error(peek(), "expected '}' or legacy 'fi'");
         }
-        // The caller consumes the branch separator or the final fi. Retain
-        // the historical '} fi' spelling with a migration diagnostic.
         return body;
     }
 
