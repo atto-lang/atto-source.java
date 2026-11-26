@@ -11533,6 +11533,18 @@ public final class TypeChecker {
                 default -> null;
             };
         }
+        if (expression instanceof Ast.TypeTestExpr test && test.binding() == null
+                && test.targetType().equals(Ast.TypeRef.simple("int"))) {
+            // Only an exact proven int constant can fold this type test.
+            Object value = evaluateScalarConstant(test.value(), env, depth + 1);
+            return value instanceof Long && "int".equals(strictNumericSource(test.value(), env))
+                    ? Boolean.TRUE : null;
+        }
+        if (expression instanceof Ast.AwaitExpr awaited && !awaited.coreAdapter()
+                && "int".equals(strictNumericSource(awaited.expression(), env))) {
+            Object value = evaluateScalarConstant(awaited.expression(), env, depth + 1);
+            return value instanceof Long ? value : null;
+        }
         if (expression instanceof Ast.ConditionalExpr conditional) {
             Object predicate = evaluateScalarConstant(conditional.condition(), env, depth + 1);
             if (!(predicate instanceof Boolean condition)) return null;
@@ -11706,6 +11718,11 @@ public final class TypeChecker {
         if (expr instanceof Ast.UnaryExpr unary
                 && Set.of("+", "-", "~").contains(unary.operator())) {
             return strictNumericSource(unary.operand(), env);
+        }
+        if (expr instanceof Ast.AwaitExpr awaited && !awaited.coreAdapter()) {
+            // Immediate int await is identity, but erased INT alone is not
+            // an exact width witness. Do not claim Future or projection width.
+            return "int".equals(strictNumericSource(awaited.expression(), env)) ? "int" : null;
         }
         if (expr instanceof Ast.ConditionalExpr ternary) {
             String yes = strictNumericSource(ternary.whenTrue(), env);
