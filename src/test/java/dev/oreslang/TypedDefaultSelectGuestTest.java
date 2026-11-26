@@ -196,7 +196,7 @@ final class TypedDefaultSelectGuestTest {
     }
 
     @Test void zeroCountHasTerminalControlHandleBeforeAnyAwait() throws Exception {
-        assertEquals("false|success|0|42",run("""
+        assertEquals("false|#success|0|42",run("""
                 pub async fnc main(): void {
                   val Channel<int> incoming = Channel.new<int>(1);
                   writech incoming, 42;
