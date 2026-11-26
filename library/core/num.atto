@@ -183,12 +183,16 @@ define module num as
     fi
     let mut int product = 0;
     let mut int term = left;
+    // Stop when all multiplier bits have been consumed; zero needs no rounds.
     for (let int i = 0; i < 63; i = i + 1) {
+      if factor == 0; do break; fi
       if Integer.rem(factor, 2) != 0 then
         product = wrapping_add(product, term);
       fi
       factor = factor >>> 1;
-      term = wrapping_add(term, term);
+      if factor != 0; do
+        term = wrapping_add(term, term);
+      fi
     }
     if negative then
       let int negated = wrapping_sub(0, product);
