@@ -54,6 +54,35 @@ final class TypedDefaultSelectGuestTest {
                 }
                 """));
     }
+    @Test void typedDefaultFutureSettlesAfterLexicalCleanup() throws Exception {
+        assertEquals("21F42",run("""
+                pub async fnc main(): void {
+                  val Future<int> pending = select<int> {
+                    default: -> {
+                      try {
+                        defer stdio.stdout.write("1");
+                        defer stdio.stdout.write("2");
+                        rt cooperate;
+                        return 42;
+                      } finally {
+                        stdio.stdout.write("F");
+                      }
+                    }
+                  };
+                  stdio.stdout.write(await pending);
+                  return;
+                }
+                """));
+    }
+
+    @Test void typedDefaultRejectsCallerBorrowAndMissingReturnPath() {
+        for(String body:new String[]{
+          "val Future<int> result = select<int> { default: -> { if true { return 42; } } };",
+          "val Future<int> result = select<int> { default: -> { break; return 42; } };"
+        }) assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck("pub async fnc main(): void { "+body+" return; }"),body);
+    }
+
     @Test void explicitTypeCannotBeReplacedByContextOrImplicitAwait() {
         for(String body:new String[]{
           "val bool result = await select<int> { default: -> { return 42; } };",

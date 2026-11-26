@@ -1,6 +1,6 @@
 # Static select result, nonblocking completion, and procedural return
 
-**Status (2026-11-25): updated normative target; incremental Java hardening only.**
+**Status (2026-11-25): normative target; restricted Java typed-default guest preview.**
 This contract corrects the older "do select returns are arm-local/discarded"
 interpretation. It does not claim that the static value/Future forms have
 already been implemented in Java/GraalVM or LLVM.
@@ -153,3 +153,7 @@ the legacy statement ambiguity and retired warning path. LLVM must reject
 unsupported source-level forms rather than claim parity. Keep feature PRs
 draft until exact-source Maven/JDK25, AOT/hybrid, LLVM CTest + sanitizer
 and formatter idempotence evidence are green.
+
+### Restricted executable Java preview
+
+`select<int>` and `nb select<int>` with exactly one default arm and no event operands lower to a checked CPU Task with fixed Future<int> type. This is a deliberately narrower implementation: it requires Task Send/COPY/MOVE captures, does not inherit actor self, and uses the existing Task scheduler/cleanup. No counted or event selection, generic result inference, alias deprecation warning, or general actor-owned selection admission is claimed. Four source guest tests passed on head 6aef0a44011fc9a07dcd37cd243b26da284ce119; the combined gate had two unrelated ownership/lock-order fixture failures reproduced on the exact preceding tree. The current change corrects the fixture mutability and separates legal lexical cleanup from forbidden nested locks; rerun all targeted suites before merge.
