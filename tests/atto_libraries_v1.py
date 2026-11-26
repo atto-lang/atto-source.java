@@ -67,11 +67,11 @@ def main():
     failures = []
     for case in cases:
         meta = headers(case, args.backend)
-        run = subprocess.run([*launcher, *meta["flags"], case.name], cwd=corpus,
-                             capture_output=True, text=True, timeout=300)
         if not meta["reject"] and "exit" not in meta:
             failures.append(f"{case.name}: missing explicit expected exit")
             continue
+        run = subprocess.run([*launcher, *meta["flags"], case.name], cwd=corpus,
+                             capture_output=True, text=True, timeout=300)
         if meta["reject"]:
             missing = [e for e in meta["errors"] if e not in run.stderr + run.stdout]
             if not check_rejection(run, meta["errors"]):
