@@ -84,10 +84,12 @@ public final class OresMain {
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
-        if (args.length > 0 && args[0].equals("--durable-counter-actor-v1")) {
+        if (args.length > 0 && (args[0].equals("--durable-counter-actor-v1") || args[0].equals("--durable-scalar-codec-v1"))) {
+            boolean scalarCodec=args[0].equals("--durable-scalar-codec-v1");
+            String className=scalarCodec?"AttoDurableScalarV1.java":"AttoDurableCounterV1.java";
             if(args.length!=4||!args[2].equals("-o")||!args[1].endsWith(".atto")||
-               !Path.of(args[3]).getFileName().toString().equals("AttoDurableCounterV1.java"))
-                throw new UsageException("usage: --durable-counter-actor-v1 input.atto -o AttoDurableCounterV1.java");
+               !Path.of(args[3]).getFileName().toString().equals(className))
+                throw new UsageException("usage: "+args[0]+" input.atto -o "+className);
             Path input=Path.of(args[1]),output=Path.of(args[3]).toAbsolutePath();
             if(!Files.isRegularFile(input,java.nio.file.LinkOption.NOFOLLOW_LINKS))
                 throw new UsageException("durable counter requires regular source");
@@ -99,7 +101,7 @@ public final class OresMain {
             }
             if(bytes.length>16384)throw new UsageException("durable counter source exceeds limit");
             String source=java.nio.charset.StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
-            String generated=dev.oreslang.compiler.DurableCounterSourceV1.emitJava(source);
+            String generated=scalarCodec?dev.oreslang.compiler.DurableScalarSourceV1.emitJava(source):dev.oreslang.compiler.DurableCounterSourceV1.emitJava(source);
             // Fresh trusted output directory. Never replace an existing artifact.
             Path temp=Files.createTempFile(output.getParent(),".atto-durable-",".tmp");
             try {
