@@ -11,7 +11,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ExplicitTaskPayloadForwardPortTest {
-    private static final String SOURCE = "pub suspends fnc main(): int { val Future<int> pending = task<int> { return 42; }; return await pending; }";
+    // Exact shared canonical Future<int> fixture; do not normalize whitespace.
+    private static final String SOURCE = "pub suspends fnc main(): int {\n  val Future<int> pending = task<int> { return 42; };\n  return await pending;\n}\n";
     @Test void checkedExplicitPayloadAndContext() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(SOURCE));
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(SOURCE.replace("task<int>", "task<bool>")));
@@ -31,7 +32,13 @@ final class ExplicitTaskPayloadForwardPortTest {
         } finally { Files.deleteIfExists(file); }
     }
     @Test void actualIntegerGuest() throws Exception {
+        assertEquals("502cee379862a887ebb95938ca21fa1e378a30db6b54db9b63e769e3380a4fd2",
+                java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(SOURCE.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
         linkedGuest(SOURCE);
+    }
+    @Test void directTypedTaskAwaitGuest() throws Exception {
+        linkedGuest("pub suspends fnc main(): int { return await task<int> { return 42; }; }");
     }
     @Test void actualStringGuest() throws Exception {
         linkedGuest("""
