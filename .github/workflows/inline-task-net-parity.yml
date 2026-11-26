@@ -213,6 +213,7 @@ jobs:
               "conditionalVoidReturnsSkipSuffixAndResumeCaller",
               "nestedValueReturnsKeepBothBranchScopesAndSkipSuffixes",
               "nestedEarlyReturnsUnwindBothDefersOnce",
+              "cancellationUnwindsInlineAndScheduledTaskDefersBeforeDone",
           }
           cases = result.findall("testcase")
           assert result.tag == "testsuite", result.tag
