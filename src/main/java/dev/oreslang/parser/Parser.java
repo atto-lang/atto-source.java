@@ -40,6 +40,12 @@ public final class Parser {
     private final Map<String, RefinedQuantity> verifiedLocals = new HashMap<>();
     private final Map<String, Set<String>> verifiedUpperBounds = new HashMap<>();
     private final Map<String, RefinedQuantity> strictMutable = new HashMap<>();
+    private static final class StrictLoopExitContext {
+        final Map<String, RefinedQuantity> writes;
+        boolean hasBreak;
+        StrictLoopExitContext(Map<String, RefinedQuantity> writes) { this.writes=Map.copyOf(writes); }
+    }
+    private final java.util.ArrayDeque<StrictLoopExitContext> strictLoopExits=new java.util.ArrayDeque<>();
     private final Map<String,List<QuantityTerm>> strictArrays=new HashMap<>();
     private int strictArrayCells;
     private static final String STRICT_CELL_PREFIX="__atto_strict_cell_";
@@ -7827,6 +7833,7 @@ public final class Parser {
             verifiedLocals.clear();
             verifiedUpperBounds.clear();
             strictMutable.clear();
+            strictLoopExits.clear();
             strictArrays.clear();strictArrayCells=0;
             consume(LPAREN, "expected '('");
             List<Ast.Param> parameters = new ArrayList<>();
@@ -7997,6 +8004,19 @@ public final class Parser {
             List<Integer> upperParameters,List<Ast.Param> parameters,List<RefinedQuantity> required,int depth) {
         if(depth>16)throw error(peek(),"E_VERIFY_UNSUPPORTED: strict return depth");
         if(check(RBRACE))return List.of();
+        if(check(BREAK)||check(CONTINUE)){
+            if(strictLoopExits.isEmpty())
+                throw error(peek(),"E_VERIFY_UNSUPPORTED: loop exit outside strict while");
+            boolean breaking=match(BREAK);
+            if(!breaking)consume(CONTINUE,"expected continue");
+            consume(SEMICOLON,"expected ';'");
+            if(!check(RBRACE))throw error(peek(),"E_VERIFY_UNSUPPORTED: statement after unconditional loop exit");
+            var loop=strictLoopExits.peek();
+            if(breaking)loop.hasBreak=true;
+            else for(var entry:loop.writes.entrySet())
+                entry.getValue().require(verifiedLocals.get(entry.getKey()),"E_REFINEMENT_BINDING","continue backedge "+entry.getKey());
+            return breaking?List.of(new Ast.BreakStmt()):List.of(new Ast.ContinueStmt());
+        }
         if(match(VAL)) {
             Token first=consume(IDENT,"expected immutable binding type or name");
             String key;
@@ -8094,14 +8114,26 @@ public final class Parser {
                 invariant.require(header.get(key),"E_REFINEMENT_BINDING","loop entry "+key);
                 header.put(key,invariant);verifiedUpperBounds.put(key,Set.of());
             }
+            // Relations mentioning mutable identities must not survive their writes.
+            verifiedUpperBounds.replaceAll((key,bounds)->{
+                var remaining=new HashSet<>(bounds);remaining.removeAll(writes);return Set.copyOf(remaining);
+            });
             var headerBounds=new HashMap<>(verifiedUpperBounds);
             var edges=strictCondition(header,0);
             consume(LBRACE,"expected '{'");restoreStrictFacts(edges.yes());
-            var loopBody=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
+            var invariants=new HashMap<String,RefinedQuantity>();
+            for(var key:writes)invariants.put(key,savedMutable.get(key));
+            var loop=new StrictLoopExitContext(invariants);
+            strictLoopExits.push(loop);
+            List<Ast.Stmt> loopBody;
+            try {
+                loopBody=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
+            } finally { strictLoopExits.pop(); }
             consume(RBRACE,"expected '}'");
-            if(!strictAlwaysReturns(loopBody))for(var key:writes)
+            if(!strictAlwaysStops(loopBody))for(var key:writes)
                 savedMutable.get(key).require(verifiedLocals.get(key),"E_REFINEMENT_BINDING","loop backedge "+key);
-            restoreStrictFacts(edges.no());
+            // A break edge may leave with the condition still true.
+            restoreStrictFacts(loop.hasBreak?header:edges.no());
             verifiedUpperBounds.clear();verifiedUpperBounds.putAll(headerBounds);
             strictMutable.clear();strictMutable.putAll(savedMutable);
             var tail=new ArrayList<>(strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1));
@@ -8129,7 +8161,7 @@ public final class Parser {
             }
             var noFacts=new HashMap<>(verifiedLocals);
             var noBounds=new HashMap<>(verifiedUpperBounds);
-            boolean yr=strictAlwaysReturns(yes),nr=strictAlwaysReturns(no);
+            boolean yr=strictAlwaysStops(yes),nr=strictAlwaysStops(no);
             var statements=new ArrayList<Ast.Stmt>();
             statements.add(new Ast.IfStmt(List.of(new Ast.IfBranch(p.test(),yes)),no));
             // Only bindings in the incoming lexical scope can reach the continuation.
@@ -8157,6 +8189,16 @@ public final class Parser {
         }
         consume(SEMICOLON,"expected ';'");
         return List.of(new Ast.ReturnStmt(term.expression()));
+    }
+
+    private static boolean strictAlwaysStops(List<Ast.Stmt> body) {
+        if(body.isEmpty())return false;
+        var last=body.get(body.size()-1);
+        if(last instanceof Ast.ReturnStmt||last instanceof Ast.BreakStmt||last instanceof Ast.ContinueStmt)return true;
+        if(last instanceof Ast.IfStmt branch)
+            return branch.branches().stream().allMatch(arm->strictAlwaysStops(arm.body()))
+                && strictAlwaysStops(branch.elseBody());
+        return false;
     }
 
     private static boolean strictAlwaysReturns(List<Ast.Stmt> body) {
