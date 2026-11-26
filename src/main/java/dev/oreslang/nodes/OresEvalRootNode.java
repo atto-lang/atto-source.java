@@ -3995,37 +3995,41 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
-            if (future.isDone()) {
-                ChannelRuntime.SelectResult chosen;
-                try {
-                    chosen = (ChannelRuntime.SelectResult) future.join();
-                } catch (RuntimeException | Error failure) {
-                    continuation.accept(task, SourceFlow.throwing(failure));
+            // A blocking source select owns this newly registered operation,
+            // unlike a general await of a caller-supplied shared Future.
+            // Retire the registration on cancellation before publishing task
+            // cleanup; wait for its physical notification drain before the
+            // next source round or selected arm executes.
+            OresFuture<Void> drained = ChannelRuntime.selectionDrained(future);
+            SourceCleanupFrame cleanup = task.registerSourceCleanup((owner, finished) -> {
+                future.cancel(false);
+                owner.suspend(drained, (t, ignored, failure) ->
+                        finished.accept(t, failure == null ? SourceFlow.normal()
+                                : SourceFlow.throwing(OresFuture.unwrap(failure))));
+            });
+            SourceValueCont retire = (t, ignored, failure) -> {
+                t.disarmSourceCleanup(cleanup);
+                if (failure != null) {
+                    continuation.accept(t, SourceFlow.throwing(OresFuture.unwrap(failure)));
                     return;
                 }
-                runSelectedArmSuspendable(
-                        task, select, chosen, env, continuation);
-                return;
+                ChannelRuntime.SelectResult chosen;
+                try {
+                    chosen = future.join();
+                } catch (RuntimeException | Error failed) {
+                    continuation.accept(t, SourceFlow.throwing(failed));
+                    return;
+                }
+                runSelectedArmSuspendable(t, select, chosen, env, continuation);
+            };
+            if (drained.isDone()) {
+                Throwable failure = null;
+                try { drained.join(); }
+                catch (RuntimeException | Error failed) { failure = failed; }
+                retire.accept(task, null, failure);
+            } else {
+                task.suspend(drained, retire);
             }
-
-            task.suspend(
-                    future,
-                    (t, value, failure) -> {
-                        if (failure != null) {
-                            continuation.accept(
-                                    t,
-                                    SourceFlow.throwing(
-                                            OresFuture.unwrap(failure)));
-                            return;
-                        }
-                        // The selected arm runs in the same source task. An
-                        // exception from a downstream completion must not be
-                        // reclassified as a second selected-arm completion.
-                        runSelectedArmSuspendable(
-                                t, select,
-                                (ChannelRuntime.SelectResult) value,
-                                env, continuation);
-                    });
         }
 
         private void finishStructuredTaskScope(
