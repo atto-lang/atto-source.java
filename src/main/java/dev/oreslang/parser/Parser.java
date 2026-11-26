@@ -3572,6 +3572,20 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after Newable[T]");
         }
         args = canonicalizeNamedParameters(args);
+        // Map[K,V] is the designated two-slot collection spelling, not a
+        // sequence shape. Normalize before any nominal/type/ownership pass.
+        if (name.equals("Map") && check(LBRACKET)) {
+            if (infer || !args.isEmpty())
+                throw error(peek(), "Map bracket shorthand cannot follow generic arguments");
+            advance();
+            args.add(parseTypeRef());
+            consume(COMMA, "Map[K,V] requires key and value types");
+            args.add(parseTypeRef());
+            consume(RBRACKET, "expected ']' after Map key and value types");
+            if (check(LBRACKET))
+                throw error(peek(), "Map bracket shorthand accepts exactly one dimension");
+            return new Ast.TypeRef(name, args, false);
+        }
         while (match(LBRACKET)) {
             // Zero-arity Tuple[] is a named tuple type.
             // Model the empty intrinsic with the existing finite tuple type

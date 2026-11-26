@@ -284,4 +284,28 @@ final class NamedPartialGenericCallsTest {
         }
     }
 
+    @Test
+    void mapShorthandNormalizesToTheSameTypedGenericSlots() {
+        for (String[] pair : java.util.List.of(
+                new String[]{"Map[string, int]", "Map<string, int>"},
+                new String[]{"Map[string, Array[int]]", "Map<string, Array[int]>"})) {
+            var square = Parser.parse("fnc consume(" + pair[0] + " value): void { return; }");
+            var angle = Parser.parse("fnc consume(" + pair[1] + " value): void { return; }");
+            assertDoesNotThrow(() -> TypeChecker.check(square));
+            assertDoesNotThrow(() -> TypeChecker.check(angle));
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                    "fnc same(" + pair[0] + " value): " + pair[1] + " { return value; }")));
+        }
+    }
+
+    @Test
+    void mapShorthandRejectsMalformedOrAdditionalSlots() {
+        for (String type : java.util.List.of("Map[]", "Map[int]", "Map[int,int,int]",
+                "Map[K=string,V=int]", "Map<string,int>[int,int]",
+                "Map[string,int][int,int]", "Map[3 of int, string]", "Map[string,int>")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc consume(" + type + " value): void { return; }"), type);
+        }
+    }
+
 }
