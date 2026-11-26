@@ -50,6 +50,33 @@ final class ExplicitTaskPayloadForwardPortTest {
             }
             """);
     }
+    @Test void actualBooleanPayloadGuest() throws Exception {
+        linkedGuest("""
+            pub suspends fnc main(): int {
+              val Future<bool> pending = task<bool> { return true; };
+              if await pending then return 42; fi
+              return 1;
+            }
+            """);
+    }
+    @Test void actualVoidPayloadGuest() throws Exception {
+        linkedGuest("""
+            pub suspends fnc main(): int {
+              await task<void> { return; };
+              return 42;
+            }
+            """);
+    }
+    @Test void explicitPayloadRejectsMissingOrWrongReturnPaths() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub suspends fnc main(): int { return await task<int> { }; }"));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub suspends fnc main(): int { return await task<int> { return; }; }"));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub suspends fnc main(): int { await task<void> { return 42; }; return 42; }"));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub suspends fnc main(): int { return await task<int> { if true then return true; fi return 42; }; }"));
+    }
     @Test void contextualTaskNameRemainsCallable() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("fnc task(int n): int { return n; } pub fnc main(): int { return task(42); }"));
     }
