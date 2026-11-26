@@ -391,6 +391,28 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void compilerPublishesModeSpecificClassPlansOnlyForExactCheckedProgram() {
+        String source = """
+                define class Cell as pub let int value = 42; end
+                fnc shallow(Cell source): Cell { return copy! source; }
+                fnc deep(Cell source): Cell { return copy!! source; }
+                """;
+        var program = OresCompiler.parseAndTypeCheck(source);
+        var seeds = dev.oreslang.types.CheckedCopyPlanSeeds.forProgram(
+                program, Ast.CheckedTaskCaptures.requireProgramEpoch(program));
+        assertEquals(2, seeds.size());
+        assertTrue(seeds.stream().anyMatch(s -> s.shallow()));
+        assertTrue(seeds.stream().anyMatch(s -> !s.shallow()));
+        assertSame(seeds.get(0).root(), seeds.get(1).root());
+        assertTrue(seeds.stream().allMatch(s -> s.matches(name ->
+                name.equals("Cell") ? s.root() : null)));
+        assertTrue(seeds.stream().noneMatch(s -> s.matches(name -> null)));
+        var reparsed = Parser.parse(source);
+        assertTrue(dev.oreslang.types.CheckedCopyPlanSeeds.forProgram(reparsed, 1).isEmpty());
+        assertTrue(dev.oreslang.types.CheckedCopyPlanSeeds.forProgram(program, 0).isEmpty());
+    }
+
+    @Test
     void recursiveClassLayoutsFailClosedUntilGraphCopierIsVerified() {
         String source = """
                 define class Node as

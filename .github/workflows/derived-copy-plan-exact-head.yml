@@ -8,6 +8,7 @@ on:
       - 'src/main/java/dev/oreslang/types/GraphTopology.java'
       - 'src/main/java/dev/oreslang/types/CopyScalarAdmission.java'
       - 'src/main/java/dev/oreslang/types/CopyPlanCache.java'
+      - 'src/main/java/dev/oreslang/types/CheckedCopyPlanSeeds.java'
       - 'src/test/java/dev/oreslang/CopyPlanCacheTest.java'
       - 'tests/graph-topology-host/CopyScalarAdmissionTest.java'
       - 'tests/graph-topology-host/TopologyTest.java'

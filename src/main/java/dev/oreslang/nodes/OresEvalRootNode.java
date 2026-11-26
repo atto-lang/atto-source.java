@@ -280,6 +280,16 @@ public final class OresEvalRootNode extends RootNode {
             indexDeclarations();
             indexCallableSlots();
             this.checkedDispatchPlans = verifyCheckedDispatchPlans();
+            // Optional compiler-issued optimization, never a new copy authority.
+            // Exact nominal dependency identity must survive linking.
+            for (var seed : dev.oreslang.types.CheckedCopyPlanSeeds.forProgram(
+                    program, taskAdmissionEpoch)) {
+                if (seed.matches(this::findClass)) {
+                    (seed.shallow() ? shallowCopyPlans : deepCopyPlans).getOrCompute(
+                            seed.root(), seed::plan,
+                            dev.oreslang.types.DerivedCopyPlanV1::weight);
+                }
+            }
         }
 
         /**
