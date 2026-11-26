@@ -7154,7 +7154,7 @@ public final class Parser {
             try {
                 count = foldCountedConstant(countExpression, new int[]{64});
             } catch (ArithmeticException | IllegalArgumentException invalid) {
-                throw error(countStart, "invalid or unsupported constant counted select expression");
+                throw error(countStart, unsupported + ": invalid or unsupported constant count expression");
             }
             if (count < 0 || count > 16) throw error(countStart, unsupported);
         }
