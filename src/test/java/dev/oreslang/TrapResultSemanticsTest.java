@@ -569,7 +569,7 @@ final class TrapResultSemanticsTest {
                   try {
                     defer stdio.stdout.write("D");
                     val Option<int> absent = None;
-                    return absent.unwrap();
+                    return absent.expect("explicit panic control");
                   } catch (err) {
                     stdio.stdout.write("C");
                     return seed;
@@ -591,7 +591,7 @@ final class TrapResultSemanticsTest {
                 .allowAllAccess(false).out(output).build()) {
             PolyglotException panic = assertThrows(
                     PolyglotException.class, () -> context.eval(program));
-            assertTrue(panic.getMessage().contains("Option::unwrap"));
+            assertTrue(panic.getMessage().contains("explicit panic control"));
         }
         assertEquals("DF", output.toString(StandardCharsets.UTF_8));
     }
@@ -780,5 +780,35 @@ final class TrapResultSemanticsTest {
         assertEquals("CFafter", run(source));
     }
 
+
+    @Test
+    void suspendedOrdinaryUnwrapRunsDeferCatchFinallyOnce() throws Exception {
+        String source = """
+                async fnc answer(): int {
+                  rt cooperate;
+                  return 11;
+                }
+                async fnc compute(): int {
+                  val int seed = await answer();
+                  try {
+                    defer stdio.stdout.write("D");
+                    val Option<int> absent = None;
+                    return absent.unwrap();
+                  } catch (err) {
+                    stdio.stdout.write("C");
+                    return seed;
+                  } finally {
+                    stdio.stdout.write("F");
+                  }
+                }
+                pub fnc main(): void {
+                  val int value = await compute();
+                  stdio.stdout.write(value);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("DCF11", run(source));
+    }
 
 }
