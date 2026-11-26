@@ -7900,15 +7900,26 @@ public final class Parser {
                     throw error(peek(), "Map.of_entries accepts Entry items only, not Pair");
                 itemKind = pair ? 1 : 2;
                 openInlineProductFactory();
-                // A literal-only Pair key is deliberately narrower than the
-                // target contract; never silently admit an untyped key.
-                if (pair) {
+                // Dynamic Pair keys are admitted only with an explicit,
+                // concrete string Map witness. The existing Map type gate
+                // independently checks the key expression against that witness.
+                // Contextual/union witnesses still use the literal-only path
+                // until nominal Pair provenance survives into typed HIR.
+                boolean explicitStringKey = mapType != null
+                        && mapType.arguments().size() == 2
+                        && java.util.Set.of("string", "String").contains(mapType.arguments().getFirst().name())
+                        && mapType.arguments().getFirst().arguments().isEmpty()
+                        && !mapType.arguments().getFirst().inferArguments();
+                if (pair && !explicitStringKey) {
                     if (!check(STRING)) throw error(peek(), "Pair.of requires a string key");
                     key = parsePrimary();
                     if (!(key instanceof Ast.LiteralExpr))
                         throw error(previous(), "Pair.of requires a pure string literal key");
                 } else {
                     key = parseExpression();
+                    if (pair && key instanceof Ast.LiteralExpr literal
+                            && !(literal.value() instanceof String))
+                        throw error(previous(), "Pair.of requires a string key");
                 }
                 consume(COMMA, "product factory requires key and value");
                 value = parseExpression();
