@@ -7379,6 +7379,10 @@ public final class Parser {
             Token token = tokens.get(i);
             if (token.type() == SEMICOLON || token.type() == LBRACE || token.type() == RBRACE
                     || token.type() == END || token.type() == RETURN) break;
+            if ((token.type() == DOT || token.type() == DOUBLE_COLON)
+                    && tokens.get(i + 1).type() == LT && tokens.get(i + 2).type() == IDENT
+                    && tokens.get(i + 3).type() == GT) return true;
+            if (token.type() == AS && units.containsKey(tokens.get(i + 1).lexeme())) return true;
             if (token.type() == INT && tokens.get(i + 1).type() == LT
                     && adjacent(token, tokens.get(i + 1))
                     && tokens.get(i + 2).type() == IDENT && tokens.get(i + 3).type() == GT) return true;
@@ -7936,28 +7940,47 @@ public final class Parser {
     }
 
     private Ast.Expr parseQuantityReturn() {
-        var term = parseQuantitySum(0);
+        var term = parseVerifiedExpression(0);
         if (!term.unit().equals(VerifiedQuantityUnit.SCALAR)) {
             throw error(peek(), "E_UNIT_ERASURE: an unannotated int requires dimensionless scale one");
         }
         return term.expression();
     }
 
+    private QuantityTerm attachVerifiedUnit(QuantityTerm term, Token name) {
+        var unit = units.get(name.lexeme());
+        if (unit == null) throw error(name, "E_UNIT_NAME: unknown unit");
+        if (refinementAliases.containsKey(name.lexeme()) || Set.of("int", "i64", "i32").contains(name.lexeme()))
+            throw error(name, "E_UNIT_NAME: ambiguous unit and type target");
+        if (!term.unit().equals(VerifiedQuantityUnit.SCALAR))
+            throw error(name, "E_UNIT_ATTACHMENT: unit attachment requires dimensionless scale one");
+        if (term.depth() >= MAX_UNARY_NESTING)
+            throw error(name, "E_UNIT_LIMIT: quantity expression is too deep");
+        return new QuantityTerm(term.expression(),
+                new RefinedQuantity(unit, term.type().range(), term.type().i32()), term.depth() + 1);
+    }
+
+    private QuantityTerm checkedVerifiedCast(QuantityTerm term, Token name, boolean legacyUnit) {
+        if (legacyUnit && units.containsKey(name.lexeme())) return attachVerifiedUnit(term, name);
+        var target = name.lexeme().equals("i64") ? RefinedQuantity.SCALAR : readRefinedType(name);
+        if (target.unit().equals(VerifiedQuantityUnit.SCALAR) && !term.unit().equals(VerifiedQuantityUnit.SCALAR))
+            throw error(name, "E_UNIT_ERASURE: scalar cast cannot erase units");
+        target.unit().requireCompatible(term.unit());
+        if (term.depth() >= MAX_UNARY_NESTING)
+            throw error(name, "E_UNIT_LIMIT: quantity expression is too deep");
+        var range = term.type().range().onNormalResultWithin(target.range());
+        var checked = new Ast.RuntimeCallExpr(Ast.VerifiedI64.CHECK_REFINEMENT, List.of(
+                term.expression(), new Ast.LiteralExpr(target.range().minimum()),
+                new Ast.LiteralExpr(target.range().maximum())));
+        return new QuantityTerm(checked, new RefinedQuantity(target.unit(), range, target.i32()),
+                term.depth() + 1, term.upperBounds());
+    }
+
     private QuantityTerm parseVerifiedExpression(int depth) {
         var term = parseQuantitySum(depth);
         while (match(AS)) {
-            Token cast = previous();
             if (check(QUESTION)) throw error(peek(), "E_REFINEMENT_CAST: optional refinement casts are unsupported");
-            var target = readRefinedType(consume(IDENT, "expected verified scalar type after 'as'"));
-            target.unit().requireCompatible(term.unit());
-            if (term.depth() >= MAX_UNARY_NESTING)
-                throw error(cast, "E_UNIT_LIMIT: quantity expression is too deep");
-            var range = term.type().range().onNormalResultWithin(target.range());
-            var checked = new Ast.RuntimeCallExpr(Ast.VerifiedI64.CHECK_REFINEMENT, List.of(
-                    term.expression(), new Ast.LiteralExpr(target.range().minimum()),
-                    new Ast.LiteralExpr(target.range().maximum())));
-            term = new QuantityTerm(checked, new RefinedQuantity(target.unit(), range, target.i32()),
-                    term.depth() + 1, term.upperBounds());
+            term = checkedVerifiedCast(term, consume(IDENT, "expected verified scalar type after 'as'"), true);
         }
         return term;
     }
@@ -8026,9 +8049,39 @@ public final class Parser {
     }
 
     private QuantityTerm parseQuantityAtom(int depth) {
+        var term = parseQuantityAtomBase(depth);
+        while ((check(DOT) || check(DOUBLE_COLON)) && checkNext(LT)) {
+            boolean unitOnly = advance().type() == DOT;
+            consume(LT, "expected '<' after verified postfix");
+            Token name = consume(IDENT, "expected verified postfix target");
+            consume(GT, "expected '>' after verified postfix");
+            term = unitOnly ? attachVerifiedUnit(term, name) : checkedVerifiedCast(term, name, true);
+        }
+        if (check(DOT) && checkNext(IDENT) && term.expression() instanceof Ast.LiteralExpr
+                && !term.unit().equals(VerifiedQuantityUnit.SCALAR)) {
+            advance();
+            consumeContextualIdentifier("to_unit", "expected '.to_unit' after quantity literal");
+            consume(LT, "expected '<' before conversion target");
+            var target = readQuantityUnit();
+            consume(GT, "expected '>' after conversion target");
+            consume(LPAREN, "expected '(' after conversion type");
+            consume(RPAREN, "expected ')' after conversion call");
+            long value = term.unit().convertExact(term.type().range().minimum(), target);
+            term = new QuantityTerm(new Ast.LiteralExpr(value),
+                    new RefinedQuantity(target, Interval.exactly(value), term.type().i32()), term.depth());
+        }
+        return term;
+    }
+
+    private QuantityTerm parseQuantityAtomBase(int depth) {
         if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
+        if (match(LT)) {
+            Token target = consume(IDENT, "expected prefix cast target");
+            consume(GT, "expected '>' after prefix cast");
+            return checkedVerifiedCast(parseQuantityAtom(depth + 1), target, false);
+        }
         if (match(LPAREN)) {
-            var term = verifiedCallable ? parseVerifiedExpression(depth + 1) : parseQuantitySum(depth + 1);
+            var term = parseVerifiedExpression(depth + 1);
             consume(RPAREN, "expected ')' after quantity expression");
             return term;
         }
@@ -8053,7 +8106,8 @@ public final class Parser {
             advance();
             unit = readQuantityUnit();
             consume(GT, "expected '>' after unit");
-            if (match(DOT)) {
+            if (check(DOT) && !checkNext(LT)) {
+                advance();
                 consumeContextualIdentifier("to_unit", "expected '.to_unit' after quantity literal");
                 consume(LT, "expected '<' before conversion target");
                 var target = readQuantityUnit();
