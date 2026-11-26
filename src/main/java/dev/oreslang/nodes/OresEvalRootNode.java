@@ -3010,47 +3010,23 @@ public final class OresEvalRootNode extends RootNode {
          * An earlier exit owns its status; an earlier unhandled failure must
          * never be downgraded by a later deferred exit(0).
          */
-        private static final int MAX_CLEANUP_SUPPRESSED = 64;
-
         private static void suppressCleanupFailure(Throwable primary, Throwable secondary) {
-            if (primary == secondary) return;
-            synchronized (primary) {
-                if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
-                    primary.addSuppressed(secondary);
-                }
-            }
+            CleanupFailureOrder.suppress(primary, secondary);
+        }
+
+        private Throwable selectCleanupFailure(Throwable earlier, Throwable cleanupFailure) {
+            return CleanupFailureOrder.merge(earlier, cleanupFailure,
+                    cleanupFailure instanceof ProcessExitSignal,
+                    isUnmaskableFailure(cleanupFailure),
+                    earlier != null && isUnmaskableFailure(earlier),
+                    earlier instanceof java.util.concurrent.CancellationException,
+                    cleanupFailure instanceof dev.oreslang.runtime.UntrappableTaskFailure);
         }
 
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
-            if (earlier == cleanupFailure) return currentFlow; // no self-suppression
-            // The first genuine failure is the PRIMARY cause of the Task.
-            // Defer/finally/guard failures are secondary diagnostics and must
-            // never erase the original THROW, RAISE, PANIC or cancellation.
-            // In particular ProcessExitSignal from a defer cannot replace a
-            // pending error. Preserve original identity for source and actor
-            // supervisor attribution.
-            if (earlier != null) {
-                // An untrappable panic/authority failure in cleanup must
-                // still escape an earlier ordinary THROW. Otherwise catch or
-                // trap could swallow a fatal cleanup panic. A deferred
-                // process-exit never replaces an already pending failure.
-                if (!(cleanupFailure instanceof ProcessExitSignal)
-                        && isUnmaskableFailure(cleanupFailure)
-                        && (!isUnmaskableFailure(earlier)
-                            || (earlier instanceof java.util.concurrent.CancellationException
-                                && cleanupFailure instanceof
-                                    dev.oreslang.runtime.UntrappableTaskFailure))) {
-                    suppressCleanupFailure(cleanupFailure, earlier);
-                    return SourceFlow.throwing(cleanupFailure);
-                }
-                // Two ordinary failures: the original Task error wins.
-                // Any already-fatal primary also remains authoritative.
-                suppressCleanupFailure(earlier, cleanupFailure);
-                return currentFlow;
-            }
-            // A cleanup failure after a normal return still fails the Task.
-            return SourceFlow.throwing(cleanupFailure);
+            Throwable selected = selectCleanupFailure(earlier, cleanupFailure);
+            return selected == earlier ? currentFlow : SourceFlow.throwing(selected);
         }
 
         /**
@@ -7543,43 +7519,17 @@ public final class OresEvalRootNode extends RootNode {
                                 ? new Ast.CallExpr(cleanup, List.of())
                                 : cleanup, env);
                     } catch (RuntimeException | Error failure) {
-                        if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                            // Never let a deferred ordinary failure replace a panic,
-                            // denial, cancellation, host Error, or earlier process exit.
-                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                        } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
-                            // A deferred exit(0) must not convert an earlier
-                            // unhandled failure into a successful process exit.
-                            // Keep the original failure authoritative; the exit
-                            // attempt is diagnostic only.
-                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                        } else {
-                            if (pendingFailure != null && pendingFailure != failure) {
-                                suppressCleanupFailure(failure, pendingFailure);
-                            }
-                            pendingFailure = failure;
-                        }
+                        pendingFailure = selectCleanupFailure(pendingFailure, failure);
                     }
                 }
                 try {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                    } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
-                        // Mutex cleanup cannot downgrade an already failing
-                        // root task into successful exit(0).
-                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                    } else {
-                        if (pendingFailure != null && pendingFailure != failure) {
-                            suppressCleanupFailure(failure, pendingFailure);
-                        }
-                        pendingFailure = failure;
-                    }
+                    pendingFailure = selectCleanupFailure(pendingFailure, failure);
                 }
                 // If only the body failed, Java will rethrow it naturally.
-                // If cleanup failed, the most recent failure takes precedence
-                // and retains earlier failures as suppressed exceptions.
+                // If cleanup selected a stronger failure, rethrow it with the
+                // earlier failure retained as a bounded suppressed diagnostic.
                 if (pendingFailure != null && pendingFailure != originalFailure) {
                     if (pendingFailure instanceof RuntimeException runtimeFailure) {
                         throw runtimeFailure;
