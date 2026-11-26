@@ -35,6 +35,56 @@ final class CopyPolicyCompilerTest {
     }
 
     @Test
+    void nonCopyableAliasUsesCanonicalHardPolicy() {
+        for (String operator : java.util.List.of("copy!", "copy!!", "rt copy")) {
+            String source = """
+                    @NonCopyable
+                    define class Expensive as
+                      pub val int value = 42;
+                    end
+                    fnc bad(Expensive original): Expensive {
+                      return %s original;
+                    }
+                    """.formatted(operator);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(failure.getMessage().contains("E_COPY_FORBIDDEN"), failure::toString);
+        }
+        Ast.Program parsed = Parser.parse("@NonCopyable define class Expensive as end");
+        var klass = (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
+        assertEquals("NoCopy", klass.annotations().getFirst().name());
+    }
+
+    @Test
+    void nonCopyableAliasRejectsDuplicatesAndConflicts() {
+        for (String markers : java.util.List.of(
+                "@NoCopy @NonCopyable", "@NonCopyable @Copyable",
+                "@NonCopyable @WarnOnCopy", "@NonCopyable(level=2)")) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(markers + " define class Expensive as end"));
+            assertTrue(error.getMessage().contains("E_COPY_ANNOTATION"), error::toString);
+        }
+    }
+
+    @Test
+    void nonCopyableChildCannotBeHiddenByEmptyTypedArray() {
+        String source = """
+                @NonCopyable
+                define class Expensive as
+                  pub val int value = 42;
+                end
+                pub fnc main(): void {
+                  val Array<Expensive> items = new Array<Expensive>();
+                  val Array<Expensive> cloned = copy!! items;
+                  return;
+                }
+                """;
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(error.getMessage().contains("E_COPY_FORBIDDEN"), error::toString);
+    }
+
+    @Test
     void noCopyClassCannotBeExplicitlyCopied() {
         String source = """
                 @NoCopy
