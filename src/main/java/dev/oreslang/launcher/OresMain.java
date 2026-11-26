@@ -105,6 +105,7 @@ public final class OresMain {
         String actorCarriersMax = System.getenv("ORES_ACTOR_CARRIERS_MAX");
         boolean strict = false;
         boolean checkOnly = false;
+        boolean strictAttoCheckOnly = false;
         boolean analyzeOnly = false;
         boolean buildAnalysis = false;
         boolean requireFullGuestAot = false;
@@ -126,6 +127,7 @@ public final class OresMain {
             try {
                 if (arg.equals("--strict-isolate")) strict = true;
                 else if (arg.equals("--check")) checkOnly = true;
+                else if (arg.equals("--check-strict-atto")) strictAttoCheckOnly = true;
                 else if (arg.equals("--analyze")) analyzeOnly = true;
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
@@ -222,6 +224,9 @@ public final class OresMain {
 
         // Report mutually exclusive CLI flags before opening/discovering a file.
         // An invalid invocation is status 2 even when the source path is absent.
+        if (strictAttoCheckOnly && (checkOnly || analyzeOnly || buildAnalysis)) {
+            throw new UsageException("--check-strict-atto is exclusive with other analysis modes");
+        }
         if ((checkOnly && buildAnalysis) || (analyzeOnly && (checkOnly || buildAnalysis))) {
             throw new UsageException("--analyze, --check and --build-analysis are mutually exclusive");
         }
@@ -277,6 +282,10 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
+        if (strictAttoCheckOnly && (!filename.toLowerCase(Locale.ROOT).endsWith(".atto")
+                || Files.isSymbolicLink(path))) {
+            throw new UsageException("--check-strict-atto requires a regular, non-symlink .atto source");
+        }
         String directOresSource = isGuestSourceFile(filename) ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
@@ -369,6 +378,19 @@ public final class OresMain {
                 CompilerEffectAnalysisV0.Report report = CompilerEffectAnalysisV0.analyze(checked);
                 for (String record : report.records()) System.out.println(record);
                 return report.exitStatus();
+            } catch (Exception error) {
+                System.err.println(formatCheckDiagnostic(path, error));
+                return 1;
+            }
+        }
+
+        // Explicit closed-unit source-profile admission. Ordinary --check is
+        // the linked compatibility checker and must not certify strict Atto.
+        if (strictAttoCheckOnly) {
+            try {
+                Ast.Program checked = OresCompiler.parseAndTypeCheckStrictAtto(directOresSource);
+                dev.oreslang.runtime.CapabilityChecker.check(checked, policy, permissionCheckMode);
+                return 0;
             } catch (Exception error) {
                 System.err.println(formatCheckDiagnostic(path, error));
                 return 1;
@@ -499,7 +521,7 @@ public final class OresMain {
 
     private static void printUsage() {
         System.err.println(
-                "usage: oreslang-compiler [--check|--analyze|--build-analysis] "
+                "usage: oreslang-compiler [--check|--check-strict-atto|--analyze|--build-analysis] "
                         + "[--control-workers=N] [--actor-carriers-max=N|auto] "
                         + "[--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
