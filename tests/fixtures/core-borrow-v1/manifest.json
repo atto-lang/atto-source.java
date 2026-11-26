@@ -23,7 +23,7 @@
     },
     {
       "path": "tests/fixtures/core-borrow-v1/pass/write-loan.atto",
-      "git_blob_sha": "cfdd50415dd0da35bb892dc6f48793eacf19c034",
+      "git_blob_sha": "2c72ccf3c7e9f2c3b7d31ee9456fba25e20b60ca",
       "expected": "EXECUTE_GUEST_EXIT_42",
       "expected_exit": 42,
       "expected_error": null,
@@ -32,7 +32,7 @@
     },
     {
       "path": "tests/fixtures/core-borrow-v1/fail/write-loan.atto",
-      "git_blob_sha": "fe4d678bd282c9af3331cfd778c78c7d6628bf16",
+      "git_blob_sha": "361439ffd4dece310c5188ae068abc13066f1c5a",
       "expected": "REJECT_BEFORE_CODEGEN",
       "expected_exit": null,
       "expected_error": "E_BORROW",
