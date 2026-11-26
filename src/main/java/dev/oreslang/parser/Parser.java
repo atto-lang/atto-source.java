@@ -5173,6 +5173,18 @@ public final class Parser {
         if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
             throw error(previous(), "'const fnc' requires a lambda initializer");
         }
+        // Local raw Future spelling is a type-inference witness only for
+        // compiler-proven select profiles. Normalize before the independent
+        // type and ownership passes; never introduce an erased Future type.
+        if (Ast.TypeRef.simple("Future").equals(type)
+                && initializer instanceof Ast.TaskExpr task) {
+            if (task.typedDefaultSelectI64()) {
+                type = new Ast.TypeRef("Future", List.of(Ast.TypeRef.simple("int")), false);
+            } else if (task.typedCountedSelectI64()) {
+                type = new Ast.TypeRef("Future", List.of(
+                        new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false)), false);
+            }
+        }
         initializer = resolveDirectContextualEmptyMap(type, initializer);
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
