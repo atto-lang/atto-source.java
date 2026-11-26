@@ -7741,9 +7741,9 @@ public final class TypeChecker {
         if (task.typedCountedSelectI64()) {
             // Every source must be a checked lexical scalar capability.
             // Global/imported lookups and wider payloads remain fail-closed.
-            String sourceName = task.zeroCountSourceName();
+            var witnesses = task.zeroCountWitnesses();
             Ast.SelectStmt countedRound = null;
-            if (sourceName != null) {
+            if (!witnesses.isEmpty()) {
                 if (task.body().size() != 1
                         || !(task.body().getFirst() instanceof Ast.ReturnStmt returned)
                         || !(returned.value() instanceof Ast.NewExpr empty)
@@ -7786,11 +7786,13 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("invalid restricted counted select lowering");
                 countedRound = selected;
             }
-            if (sourceName != null) {
-                Env.Binding sourceBinding = env.lookup(sourceName);
-                if (sourceBinding == null
-                        || !new Named("Channel", List.of(Primitive.INT)).equals(sourceBinding.type()))
-                    throw new IllegalArgumentException("restricted counted select requires lexical Channel<int>");
+            if (!witnesses.isEmpty()) {
+                for (var witness : witnesses) {
+                    String kind = witness.operation() == Ast.ChannelOperation.READ ? "Channel" : "Future";
+                    Env.Binding binding = env.lookup(witness.name());
+                    if (binding == null || !new Named(kind, List.of(Primitive.INT)).equals(binding.type()))
+                        throw new IllegalArgumentException("restricted counted select requires lexical " + kind + "<int>");
+                }
             } else {
                 for (var arm : countedRound.arms()) {
                     if (!(arm.channel() instanceof Ast.NameExpr source)
