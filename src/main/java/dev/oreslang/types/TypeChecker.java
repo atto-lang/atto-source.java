@@ -399,6 +399,8 @@ public final class TypeChecker {
                     || !declaration.parents().isEmpty()) {
                 throw new IllegalArgumentException("invalid linked module contract metadata");
             }
+            rejectReservedSymbolTypeName(declaration.name(), "linked contract");
+            rejectReservedSymbolTypeName(localName, "linked contract alias");
             boolean imported = program.imports().stream().anyMatch(use ->
                     use.kind() == Ast.ImportKind.CONTRACT && !use.wildcard()
                             && use.names().contains(declaration.name())
@@ -422,6 +424,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
 
+            rejectReservedSymbolTypeName(declaration.name(), "linked class");
+            rejectReservedSymbolTypeName(name, "linked class alias");
             String linkedModuleAlias = null;
             boolean importedDirectly = declaration.actorKind() == Ast.ActorKind.NONE
                     && program.imports().stream().anyMatch(use ->
@@ -473,6 +477,9 @@ public final class TypeChecker {
                         || !alias.getKey().equals(alias.getValue().name())) {
                     throw new IllegalArgumentException("invalid private linked field type alias");
                 }
+            }
+            for (String aliasName : aliases.keySet()) {
+                rejectReservedSymbolTypeName(aliasName, "linked private type alias");
             }
             checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
             checker.hiddenLinkedAliasNames.addAll(aliases.keySet());
