@@ -7991,6 +7991,26 @@ public final class Parser {
     private List<Ast.Stmt> strictVerifiedReturns(RefinedQuantity declared,RefinedQuantity guaranteed,Token name,
             List<Integer> upperParameters,List<Ast.Param> parameters,List<RefinedQuantity> required,int depth) {
         if(depth>16)throw error(peek(),"E_VERIFY_UNSUPPORTED: strict return depth");
+        if(match(VAL)) {
+            Token first=consume(IDENT,"expected a binding type or name");
+            String key;
+            RefinedQuantity type=null;
+            if(check(EQUAL)) key=first.lexeme();
+            else if(match(COLON)) {
+                key=first.lexeme();type=readRefinedType(consume(IDENT,"expected a binding type"));
+            } else {
+                type=readRefinedType(first);key=verifiedName("expected a binding name").lexeme();
+            }
+            consume(EQUAL,"expected '='");var value=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
+            if(type==null)type=value.type();
+            type.require(value.type(),"E_REFINEMENT_BINDING","immutable snapshot "+key);
+            if(verifiedLocals.putIfAbsent(key,new RefinedQuantity(type.unit(),value.type().range(),type.i32()))!=null)
+                throw error(first,"E_REFINEMENT_DUPLICATE: duplicate binding");
+            verifiedUpperBounds.put(key,value.upperBounds());
+            var tail=new ArrayList<>(strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1));
+            tail.add(0,new Ast.BindingStmt(Ast.BindingKind.VAL,VERIFIED_CARRIER,key,value.expression(),false));
+            return tail;
+        }
         if(match(LET)) {
             Token typeName=consume(IDENT,"expected mutable scalar type");
             var type=readRefinedType(typeName);
