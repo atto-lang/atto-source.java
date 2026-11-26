@@ -82,6 +82,59 @@ final class SupervisorFailureEscrowV1Standalone {
         ok(ledger.fail(1002L).failedGeneration() == 3, "stale notice survived rollback");
     }
 
+    private static void reservedDeliveryTakeover() {
+        var bean = java.lang.management.ManagementFactory.getThreadMXBean();
+        if (!(bean instanceof com.sun.management.ThreadMXBean allocation)
+                || !allocation.isThreadAllocatedMemorySupported()) {
+            throw new AssertionError("allocation instrumentation unavailable");
+        }
+        allocation.setThreadAllocatedMemoryEnabled(true);
+        long thread = Thread.currentThread().threadId();
+        // Warm all relevant paths (including a stale acknowledgement).
+        for (int i = 0; i < 1024; i++) {
+            var warm = new SupervisorFailureEscrowV1();
+            warm.registerRoot(1000L, 1);
+            warm.registerChild(1001L, 1000L, 2);
+            warm.registerChild(1002L, 1001L, 3);
+            warm.fail(1002L);
+            var old = warm.deliver(1002L);
+            warm.fail(1001L);
+            warm.currentDelivery(old);
+            warm.acknowledge(old);
+            warm.acknowledge(warm.deliver(1002L));
+        }
+        var ledger = new SupervisorFailureEscrowV1();
+        ledger.registerRoot(2000L, 1);
+        for (int i = 1; i < SupervisorFailureEscrowV1.MAX_DEPTH; i++) {
+            ledger.registerChild(2000L + i, 1999L + i, i + 1);
+        }
+        long failed = 2000L + SupervisorFailureEscrowV1.MAX_DEPTH - 1;
+        ledger.fail(failed);
+        var first = ledger.deliver(failed);
+        ok(first.controllerId() == failed - 1, "first controller wrong");
+        // Measure all 62 possible upward takeovers and final ACK, without
+        // allocating assertion text, snapshots or diagnostic objects in region.
+        long before = allocation.getThreadAllocatedBytes(thread);
+        var previous = first;
+        boolean valid = true;
+        for (long parent = failed - 1; parent > 2000L; parent--) {
+            ledger.fail(parent);
+            valid &= !ledger.currentDelivery(previous);
+            valid &= !ledger.acknowledge(previous);
+            var next = ledger.deliver(failed);
+            valid &= next != previous && next.controllerId() == parent - 1;
+            valid &= ledger.currentDelivery(next);
+            previous = next;
+        }
+        valid &= ledger.acknowledge(previous);
+        valid &= !ledger.acknowledge(previous);
+        long after = allocation.getThreadAllocatedBytes(thread);
+        ok(valid, "takeover/ACK authority violated");
+        ok(before >= 0 && after == before, "delivery/ACK allocated " + (after - before) + " bytes");
+        ok(ledger.deliver(failed) == null, "acknowledged notice replayed");
+        System.out.println("CONTROL_TAKEOVERS=62 DELIVERY_ACK_ALLOCATED_BYTES=" + (after - before));
+    }
+
     public static void main(String[] args) throws Exception {
         var ledger = new SupervisorFailureEscrowV1();
         ledger.registerRoot(1, 1);
@@ -162,6 +215,7 @@ final class SupervisorFailureEscrowV1Standalone {
         rejected(() -> clean.fail(2), "late failure cannot forge a previously clean terminal");
         rollbackIndexDoesNotRetainUnpublishedChild();
         saturatedFailurePublication();
+        reservedDeliveryTakeover();
         System.out.println("PASS SupervisorFailureEscrowV1Standalone assertions=" + assertions);
     }
 }

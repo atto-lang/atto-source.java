@@ -10,7 +10,7 @@ verify_blob() {
     exit 2
   fi
 }
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 008d1a52f44545f995533b2f1acdf938c091c080
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 53fafa708ad2bc6c13e36e2739335379efccb532
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java eb84fea8ce35f786bdae3de8626c784f03cbfbe8
 verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java b307f5cbd8c9a460aedd5fd2fbe162784d2fcfbd
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java e6849c0d825f8af4b1ac140e5ac65822e49ee1da

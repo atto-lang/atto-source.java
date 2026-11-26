@@ -54,6 +54,7 @@ final class SupervisorFailureEscrowV1 {
         final int depth;
         final Cell parent;
         final Notice reservedNotice;
+        final Delivery[] reservedDeliveries;
         boolean alive = true;
         boolean fenced;
         Notice terminal;
@@ -71,6 +72,13 @@ final class SupervisorFailureEscrowV1 {
             this.depth = depth;
             this.parent = parent;
             this.reservedNotice = new Notice(id, generation, reservation);
+            // Authority can only move up the immutable parent chain. Reserve
+            // one immutable delivery per possible ancestor before publication.
+            this.reservedDeliveries = new Delivery[depth - 1];
+            for (Cell ancestor = parent; ancestor != null; ancestor = ancestor.parent) {
+                reservedDeliveries[ancestor.depth - 1] =
+                        new Delivery(reservedNotice, ancestor.id, ancestor.generation);
+            }
         }
     }
 
@@ -168,13 +176,13 @@ final class SupervisorFailureEscrowV1 {
 
     /** Returns the nearest healthy ancestor's CONTROL delivery, never guest DATA. */
     synchronized Delivery deliver(long failedId) {
-        Cell cell = requireNode(failedId);
+        Cell cell = requireTerminalNode(failedId);
         if (!cell.pending) return null;
         Cell authority = nearestLiveAncestor(cell);
         if (authority == null) throw new IllegalStateException("no healthy CONTROL ancestor");
         if (cell.delivery == null || cell.delivery.controllerId != authority.id
                 || cell.delivery.controllerGeneration != authority.generation) {
-            cell.delivery = new Delivery(cell.terminal, authority.id, authority.generation);
+            cell.delivery = cell.reservedDeliveries[authority.depth - 1];
         }
         return cell.delivery;
     }
@@ -183,7 +191,7 @@ final class SupervisorFailureEscrowV1 {
      * This check MUST be repeated after that sink completes. */
     synchronized boolean currentDelivery(Delivery delivery) {
         Objects.requireNonNull(delivery, "delivery");
-        Cell cell = nodes.get(delivery.notice.failedId());
+        Cell cell = findTerminalNode(delivery.notice.failedId());
         if (cell == null || !cell.pending || cell.delivery != delivery
                 || cell.terminal != delivery.notice
                 || cell.generation != delivery.notice.failedGeneration()) return false;
@@ -195,7 +203,7 @@ final class SupervisorFailureEscrowV1 {
     /** A stale delivery cannot be acknowledged even before it is redelivered. */
     synchronized boolean acknowledge(Delivery delivery) {
         if (!currentDelivery(delivery)) return false;
-        Cell cell = nodes.get(delivery.notice.failedId());
+        Cell cell = findTerminalNode(delivery.notice.failedId());
         cell.pending = false;
         cell.delivery = null;
         return true;
@@ -278,7 +286,7 @@ final class SupervisorFailureEscrowV1 {
 
     synchronized int pendingCount() {
         int count = 0;
-        for (Cell cell : nodes.values()) if (cell.pending) count++;
+        for (int i = 0; i < terminalIndexSize; i++) if (terminalIndex[i].pending) count++;
         return count;
     }
 
@@ -292,11 +300,8 @@ final class SupervisorFailureEscrowV1 {
     }
 
     private Cell nearestLiveAncestor(Cell cell) {
-        long parentId = cell.parentId;
-        while (parentId != 0) {
-            Cell parent = requireNode(parentId);
+        for (Cell parent = cell.parent; parent != null; parent = parent.parent) {
             if (parent.alive && !parent.fenced) return parent;
-            parentId = parent.parentId;
         }
         return null;
     }
@@ -322,12 +327,18 @@ final class SupervisorFailureEscrowV1 {
         return false;
     }
 
-    private Cell requireTerminalNode(long id) {
+    private Cell findTerminalNode(long id) {
         for (int i = 0; i < terminalIndexSize; i++) {
             Cell cell = terminalIndex[i];
             if (cell.id == id) return cell;
         }
-        throw new IllegalArgumentException("unknown CONTROL identity");
+        return null;
+    }
+
+    private Cell requireTerminalNode(long id) {
+        Cell cell = findTerminalNode(id);
+        if (cell == null) throw new IllegalArgumentException("unknown CONTROL identity");
+        return cell;
     }
 
     private void removeTerminalIndex(Cell cell) {
