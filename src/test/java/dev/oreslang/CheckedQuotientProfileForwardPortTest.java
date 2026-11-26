@@ -9,6 +9,8 @@ import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import java.util.Map;
+import java.math.BigInteger;
+import java.util.Random;
 import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(45)
@@ -60,6 +62,15 @@ final class CheckedQuotientProfileForwardPortTest {
                 .getMessage().contains("ORES_I64_DIVISION_BY_ZERO"));
         assertTrue(assertThrows(ArithmeticException.class, () -> StrictIntegerArithmetic.div(Long.MIN_VALUE, -1))
                 .getMessage().contains("ORES_I64_OVERFLOW"));
+        // Deterministic independent mathematical oracle, not a second
+        // implementation of Java long division. Include nonrepresentable
+        // quotients and values beyond the binary64 exact integer range.
+        long[] edges = { Long.MIN_VALUE, Long.MIN_VALUE + 1, -9007199254740993L,
+                -7, -3, -2, -1, 0, 1, 2, 3, 7, 9007199254740993L,
+                Long.MAX_VALUE - 1, Long.MAX_VALUE };
+        for (long a : edges) for (long b : edges) checkAgainstOracle(a, b);
+        Random random = new Random(518231);
+        for (int i = 0; i < 100000; i++) checkAgainstOracle(random.nextLong(), random.nextLong());
         for (String[] failure : new String[][] {
                 {"7", "0", "ORES_I64_DIVISION_BY_ZERO"},
                 {"-9223372036854775808", "-1", "ORES_I64_OVERFLOW"}
@@ -68,6 +79,21 @@ final class CheckedQuotientProfileForwardPortTest {
                     + "pub fnc main(): int { return divide(" + failure[0] + ", " + failure[1] + "); }";
             var error = assertThrows(PolyglotException.class, () -> run(guest, "fault.atto"));
             assertTrue(error.getMessage().contains(failure[2]), error::getMessage);
+        }
+    }
+
+    private static void checkAgainstOracle(long a, long b) {
+        if (b == 0) {
+            assertTrue(assertThrows(ArithmeticException.class, () -> StrictIntegerArithmetic.div(a, b))
+                    .getMessage().contains("ORES_I64_DIVISION_BY_ZERO"));
+            return;
+        }
+        BigInteger quotient = BigInteger.valueOf(a).divide(BigInteger.valueOf(b));
+        if (quotient.bitLength() > 63) {
+            assertTrue(assertThrows(ArithmeticException.class, () -> StrictIntegerArithmetic.div(a, b))
+                    .getMessage().contains("ORES_I64_OVERFLOW"));
+        } else {
+            assertEquals(quotient.longValueExact(), StrictIntegerArithmetic.div(a, b));
         }
     }
 }
