@@ -53,12 +53,16 @@ public final class DerivedCopyPlanV1 {
      */
     public static Plan deriveDeep(Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
         if (findClass == null) throw fail("E_COPY_UNPROVEN", "missing class resolver");
+        if (findClass.apply("DeepCopyable") != null) {
+            throw fail("E_COPY_OPT_IN_REQUIRED", "core DeepCopyable is shadowed by a nominal class");
+        }
         return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0, true);
     }
 
     public static void validateDeepMarker(Ast.ClassDecl klass, Ast.TypeRef marker,
                                           Function<String, Ast.ClassDecl> lookup) {
-        if (klass.actorKind() != Ast.ActorKind.NONE || klass.isAbstract()
+        if (!marker.name().equals("DeepCopyable")
+                || klass.actorKind() != Ast.ActorKind.NONE || klass.isAbstract()
                 || !klass.genericParameters().isEmpty()
                 || marker.inferArguments() || marker.arguments().size() != 1) {
             throw fail("E_COPY_OPT_IN_REQUIRED", "DeepCopyable requires concrete non-generic self: " + klass.name());
@@ -217,7 +221,8 @@ public final class DerivedCopyPlanV1 {
     }
 
     private static boolean has(List<Ast.Annotation> annotations, String name) {
-        return annotations.stream().anyMatch(annotation -> annotation.name().equals(name));
+        return annotations.stream().anyMatch(annotation -> annotation.name().equals(name)
+                || (name.equals("NoCopy") && annotation.name().equals("NonCopyable")));
     }
 
     private static IllegalArgumentException fail(String code, String detail) {
