@@ -92,7 +92,8 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
                 "~record(foo: 1, \"x\" => true)")) {
             assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
         }
-        assertDoesNotThrow(() -> initializer("Map.of()"));
+        assertDoesNotThrow(() -> initializer("Map.of<string,int>()"));
+        assertThrows(IllegalArgumentException.class, () -> initializer("Map.of()"));
     }
 
     @Test

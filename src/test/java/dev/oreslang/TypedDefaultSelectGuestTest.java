@@ -353,6 +353,46 @@ final class TypedDefaultSelectGuestTest {
                 "pub async fnc main(): void { val bool count = true; val Channel<int> incoming = Channel.new<int>(1); val Future<Array<int>> result = select<int>(count+1) { when readch incoming: int n -> { return n; } }; return; }"));
     }
 
+    @Test void countedGuestCancellationAfterCommittedProgress() throws Exception {
+        // The second write cannot finish until the counted guest consumes
+        // at least one input. The host regression independently proves
+        // physical retirement; this checks the compiled guest completion.
+        assertEquals("true|#cancelled", run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 10;
+                  val Future<Array<int>> pending = select<int>(4) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  writech incoming, 20;
+                  writech incoming, 30;
+                  // The third write forces progress beyond the first read.
+                  // A fourth read may be pending; it must not steal data
+                  // after the task's get_done receipt.
+                  stdio.stdout.write(pending.cancel());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await pending.get_done());
+                  return;
+                }
+                """));
+    }
+
+    @Test void countedGuestExhaustionUsesAggregateCursor() throws Exception {
+        var failure = assertThrows(org.graalvm.polyglot.PolyglotException.class, () -> run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 42;
+                  incoming.close();
+                  val Array[int] result = await select<int>(2) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  stdio.stdout.write(result.size);
+                  return;
+                }
+                """));
+        assertTrue(failure.getMessage().contains("all counted selection sources exhausted"), failure.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         var out=new ByteArrayOutputStream();
         try(var context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()){
