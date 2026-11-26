@@ -174,8 +174,8 @@ final class TypedDefaultSelectGuestTest {
                   val Array[int] second = await select(0) over
                     when readch incoming: int n -> { return n; }
                   end;
-                  stdio.stdout.write(first.size()); stdio.stdout.write("|");
-                  stdio.stdout.write(second.size()); stdio.stdout.write("|");
+                  stdio.stdout.write(first.size); stdio.stdout.write("|");
+                  stdio.stdout.write(second.size); stdio.stdout.write("|");
                   stdio.stdout.write(readch incoming);
                   return;
                 }
