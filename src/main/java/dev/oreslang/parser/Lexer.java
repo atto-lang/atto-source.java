@@ -105,7 +105,7 @@ public final class Lexer {
                 else if (match('*')) blockComment();
                 else add(SLASH);
             }
-            case ' ', '\t' -> { }
+            case ' ', '\t', '\f', 0x0b -> { }
             case '\r' -> { match('\n'); newline(); }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
@@ -289,6 +289,20 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
+
+        // The two transfer spellings have identical lexical admission.
+        // Leave != and !eq as inequality tokens, including on bare identifiers.
+        if ((text.equals("take") || text.equals("move")) && peek() == '!'
+                && !source.startsWith("!=", current)
+                && !(source.startsWith("!eq", current)
+                     && (current + 3 == source.length()
+                         || !isIdentPart(source.charAt(current + 3))))) {
+            int after = current + 1;
+            if (after == source.length()
+                    || " \t\r\n\u000b\f".indexOf(source.charAt(after)) < 0) {
+                throw error("E_BANG_KEYWORD_WHITESPACE: whitespace required after " + text + "!");
+            }
+        }
 
         // Both 'nb' and 'select' are already reserved, so this spelling cannot
         // change the meaning of a legal subtraction expression. Critical and

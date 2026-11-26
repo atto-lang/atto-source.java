@@ -199,6 +199,13 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
                 new IdentityHashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+        // Per immutable evaluator/code image. Identity keys are exact AST
+        // declarations/type occurrences, not names or guest object addresses.
+        // Bounded independently for shallow/deep; no rejected plans are cached.
+        private final dev.oreslang.types.CopyPlanCache<dev.oreslang.types.DerivedCopyPlanV1.Plan>
+                shallowCopyPlans = new dev.oreslang.types.CopyPlanCache<>(64, 32768);
+        private final dev.oreslang.types.CopyPlanCache<dev.oreslang.types.DerivedCopyPlanV1.Plan>
+                deepCopyPlans = new dev.oreslang.types.CopyPlanCache<>(64, 32768);
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -7881,6 +7888,16 @@ public final class OresEvalRootNode extends RootNode {
          * OwnershipChecker. No reflection, guest callbacks, implicit constructors,
          * shallow map copy or user-defined copy() calls are permitted in v1.
          */
+        private dev.oreslang.types.DerivedCopyPlanV1.Plan cachedCopyPlan(
+                Object declarationIdentity, Ast.TypeRef type, boolean shallow) {
+            return (shallow ? shallowCopyPlans : deepCopyPlans).getOrCompute(
+                    declarationIdentity,
+                    () -> shallow
+                            ? dev.oreslang.types.DerivedCopyPlanV1.deriveShallow(type, this::findClass)
+                            : dev.oreslang.types.DerivedCopyPlanV1.deriveDeep(type, this::findClass),
+                    dev.oreslang.types.DerivedCopyPlanV1::weight);
+        }
+
         private Object copyOwnedValueV1(Object value, boolean shallow) {
             // An actor object currently lacks runtime provenance proving that
             // the source and destination allocations belong to the same actor
@@ -7892,9 +7909,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof TypedGuestSequence sequence) {
                 dev.oreslang.types.DerivedCopyPlanV1.Plan plan =
-                        shallow
-                                ? dev.oreslang.types.DerivedCopyPlanV1.deriveShallow(sequence.type, this::findClass)
-                                : dev.oreslang.types.DerivedCopyPlanV1.derive(sequence.type, this::findClass);
+                        cachedCopyPlan(sequence.type, sequence.type, shallow);
                 if (!(plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Sequence)) {
                     throw new IllegalArgumentException("E_COPY_UNPROVEN: typed sequence copy plan missing");
                 }
@@ -7907,12 +7922,11 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "E_COPY_DOMAIN: cannot duplicate a foreign compiler owner's object");
             }
-            dev.oreslang.types.DerivedCopyPlanV1.Plan plan =
-                    shallow
-                            ? dev.oreslang.types.DerivedCopyPlanV1.deriveShallow(
-                                    Ast.TypeRef.simple(original.klass.name()), this::findClass)
-                            : dev.oreslang.types.DerivedCopyPlanV1.derive(
-                                    Ast.TypeRef.simple(original.klass.name()), this::findClass);
+            if (findClass(original.klass.name()) != original.klass) {
+                throw new IllegalArgumentException("E_COPY_TYPE: source declaration is not the exact local class");
+            }
+            dev.oreslang.types.DerivedCopyPlanV1.Plan plan = cachedCopyPlan(
+                    original.klass, Ast.TypeRef.simple(original.klass.name()), shallow);
             if (!(plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Instance)) {
                 throw new IllegalArgumentException("E_COPY_UNPROVEN: expected class copy plan");
             }
@@ -7966,7 +7980,7 @@ public final class OresEvalRootNode extends RootNode {
                     && instance.fields().stream().allMatch(
                             field -> field.plan() instanceof dev.oreslang.types.DerivedCopyPlanV1.Scalar)) {
                 if (!(value instanceof OresObject source) || source.owner != this
-                        || !source.klass.name().equals(instance.className())
+                        || findClass(instance.className()) != source.klass
                         || source.klass.actorKind() != Ast.ActorKind.NONE
                         || source.fields.size() != instance.fields().size()) {
                     throw new IllegalArgumentException("E_COPY_TYPE: copied class must have exact owned concrete layout");
@@ -8034,7 +8048,7 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayList<Object> result;
                 if (value instanceof TypedGuestSequence typed) {
                     dev.oreslang.types.DerivedCopyPlanV1.Plan exact =
-                            dev.oreslang.types.DerivedCopyPlanV1.derive(typed.type, this::findClass);
+                            cachedCopyPlan(typed.type, typed.type, false);
                     if (!exact.equals(sequence)) {
                         throw new IllegalArgumentException(
                                 "E_COPY_TYPE: typed sequence witness disagrees with compiler plan");
@@ -8053,7 +8067,7 @@ public final class OresEvalRootNode extends RootNode {
             if (plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Instance instance) {
                 if (!(value instanceof OresObject source)
                         || source.owner != this
-                        || !source.klass.name().equals(instance.className())
+                        || findClass(instance.className()) != source.klass
                         || source.klass.actorKind() != Ast.ActorKind.NONE
                         || source.fields.size() != instance.fields().size()) {
                     throw new IllegalArgumentException(

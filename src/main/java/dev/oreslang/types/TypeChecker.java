@@ -399,6 +399,8 @@ public final class TypeChecker {
                     || !declaration.parents().isEmpty()) {
                 throw new IllegalArgumentException("invalid linked module contract metadata");
             }
+            rejectReservedSymbolTypeName(declaration.name(), "linked contract");
+            rejectReservedSymbolTypeName(localName, "linked contract alias");
             boolean imported = program.imports().stream().anyMatch(use ->
                     use.kind() == Ast.ImportKind.CONTRACT && !use.wildcard()
                             && use.names().contains(declaration.name())
@@ -422,6 +424,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
 
+            rejectReservedSymbolTypeName(declaration.name(), "linked class");
+            rejectReservedSymbolTypeName(name, "linked class alias");
             String linkedModuleAlias = null;
             boolean importedDirectly = declaration.actorKind() == Ast.ActorKind.NONE
                     && program.imports().stream().anyMatch(use ->
@@ -474,6 +478,9 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("invalid private linked field type alias");
                 }
             }
+            for (String aliasName : aliases.keySet()) {
+                rejectReservedSymbolTypeName(aliasName, "linked private type alias");
+            }
             checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
             checker.hiddenLinkedAliasNames.addAll(aliases.keySet());
         }
@@ -492,7 +499,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "task_context", "task_cancel_requested", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
-                "Object", "List", "Option", "Result", "Future",
+                "Object", "List", "Option", "Result", "Future", "DeepCopyable",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "HttpClientResponse", "HttpClientBody",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
@@ -577,7 +584,7 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
-        if ("Symbol".equals(name) || "Newable".equals(name)) {
+        if ("Symbol".equals(name) || "Newable".equals(name) || "DeepCopyable".equals(name)) {
             throw new IllegalArgumentException(name
                     + " is a reserved compiler-owned nominal type; cannot declare "
                     + declarationKind + " " + name);
@@ -1961,6 +1968,10 @@ public final class TypeChecker {
         Set<String> implemented = new HashSet<>();
         for (Ast.TypeRef interfaceRef : klass.interfaces()) {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
+            if (interfaceRef.name().equals("DeepCopyable")) {
+                DerivedCopyPlanV1.validateDeepMarker(klass, interfaceRef, this::findClass);
+                continue; // compiler-owned opt-in, not a structural instance interface
+            }
             if (interfaceRef.name().equals("Newable")) {
                 validateNewableFactory(klass, interfaceRef, classGenerics, self);
                 continue; // Static factory witness is not an instance shape.
@@ -11400,6 +11411,8 @@ public final class TypeChecker {
             }
             case "StreamOperator" -> throw new IllegalArgumentException(
                     "StreamOperator<I,O> is a reserved actor implements marker, not a runtime value type");
+            case "DeepCopyable" -> throw new IllegalArgumentException(
+                    "DeepCopyable<T> is a compiler-owned nominal copy marker; use only in implements");
             case "Newable" -> throw new IllegalArgumentException(
                     "Newable[T] is a compiler-owned type-level factory contract; "
                             + "use it only in a class implements clause");

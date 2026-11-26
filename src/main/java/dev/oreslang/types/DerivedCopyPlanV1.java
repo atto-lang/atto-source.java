@@ -43,34 +43,118 @@ public final class DerivedCopyPlanV1 {
     public static Plan derive(
             Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
         if (findClass == null) throw new IllegalArgumentException("E_COPY_UNPROVEN: missing class resolver");
-        return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0);
+        return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0, false);
     }
 
     /**
-     * Conservative phase-1 shallow capability: a fresh root whose immediate
-     * fields/elements are all proven immutable scalars. The existing bounded
-     * executor may execute this plan without recursively allocating a mutable
-     * child. Shared-child witnesses and inline ADTs are deliberately deferred.
-     * Not yet wired to legacy copy! syntax; edition migration is separate.
+     * Deep guest admission. Structural derivation alone is not consent.
+     * The core marker is reserved by TypeChecker; resolve its self argument
+     * to the exact declaration, not a name-equivalent foreign class.
+     */
+    public static Plan deriveDeep(Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
+        if (findClass == null) throw fail("E_COPY_UNPROVEN", "missing class resolver");
+        if (findClass.apply("DeepCopyable") != null) {
+            throw fail("E_COPY_OPT_IN_REQUIRED", "core DeepCopyable is shadowed by a nominal class");
+        }
+        return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0, true);
+    }
+
+    public static void validateDeepMarker(Ast.ClassDecl klass, Ast.TypeRef marker,
+                                          Function<String, Ast.ClassDecl> lookup) {
+        if (!marker.name().equals("DeepCopyable")
+                || klass.actorKind() != Ast.ActorKind.NONE || klass.isAbstract()
+                || !klass.genericParameters().isEmpty()
+                || marker.inferArguments() || marker.arguments().size() != 1) {
+            throw fail("E_COPY_OPT_IN_REQUIRED", "DeepCopyable requires concrete non-generic self: " + klass.name());
+        }
+        Ast.TypeRef self = marker.arguments().getFirst();
+        if (self.inferArguments() || !self.arguments().isEmpty()
+                || lookup.apply(self.name()) != klass) {
+            throw fail("E_COPY_OPT_IN_REQUIRED", "DeepCopyable must name exact concrete self: " + klass.name());
+        }
+        if (has(klass.annotations(), "NoCopy")) {
+            throw fail("E_COPY_FORBIDDEN", "@NoCopy conflicts with DeepCopyable: " + klass.name());
+        }
+    }
+
+    private static void requireDeepConsent(Ast.ClassDecl klass, Function<String, Ast.ClassDecl> lookup) {
+        var markers = klass.interfaces().stream().filter(i -> i.name().equals("DeepCopyable")).toList();
+        if (markers.size() != 1) {
+            throw fail("E_COPY_OPT_IN_REQUIRED", "explicit DeepCopyable<" + klass.name() + "> required");
+        }
+        validateDeepMarker(klass, markers.getFirst(), lookup);
+    }
+
+    /**
+     * A layout obligation, not an ownership witness. A retained edge names
+     * the immediate reference slot whose entire reachable graph needs a
+     * shared read loan. Independent inline scalar slots remain writable.
+     * Sequence elements use an indexed family rather than a fake field name.
+     */
+    public sealed interface RetainedEdge permits RetainedField, RetainedElements { }
+    public record RetainedField(String field, Plan target) implements RetainedEdge { }
+    public record RetainedElements(Plan target) implements RetainedEdge { }
+    public record ShallowLoanLayout(Plan root, List<RetainedEdge> retained) {
+        public ShallowLoanLayout { retained = List.copyOf(retained); }
+        public boolean requiresLoans() { return !retained.isEmpty(); }
+    }
+
+    /**
+     * Derive the bounded structural obligations for a future checked lexical
+     * copy-loan instruction. No mutable alias is authorized by this method.
+     * The caller must separately prove all paths, provenance, lifetimes,
+     * writes, moves, cleanup, and escape behavior before using these edges.
+     */
+    public static ShallowLoanLayout deriveShallowLoanLayout(
+            Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
+        Plan plan = derive(type, findClass);
+        List<RetainedEdge> edges = new ArrayList<>();
+        switch (plan) {
+            case Scalar scalar -> { }
+            case Sequence sequence -> {
+                if (!(sequence.element() instanceof Scalar)) {
+                    edges.add(new RetainedElements(sequence.element()));
+                }
+            }
+            case Instance instance -> {
+                for (Field field : instance.fields()) {
+                    if (!(field.plan() instanceof Scalar)) {
+                        edges.add(new RetainedField(field.name(), field.plan()));
+                    }
+                }
+            }
+        }
+        return new ShallowLoanLayout(plan, edges);
+    }
+
+    /**
+     * Until the ownership pass and evaluator can mint and consume a lexical
+     * loan proof, only layouts without retained mutable edges may execute.
      */
     public static Plan deriveShallow(Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
-        Plan plan = derive(type, findClass);
-        boolean safe = switch (plan) {
-            case Scalar scalar -> true;
-            case Sequence sequence -> sequence.element() instanceof Scalar;
-            case Instance instance -> instance.fields().stream()
-                    .allMatch(field -> field.plan() instanceof Scalar);
-        };
-        if (!safe) {
+        ShallowLoanLayout layout = deriveShallowLoanLayout(type, findClass);
+        if (layout.requiresLoans()) {
             throw fail("E_COPY_SHALLOW_ALIAS",
-                    "shallow root would duplicate an unproved owned child; use copy!!");
+                    "shallow root requires a verified scoped read loan for retained owned children");
         }
-        return plan;
+        return layout.root();
+    }
+
+    /** Exact expanded plan weight, bounded by admission's node ceiling. */
+    public static int weight(Plan plan) {
+        if (plan instanceof Scalar) return 1;
+        if (plan instanceof Sequence sequence) return 1 + weight(sequence.element());
+        if (plan instanceof Instance instance) {
+            int count = 1;
+            for (Field field : instance.fields()) count += weight(field.plan());
+            return count;
+        }
+        throw fail("E_COPY_UNPROVEN", "unknown plan");
     }
 
     private static Plan build(
             Ast.TypeRef type, Function<String, Ast.ClassDecl> lookup,
-            Set<String> visiting, int[] work, int depth) {
+            Set<String> visiting, int[] work, int depth, boolean deepConsent) {
         // Acyclic diamond layouts can expand exponentially despite a depth
         // cap. Charge each plan occurrence before allocating its subtree.
         if (++work[0] > MAX_PLAN_NODES) {
@@ -92,7 +176,7 @@ public final class DerivedCopyPlanV1 {
                 throw fail("E_COPY_UNPROVEN", "typed Array/List requires exactly one element type");
             }
             return new Sequence(type.name(), build(
-                    type.arguments().getFirst(), lookup, visiting, work, depth + 1));
+                    type.arguments().getFirst(), lookup, visiting, work, depth + 1, deepConsent));
         }
         // Every other nominal or resource type remains noncopyable until its
         // compiler/runtime shape is explicitly supported.
@@ -106,6 +190,7 @@ public final class DerivedCopyPlanV1 {
         if (has(klass.annotations(), "NoCopy")) {
             throw fail("E_COPY_FORBIDDEN", "@NoCopy class " + klass.name());
         }
+        if (deepConsent) requireDeepConsent(klass, lookup);
         if (has(klass.annotations(), "ManualCopy")) {
             throw fail("E_COPY_UNPROVEN", "@ManualCopy requires checked custom lowering: " + klass.name());
         }
@@ -114,7 +199,7 @@ public final class DerivedCopyPlanV1 {
             throw fail("E_COPY_UNPROVEN", "polymorphic/generic class not admitted in copy v1: " + klass.name());
         }
         // An unverified handwritten method cannot replace compiler allocation.
-        if (klass.methods().stream().anyMatch(m -> m.name().equals("copy") && !m.isStatic())) {
+        if (klass.methods().stream().anyMatch(m -> (m.name().equals("copy") || m.name().equals("copy_deep")) && !m.isStatic())) {
             throw fail("E_COPY_OVERRIDE", "class copy override requires verified super.copy lowering: " + klass.name());
         }
         if (!visiting.add(type.name())) {
@@ -123,10 +208,14 @@ public final class DerivedCopyPlanV1 {
         try {
             LinkedHashMap<String, Field> fields = new LinkedHashMap<>();
             for (Ast.TypeRef parentType : klass.parents()) {
-                if (parentType.name().equals("Object") || parentType.name().equals("List")) {
-                    continue; // builtin, field-free base
+                if ((parentType.name().equals("Object") || parentType.name().equals("List"))
+                        && lookup.apply(parentType.name()) == null) {
+                    if (!parentType.arguments().isEmpty()) {
+                        throw fail("E_COPY_UNPROVEN", "unproved generic builtin parent");
+                    }
+                    continue; // builtin, field-free base only
                 }
-                Plan parentPlan = build(parentType, lookup, visiting, work, depth + 1);
+                Plan parentPlan = build(parentType, lookup, visiting, work, depth + 1, deepConsent);
                 if (!(parentPlan instanceof Instance base)) {
                     throw fail("E_COPY_UNPROVEN", "class parent is not copyable: " + parentType.name());
                 }
@@ -148,7 +237,7 @@ public final class DerivedCopyPlanV1 {
                 }
                 Plan fieldPlan;
                 try {
-                    fieldPlan = build(field.type(), lookup, visiting, work, depth + 1);
+                    fieldPlan = build(field.type(), lookup, visiting, work, depth + 1, deepConsent);
                 } catch (IllegalArgumentException failure) {
                     throw fail("E_COPY_TRANSITIVE", klass.name() + "." + field.name()
                             + ": " + failure.getMessage());
@@ -165,7 +254,8 @@ public final class DerivedCopyPlanV1 {
     }
 
     private static boolean has(List<Ast.Annotation> annotations, String name) {
-        return annotations.stream().anyMatch(annotation -> annotation.name().equals(name));
+        return annotations.stream().anyMatch(annotation -> annotation.name().equals(name)
+                || (name.equals("NoCopy") && annotation.name().equals("NonCopyable")));
     }
 
     private static IllegalArgumentException fail(String code, String detail) {

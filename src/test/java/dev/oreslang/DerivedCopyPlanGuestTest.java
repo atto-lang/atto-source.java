@@ -31,7 +31,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void ordinaryClassArrayFieldsAreClonedNotAliased() throws Exception {
         assertEquals("10|99", run("""
-                define class Person as
+                define class Person implements DeepCopyable<Person> as
                   pub let string name = "Alice";
                   pub val Array<int> scores = new Array<int>();
                 end
@@ -117,10 +117,10 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void flatDeepCopyRetainsInheritedFieldsWithoutAliasing() throws Exception {
         assertEquals("42|99|7", run("""
-                define class Base as
+                define class Base implements DeepCopyable<Base> as
                   pub let int value = 42;
                 end
-                define class Child extends Base as
+                define class Child extends Base implements DeepCopyable<Child> as
                   pub let int tag = 7;
                 end
                 pub fnc main(): void {
@@ -147,7 +147,7 @@ final class DerivedCopyPlanGuestTest {
         assertThrows(IllegalArgumentException.class, () ->
                 Parser.parse(template.formatted("copy!!!x")));
         assertEquals("10|77", run("""
-                define class Person as
+                define class Person implements DeepCopyable<Person> as
                   pub val Array<int> scores = new Array<int>();
                 end
                 pub fnc main(): void {
@@ -166,7 +166,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void doubleBangStillRejectsUnprovedCyclicLayout() {
         String source = """
-                define class Node as
+                define class Node implements DeepCopyable<Node> as
                   pub let Node next;
                 end
                 fnc bad(Node value): Node {
@@ -245,7 +245,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void rootTypedArrayOfClassesCopiesNestedObjects() throws Exception {
         assertEquals("10|88", run("""
-                define class Child as
+                define class Child implements DeepCopyable<Child> as
                   pub let int value = 10;
                 end
                 pub fnc main(): void {
@@ -291,10 +291,10 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void nestedClassesAreRecursivelyCloned() throws Exception {
         assertEquals("7|42", run("""
-                define class Child as
+                define class Child implements DeepCopyable<Child> as
                   pub let int value = 7;
                 end
-                define class Parent as
+                define class Parent implements DeepCopyable<Parent> as
                   pub val Child child = new Child();
                 end
 
@@ -313,10 +313,10 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void compilerDerivesInheritanceWithoutSlicing() throws Exception {
         assertEquals("5|12|99", run("""
-                define class Base as
+                define class Base implements DeepCopyable<Base> as
                   pub let int base_value = 5;
                 end
-                define class Child extends Base as
+                define class Child extends Base implements DeepCopyable<Child> as
                   pub let int own_value = 12;
                 end
 
@@ -337,7 +337,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void derivedPlanRejectsNestedResourceNotShallowCopy() {
         String source = """
-                define class Connection as
+                define class Connection implements DeepCopyable<Connection> as
                   pub let Channel<int> chan;
                 end
                 fnc bad(Connection value): Connection {
@@ -352,7 +352,7 @@ final class DerivedCopyPlanGuestTest {
     @Test
     void handwrittenCopyCannotBypassUnverifiedOverride() {
         String source = """
-                define class Record as
+                define class Record implements DeepCopyable<Record> as
                   pub let int n = 1;
                   pub copy() -> Record {
                     return self;
@@ -368,9 +368,32 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void deepOverrideAndInheritedDenialCannotBeBypassedByDerivedPlan() {
+        for (String source : java.util.List.of(
+                """
+                define class Record implements DeepCopyable<Record> as
+                  pub let int n = 1;
+                  pub copy_deep() -> Record { return self; }
+                end
+                fnc bad(Record value): Record { return copy!! value; }
+                """,
+                """
+                @NonCopyable
+                define class Base as pub val int n = 1; end
+                define class Child extends Base implements DeepCopyable<Child> as pub val int m = 2; end
+                fnc bad(Child value): Child { return copy!! value; }
+                """)) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("E_COPY_OVERRIDE")
+                    || error.getMessage().contains("E_COPY_FORBIDDEN"), error::toString);
+        }
+    }
+
+    @Test
     void recursiveClassLayoutsFailClosedUntilGraphCopierIsVerified() {
         String source = """
-                define class Node as
+                define class Node implements DeepCopyable<Node> as
                   pub let Node next;
                 end
                 fnc bad(Node value): Node {
@@ -427,4 +450,47 @@ final class DerivedCopyPlanGuestTest {
                         Ast.TypeRef.simple("Array"), name -> null));
         assertTrue(raw.getMessage().contains("E_COPY_UNPROVEN"));
     }
+    @Test
+    void shallowLoanLayoutIdentifiesRetainedFieldsWithoutGrantingAuthority() {
+        var parsed = Parser.parse("""
+                define class Base as pub val Array<int> scores = new Array<int>(); end
+                define class Child extends Base as
+                    pub let int age = 25;
+                    pub val Array<int> other = new Array<int>();
+                end
+                """);
+        var classes = new java.util.HashMap<String, Ast.ClassDecl>();
+        for (var module : parsed.modules()) {
+            for (var declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass) classes.put(klass.name(), klass);
+            }
+        }
+        var layout = DerivedCopyPlanV1.deriveShallowLoanLayout(
+                Ast.TypeRef.simple("Child"), classes::get);
+        assertTrue(layout.requiresLoans());
+        assertEquals(java.util.List.of("scores", "other"), layout.retained().stream()
+                .map(edge -> assertInstanceOf(DerivedCopyPlanV1.RetainedField.class, edge).field())
+                .toList());
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                DerivedCopyPlanV1.deriveShallow(Ast.TypeRef.simple("Child"), classes::get));
+        assertTrue(error.getMessage().contains("E_COPY_SHALLOW_ALIAS"));
+    }
+
+    @Test
+    void shallowLoanLayoutDistinguishesFlatStorageFromNestedElementFamily() {
+        var scalar = Ast.TypeRef.simple("int");
+        var array = new Ast.TypeRef("Array", java.util.List.of(scalar), false);
+        var nested = new Ast.TypeRef("Array", java.util.List.of(array), false);
+        var flat = DerivedCopyPlanV1.deriveShallowLoanLayout(array, name -> null);
+        assertFalse(flat.requiresLoans());
+        assertEquals(flat.root(), DerivedCopyPlanV1.deriveShallow(array, name -> null));
+        var layout = DerivedCopyPlanV1.deriveShallowLoanLayout(nested, name -> null);
+        assertTrue(layout.requiresLoans());
+        assertEquals(1, layout.retained().size());
+        var edge = assertInstanceOf(DerivedCopyPlanV1.RetainedElements.class, layout.retained().getFirst());
+        assertInstanceOf(DerivedCopyPlanV1.Sequence.class, edge.target());
+        assertThrows(IllegalArgumentException.class, () ->
+                DerivedCopyPlanV1.deriveShallow(nested, name -> null));
+    }
+
 }
