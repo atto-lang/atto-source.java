@@ -13288,9 +13288,10 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
-            boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
+            boolean integral = isIntegral(a) && isIntegral(b) && (op != '/' || checkedI64Arithmetic);
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                if (op == '/') return dev.oreslang.runtime.StrictIntegerArithmetic.div(x, y);
                 // An implicit VM fast-throw exception may have suppression disabled,
                 // which would discard source-boundary diagnostics after warm-up.
                 if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
