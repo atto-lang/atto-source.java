@@ -84,6 +84,30 @@ public final class OresMain {
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("--durable-counter-actor-v1")) {
+            if(args.length!=4||!args[2].equals("-o")||!args[1].endsWith(".atto")||
+               !Path.of(args[3]).getFileName().toString().equals("AttoDurableCounterV1.java"))
+                throw new UsageException("usage: --durable-counter-actor-v1 input.atto -o AttoDurableCounterV1.java");
+            Path input=Path.of(args[1]),output=Path.of(args[3]).toAbsolutePath();
+            if(!Files.isRegularFile(input,java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                throw new UsageException("durable counter requires regular source");
+            if(Files.exists(output,java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                throw new UsageException("durable counter requires fresh output");
+            byte[] bytes;
+            try(var stream=Files.newInputStream(input,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                bytes=stream.readNBytes(16385);
+            }
+            if(bytes.length>16384)throw new UsageException("durable counter source exceeds limit");
+            String source=java.nio.charset.StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+            String generated=dev.oreslang.compiler.DurableCounterSourceV1.emitJava(source);
+            // Fresh trusted output directory. Never replace an existing artifact.
+            Path temp=Files.createTempFile(output.getParent(),".atto-durable-",".tmp");
+            try {
+                Files.writeString(temp,generated,java.nio.charset.StandardCharsets.UTF_8);
+                Files.move(temp,output);
+            } finally {Files.deleteIfExists(temp);}
+            return 0;
+        }
         if (args.length > 0 && args[0].equals("test")) {
             return ConcurrencyTestCommand.run(java.util.Arrays.copyOfRange(args, 1, args.length));
         }
