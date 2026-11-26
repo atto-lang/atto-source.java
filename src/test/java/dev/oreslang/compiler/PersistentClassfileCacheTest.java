@@ -4,6 +4,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.channels.FileChannel;
+import java.nio.ByteBuffer;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
@@ -13,7 +18,9 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Closed scalar compiler-backed classfile persistence fixture, not a
  * production checked-AST serializer, native image or general cache API.
  * Host owns private directory and all ancestors; no hostile filesystem writer.
- * Fixed slot, sequential process admission, no crash durability claim. */
+ * Descriptor-relative Java NIO fixture. Requires a SecureDirectoryStream
+ * provider and trusted/cooperating filesystem writers. Java does not expose
+ * O_PATH, inode link count or directory fsync; not native Linux parity. */
 public final class PersistentClassfileCacheTest {
     private static final String A="pub fnc tick(i32 x): i32 { return x + 1; }";
     private static final String B="pub fnc tick(i32 x): i32 { return x + 2; }";
@@ -41,17 +48,72 @@ public final class PersistentClassfileCacheTest {
             return Files.readAllBytes(artifact.classFile());
         }finally{try(var paths=Files.walk(out)){for(var p:paths.sorted(Comparator.reverseOrder()).toList())Files.delete(p);}}
     }
+    private static final class Directory implements AutoCloseable {
+        private final SecureDirectoryStream<Path> stream;
+        private final PosixFileAttributes identity;
+        private Directory(SecureDirectoryStream<Path> stream)throws IOException{
+            this.stream=stream;identity=stream.getFileAttributeView(PosixFileAttributeView.class).readAttributes();
+            if(!identity.isDirectory()||identity.fileKey()==null||
+                !identity.permissions().equals(PosixFilePermissions.fromString("rwx------")))
+                throw new IOException("E_CACHE_PATH: private root required");
+        }
+        static SecureDirectoryStream<Path> secure(DirectoryStream<Path> d)throws IOException{
+            if(d instanceof SecureDirectoryStream<Path> s)return s;
+            d.close();throw new IOException("E_CACHE_PATH: secure directory provider required");
+        }
+        static Directory open(Path root)throws IOException{
+            if(!root.isAbsolute())root=root.toAbsolutePath();
+            var current=secure(Files.newDirectoryStream(root.getRoot()));
+            try{
+                for(Path part:root){
+                    if(part.toString().equals(".."))throw new IOException("E_CACHE_PATH: traversal");
+                    if(part.toString().equals("."))continue;
+                    var next=current.newDirectoryStream(part,LinkOption.NOFOLLOW_LINKS);current.close();current=next;
+                }
+                return new Directory(current);
+            }catch(IOException|RuntimeException e){current.close();throw e;}
+        }
+        private PosixFileAttributes attributes(Path name)throws IOException{
+            try{
+                var a=stream.getFileAttributeView(name,PosixFileAttributeView.class,LinkOption.NOFOLLOW_LINKS).readAttributes();
+                if(!a.isRegularFile()||!a.owner().equals(identity.owner())||
+                    !a.permissions().equals(PosixFilePermissions.fromString("rw-------"))||
+                    a.size()<CompilerArtifactReceipt.HEADER||a.size()>CompilerArtifactReceipt.HEADER+CompilerArtifactReceipt.MAX_ARTIFACT)
+                    throw new IOException("E_CACHE_PATH: bounded private regular file required");
+                return a;
+            }catch(NoSuchFileException e){return null;}
+        }
+        byte[] read(Path name)throws IOException{
+            var a=attributes(name);if(a==null)return null;
+            try(var channel=stream.newByteChannel(name,Set.of(StandardOpenOption.READ,LinkOption.NOFOLLOW_LINKS))){
+                var buffer=ByteBuffer.allocate((int)a.size());
+                while(buffer.hasRemaining()){if(channel.read(buffer)<=0)throw new IOException("E_CACHE_PATH: short artifact");}
+                if(channel.read(ByteBuffer.allocate(1))!=-1)throw new IOException("E_CACHE_PATH: artifact grew");
+                return buffer.array();
+            }
+        }
+        void publish(Path name,byte[] bytes)throws IOException{
+            // Fixed exclusive per-slot staging; never delete a different writer's
+            // staging file. Abandoned staging requires offline cleanup.
+            attributes(name);Path pending=Path.of(".pending-"+name);boolean owned=false;
+            try{
+                try(var channel=stream.newByteChannel(pending,Set.of(StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS),
+                        PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))){
+                    owned=true;var buffer=ByteBuffer.wrap(bytes);while(buffer.hasRemaining())channel.write(buffer);
+                    if(!(channel instanceof FileChannel file))throw new IOException("E_CACHE_PATH: file sync unavailable");
+                    file.force(true);
+                }
+                attributes(name);stream.move(pending,stream,name);owned=false;
+            }finally{if(owned)stream.deleteFile(pending);}
+        }
+        public void close()throws IOException{stream.close();}
+    }
     private static byte[] build(Path root,String source,boolean cold,boolean requireHit,byte[] pin)throws Exception{
-        var k=key(source);var path=slot(root,source);var s=secret(pin);
-        try{
-            if(!cold&&Files.exists(path,LinkOption.NOFOLLOW_LINKS)){
-                if(!Files.isRegularFile(path,LinkOption.NOFOLLOW_LINKS)||
-                    !Files.getPosixFilePermissions(path,LinkOption.NOFOLLOW_LINKS).equals(PosixFilePermissions.fromString("rw-------")))
-                    throw new IllegalArgumentException("E_CACHE_PATH");
-                try(var input=Files.newInputStream(path,LinkOption.NOFOLLOW_LINKS)){
-                    var envelope=input.readNBytes(CompilerArtifactReceipt.HEADER+CompilerArtifactReceipt.MAX_ARTIFACT+1);
-                    if(envelope.length<CompilerArtifactReceipt.HEADER||envelope.length>CompilerArtifactReceipt.HEADER+CompilerArtifactReceipt.MAX_ARTIFACT)
-                        throw new IllegalArgumentException("E_CACHE_READ");
+        var k=key(source);var name=slot(root,source).getFileName();var s=secret(pin);
+        try(var dir=Directory.open(root)){
+            if(!cold){
+                var envelope=dir.read(name);
+                if(envelope!=null){
                     var actual=HexFormat.of().formatHex(envelope,8,40);
                     if(actual.charAt(0)!=k.charAt(0))throw new IllegalArgumentException("E_CACHE_READ");
                     var bytes=CompilerArtifactReceipt.verify(actual,envelope,s);
@@ -60,12 +122,7 @@ public final class PersistentClassfileCacheTest {
             }
             if(requireHit)throw new AssertionError("restart attempted compilation");
             byte[] bytes=compile(root,source);
-            Path pending=Files.createTempFile(root,"pending-",".tmp",PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
-            try{
-                Files.write(pending,CompilerArtifactReceipt.seal(k,bytes,s));
-                Files.move(pending,path,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
-            }finally{Files.deleteIfExists(pending);}
-            return bytes;
+            dir.publish(name,CompilerArtifactReceipt.seal(k,bytes,s));return bytes;
         }finally{Arrays.fill(s,(byte)0);}
     }
     private static void execute(Path root,byte[] bytes,int expected)throws Exception{
@@ -90,6 +147,17 @@ public final class PersistentClassfileCacheTest {
         assertThrows(IllegalArgumentException.class,()->build(root,BAD,true,false,pin));
         assertArrayEquals(original,Files.readAllBytes(path));assertArrayEquals(edited,build(root,B,false,true,pin));
         assertThrows(IllegalArgumentException.class,()->build(root,B,false,true,new byte[32]));
+        var saved=path.resolveSibling("saved");Files.move(path,saved);Files.createSymbolicLink(path,saved);
+        try{assertThrows(IOException.class,()->build(root,B,false,true,pin));}finally{Files.delete(path);Files.move(saved,path);}
+        var real=Files.createDirectory(root.resolve("real"),PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+        var alias=Files.createSymbolicLink(root.resolve("alias"),real);
+        try{assertThrows(IOException.class,()->Directory.open(alias));}finally{Files.delete(alias);Files.delete(real);}
+        var pending=path.resolveSibling(".pending-"+path.getFileName());
+        Files.writeString(pending,"occupied",StandardOpenOption.CREATE_NEW);
+        try{assertThrows(FileAlreadyExistsException.class,()->build(root,B,true,false,pin));assertEquals("occupied",Files.readString(pending));}
+        finally{Files.delete(pending);}
+        assertArrayEquals(edited,build(root,B,false,true,pin));
+        System.out.println("JAVA_SECURE_DIRECTORY|symlink|ancestor-denied|staging-contention");
         original[80]^=1;Files.write(path,original);
         assertThrows(IllegalArgumentException.class,()->build(root,B,false,true,pin));
         System.out.println("PERSISTENT_JAVA_CLASSFILE|cold=42|warm-child=42|edit=43|rollback|corruption-denied");
