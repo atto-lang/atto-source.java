@@ -1,0 +1,5 @@
+# Experimental checked unsigned JVM scalar profile
+
+Explicit standalone source-to-Java compiler, not the default Graal frontend. Homogeneous u64/uint root functions and closed calls, grouping, checked +,-,*. Long stores exact bit patterns; compareUnsigned and divideUnsigned enforce unsigned range before arithmetic. Source, token, node, depth and expanded call-work limits reject unsupported input before code emission. No signed fallback. The generated Java class is compiled with javac and executes real JVM bytecode. Full-width unsigned decimal observer; machine-profile exit 70 for arithmetic faults, not the typed Atto Error ABI.
+
+Local OpenJDK 21.0.12.1 / Node 22.16.0: 14/14 focused tests, 24 shared guest executions in -Xint/-Xmixed, 2 additional non-corpus guest executions, 17 invalid-source controls. Mixed mode is not proof of JIT compilation. Exact source/test/corpus blobs matched. The candidate is not integrated with the canonical typed frontend; no Graal Native Image, JDK25, full repository CI or production parity claim. Reconcile existing numeric PR #1329 before canonical integration.

@@ -17,7 +17,10 @@ public final class GuestErrorValue {
     public enum Kind {
         BASE("Error", 0, "ordinary guest throw"),
         ARITHMETIC_OVERFLOW("ArithmeticOverflowError", 0x0001_0001, "ORES_I64_OVERFLOW"),
-        DIVISION_BY_ZERO("DivisionByZeroError", 0x0001_0002, "ORES_I64_DIVISION_BY_ZERO");
+        DIVISION_BY_ZERO("DivisionByZeroError", 0x0001_0002, "ORES_I64_DIVISION_BY_ZERO"),
+        // Compatibility runtime only; these codes are not a cross-backend ABI claim.
+        OPTION_UNWRAP("OptionUnwrapError", 0x0001_0003, "ORES_OPTION_UNWRAP"),
+        RESULT_UNWRAP("ResultUnwrapError", 0x0001_0004, "ORES_RESULT_UNWRAP");
 
         private final String nominalType;
         private final int abiCode;
@@ -31,10 +34,25 @@ public final class GuestErrorValue {
 
     private final String message;
     private final Kind kind;
+    private final Object payload;
 
-    private GuestErrorValue(Kind kind, String message) {
+    private GuestErrorValue(Kind kind, String message) { this(kind, message, null); }
+
+    private GuestErrorValue(Kind kind, String message, Object payload) {
         this.kind = kind;
         this.message = message;
+        this.payload = payload;
+    }
+
+    /** Guest-local payload; no transport or host authority is implied. */
+    public Object payload() { return payload; }
+
+    public static GuestErrorValue optionUnwrap() {
+        return new GuestErrorValue(Kind.OPTION_UNWRAP, "called Option::unwrap() on a None value");
+    }
+
+    public static GuestErrorValue resultUnwrap(Object original) {
+        return new GuestErrorValue(Kind.RESULT_UNWRAP, "called Result::unwrap() on an Err value", original);
     }
 
     /** A trusted future guest-constructor lowering must call this only after typechecking. */
