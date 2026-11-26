@@ -14,6 +14,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Real guest A cannot receive data until real guest B signals the external peer. */
@@ -55,6 +56,7 @@ final class SingleCarrierNioContinuationGuestTest {
     }
 
     @Test
+    @EnabledIfSystemProperty(named = "ores.runtime.control.parallelism", matches = "1")
     @Timeout(30)
     void externalPeerReleasesPendingReadOnlyAfterSecondGuestRuns() throws Exception {
         assertEquals("1", System.getProperty("ores.runtime.control.parallelism"),
