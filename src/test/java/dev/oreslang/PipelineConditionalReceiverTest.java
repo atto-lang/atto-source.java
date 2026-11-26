@@ -39,18 +39,24 @@ final class PipelineConditionalReceiverTest {
                     OresCompiler.parseAndTypeCheckStrictAtto("fnc f(): int { return " + expr + "; }"), expr);
         }
     }
+    @Test void constantConditionalReceiverAndAwaitAreProvenWithoutRuntimeCalls() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(
+                "pub fnc main(): int { const int x = 42 |> await |> if is int then 30 else 20 fi; return x; }"));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheckStrictAtto(
+                "fnc id(int n): int { return n; } pub fnc main(): int { const int x = id(42) |> if is int then 30 else 20 fi; return x; }"));
+    }
     @Test void realGuestEvaluatesReceiverOnceAndOnlySelectedBranches() throws Exception {
         String source = """
             fnc input(): int { stdio.stdout.write("S"); return 42; }
             fnc losing(): int { stdio.stdout.write("L"); return 20; }
             fnc increment(int n): int { return n + 1; }
             pub routine main(): void {
-                const int a = input() |> if is int then 30 else losing() fi;
-                const int b = 42 |> is type int ? 30 : losing();
-                const int c = 42 |> > 10 ? 30 : losing();
-                const int d = true |> ? 30 : losing();
-                const int e = true |> if then 30 else losing() fi;
-                const int f = 42 |> await |> if > 10 then 30 else losing() fi
+                val int a = input() |> if is int then 30 else losing() fi;
+                val int b = 42 |> is type int ? 30 : losing();
+                val int c = 42 |> > 10 ? 30 : losing();
+                val int d = true |> ? 30 : losing();
+                val int e = true |> if then 30 else losing() fi;
+                val int f = 42 |> await |> if > 10 then 30 else losing() fi
                     |> increment |> > 30 |> ? 100 : losing();
                 stdio.stdout.write(a+b+c+d+e+f);
             }
