@@ -14,8 +14,8 @@ import java.util.*;
 
 /**
  * Opt-in trusted-host namespace session. Only closed, public scalar provider
- * functions returning an integer literal and a consumer consisting of
- * stdout calls to zero-argument selected functions are admitted. No arbitrary
+ * functions returning bounded integer expressions and a consumer consisting of
+ * stdout calls to selected functions with integer expressions are admitted. No arbitrary
  * source rewriting, file resolution, host interop, or implicit namespace.
  * The actual compiler checks independent source units and the normal Truffle
  * linker executes them. The consumer is lowered to explicit file wildcard bindings
@@ -77,21 +77,38 @@ public final class PinnedScalarNamespaceSession {
         }
     }
     // Package-private: only trusted inventory admission supplies the selection.
+    // Render only checked closed integer expression nodes; the compiler, not
+    // this admission pass, defines arithmetic evaluation and overflow behavior.
+    private static String integerExpr(Ast.Expr expr,Set<String> names,int depth,int[] count){
+        if(depth>32||++count[0]>256)throw deny("integer expression budget");
+        if(expr instanceof Ast.LiteralExpr l && l.value() instanceof Long n)return Long.toString(n);
+        if(expr instanceof Ast.NameExpr n&&names.contains(n.name()))return n.name();
+        if(expr instanceof Ast.UnaryExpr u&&u.operator().equals("-"))return "(-("+integerExpr(u.operand(),names,depth+1,count)+"))";
+        if(expr instanceof Ast.BinaryExpr b&&Set.of("+","-","*").contains(b.operator()))
+            return "("+integerExpr(b.left(),names,depth+1,count)+b.operator()+integerExpr(b.right(),names,depth+1,count)+")";
+        throw deny("closed integer expression required");
+    }
     static Lowered lower(Ast.Program program,PinnedNamespaceInventory.Selection selected){
         if(!identifier(selected.localAlias()))throw deny("reserved alias");
         var m=root(program);
         if(m.declarations().size()!=1)throw deny("single entry");
         var main=ordinary(m.declarations().getFirst(),"void");
         if(!main.name().equals("main")||!main.parameters().isEmpty()||main.body().isEmpty()||main.body().size()>129)throw deny("entry signature");
-        var sources=new TreeMap<String,String>();var exports=new TreeMap<String,String>();
+        var sources=new TreeMap<String,String>();var exports=new TreeMap<String,String>();var arities=new TreeMap<String,Integer>();
         for(var provider:selected.providers()){
             var p=provider.program();if(!p.imports().isEmpty())throw deny("provider imports not supported");
             String id="provider/"+provider.path();
             for(var d:root(p).declarations()){
                 var f=ordinary(d,"int");
                 if(!identifier(f.name()))throw deny("reserved provider symbol");
-                if(!f.parameters().isEmpty())throw new IllegalArgumentException("E_NAMESPACE_ARITY: zero-argument provider required: "+f.name());
-                if(f.body().size()!=1||!(f.body().getFirst() instanceof Ast.ReturnStmt ret)||!(ret.value() instanceof Ast.LiteralExpr))throw deny("closed scalar literal provider required");
+                if(f.parameters().size()>16)throw deny("parameter budget");
+                var names=new HashSet<String>();
+                for(var param:f.parameters()){
+                    if(!identifier(param.name())||param.mutable()||param.structural()||!Ast.TypeRef.simple("int").equals(param.type())||!names.add(param.name()))throw deny("ordinary integer parameters required");
+                }
+                if(f.body().size()!=1||!(f.body().getFirst() instanceof Ast.ReturnStmt ret))throw deny("single scalar return required");
+                integerExpr(ret.value(),names,0,new int[1]);
+                arities.put(f.name(),f.parameters().size());
                 if(exports.putIfAbsent(f.name(),id)!=null)throw deny("ambiguous provider");
             }
             sources.put(id,provider.source());
@@ -107,10 +124,13 @@ public final class PinnedScalarNamespaceSession {
             var print=direct(expr.expression());
             if(!member(print.callee(),"stdio","println")||print.arguments().size()!=1)throw deny("only stdio.println");
             var call=direct(print.arguments().getFirst());
-            if(!(call.callee() instanceof Ast.MemberExpr access)||!member(call.callee(),selected.localAlias(),access.member())||!call.arguments().isEmpty())throw deny("selected zero-argument call required");
+            if(!(call.callee() instanceof Ast.MemberExpr access)||!member(call.callee(),selected.localAlias(),access.member()))throw deny("selected integer call required");
             String name=access.member(),target=exports.get(name);
             if(target==null)throw new IllegalArgumentException("E_NAMESPACE_SYMBOL: not a public selected provider: "+name);
-            used.put(name,target);body.append("stdio.println(namespace_provider_").append(name).append(".").append(name).append("());\n");
+            if(call.arguments().size()!=arities.get(name))throw new IllegalArgumentException("E_NAMESPACE_ARITY: incompatible selected call: "+name);
+            var args=new ArrayList<String>();int[] count={0};
+            for(var arg:call.arguments())args.add(integerExpr(arg,Set.of(),0,count));
+            used.put(name,target);body.append("stdio.println(namespace_provider_").append(name).append(".").append(name).append("(").append(String.join(",",args)).append("));\n");
         }
         if(used.isEmpty())throw deny("no selected calls");
         var lowered=new StringBuilder();
