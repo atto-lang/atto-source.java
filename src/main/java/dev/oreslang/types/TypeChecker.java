@@ -10285,6 +10285,12 @@ public final class TypeChecker {
             String no = strictNumericSource(ternary.whenFalse(), env);
             return yes != null && yes.equals(no) ? yes : null;
         }
+        // Canonical XOR is signed int, not a width-erased numeric coercion.
+        if (expr instanceof Ast.BinaryExpr bitwise && bitwise.operator().equals("^^")) {
+            String left = strictNumericSource(bitwise.left(), env);
+            String right = strictNumericSource(bitwise.right(), env);
+            return "int".equals(left) && "int".equals(right) ? "int" : null;
+        }
         if (expr instanceof Ast.BinaryExpr arithmetic
                 && Set.of("+", "-", "*").contains(arithmetic.operator())) {
             String left = strictNumericSource(arithmetic.left(), env);
