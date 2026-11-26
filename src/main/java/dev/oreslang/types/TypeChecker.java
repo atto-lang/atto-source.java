@@ -6892,6 +6892,12 @@ public final class TypeChecker {
                 actorClassForRef(actorRef);
                 return actorRef;
             }
+            // Immediate int values already use the non-suspending identity
+            // path in both guest evaluators. Keep std.await Future-only and
+            // reject unknown/affine operands rather than guessing at runtime.
+            if (!awaited.coreAdapter() && awaitedType == Primitive.INT) {
+                return awaitedType;
+            }
             throw new IllegalArgumentException(
                     "await requires Future<T>, HasFuture<T>, or ActorRef<T>; got " + awaitedType);
         }
