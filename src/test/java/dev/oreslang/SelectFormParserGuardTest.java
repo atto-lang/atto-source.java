@@ -103,6 +103,22 @@ final class SelectFormParserGuardTest {
 
 
     @Test
+    void futureDefaultExpressionFormsFailClosedUntilTrackedLoweringExists() {
+        for (String prefix : new String[] {"select", "nb select", "await select", "await nb select"}) {
+            for (String generic : new String[] {"", "<int>", "<Future<int>>"}) {
+                for (String body : new String[] {" { default: -> { return 42; } }",
+                        " over default: -> { return 42; } end"}) {
+                    String source = "pub fnc main(): int { return " + prefix + generic + body + "; }";
+                    IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                            () -> OresCompiler.parseAndTypeCheck(source), source);
+                    assertTrue(error.getMessage().contains("tracked Future result lowering"),
+                            error::getMessage);
+                }
+            }
+        }
+    }
+
+    @Test
     void overDelimiterDoesNotAdmitDoTrySelect() {
         String source = """
                 pub fnc main(): void {
