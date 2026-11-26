@@ -11729,7 +11729,7 @@ public final class TypeChecker {
             String no = strictNumericSource(ternary.whenFalse(), env);
             return yes != null && yes.equals(no) ? yes : null;
         }
-        // Conservative literal-only match join proof. Do not consult the outer
+        // Conservative literal and direct tagged-payload match join proof. Do not consult the outer
         // environment for a name declared or shadowed by an arm pattern/prefix.
         // Explicit result annotations alone cannot prove exact numeric width.
         if (expr instanceof Ast.MatchExpr match) {
@@ -11742,9 +11742,32 @@ public final class TypeChecker {
                         && Set.of("+", "-").contains(unary.operator())) {
                     value = unary.operand();
                 }
-                if (!(value instanceof Ast.LiteralExpr literal)) return null;
-                String width = literal.value() instanceof Long ? "int"
-                        : literal.value() instanceof Double ? "float" : null;
+                String width;
+                if (value instanceof Ast.LiteralExpr literal) {
+                    width = literal.value() instanceof Long ? "int"
+                            : literal.value() instanceof Double ? "float" : null;
+                } else if (arm.prefixStatements().isEmpty()
+                        && value instanceof Ast.NameExpr name
+                        && arm.pattern() instanceof Ast.ConstructorPattern constructor
+                        && constructor.arguments().size() == 1
+                        && constructor.arguments().getFirst() instanceof Ast.BindingPattern binding
+                        && name.name().equals(binding.name())) {
+                    // Only a direct payload binder from an explicitly typed
+                    // built-in Option/Result subject proves source width.
+                    // No erased primitive, outer name or arm-local shadowing.
+                    Ast.TypeRef source = strictSourceRef(match.subject(), env);
+                    if (source == null || source.isBorrow() || source.inferArguments()) return null;
+                    Ast.TypeRef payload = switch (constructor.constructor()) {
+                        case "Some" -> source.name().equals("Option") && source.arguments().size() == 1
+                                ? source.arguments().getFirst() : null;
+                        case "Ok" -> source.name().equals("Result") && source.arguments().size() == 2
+                                ? source.arguments().get(0) : null;
+                        case "Err" -> source.name().equals("Result") && source.arguments().size() == 2
+                                ? source.arguments().get(1) : null;
+                        default -> null;
+                    };
+                    width = strictNumericName(payload);
+                } else return null;
                 if (width == null || (common != null && !common.equals(width))) return null;
                 common = width;
             }
