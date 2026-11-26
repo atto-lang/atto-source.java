@@ -7132,6 +7132,66 @@ public final class Parser {
         return new Ast.ChannelOpExpr(operation, mode, channel, value);
     }
 
+    // Restricted executable source slice. A single lexical Channel<int>
+    // and pure integer projection need no mixed-source rotation. Each round
+    // uses the real checked procedural select arbiter on the Task lane.
+    // Dynamic counts, zero, multiple sources, Future and arbitrary arm
+    // bodies still fail closed until general aggregate lowering exists.
+    private Ast.Expr parseRestrictedCountedSelect() {
+        String unsupported = "counted select requires tracked Future result lowering outside restricted single-read literal slice";
+        if (!match(INT)) throw error(peek(), unsupported);
+        long count = parseSignedI64(previous());
+        if (count < 1 || count > 16 || !match(RPAREN))
+            throw error(peek(), unsupported);
+        Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.BLOCKING, true);
+        if (selected.policy() == Ast.SelectPolicy.RANDOM || selected.arms().size() != 1)
+            throw error(previous(), unsupported);
+        Ast.SelectArm arm = selected.arms().getFirst();
+        if (arm.operation() != Ast.ChannelOperation.READ
+                || !(arm.channel() instanceof Ast.NameExpr source)
+                || source.name().startsWith("$") || arm.bindingName() == null
+                || arm.bindingName().startsWith("$") || arm.mutableReferent()
+                || !Ast.TypeRef.simple("int").equals(arm.bindingType())
+                || arm.body().size() != 1
+                || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
+                || !isCountedScalarProjection(returned.value(), arm.bindingName()))
+            throw error(previous(), unsupported);
+        List<Ast.Stmt> taskBody = new ArrayList<>();
+        List<Ast.Expr> values = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            String slot = "$counted_select_value_" + i;
+            taskBody.add(new Ast.BindingStmt(Ast.BindingKind.LET, Ast.TypeRef.simple("int"),
+                    slot, new Ast.LiteralExpr(0L)));
+            var projected = copyCountedScalarProjection(returned.value());
+            var assignment = new Ast.ExprStmt(new Ast.AssignExpr(new Ast.NameExpr(slot), projected));
+            var roundArm = new Ast.SelectArm(Ast.ChannelOperation.READ,
+                    new Ast.NameExpr(source.name()), null, arm.bindingKind(),
+                    arm.bindingName(), List.of(assignment), false, arm.bindingType());
+            taskBody.add(new Ast.SelectStmt(Ast.WaitMode.BLOCKING,
+                    selected.policy(), List.of(roundArm), true));
+            values.add(new Ast.NameExpr(slot));
+        }
+        taskBody.add(new Ast.ReturnStmt(new Ast.ListExpr(values, true)));
+        return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, taskBody, false, false, true);
+    }
+
+    private static boolean isCountedScalarProjection(Ast.Expr expression, String binding) {
+        if (expression instanceof Ast.LiteralExpr literal) return literal.value() instanceof Long;
+        if (expression instanceof Ast.NameExpr name) return name.name().equals(binding);
+        return expression instanceof Ast.BinaryExpr binary
+                && List.of("+", "-", "*").contains(binary.operator())
+                && isCountedScalarProjection(binary.left(), binding)
+                && isCountedScalarProjection(binary.right(), binding);
+    }
+
+    private static Ast.Expr copyCountedScalarProjection(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) return new Ast.LiteralExpr(literal.value());
+        if (expression instanceof Ast.NameExpr name) return new Ast.NameExpr(name.name());
+        Ast.BinaryExpr binary = (Ast.BinaryExpr) expression;
+        return new Ast.BinaryExpr(binary.operator(),
+                copyCountedScalarProjection(binary.left()), copyCountedScalarProjection(binary.right()));
+    }
+
     private Ast.Expr parseDynamicSelect(Ast.WaitMode mode) {
         // Static select expressions will return a tracked Future, including
         // explicit select<T>. Do not lower them as legacy blocking/detached
@@ -7147,8 +7207,9 @@ public final class Parser {
             if (!peek().lexeme().equals("int"))
                 throw error(peek(), "typed static select<T> requires tracked Future result lowering");
             advance();
-            if (!match(GT) || check(LPAREN) || mode == Ast.WaitMode.IMMEDIATE)
+            if (!match(GT) || mode == Ast.WaitMode.IMMEDIATE)
                 throw error(peek(), "typed/count select requires tracked Future result lowering");
+            if (match(LPAREN)) return parseRestrictedCountedSelect();
             Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.NONBLOCKING, false);
             if (selected.arms().size() != 1
                     || selected.arms().getFirst().operation() != Ast.ChannelOperation.DEFAULT)

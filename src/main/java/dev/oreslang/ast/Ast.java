@@ -2218,15 +2218,21 @@ public final class Ast {
     public enum ExecutionDomain { CPU, GPU }
     public enum TaskCaptureTransfer { COPY, MOVE }
     public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
-                           boolean typedDefaultSelectI64) implements Expr {
+                           boolean typedDefaultSelectI64, boolean typedCountedSelectI64) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
-            if (typedDefaultSelectI64 && domain != ExecutionDomain.CPU)
-                throw new IllegalArgumentException("typed default select requires CPU task authority");
+            if ((typedDefaultSelectI64 || typedCountedSelectI64) && domain != ExecutionDomain.CPU)
+                throw new IllegalArgumentException("typed select requires CPU task authority");
+            if (typedDefaultSelectI64 && typedCountedSelectI64)
+                throw new IllegalArgumentException("inconsistent typed select result");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, false);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) {
-            this(domain, body, legacyNb, false);
+            this(domain, body, legacyNb, false, false);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body) {
             this(domain, body, false);

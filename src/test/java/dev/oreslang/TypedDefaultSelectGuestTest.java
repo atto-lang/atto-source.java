@@ -95,6 +95,62 @@ final class TypedDefaultSelectGuestTest {
         }) assertThrows(IllegalArgumentException.class,
           () -> OresCompiler.parseAndTypeCheck("pub async fnc main(): void { "+body+" return; }"),body);
     }
+    @Test void countedSingleReadGuestReturnsExactProjectedArray() throws Exception {
+        assertEquals("6|10|26|99",run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(4);
+                  writech incoming, 3; writech incoming, 5;
+                  writech incoming, 13; writech incoming, 99;
+                  val Future<Array<int>> pending = select<int>(3) over
+                    when readch incoming: int value -> { return value * 2; }
+                  end;
+                  val Array[int] result = await pending;
+                  stdio.stdout.write(result[0]); stdio.stdout.write("|");
+                  stdio.stdout.write(result[1]); stdio.stdout.write("|");
+                  stdio.stdout.write(result[2]); stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming);
+                  return;
+                }
+                """));
+    }
+
+    @Test void countedSingleReadAliasAndDirectAwaitExecute() throws Exception {
+        assertEquals("42|42",run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(2);
+                  writech incoming, 21; writech incoming, 40;
+                  val Future<Array<int>> first = nb select<int>(1) {
+                    when readch incoming: int value -> { return value * 2; }
+                  };
+                  val Array[int] result = await first;
+                  val Array[int] second = await select<int>(1) over
+                    when readch incoming: int value -> { return value + 2; }
+                  end;
+                  stdio.stdout.write(result[0]); stdio.stdout.write("|");
+                  stdio.stdout.write(second[0]);
+                  return;
+                }
+                """));
+    }
+
+    @Test void countedUnsupportedSourceFormsAndContextFailClosed() {
+        for (String expression : new String[]{
+          "select<int>(0) { when readch incoming: int n -> { return n; } }",
+          "select<int>(17) { when readch incoming: int n -> { return n; } }",
+          "select<int>(1+2) { when readch incoming: int n -> { return n; } }",
+          "select<int>(1) { when readch incoming: int n -> { return n; } default: -> { return 0; } }",
+          "select<int>(1) { when readch incoming: int n -> { return n + other; } }"
+        }) assertThrows(IllegalArgumentException.class, () ->
+            OresCompiler.parseAndTypeCheck("pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(4); val int other = 1; val Future<Array<int>> result = "+expression+"; return; }"),expression);
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(4);
+                  val Future<int> result = select<int>(1) { when readch incoming: int n -> { return n; } };
+                  return;
+                }
+                """));
+    }
+
     private static String run(String program) throws Exception {
         var out=new ByteArrayOutputStream();
         try(var context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()){

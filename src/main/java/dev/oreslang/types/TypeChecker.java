@@ -6829,6 +6829,8 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.TaskExpr task) {
+            if (task.typedCountedSelectI64())
+                return checkTaskExpression(task, new ListType(Primitive.INT), env, generics, self);
             if (task.typedDefaultSelectI64())
                 return checkTaskExpression(task, Primitive.INT, env, generics, self);
             // A value-producing task needs contextual Future<T> information so
@@ -7799,6 +7801,8 @@ public final class TypeChecker {
             Type result = future.arguments().getFirst();
             if (task.typedDefaultSelectI64() && result != Primitive.INT)
                 throw new IllegalArgumentException("select<int> has result Future<int>; contextual result cannot change it");
+            if (task.typedCountedSelectI64() && !new ListType(Primitive.INT).equals(result))
+                throw new IllegalArgumentException("counted select<int> has result Future<Array<int>>; contextual result cannot change it");
             checkTaskExpression(task, result, env, generics, self);
             return future;
         }
