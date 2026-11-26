@@ -1127,7 +1127,23 @@ public final class Ast {
         }
     }
     public record ExprStmt(Expr expression) implements Stmt { }
-    public record DeferStmt(Expr expression) implements Stmt { }
+    public record DeferStmt(Expr expression) implements Stmt {
+        /**
+         * Bounded explicit registration factory: (|T x| -> || -> {...})(v).
+         * This is a source shape, not an authorization: the type and ownership
+         * passes must validate it before either execution path admits it.
+         */
+        public CallExpr boundFactory() {
+            if (expression instanceof CallExpr call
+                    && call.origin() == CallOrigin.DIRECT
+                    && call.callee() instanceof LambdaExpr outer
+                    && outer.expressionBody() instanceof LambdaExpr
+                    && !call.typeArgumentsPresent()) {
+                return call;
+            }
+            return null;
+        }
+    }
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
