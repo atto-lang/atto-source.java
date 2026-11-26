@@ -107,6 +107,41 @@ final class CallableAggregatePatternTest {
     }
 
     @Test
+    void nominalClassPublicDataFieldsAndMethodParameter() throws Exception {
+        execute("""
+                define class Point as
+                    pub val int x = 5;
+                    pub val int y = 8;
+                end
+                define class Calculator as
+                    pub total(Point {x, y}): int { return x + y; }
+                end
+                fnc total(Point {x, y}): int { return x + y; }
+                pub routine main(): void {
+                    stdio.stdout.write(total(new Point()));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(new Point() |> |Point {x, y}| -> x + y);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(new Calculator().total(new Point()));
+                    return;
+                }
+                """, "13:13:13");
+    }
+
+    @Test
+    void nominalClassPrivateFieldAndMethodAreNotPatternFields() {
+        for (String selector : new String[]{"secret", "read"}) {
+            assertThrows(IllegalArgumentException.class, () -> check("""
+                    define class Vault as
+                        private val int secret = 7;
+                        pub read(): int { return self.secret; }
+                    end
+                    fnc bad(Vault {%s}): int { return 0; }
+                    """.formatted(selector)), selector);
+        }
+    }
+
+    @Test
     void explicitTupleTypeFormalRemainsOrdinary() {
         check("""
                 fnc ordinary((int, int) t): int { return t[0] + t[1]; }
