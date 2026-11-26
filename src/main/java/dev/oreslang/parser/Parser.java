@@ -5062,13 +5062,15 @@ public final class Parser {
         if (!(type.equals("int") || type.equals("bool")
                 || type.equals("string") || type.equals("String"))) return false;
         return tokens.get(current + 1).type() == IDENT
-                && tokens.get(current + 2).type() == EQUAL;
+                && (tokens.get(current + 2).type() == EQUAL
+                    || tokens.get(current + 2).type() == SEMICOLON);
     }
 
     private Ast.BindingStmt parsePrimitiveTypeFirstImmutableBinding() {
         Ast.TypeRef type = parseTypeRef();
         String name = consume(IDENT,
                 "expected binding name after immutable-default local type").lexeme();
+        if(check(SEMICOLON))throw error(peek(),"E_MISSING_INITIALIZER: type-first local binding requires initializer");
         consume(EQUAL, "immutable-default local binding requires initializer");
         Ast.Expr initializer = parseExpression();
         consumeExpressionStatementTerminator(
@@ -8030,6 +8032,7 @@ public final class Parser {
             }
             if(key.startsWith(STRICT_CELL_PREFIX)||strictArrays.containsKey(key))
                 throw error(first,"E_VERIFY_UNSUPPORTED: reserved or reused array binding");
+            if(check(SEMICOLON))throw error(peek(),"E_MISSING_INITIALIZER: explicit initializer required");
             consume(EQUAL,"expected '='");
             if(check(IDENT)&&peek().lexeme().equals("Array")){
                 if(type!=null||verifiedLocals.containsKey(key))
@@ -8069,6 +8072,7 @@ public final class Parser {
             Token typeName=consume(IDENT,"expected mutable scalar type");
             var type=readRefinedType(typeName);
             Token local=verifiedName("expected mutable scalar name");
+            if(check(SEMICOLON))throw error(peek(),"E_MISSING_INITIALIZER: explicit initializer required");
             consume(EQUAL,"expected '='");var value=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
             type.require(value.type(),"E_REFINEMENT_BINDING","mutable binding "+local.lexeme());
             var key=local.lexeme();
