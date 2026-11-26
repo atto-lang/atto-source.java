@@ -49,7 +49,16 @@ public final class RealtimeClassfileAudit {
     public static Report audit(Path classFile) throws IOException {
         long fileSize = Files.size(classFile);
         if (fileSize < 24 || fileSize > MAX_CLASS_BYTES) deny("invalid or oversized classfile");
-        byte[] bytes = Files.readAllBytes(classFile);
+        try (var input = Files.newInputStream(classFile)) {
+            return audit(input.readNBytes(MAX_CLASS_BYTES + 1));
+        }
+    }
+
+    /** Audit an owned snapshot, not a path that might be reopened by a loader. */
+    public static Report audit(byte[] candidate) throws IOException {
+        if (candidate == null || candidate.length < 24 || candidate.length > MAX_CLASS_BYTES)
+            deny("invalid or oversized classfile");
+        byte[] bytes = candidate.clone();
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             if (in.readInt() != 0xCAFEBABE) deny("bad classfile magic");
             in.readUnsignedShort();
@@ -82,6 +91,7 @@ public final class RealtimeClassfileAudit {
             for (int i = 0; i < fields; i++) skipMember(in, cp);
 
             int methods = in.readUnsignedShort();
+            if (methods < 2 || methods > 129) deny("classfile method budget");
             int verified = 0;
             int bytecodeBytes = 0;
             boolean constructorSeen = false;
@@ -97,7 +107,7 @@ public final class RealtimeClassfileAudit {
                 for (int a = 0; a < attributes; a++) {
                     String attributeName = utf8(cp, in.readUnsignedShort());
                     int length = in.readInt();
-                    if (length < 0) deny("negative attribute length");
+                    if (length < 0 || length > in.available()) deny("invalid or truncated attribute length");
                     byte[] payload = in.readNBytes(length);
                     if (payload.length != length) deny("truncated method attribute");
                     if (!"Code".equals(attributeName)) deny("unknown method attribute");

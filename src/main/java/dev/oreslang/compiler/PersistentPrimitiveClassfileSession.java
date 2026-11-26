@@ -19,7 +19,10 @@ public final class PersistentPrimitiveClassfileSession {
     private final Path root;
     private final Object identity;
     private final String scope,compiler,toolchain;
-    public record Build(byte[] bytes,boolean reused){}
+    public record Build(byte[] bytes,boolean reused){
+        public Build { bytes=bytes.clone(); }
+        @Override public byte[] bytes(){return bytes.clone();}
+    }
     public PersistentPrimitiveClassfileSession(Path root,String scope,String compiler,String toolchain)throws IOException{
         this.root=root.toAbsolutePath();this.scope=scope;this.compiler=compiler;this.toolchain=toolchain;
         try(var dir=Directory.open(this.root)){identity=dir.identity.fileKey();}
@@ -49,7 +52,10 @@ public final class PersistentPrimitiveClassfileSession {
                     String actual=HexFormat.of().formatHex(envelope,8,40);
                     if(actual.charAt(0)!=key.charAt(0))throw new IllegalArgumentException("E_CACHE_READ: wrong slot");
                     byte[] bytes=CompilerArtifactReceipt.verify(actual,envelope,secret);
-                    if(actual.equals(key))return new Build(bytes,true);
+                    if(actual.equals(key)){
+                        RealtimeClassfileAudit.audit(bytes);
+                        return new Build(bytes,true);
+                    }
                 }
             }
             // Scratch is host-private and the compiler's own closed-world
@@ -62,6 +68,7 @@ public final class PersistentPrimitiveClassfileSession {
                     bytes=input.readNBytes(CompilerArtifactReceipt.MAX_ARTIFACT+1);
                 }
                 if(bytes.length>CompilerArtifactReceipt.MAX_ARTIFACT)throw new IOException("E_CACHE_READ: classfile budget");
+                RealtimeClassfileAudit.audit(bytes);
                 dir.publish(name,CompilerArtifactReceipt.seal(key,bytes,secret));return new Build(bytes,false);
             }finally{try(var paths=Files.walk(work)){for(var file:paths.sorted(Comparator.reverseOrder()).toList())Files.delete(file);}}
         }finally{Arrays.fill(secret,(byte)0);}
