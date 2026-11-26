@@ -10,6 +10,7 @@ on:
       - 'src/main/java/dev/oreslang/types/CopyPlanCache.java'
       - 'src/main/java/dev/oreslang/types/ShallowSlotDomain.java'
       - 'src/main/java/dev/oreslang/types/GuestClassSlots.java'
+      - 'src/test/java/dev/oreslang/GuestClassGraphLeaseTest.java'
       - 'tests/graph-topology-host/GuestClassSlotsHarness.java'
       - 'tests/graph-topology-host/SlotHarness.java'
       - 'src/main/java/dev/oreslang/types/CheckedCopyPlanSeeds.java'
@@ -86,6 +87,7 @@ jobs:
           set -euo pipefail
           javac -Xlint:all -Werror -d "$RUNNER_TEMP/guest-slots" \
             src/main/java/dev/oreslang/types/GuestClassSlots.java \
+            src/main/java/dev/oreslang/types/CopyScalarAdmission.java \
             tests/graph-topology-host/GuestClassSlotsHarness.java
           java -Xss256k -cp "$RUNNER_TEMP/guest-slots" GuestClassSlotsHarness
           echo 'GUEST_SLOT_SCOPE=HOST_COMPONENT_ONLY'
@@ -93,7 +95,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=DerivedCopyPlanGuestTest,CopyPolicyCompilerTest,OwnershipAndClosureTest,DerivedGraphCopyPlanTest,GraphCopyTransactionTest,CopyPlanCacheTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -ntp -Dtest=DerivedCopyPlanGuestTest,CopyPolicyCompilerTest,OwnershipAndClosureTest,DerivedGraphCopyPlanTest,GraphCopyTransactionTest,CopyPlanCacheTest,GuestClassGraphLeaseTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
       - name: Capture executed Surefire receipts
         if: always()
         shell: bash
