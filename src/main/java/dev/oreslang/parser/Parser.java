@@ -2763,8 +2763,12 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseOr() {
         Ast.Expr expr = parseBitwiseXor();
-        while (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
-            expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+        while (true) {
+            if (matchContextualIdentifier("pipe")) {
+                expr = new Ast.BinaryExpr("pipe", expr, parseBitwiseXor());
+            } else if (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
+                expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+            } else break;
         }
         return expr;
     }
@@ -3019,6 +3023,19 @@ public final class Parser {
             } else if (match(DOT)) {
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
+            } else if (check(COLON) && checkNext(COLON)
+                    && adjacent(peek(), tokens.get(current + 1))) {
+                advance();
+                advance();
+                // Never allow :: to silently fall back to an instance. The
+                // internal non-source identifier forces static namespace
+                // lookup even when a local value shadows the class name.
+                if (!(expr instanceof Ast.NameExpr namespace)) {
+                    throw error(previous(), "'::' requires a named static namespace");
+                }
+                String member = consumeMemberName();
+                expr = new Ast.MemberExpr(
+                        new Ast.NameExpr("$static$" + namespace.name()), member);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
                 consume(RBRACKET, "expected ']' after index");

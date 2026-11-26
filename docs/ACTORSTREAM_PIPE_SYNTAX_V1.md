@@ -1,0 +1,48 @@
+# ActorStream syntax gate (experimental)
+
+Supported spelling targets:
+
+```oreslang
+return spawn Source() pipe spawn Transform() pipe spawn Sink();
+return ActorUtils.pipe(spawn Source(), spawn Transform(), spawn Sink());
+return ActorUtils::pipe(spawn Source(), spawn Transform(), spawn Sink());
+```
+
+`::` is the preferred explicit spelling for static functions when a
+namespace/class resolution could be ambiguous. It maps to static namespace
+member resolution rather than dynamic actor messaging.
+
+All forms construct a bounded, compiler-validated `ActorStream` (2..16
+distinct actor capabilities, shared exact closed nominal ActorMail contract).
+The runtime binds the full route before any DATA ingress, with one outstanding
+round trip: stage 0 -> ... -> stage N-1 -> ... -> stage 0. `ActorStream.send`
+sends to the source and `ActorStream.get_done()` observes its physical
+completion. Actors run on their own exclusive scheduler turns; stage grouping
+does not permit concurrent native execution inside one actor.
+
+The 15-actor fixture sends 14 forward and 14 backward typed hops, rejects
+direct middle-stage ingress, duplicate registrations and early STOP through
+the same scheduler authority checks as the previous three-stage route.
+This gate is Java-first: native LLVM same-byte source acceptance and FD3
+runtime attestation are separate release requirements.
+
+## Static namespace disambiguation
+
+`Utility::answer()` and `ActorUtils::pipe(...)` resolve static
+namespaces *even if a local variable named `Utility` or `ActorUtils`
+exists*. This is enforced in the parser/typechecker and runtime with an
+internal, non-source static-namespace receiver; it never calls a shadowing
+instance's method. `Utility.answer()` uses ordinary lexical/instance
+lookup, and is therefore ambiguous if the value name shadows the class.
+
+## Physical completion gate
+
+`ActorStream.get_done()` is a **whole-route** barrier: success requires
+both the completed `2*N` phase transition and physical DONE settlement
+from **all N actors**. A failed stage, an aborted route, or an incomplete
+roundtrip rejects the observer without treating source-only termination
+as sufficient evidence. Cancelling an observation cannot cancel the actors.
+
+The pipeline remains a single-flow construct: only one root DATA ingress
+may complete. Replaying a root message or sending directly to a middle
+actor is not equivalent to `ActorStream.send`.
