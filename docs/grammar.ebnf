@@ -420,7 +420,9 @@ pipeline_stage  = IDENT [ call_suffix ]
                 | ( "Option" | "Result" ) "." IDENT call_suffix
                 | pipe_lambda
                 | "nlex" pipe_lambda
-                | pipeline_match ;
+                | pipeline_match
+                | "await"
+                | "std" "." "await" ;
 pipeline_match  = "match" [ "first" ] [ "<" [ "ret" "=" ] type_ref ">" ]
                   "over" ( value_match_stage_arm { value_match_stage_arm } "end"
                          | "{" braced_value_match_stage_arm { braced_value_match_stage_arm } "}" ) ;
@@ -438,6 +440,8 @@ value_match_stage_result
    ownership and arm-result restrictions apply. No implicit closure or copy.
    Both over/end and over/braces accept expression and block arms, with optional
    trailing commas, in standalone matches and forward pipeline stages.
+   Bare await is ordinary prefix await supplied with the left-hand value;
+   immediate int returns unchanged. std.await remains a Future-only adapter.
    Other stages are existing callables, including existing |x| -> expr lambdas.
    No separate |> (name) binding syntax. A single lambda parameter receives
    the entire upstream value, including Tuple[T1,...,TN]. Two or more lambda
