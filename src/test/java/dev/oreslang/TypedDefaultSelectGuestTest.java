@@ -377,6 +377,22 @@ final class TypedDefaultSelectGuestTest {
                 """));
     }
 
+    @Test void countedGuestExhaustionUsesAggregateCursor() throws Exception {
+        var failure = assertThrows(org.graalvm.polyglot.PolyglotException.class, () -> run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 42;
+                  incoming.close();
+                  val Array[int] result = await select<int>(2) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  stdio.stdout.write(result.size);
+                  return;
+                }
+                """));
+        assertTrue(failure.getMessage().contains("all counted selection sources exhausted"), failure.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         var out=new ByteArrayOutputStream();
         try(var context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()){

@@ -14,6 +14,7 @@ final class CountedSelectReadCursor {
         SelectExhausted() { super("all counted selection sources exhausted"); }
     }
     private final Thread owner;
+    private java.util.function.LongUnaryOperator projection = value -> value;
     private final Object taskDomain;
     private TaskOwnedLeases.Lease taskRoundLease;
     private final ActorRuntime actorRuntime;
@@ -143,6 +144,13 @@ final class CountedSelectReadCursor {
         if (actorRuntime != null || taskDomain != null)
             throw new IllegalStateException("owned cursor requires its retirement continuation");
         return beginRoundInternal();
+    }
+
+    void setTaskProjection(java.util.function.LongUnaryOperator projector) {
+        checkOwner();
+        if (taskDomain == null || state != State.READY || !values.isEmpty() || active != null)
+            throw new IllegalStateException("counted projection requires initial tracked cursor");
+        projection = Objects.requireNonNull(projector);
     }
 
     // Register cleanup and its physical receipt BEFORE publishing the round.
@@ -295,7 +303,7 @@ final class CountedSelectReadCursor {
                             && result.operation() != ChannelRuntime.SelectOperation.FUTURE)
                             || !(result.value() instanceof Long number))
                         throw new IllegalStateException("counted scalar selection received non-i64 result");
-                    values.add(number);
+                    values.add(projection.applyAsLong(number));
                     advance(result.index(), result.operation() == ChannelRuntime.SelectOperation.FUTURE);
                 }
                 if (values.size() == count) {

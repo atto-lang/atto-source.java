@@ -27,6 +27,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.CountedTaskSelection;
 import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
@@ -1701,6 +1702,7 @@ public final class OresEvalRootNode extends RootNode {
             private final List<?> arguments;
             private final TaskLaunchAuthority taskLaunchAuthority;
             private Env initialBlockEnv;
+            private CountedGuestPlan countedGuestPlan;
             /** Independent Task launch authority is one-shot even if a scheduler mis-dispatches it. */
             private boolean taskLaunchConsumed;
 
@@ -1925,11 +1927,11 @@ public final class OresEvalRootNode extends RootNode {
                                             ? function.body()
                                             : method.body();
 
-                    runBlock(
-                            this,
-                            body,
-                            params,
-                            this::finishSourceFlow);
+                    if (countedGuestPlan != null) {
+                        runCountedGuest(this, countedGuestPlan, params);
+                    } else {
+                        runBlock(this, body, params, this::finishSourceFlow);
+                    }
                 } else if (!cancellationUnwinding
                         && resume.failure() instanceof java.util.concurrent.CancellationException
                         && OresScheduler.cancellationCleanupTurn()) {
@@ -2247,6 +2249,87 @@ public final class OresEvalRootNode extends RootNode {
             return future;
         }
 
+        private record CountedGuestPlan(int count, String source, Ast.SelectPolicy policy,
+                Ast.SelectArm arm, Ast.Expr projection) {}
+
+        // Reuse the checked synthetic body as the proof of the currently
+        // admitted single-read i64 slice. Never execute an unchecked clone.
+        private CountedGuestPlan checkedCountedGuestPlan(List<Ast.Stmt> body, Long dynamicCount) {
+            if (dynamicCount != null) {
+                if (body.size() != 4 || !(body.get(2) instanceof Ast.LoopStmt loop)
+                        || loop.body().size() != 2
+                        || !(loop.body().get(1) instanceof Ast.SelectStmt select)
+                        || select.arms().size() != 1)
+                    throw new IllegalStateException("invalid checked counted loop");
+                var arm = select.arms().getFirst();
+                if (!(arm.channel() instanceof Ast.NameExpr source)
+                        || arm.operation() != Ast.ChannelOperation.READ
+                        || arm.body().size() != 1
+                        || !(arm.body().getFirst() instanceof Ast.ExprStmt stmt)
+                        || !(stmt.expression() instanceof Ast.CallExpr call)
+                        || !(call.callee() instanceof Ast.MemberExpr member)
+                        || !member.member().equals("add")
+                        || call.arguments().size() != 1)
+                    throw new IllegalStateException("invalid checked counted projection");
+                return new CountedGuestPlan(dynamicCount.intValue(), source.name(),
+                        select.policy(), arm, call.arguments().getFirst());
+            }
+            int count = (body.size() - 1) / 2;
+            if (count < 1 || count > 16 || body.size() != count * 2 + 1)
+                throw new IllegalStateException("invalid checked counted body");
+            CountedGuestPlan plan = null;
+            for (int i = 0; i < count; i++) {
+                if (!(body.get(i * 2 + 1) instanceof Ast.SelectStmt select)
+                        || select.arms().size() != 1)
+                    throw new IllegalStateException("invalid checked counted round");
+                var arm = select.arms().getFirst();
+                if (!(arm.channel() instanceof Ast.NameExpr source)
+                        || arm.operation() != Ast.ChannelOperation.READ
+                        || arm.body().size() != 1
+                        || !(arm.body().getFirst() instanceof Ast.ExprStmt stmt)
+                        || !(stmt.expression() instanceof Ast.AssignExpr assignment))
+                    throw new IllegalStateException("invalid checked counted projection");
+                if (plan == null) {
+                    plan = new CountedGuestPlan(count, source.name(), select.policy(),
+                            arm, assignment.value());
+                } else if (!plan.source().equals(source.name())
+                        || plan.policy() != select.policy()
+                        || !plan.arm().bindingName().equals(arm.bindingName())
+                        || !plan.projection().equals(assignment.value()))
+                    throw new IllegalStateException("counted rounds changed checked source/projection");
+            }
+            return plan;
+        }
+
+        private void runCountedGuest(SourceTask task, CountedGuestPlan plan, Env params) {
+            var source = requireChannel(params.lookup(plan.source()), "counted select");
+            var cursor = new CountedTaskSelection(plan.count(),
+                    List.of(ChannelRuntime.read(source)), runtimeSelectPolicy(plan.policy()), number -> {
+                        Env armEnv = new Env(params);
+                        armEnv.define(plan.arm().bindingName(), number, plan.arm().bindingKind());
+                        Object value = eval(plan.projection(), armEnv);
+                        if (!(value instanceof Long projected))
+                            throw new IllegalStateException("counted projection produced non-i64");
+                        return projected;
+                    });
+            runCountedGuestRound(task, cursor);
+        }
+
+        private void runCountedGuestRound(SourceTask task, CountedTaskSelection cursor) {
+            // Each scheduler resume follows the physical drain; even a ready
+            // source uses an ordinary scheduler Await, never a producer callback.
+            task.suspend(cursor.begin(), (owner, ignored, failure) -> {
+                if (failure != null) throw sourceFailure(failure);
+                if (cursor.retire()) {
+                    var result = new NativeAttoSequence("Array");
+                    result.addAll(cursor.result());
+                    owner.done(result);
+                } else {
+                    runCountedGuestRound(owner, cursor);
+                }
+            });
+        }
+
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr taskExpr,
                 Env env) {
@@ -2365,6 +2448,9 @@ public final class OresEvalRootNode extends RootNode {
                             taskBody,
                             true,
                             launchAuthority);
+            if (taskExpr.typedCountedSelectI64() && !ActorRuntime.inActorExecution()) {
+                task.countedGuestPlan = checkedCountedGuestPlan(taskBody, dynamicCount);
+            }
             Env.DetachedTaskSnapshot transfer =
                     env.detachedTaskSnapshot(
                             admitted,
