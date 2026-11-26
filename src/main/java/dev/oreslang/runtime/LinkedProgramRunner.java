@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.PackageLayout;
 import dev.oreslang.compiler.SourceUnitDiagnosticException;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
@@ -116,7 +117,8 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         // The v2 legacy manifest is an explicit closed scalar namespace
         // profile. Use the same compiler and policy-controlled runner below.
-        if (!PinnedNamespaceFilePlan.loadIfPresent(entry, units, importResolutions)) {
+        PackageLayout pinnedLayout= PinnedNamespaceFilePlan.loadIfPresent(entryFile, units, importResolutions);
+        if (pinnedLayout == null) {
             OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
             projectConfig.requireStdJavaBackend();
             collectImportClosure(entry, units, projectConfig, importResolutions,
@@ -137,7 +139,7 @@ public final class LinkedProgramRunner {
 
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
-                new IncrementalCompiler().compile(sources, importResolutions);
+                new IncrementalCompiler().compile(sources, importResolutions, pinnedLayout == null ? PackageLayout.NONE : pinnedLayout);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         if (policy != null) {
             for (Ast.Program program : programs.values()) {
@@ -288,7 +290,8 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         // The v2 legacy manifest is an explicit closed scalar namespace
         // profile. Use the same compiler and policy-controlled runner below.
-        if (!PinnedNamespaceFilePlan.loadIfPresent(entry, units, importResolutions)) {
+        PackageLayout pinnedLayout= PinnedNamespaceFilePlan.loadIfPresent(entryFile, units, importResolutions);
+        if (pinnedLayout == null) {
             OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
             projectConfig.requireStdJavaBackend();
             collectImportClosure(entry, units, projectConfig, importResolutions,
@@ -307,7 +310,7 @@ public final class LinkedProgramRunner {
 
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
-                new IncrementalCompiler().compile(sources, importResolutions);
+                new IncrementalCompiler().compile(sources, importResolutions, pinnedLayout == null ? PackageLayout.NONE : pinnedLayout);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         int exitStatus = 0;
         String entryId = unitId(entry);

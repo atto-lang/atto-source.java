@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.PinnedNamespaceInventory;
+import dev.oreslang.compiler.PackageLayout;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.parser.Parser;
@@ -57,16 +58,25 @@ final class PinnedNamespaceFilePlan {
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));}
         catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
     }
-    static boolean loadIfPresent(Path entry,Map<String,MixedSourceUnit> units,Map<String,Map<String,String>> resolutions)throws IOException{
+    static PackageLayout loadIfPresent(Path submitted,Map<String,MixedSourceUnit> units,Map<String,Map<String,String>> resolutions)throws IOException{
+        Path entry=submitted.toAbsolutePath().normalize();
         Path root=null;
         for(Path d=entry.getParent();d!=null;d=d.getParent()){
             boolean legacy=exists(d.resolve(MANIFEST));
             boolean ordinary=exists(d.resolve(OresProjectConfig.MANIFEST_NAME))||exists(d.resolve(OresProjectConfig.ATTO_MANIFEST_NAME));
             if(legacy&&ordinary)throw deny("ambiguous project manifests");
-            if(ordinary)return false;
+            if(ordinary)return null;
             if(legacy){root=d;break;}
         }
-        if(root==null)return false;
+        if(root==null)return null;
+        // Reject symlink ancestry before normalization can erase alias/.. .
+        Path raw=submitted.toAbsolutePath(),cursor=raw.getRoot();
+        for(Path part:raw){
+            if(part.toString().equals("."))continue;
+            if(part.toString().equals("..")){cursor=cursor.getParent();if(cursor==null)throw deny("entry escapes root");continue;}
+            cursor=cursor.resolve(part);
+            if(Files.isSymbolicLink(cursor))throw deny("symlinked snapshot path");
+        }
         String cm=read(root.resolve(MANIFEST));
         var c=manifest(cm);
         if(!c.keySet().equals(Set.of("schema_version","project","packages","namespace_dependencies"))||
@@ -113,6 +123,11 @@ final class PinnedNamespaceFilePlan {
         }
         var imports=new TreeMap<String,String>();
         plan.resolutions().forEach((key,target)->imports.put(key,Objects.requireNonNull(mapped.get(target))));
-        units.putAll(staged);resolutions.put(id(entry),imports);return true;
+        var owners=new TreeMap<String,String>();
+        String consumerIdentity="p_"+sha(id(root.resolve(MANIFEST))+"\0"+consumerName);
+        String providerIdentity="p_"+sha(id(provider.resolve(MANIFEST))+"\0"+alias+"\0"+sha(pm));
+        for(String physical:staged.keySet())owners.put(physical,physical.equals(id(entry))?consumerIdentity:providerIdentity);
+        var layout=PackageLayout.pinned(owners);
+        units.putAll(staged);resolutions.put(id(entry),imports);return layout;
     }
 }
