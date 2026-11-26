@@ -13095,8 +13095,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
-                case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
-                case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
+                case "<", "<=", ">", ">=" -> orderedCompare(left, right, op);
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
@@ -13359,14 +13358,20 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unary - requires a number");
         }
 
-        private int compare(Object left, Object right) {
+        private boolean orderedCompare(Object left, Object right, String op) {
             if (left instanceof Number a && right instanceof Number b) {
-                if (isIntegral(a) && isIntegral(b)) {
-                    return Long.compare(a.longValue(), b.longValue());
-                }
-                return Double.compare(a.doubleValue(), b.doubleValue());
+                return dev.oreslang.types.NumericValueOrdering.ordered(a, b, op);
             }
-            if (left instanceof String a && right instanceof String b) return a.compareTo(b);
+            if (left instanceof String a && right instanceof String b) {
+                int c = a.compareTo(b);
+                return switch (op) {
+                    case "<" -> c < 0;
+                    case "<=" -> c <= 0;
+                    case ">" -> c > 0;
+                    case ">=" -> c >= 0;
+                    default -> throw new IllegalArgumentException("not an ordering operator");
+                };
+            }
             throw new IllegalArgumentException("values are not comparable");
         }
 
