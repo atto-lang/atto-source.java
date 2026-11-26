@@ -96,7 +96,6 @@ final class GuestClassGraphLeaseTest {
         var d = new GuestClassSlots.Domain();
         var child = store(d, Map.of("n", 10));
         var original = store(d, Map.of("data", child, "count", 1));
-        var fresh = store(d, Map.of("n", 20));
         var snapshot = original.shallowSnapshot(1,3);
         assertSame(child, snapshot.get("data"));
         assertEquals(1, snapshot.protectedCount());
@@ -105,19 +104,54 @@ final class GuestClassGraphLeaseTest {
         assertEquals(2,snapshot.get("count"));
         assertEquals(3,original.get("count"));
         deny("E_COPY_READONLY",()->child.replace("n",11));
-        snapshot.replace("data",fresh);
+        var fresh = snapshot.replaceWithFresh("data", Map.of("n",20));
         fresh.replace("n",21);
         assertSame(child,original.get("data"));
         assertSame(fresh,snapshot.get("data"));
-        // Conservative scope lease: per-edge detachment is a separate gate.
-        deny("E_COPY_READONLY",()->child.replace("n",12));
-        snapshot.close();
+        assertEquals(0,snapshot.protectedCount());
         child.replace("n",12);
+        snapshot.close();
         assertEquals(12,child.get("n"));
         assertThrows(IllegalStateException.class,()->snapshot.get("data"));
         assertThrows(IllegalStateException.class,()->snapshot.replace("count",4));
         assertThrows(IllegalStateException.class,snapshot::close);
         deny("E_COPY_BUDGET",()->original.shallowSnapshot(0,3));
+        assertFalse(child.isReadOnly());
+    }
+
+    @Test void detachPreservesOtherPathsCopiesAndLoans() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("n",10));
+        var a = store(d, Map.of("left",child,"right",child));
+        var b = a.shallowSnapshot(4,10);
+        var c = a.shallowSnapshot(4,10);
+        var loan = child.retainReadOnly();
+        b.replaceWithFresh("left",Map.of("n",20));
+        assertEquals(1,b.protectedCount());
+        b.replace("right",null);
+        assertEquals(0,b.protectedCount());
+        assertTrue(child.isReadOnly());
+        c.close();
+        assertTrue(child.isReadOnly());
+        loan.close();
+        child.replace("n",42);
+        assertEquals(42,child.get("n"));
+        deny("E_COPY_UNPROVEN",()->b.replace("right",child));
+        b.close();
+    }
+
+    @Test void detachBudgetFailureKeepsOriginalReferenceAndLease() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d,Map.of("n",10));
+        var a = store(d,Map.of("data",child));
+        try(var b=a.shallowSnapshot(1,2)){
+            deny("E_COPY_BUDGET",()->b.replaceWithFresh("data",Map.of("x",1,"y",2)));
+            assertSame(child,b.get("data"));
+            assertEquals(1,b.protectedCount());
+            assertTrue(child.isReadOnly());
+            deny("E_COPY_LAYOUT",()->b.replaceWithFresh("missing",Map.of("x",1)));
+            assertSame(child,b.get("data"));
+        }
         assertFalse(child.isReadOnly());
     }
 
