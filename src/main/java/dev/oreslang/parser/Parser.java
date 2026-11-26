@@ -4493,6 +4493,10 @@ public final class Parser {
         }
 
         consume(SELECT, "expected 'select'");
+        return parseStaticSelectBody(mode, explicitDo);
+    }
+
+    private Ast.SelectStmt parseStaticSelectBody(Ast.WaitMode mode, boolean explicitDo) {
         Ast.SelectPolicy policy = parseSelectPolicy();
         boolean endDelimited = match(OVER) || matchContextualIdentifier("over");
         if (!endDelimited) {
@@ -7128,15 +7132,29 @@ public final class Parser {
         return new Ast.ChannelOpExpr(operation, mode, channel, value);
     }
 
-    private Ast.DynamicSelectExpr parseDynamicSelect(Ast.WaitMode mode) {
+    private Ast.Expr parseDynamicSelect(Ast.WaitMode mode) {
         // Static select expressions will return a tracked Future, including
         // explicit select<T>. Do not lower them as legacy blocking/detached
         // statements or pretend that parsing a generic admits the feature.
         if (check(LPAREN)) {
             throw error(peek(), "counted select requires tracked Future result lowering and bounded batch storage");
         }
-        if (check(LT)) {
-            throw error(peek(), "typed static select<T> requires tracked Future result lowering");
+        if (match(LT)) {
+            // First executable value-select slice: exactly one default arm,
+            // no event operands to evaluate or commit. The checked CPU task
+            // machinery supplies deferred execution, scope and cleanup.
+            // Keep all event and counted forms fail-closed.
+            if (!peek().lexeme().equals("int"))
+                throw error(peek(), "typed static select<T> requires tracked Future result lowering");
+            advance();
+            if (!match(GT) || check(LPAREN) || mode == Ast.WaitMode.IMMEDIATE)
+                throw error(peek(), "typed/count select requires tracked Future result lowering");
+            Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.NONBLOCKING, false);
+            if (selected.arms().size() != 1
+                    || selected.arms().getFirst().operation() != Ast.ChannelOperation.DEFAULT)
+                throw error(previous(), "event select requires tracked Future result lowering");
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
+                    selected.arms().getFirst().body(), false, true);
         }
         Ast.SelectPolicy policy = parseSelectPolicy();
         if (check(LBRACE) || check(OVER)

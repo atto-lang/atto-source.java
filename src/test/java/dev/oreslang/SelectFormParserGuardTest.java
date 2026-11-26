@@ -105,7 +105,7 @@ final class SelectFormParserGuardTest {
     @Test
     void futureDefaultExpressionFormsFailClosedUntilTrackedLoweringExists() {
         for (String prefix : new String[] {"select", "nb select", "await select", "await nb select"}) {
-            for (String generic : new String[] {"", "<int>", "<Future<int>>"}) {
+            for (String generic : new String[] {"", "<Future<int>>"}) {
                 for (String body : new String[] {" { default: -> { return 42; } }",
                         " over default: -> { return 42; } end"}) {
                     String source = "pub fnc main(): int { return " + prefix + generic + body + "; }";

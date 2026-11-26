@@ -2217,10 +2217,16 @@ public final class Ast {
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
     public enum TaskCaptureTransfer { COPY, MOVE }
-    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) implements Expr {
+    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                           boolean typedDefaultSelectI64) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
+            if (typedDefaultSelectI64 && domain != ExecutionDomain.CPU)
+                throw new IllegalArgumentException("typed default select requires CPU task authority");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) {
+            this(domain, body, legacyNb, false);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body) {
             this(domain, body, false);

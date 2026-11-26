@@ -6829,6 +6829,8 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.TaskExpr task) {
+            if (task.typedDefaultSelectI64())
+                return checkTaskExpression(task, Primitive.INT, env, generics, self);
             // A value-producing task needs contextual Future<T> information so
             // every return path can be checked without guessing a result type.
             // A no-value task is unambiguously Future<void>.
@@ -7795,6 +7797,8 @@ public final class TypeChecker {
                 && future.name().equals("Future")
                 && future.arguments().size() == 1) {
             Type result = future.arguments().getFirst();
+            if (task.typedDefaultSelectI64() && result != Primitive.INT)
+                throw new IllegalArgumentException("select<int> has result Future<int>; contextual result cannot change it");
             checkTaskExpression(task, result, env, generics, self);
             return future;
         }

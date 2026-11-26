@@ -2014,7 +2014,8 @@ public final class OwnershipChecker {
                         "same Task expression produced inconsistent capture admission");
             }
             Ast.TypeRef result = new Ast.TypeRef(
-                    "Future", List.of(Ast.TypeRef.inferred()), false);
+                    "Future", List.of(task.typedDefaultSelectI64()
+                            ? Ast.TypeRef.simple("int") : Ast.TypeRef.inferred()), false);
             return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
