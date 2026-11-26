@@ -11718,7 +11718,14 @@ public final class TypeChecker {
         if (expr instanceof Ast.MatchExpr match) {
             String common = null;
             for (Ast.MatchValueArm arm : match.arms()) {
-                if (!(arm.value() instanceof Ast.LiteralExpr literal)) return null;
+                // Signed literals are parsed as unary expressions. Prove
+                // their width using only literal operands, never outer names.
+                Ast.Expr value = arm.value();
+                while (value instanceof Ast.UnaryExpr unary
+                        && Set.of("+", "-").contains(unary.operator())) {
+                    value = unary.operand();
+                }
+                if (!(value instanceof Ast.LiteralExpr literal)) return null;
                 String width = literal.value() instanceof Long ? "int"
                         : literal.value() instanceof Double ? "float" : null;
                 if (width == null || (common != null && !common.equals(width))) return null;
