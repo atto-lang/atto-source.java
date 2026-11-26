@@ -130,11 +130,15 @@ public final class PersistentPrimitiveClassfileSession {
                     String actual=HexFormat.of().formatHex(envelope,8,40);
                     if(actual.charAt(0)!=key.charAt(0))throw new IllegalArgumentException("E_CACHE_READ: wrong slot");
                     byte[] bytes=CompilerArtifactReceipt.verify(actual,envelope,secret);
-                    if(actual.equals(key))return new Build(bytes,true);
+                    if(actual.equals(key)){
+                        if(widePlan!=null)CheckedI64ClassfileAudit.audit(bytes,arity,budget.maxSourceSteps());
+                        return new Build(bytes,true);
+                    }
                 }
             }
             if(widePlan!=null){
                 byte[] bytes=widePlan.emitClassfile();
+                CheckedI64ClassfileAudit.audit(bytes,arity,budget.maxSourceSteps());
                 dir.publish(name,CompilerArtifactReceipt.seal(key,bytes,secret));return new Build(bytes,false);
             }
             // Scratch is host-private and the compiler's own closed-world

@@ -80,6 +80,54 @@ final class CheckedI64ProviderCacheTest {
         assertEquals(Long.MIN_VALUE,entry(sub.bytes()).invoke(null,Long.MIN_VALUE,0L));
         System.out.println("JAVA_I64_BOUND_PROVIDER|42/42/43|wide=8000000002|overflow-traps|restart-hit|clean-equivalent");
     }
+    @Test void independentAuditRejectsMalformedAndAuthenticatedInvalidArtifact(@TempDir Path root)throws Exception{
+        var a=build(root,"x * y + 2","900",true);
+        byte[] original=a.bytes();
+        CheckedI64ClassfileAudit.audit(original,2,256);
+        assertThrows(IllegalArgumentException.class,()->CheckedI64ClassfileAudit.audit(original,1,256));
+        assertThrows(IllegalArgumentException.class,()->CheckedI64ClassfileAudit.audit(original,2,1));
+        for(int n=0;n<original.length;n++){
+            byte[] truncated=Arrays.copyOf(original,n);
+            assertThrows(IllegalArgumentException.class,()->CheckedI64ClassfileAudit.audit(truncated,2,256));
+        }
+        byte[] trailing=Arrays.copyOf(original,original.length+1);
+        assertThrows(IllegalArgumentException.class,()->CheckedI64ClassfileAudit.audit(trailing,2,256));
+        // Last instruction is lreturn, followed by three zero u2 fields.
+        int ret=original.length-7;
+        assertEquals(0xad,original[ret]&255);assertEquals(0xb8,original[ret-3]&255);
+        byte[] external=original.clone();external[ret-1]=19;
+        byte[] unchecked=original.clone();unchecked[ret-3]=0x61; // unchecked ladd
+        byte[] noReturn=original.clone();noReturn[ret]=0;
+        byte[] stack=original.clone();stack[ret-1]=23; // negateExact leaves extra operand
+        for(byte[] invalid:List.of(external,unchecked,noReturn,stack))
+            assertThrows(IllegalArgumentException.class,()->CheckedI64ClassfileAudit.audit(invalid,2,256));
+        byte[] badOwner=original.clone();
+        byte[] name="java/lang/Math".getBytes(StandardCharsets.US_ASCII);
+        int offset=-1;
+        outer:for(int i=0;i<=badOwner.length-name.length;i++){
+            for(int j=0;j<name.length;j++)if(badOwner[i+j]!=name[j])continue outer;
+            offset=i;break;
+        }
+        assertTrue(offset>=0);badOwner[offset+name.length-1]='X';
+        assertThrows(IllegalArgumentException.class,()->CheckedI64ClassfileAudit.audit(badOwner,2,256));
+        Path slot;try(var paths=Files.list(root)){
+            slot=paths.filter(p->p.getFileName().toString().startsWith("slot-")).findFirst().orElseThrow();
+        }
+        byte[] envelope=Files.readAllBytes(slot);
+        String key=HexFormat.of().formatHex(envelope,8,40);
+        byte[] record=CompilerCacheLedger.record("tenant/i64",2,MASTER);
+        byte[] secret=CompilerCacheLedger.admit("tenant/i64",record,hash(record),MASTER);
+        try{
+            // Simulate an authenticated but structurally invalid publisher artifact.
+            byte[] poison=CompilerArtifactReceipt.seal(key,external,secret);
+            Files.write(slot,poison);
+            var ex=assertThrows(IllegalArgumentException.class,()->build(root,"x * y + 2","901",false));
+            assertTrue(ex.getMessage().startsWith("E_I64_CLASSFILE_AUDIT:"));
+            assertArrayEquals(poison,Files.readAllBytes(slot));
+        }finally{Arrays.fill(secret,(byte)0);Files.write(slot,envelope);}
+        assertTrue(build(root,"x * y + 2","901",false).reused());
+        System.out.println("JAVA_I64_AUDIT|truncation|trailing|abi|budget|external-call|unchecked-op|stack|owner|authenticated-invalid-denied|restored-hit");
+    }
     public static void main(String[] args)throws Exception{
         var b=build(Path.of(args[0]),"x * y + 2","901",false);
         assertTrue(b.reused());assertEquals(42L,entry(b.bytes()).invoke(null,10L,4L));
