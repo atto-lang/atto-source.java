@@ -10,7 +10,7 @@ public final class M10MailboxTurnProbe {
     private static AttoM6Runtime.ReceiptRoute route(
             AttoM6Runtime.ActorRef ref, long messageId) {
         return new AttoM6Runtime.ReceiptRoute(1, 7, 13,
-            Integer.toUnsignedLong(ref.name().hashCode()) + 1L,
+            17,
             ref.generation(), 19, 23, messageId, 1);
     }
     private static AttoM6Runtime.Ticket admit(
@@ -31,7 +31,7 @@ public final class M10MailboxTurnProbe {
         try (var runtime = new AttoM6Runtime(2, 8)) {
             CountDownLatch started = new CountDownLatch(1);
             CountDownLatch release = new CountDownLatch(1);
-            var actor = runtime.spawn_with_result("turn", 2, value -> {
+            var actor = runtime.spawn_scoped_with_result("turn", 2, 7, 17, value -> {
                 if (value == 1) {
                     started.countDown();
                     if (!release.await(5, TimeUnit.SECONDS))
@@ -67,7 +67,7 @@ public final class M10MailboxTurnProbe {
                 snap.lastControl() == AttoM6Runtime.ControlKind.PANIC,
                 "actor settlement/supervisor counters inconsistent: " + snap);
             AttoM6Runtime.check_conservation(snap);
-            var replacement = runtime.spawn_with_result("turn", 2, value -> value);
+            var replacement = runtime.spawn_scoped_with_result("turn", 2, 7, 17, value -> value);
             require(replacement.generation() == actor.generation() + 1,
                 "actor generation reused after panic");
             require(runtime.try_send(actor, 8) == AttoM6Runtime.Admission.STALE,
