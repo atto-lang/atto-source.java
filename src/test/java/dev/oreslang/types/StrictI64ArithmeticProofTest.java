@@ -49,6 +49,15 @@ final class StrictI64ArithmeticProofTest {
         assertTrue(i32.getMessage().contains("E_VERIFY_UNSUPPORTED:"));
     }
 
+    @Test void contractedBodyDelimiters() {
+        String pre="type Bounded = int where self >= 1 and self <= 42; ";
+        String header="fnc f(int x) -> int requires x >= 1 requires x <= 42";
+        for (String body : new String[]{" { return 84/x; }", "\nbegin return 84/x; end", " :: return 84/x; end", "\n:: return 84/x; end"})
+            assertNotNull(TypeChecker.check(Parser.parseVerifiedStrictI64(pre+header+body+" pub fnc main() -> int { return f(2); }")));
+        for (String body : new String[]{" begin return 84/x; end", " :: return 84/x; }", " :: return 84/x;"})
+            assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+header+body+" pub fnc main() -> int { return f(2); }"));
+    }
+
     @Test void strictReturningConditionals() {
         String pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42; ";
         for(String source:new String[]{"fnc f(int x) -> int { if x != 0 { return 42/x; } return 0; } pub fnc main() -> int { return f(1); }",
@@ -92,6 +101,29 @@ final class StrictI64ArithmeticProofTest {
                 assertEquals(want[i],value.asLong(),name);
             }
         }
+    }
+
+    @Test void executeContractDelimiterGuests() throws Exception {
+        String pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42; ";
+        String header="fnc f(int x) -> int requires x >= 1 requires x <= 42";
+        int count=0;
+        for (String body : new String[]{" { return 84/x; }","\nbegin return 84/x; end"," :: return 84/x; end","\n:: return 84/x; end"}) {
+            for (long arg : new long[]{1,2,42}) {
+                String text=pre+header+body+" pub fnc main() -> int { return f("+arg+"); }";
+                String name="contract-guest-"+count++ +".atto";
+                var ast=dev.oreslang.compiler.OresCompiler.analyze(Parser.parseVerifiedStrictI64(text));
+                var source=org.graalvm.polyglot.Source.newBuilder(dev.oreslang.OresLanguage.ID,text,name).cached(false).build();
+                try(var context=org.graalvm.polyglot.Context.newBuilder(dev.oreslang.OresLanguage.ID).allowExperimentalOptions(true).option("engine.WarnInterpreterOnly","false").build();
+                    var lease=dev.oreslang.OresLanguage.openPrecheckedProgram(name,text,ast)){
+                    assertEquals(84/arg,context.eval(source).asLong(),name);
+                }
+            }
+        }
+        assertEquals(12,count);
+        for(String body:new String[]{" { return 84/x; }","\nbegin return 84/x; end"," :: return 84/x; end","\n:: return 84/x; end"})
+            for(long arg:new long[]{0,43,-1})
+                assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+header+body+" pub fnc main() -> int { return f("+arg+"); }"));
+        System.out.println("JAVA_CONTRACT_GUEST_VERIFIED "+count+" values; 12 precondition denials");
     }
 
     @Test void rejectStaleOrUnsafeLoopProofs() {
