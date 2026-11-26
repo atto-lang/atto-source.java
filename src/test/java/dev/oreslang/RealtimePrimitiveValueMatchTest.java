@@ -127,7 +127,7 @@ final class RealtimePrimitiveValueMatchTest {
         String source = """
                 fnc identity(i32 number): i32 { return number; }
                 fnc choose(i32 number, bool gate): bool {
-                    const bool hit = gate && (match identity(number) over
+                    val bool hit = gate && (match identity(number) over
                         on 0 -> { return true; }
                         on 7 -> { return false; }
                         default -> { return true; }
@@ -139,6 +139,10 @@ final class RealtimePrimitiveValueMatchTest {
                     end);
                 }
                 """;
+        // A parameter-dependent match is immutable at runtime, not a compile-time const.
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> compile(source.replace("val bool hit", "const bool hit"), 2, 100, 2));
+        assertTrue(rejected.getMessage().contains("E_NON_CONST_INITIALIZER"), rejected::getMessage);
         var artifact = compile(source, 2, 100, 2);
         assertEquals(2, artifact.classfileReport().verifiedMethods());
         String generated = java.nio.file.Files.readString(
