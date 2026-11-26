@@ -199,11 +199,12 @@ final class LocalityCarrierPool extends AbstractExecutorService {
                 }
                 if (home.parked) {
                     LockSupport.unpark(home.thread);
-                } else {
-                    // The home carrier is busy. Wake an idle carrier that will
-                    // take the entry only if it is still queued after the grace.
-                    wakeIdle(home);
                 }
+                // Also give another idle carrier the opportunity to wait out
+                // the grace. The preferred carrier can be OS-descheduled or
+                // take older shared work even if it was observed parked.
+                // The stealing path still enforces the bounded preference.
+                wakeIdle(home);
                 return;
             }
             home.localSize.decrementAndGet();
