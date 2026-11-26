@@ -184,7 +184,7 @@ final class TildeCollectionConstructorRemovalTest {
     @Test
     void supportedCanonicalFactoriesLowerToTheCheckedAggregateAst() {
         for (String expression : new String[]{
-                "Map.of()",
+                "Map.of<string,int>()",
                 "Tuple.of(1, true)",
                 "Array.of(1, 2)",
                 "Record.of()"}) {
@@ -192,6 +192,14 @@ final class TildeCollectionConstructorRemovalTest {
                     "pub fnc main(): void { const value = " + expression + "; return; }"),
                     expression);
         }
+    }
+
+    @Test
+    void contextFreeEmptyMapRemainsRejectedWithoutATypeWitness() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "pub fnc main(): void { const value = Map.of(); return; }"));
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc main(): void { val value: Map<string,int> = Map.of(); return; }"));
     }
 
     @Test

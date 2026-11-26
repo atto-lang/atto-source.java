@@ -370,4 +370,111 @@ final class CollectionOfFactoryGuestTest {
                 () -> Parser.parse(program("const a = Array.of(...source);")));
     }
 
+
+    @Test
+    void inlinePairAndEntryFactoriesReuseCheckedAggregateStorage() {
+        String source = program("""
+            const m = Map.of<string,int>(Pair.of("alpha", 1), Entry.of("beta", 2), "gamma" => 3);
+            const r = Record.of(Pair.of("count", 42), Pair.of("ready", true));
+            const named = Record.of(count=42, ready=true);
+            stdio.println(m.size);
+            stdio.println(r.count);
+            stdio.println(r.ready);
+            stdio.println(named.count);
+            """);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("3\n42\ntrue\n42\n", guestStdout(source));
+    }
+
+    @Test
+    void inlineProductsRejectIncorrectNamesKindsAndArity() {
+        for (String expression : new String[] {
+            "Record.of(Entry.of(\"a\", 1))",
+            "Record.of(Pair.of(42, 1))",
+            "Record.of(Pair.of(\"first-name\", 1))",
+            "Record.of(Pair.of(\"return\", 1))",
+            "Record.of(Pair.of(\" a\", 1))",
+            "Record.of(Pair.of(\"a\", 1), Pair.of(\"a\", 2))",
+            "Record.of(Pair.of(\"a\", 1), b=2)",
+            "Record.of(\"a\"=1)",
+            "Map.of<string,int>(Pair.of(42, 1))",
+            "Map.of<string,int>(Pair.of(\"a\"))",
+            "Map.of<string,int>(Entry.of(\"a\", 1, 2))"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program("const x = " + expression + ";")), expression);
+        }
+        assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck(program(
+                "const x = Map.of<string,int>(Pair.of(\"a\", 1), Entry.of(\"a\", 2));")));
+    }
+
+    @Test
+    void entryOnlyMapFactoryUsesCheckedStorageAndContextualWitness() {
+        String source = program("""
+            const explicit = Map.of_entries<string,int>(Entry.of("a", 1), "b" => 2);
+            val contextual: Map<string,int> = Map.of_entries("c" => 3);
+            const empty = Map.of_entries<string,int>();
+            stdio.println(explicit.size);
+            stdio.println(contextual.size);
+            stdio.println(empty.size);
+            """);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("2\n1\n0\n", guestStdout(source));
+    }
+
+    @Test
+    void entryOnlyMapFactoryRejectsPairFlatArgumentsAndWrongTypes() {
+        for (String expression : new String[]{
+            "Map.of_entries<string,int>(Pair.of(\"a\", 1))",
+            "Map.of_entries<string,int>(Entry.of(\"a\", 1), Pair.of(\"b\", 2))",
+            "Map.of_entries<string,int>(\"a\", 1)",
+            "Map.of_entries<string,int>(Entry.of(\"a\"))",
+            "Map.of_entries<string,int>(Entry.of(\"a\", true))",
+            "Map.of_entries<string,int>(Entry.of(1, 2))",
+            "Map.of_entries<string,int>(Entry.of(\"a\", 1), \"a\" => 2)",
+            "Map.of_entries()",
+            "Map.of_entries",
+            "Map.of_entries<string>(\"a\" => 1)"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program("const x = " + expression + ";")), expression);
+        }
+        assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
+            "define class Map as end\n" + program("const x = Map.of_entries(1, 2);")));
+    }
+
+    @Test
+    void dynamicStringPairKeyEvaluatesExactlyOnceInMapSourceOrder() {
+        String source = """
+            fnc key(): string { stdio.println(1); return "first-name"; }
+            fnc value(): int { stdio.println(2); return 42; }
+            pub fnc main(): void {
+                const m = Map.of<string,int>(Pair.of(key(), value()), "b" => 7);
+                stdio.println(m.size);
+                return;
+            }
+            """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("1\n2\n2\n", guestStdout(source));
+    }
+
+    @Test
+    void dynamicPairKeyStillRequiresStringAndStaticRecordProvenance() {
+        for (String body : new String[]{
+            "const key = 42; const x = Map.of<string,int>(Pair.of(key, 1));",
+            "const key = true; const x = Map.of<string,int>(Pair.of(key, 1));",
+            "const key = #ready; const x = Map.of<Symbol,int>(Pair.of(key, 1));",
+            "const key = \"a\"; const x = Record.of(Pair.of(key, 1));",
+            "const key = \"a\"; const x = Map.of_entries<string,int>(Pair.of(key, 1));"
+        }) assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck(program(body)), body);
+    }
+
+    @Test
+    void shadowedPairCannotBeConsumedAsStaticRecordField() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+            "define class Pair as end\n" + program("const r = Record.of(Pair.of(\"a\", 1));")));
+    }
+
 }
