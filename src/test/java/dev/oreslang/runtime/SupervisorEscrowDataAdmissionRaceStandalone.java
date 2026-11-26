@@ -62,6 +62,41 @@ final class SupervisorEscrowDataAdmissionRaceStandalone {
         reject(() -> foreign.finishDataAdmission(admittedBeforeFence, false),
                 "permit from a foreign runtime accepted");
 
+        // Force the otherwise astronomically rare signed counter boundary.
+        // A broken finish() must not drop its one-use outstanding permit and
+        // thereby authorize supervisor restart with unaccounted DATA.
+        var overflow = new SupervisorFailureEscrowV1();
+        overflow.registerRoot(1, 1);
+        overflow.registerChild(2, 1, 1);
+        var unsettled = overflow.beginDataAdmission(2, 1);
+        require(unsettled != null, "overflow fixture could not reserve DATA");
+        var ownerField = SupervisorFailureEscrowV1.DataAdmission.class.getDeclaredField("owner");
+        ownerField.setAccessible(true);
+        var owner = ownerField.get(unsettled);
+        var committedField = owner.getClass().getDeclaredField("dataCommitted");
+        committedField.setAccessible(true);
+        committedField.setLong(owner, Long.MAX_VALUE);
+        boolean overflowCaught = false;
+        try {
+            overflow.finishDataAdmission(unsettled, true);
+        } catch (ArithmeticException expected) {
+            overflowCaught = true;
+        }
+        require(overflowCaught, "committed counter overflow was silently accepted");
+        require(overflow.dataInFlightInSubtree(2) == 1,
+                "overflow incorrectly released the outstanding DATA permit");
+        require(overflow.dataAdmissionStatus(2).committed() == Long.MAX_VALUE,
+                "overflow silently wrapped the committed counter");
+        reject(() -> overflow.beginDataAdmission(2, 1),
+                "new DATA permit admitted without counter headroom");
+        committedField.setLong(owner, Long.MAX_VALUE - 1);
+        overflow.finishDataAdmission(unsettled, true);
+        require(overflow.dataInFlightInSubtree(2) == 0
+                        && overflow.dataAdmissionStatus(2).committed() == Long.MAX_VALUE,
+                "restored permitted settlement must complete exactly once");
+        reject(() -> overflow.beginDataAdmission(2, 1),
+                "exhausted counter permitted more DATA");
+
         final int rounds = 16;
         final int workers = 8;
         final int perWorker = 512;

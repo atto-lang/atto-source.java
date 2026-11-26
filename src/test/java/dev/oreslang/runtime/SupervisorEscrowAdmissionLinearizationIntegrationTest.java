@@ -96,6 +96,13 @@ final class SupervisorEscrowAdmissionLinearizationIntegrationTest {
                     "every successfully returned mailbox send has one DATA permit");
             assertEquals(0, admission.inFlight(), "no permit may be stranded");
             assertEquals(0, bridge.dataInFlightInSubtree(childId));
+            // Check the public runtime send path, not only a ledger helper:
+            // the already-retired generation cannot accept another envelope.
+            assertThrows(IllegalStateException.class, () -> child.send("post-fence"));
+            var afterDenied = bridge.dataAdmissionStatus(childId);
+            assertEquals(admission.committed(), afterDenied.committed(),
+                    "post-fence runtime send improperly committed a DATA permit");
+            assertEquals(0, afterDenied.inFlight());
             assertNull(bridge.beginDataAdmissionFromRuntime(childId, child.generation()),
                     "new DATA admission cannot cross completed supervisor fence");
         }

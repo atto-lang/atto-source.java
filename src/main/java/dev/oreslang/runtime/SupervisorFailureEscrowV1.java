@@ -218,6 +218,15 @@ final class SupervisorFailureEscrowV1 {
         if (owner.dataInFlight == Integer.MAX_VALUE) {
             throw new IllegalStateException("actor DATA admission count exhausted");
         }
+        // Any currently in-flight operation may commit OR abort. Reserve
+        // enough headroom in BOTH counters before granting another permit,
+        // so a valid mailbox write never discovers a fatal accounting
+        // overflow while settling after publication.
+        long needed = (long) owner.dataInFlight + 1L;
+        if (owner.dataCommitted > Long.MAX_VALUE - needed
+                || owner.dataAborted > Long.MAX_VALUE - needed) {
+            throw new IllegalStateException("actor DATA accounting sequence exhausted");
+        }
         DataAdmission permit = new DataAdmission(owner);
         if (!dataAdmissions.add(permit)) {
             throw new IllegalStateException("duplicate DATA admission permit");
@@ -231,15 +240,21 @@ final class SupervisorFailureEscrowV1 {
      * logically preceded the fence. Foreign/replayed permits are rejected. */
     synchronized void finishDataAdmission(DataAdmission permit, boolean committed) {
         Objects.requireNonNull(permit, "permit");
-        if (!dataAdmissions.remove(permit) || permit.owner.dataInFlight <= 0) {
+        if (!dataAdmissions.contains(permit) || permit.owner.dataInFlight <= 0) {
             throw new IllegalStateException("foreign or replayed DATA admission");
         }
-        permit.owner.dataInFlight--;
-        if (committed) {
-            permit.owner.dataCommitted = Math.addExact(permit.owner.dataCommitted, 1L);
-        } else {
-            permit.owner.dataAborted = Math.addExact(permit.owner.dataAborted, 1L);
+        // Compute first, then consume identity and decrement the outstanding
+        // reservation. An invariant violation must leave the permit pinned,
+        // not make an accepted mailbox write look physically unaccounted for.
+        long next = committed
+                ? Math.addExact(permit.owner.dataCommitted, 1L)
+                : Math.addExact(permit.owner.dataAborted, 1L);
+        if (!dataAdmissions.remove(permit)) {
+            throw new IllegalStateException("DATA admission permit concurrently consumed");
         }
+        permit.owner.dataInFlight--;
+        if (committed) permit.owner.dataCommitted = next;
+        else permit.owner.dataAborted = next;
     }
 
     /** Descendant retirement must wait until every admission reserved before
