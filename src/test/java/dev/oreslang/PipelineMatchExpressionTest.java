@@ -130,10 +130,21 @@ final class PipelineMatchExpressionTest {
                 "flag |> match over { default -> 1, on true -> 0, }",
                 "flag |> match over { on true -> 1,, on false -> 0, }",
                 "flag |> match<int> over default -> 1, on true -> 0, end",
-                "flag |> match<int> over on true -> { if flag then return 1; fi return 2; }, on false -> 0, end"
+                "flag |> match<int> over on true -> { do if flag then return 1; fi return 2; }, on false -> 0, end",
+                "flag |> match<int> over on true -> { if flag { return 1; } return 2; }, on false -> 0, end"
         }) {
             assertThrows(IllegalArgumentException.class, () -> returned(invalid), invalid);
         }
+    }
+
+    @Test
+    void functionalIfActionIsNotAnEnclosingReturn() {
+        var match = assertInstanceOf(Ast.MatchExpr.class, returned(
+                "flag |> match<int> over on true -> { if flag then return 1; fi return 2; }, on false -> 0, end"));
+        var arm = match.arms().getFirst();
+        var conditional = assertInstanceOf(Ast.IfStmt.class, arm.prefixStatements().getFirst());
+        assertInstanceOf(Ast.ExprStmt.class, conditional.branches().getFirst().body().getFirst());
+        assertEquals(new Ast.LiteralExpr(2L), arm.value());
     }
 
     @Test
