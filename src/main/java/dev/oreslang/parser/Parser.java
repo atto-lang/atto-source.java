@@ -4493,6 +4493,10 @@ public final class Parser {
         }
 
         consume(SELECT, "expected 'select'");
+        return parseStaticSelectBody(mode, explicitDo);
+    }
+
+    private Ast.SelectStmt parseStaticSelectBody(Ast.WaitMode mode, boolean explicitDo) {
         Ast.SelectPolicy policy = parseSelectPolicy();
         boolean endDelimited = match(OVER) || matchContextualIdentifier("over");
         if (!endDelimited) {
@@ -7141,10 +7145,176 @@ public final class Parser {
         return new Ast.ChannelOpExpr(operation, mode, channel, value);
     }
 
-    private Ast.DynamicSelectExpr parseDynamicSelect(Ast.WaitMode mode) {
+    // Restricted executable source slice. A single lexical Channel<int>
+    // and pure integer projection need no mixed-source rotation. Each round
+    // uses the real checked procedural select arbiter on the Task lane.
+    // Literal/constant counts and lexical int counts are supported. Multiple
+    // sources, general dynamic expressions, Future and arbitrary arm bodies
+    // still fail closed until general aggregate lowering exists.
+    private Ast.Expr parseRestrictedCountedSelect() {
+        String unsupported = "counted select requires tracked Future result lowering outside restricted single-read slice";
+        long count = -1;
+        String dynamicCount = null;
+        Token countStart = peek();
+        Ast.Expr countExpression = parseExpression();
+        if (!match(RPAREN)) throw error(peek(), unsupported);
+        if (countExpression instanceof Ast.NameExpr name && countStart.type() == IDENT) {
+            dynamicCount = name.name();
+            if (dynamicCount.startsWith("$")) throw error(countStart, unsupported);
+        } else {
+            // Pure constant integer expressions only: checked arithmetic, no
+            // evaluation or captures in the parser, bounded traversal.
+            try {
+                count = foldCountedConstant(countExpression, new int[]{64});
+            } catch (ArithmeticException | IllegalArgumentException invalid) {
+                throw error(countStart, unsupported + ": invalid or unsupported constant count expression");
+            }
+            if (count < 0 || count > 16) throw error(countStart, unsupported);
+        }
+        Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.BLOCKING, true);
+        if (selected.policy() == Ast.SelectPolicy.RANDOM || selected.arms().size() != 1)
+            throw error(previous(), unsupported);
+        Ast.SelectArm arm = selected.arms().getFirst();
+        if (arm.operation() != Ast.ChannelOperation.READ
+                || !(arm.channel() instanceof Ast.NameExpr source)
+                || source.name().startsWith("$") || arm.bindingName() == null
+                || arm.bindingName().startsWith("$") || arm.mutableReferent()
+                || !Ast.TypeRef.simple("int").equals(arm.bindingType())
+                || arm.body().size() != 1
+                || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
+                || !isCountedScalarProjection(returned.value(), arm.bindingName()))
+            throw error(previous(), unsupported);
+        if (dynamicCount != null) {
+            // Runtime snapshots the lexical count once before source admission.
+            // Fixed-size checked body; no count-dependent AST unrolling.
+            String output = "$counted_select_output";
+            var array = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
+            var result = new Ast.BindingStmt(Ast.BindingKind.VAL, array, output,
+                    new Ast.NewExpr(array, List.of()));
+            var reserve = new Ast.ExprStmt(new Ast.CallExpr(
+                    new Ast.MemberExpr(new Ast.NameExpr(output), "reserve"),
+                    List.of(new Ast.NameExpr(dynamicCount))));
+            var stop = new Ast.IfStmt(List.of(new Ast.IfBranch(
+                    new Ast.BinaryExpr(">=", new Ast.MemberExpr(new Ast.NameExpr(output), "size"),
+                            new Ast.NameExpr(dynamicCount)), List.of(new Ast.BreakStmt()))), List.of());
+            var add = new Ast.ExprStmt(new Ast.CallExpr(
+                    new Ast.MemberExpr(new Ast.NameExpr(output), "add"),
+                    List.of(copyCountedScalarProjection(returned.value()))));
+            var round = new Ast.SelectStmt(Ast.WaitMode.BLOCKING, selected.policy(),
+                    List.of(new Ast.SelectArm(Ast.ChannelOperation.READ, new Ast.NameExpr(source.name()),
+                            null, arm.bindingKind(), arm.bindingName(), List.of(add), false, arm.bindingType())), true);
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
+                    List.of(result, reserve, new Ast.LoopStmt(List.of(stop, round)),
+                            new Ast.ReturnStmt(new Ast.NameExpr(output))),
+                    false, false, true, null, dynamicCount);
+        }
+        if (count == 0) {
+            // Retain only a static lexical type witness, never capture or
+            // evaluate the source and never materialize an executable arm.
+            var array = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
+                    List.of(new Ast.ReturnStmt(new Ast.NewExpr(array, List.of()))),
+                    false, false, true, source.name());
+        }
+        List<Ast.Stmt> taskBody = new ArrayList<>();
+        List<Ast.Expr> values = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            String slot = "$counted_select_value_" + i;
+            taskBody.add(new Ast.BindingStmt(Ast.BindingKind.LET, Ast.TypeRef.simple("int"),
+                    slot, new Ast.LiteralExpr(0L)));
+            var projected = copyCountedScalarProjection(returned.value());
+            var assignment = new Ast.ExprStmt(new Ast.AssignExpr(new Ast.NameExpr(slot), projected));
+            var roundArm = new Ast.SelectArm(Ast.ChannelOperation.READ,
+                    new Ast.NameExpr(source.name()), null, arm.bindingKind(),
+                    arm.bindingName(), List.of(assignment), false, arm.bindingType());
+            taskBody.add(new Ast.SelectStmt(Ast.WaitMode.BLOCKING,
+                    selected.policy(), List.of(roundArm), true));
+            values.add(new Ast.NameExpr(slot));
+        }
+        taskBody.add(new Ast.ReturnStmt(new Ast.ListExpr(values, true)));
+        return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, taskBody, false, false, true);
+    }
+
+    private static long foldCountedConstant(Ast.Expr expression, int[] budget) {
+        if (--budget[0] < 0) throw new IllegalArgumentException("count expression budget");
+        if (expression instanceof Ast.LiteralExpr literal && literal.value() instanceof Long value)
+            return value;
+        if (expression instanceof Ast.BinaryExpr binary) {
+            long left = foldCountedConstant(binary.left(), budget);
+            long right = foldCountedConstant(binary.right(), budget);
+            return switch (binary.operator()) {
+                case "+" -> Math.addExact(left, right);
+                case "-" -> Math.subtractExact(left, right);
+                case "*" -> Math.multiplyExact(left, right);
+                default -> throw new IllegalArgumentException("unsupported count operator");
+            };
+        }
+        throw new IllegalArgumentException("nonconstant count expression");
+    }
+
+    private static boolean isCountedScalarProjection(Ast.Expr expression, String binding) {
+        // Check the projection with a bounded iterative walk before cloning.
+        // Unrolling a large source tree must not amplify compiler stack or AST use.
+        if (expression == null) return false;
+        java.util.ArrayDeque<Ast.Expr> pending = new java.util.ArrayDeque<>();
+        pending.push(expression);
+        int budget = 64;
+        while (!pending.isEmpty()) {
+            if (--budget < 0) return false;
+            Ast.Expr item = pending.pop();
+            if (item instanceof Ast.LiteralExpr literal && literal.value() instanceof Long) continue;
+            if (item instanceof Ast.NameExpr name && name.name().equals(binding)) continue;
+            if (!(item instanceof Ast.BinaryExpr binary)
+                    || !List.of("+", "-", "*").contains(binary.operator())) return false;
+            pending.push(binary.right());
+            pending.push(binary.left());
+        }
+        return true;
+    }
+
+    private static Ast.Expr copyCountedScalarProjection(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) return new Ast.LiteralExpr(literal.value());
+        if (expression instanceof Ast.NameExpr name) return new Ast.NameExpr(name.name());
+        Ast.BinaryExpr binary = (Ast.BinaryExpr) expression;
+        return new Ast.BinaryExpr(binary.operator(),
+                copyCountedScalarProjection(binary.left()), copyCountedScalarProjection(binary.right()));
+    }
+
+    private Ast.Expr parseDynamicSelect(Ast.WaitMode mode) {
+        // Static select expressions will return a tracked Future, including
+        // explicit select<T>. Do not lower them as legacy blocking/detached
+        // statements or pretend that parsing a generic admits the feature.
+        if (match(LPAREN)) {
+            if (mode == Ast.WaitMode.IMMEDIATE)
+                throw error(previous(), "counted select requires tracked Future result lowering");
+            // The same narrow typed binding + pure int projection establishes
+            // the inferred result independently of contextual annotation.
+            return parseRestrictedCountedSelect();
+        }
+        if (match(LT)) {
+            // First executable value-select slice: exactly one default arm,
+            // no event operands to evaluate or commit. The checked CPU task
+            // machinery supplies deferred execution, scope and cleanup.
+            // Keep all event and counted forms fail-closed.
+            if (!peek().lexeme().equals("int"))
+                throw error(peek(), "typed static select<T> requires tracked Future result lowering");
+            advance();
+            if (!match(GT) || mode == Ast.WaitMode.IMMEDIATE)
+                throw error(peek(), "typed/count select requires tracked Future result lowering");
+            if (match(LPAREN)) return parseRestrictedCountedSelect();
+            Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.NONBLOCKING, false);
+            if (selected.arms().size() != 1
+                    || selected.arms().getFirst().operation() != Ast.ChannelOperation.DEFAULT)
+                throw error(previous(), "event select requires tracked Future result lowering");
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
+                    selected.arms().getFirst().body(), false, true);
+        }
         Ast.SelectPolicy policy = parseSelectPolicy();
-        consume(FROM,
-                "dynamic select requires 'select from cases'; static select uses 'select { when ... }'");
+        if (check(LBRACE) || check(OVER)
+                || (check(IDENT) && peek().lexeme().equals("over"))) {
+            throw error(peek(), "static select expression requires tracked Future result lowering");
+        }
+        consume(FROM, "dynamic select requires 'select from cases'");
         Ast.Expr cases = parseUnary();
         return new Ast.DynamicSelectExpr(mode, policy, cases);
     }
