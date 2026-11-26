@@ -2,6 +2,11 @@
 import module num from "atto.core/num";
 import module option from "atto.core/option";
 pub fnc main(): int {
+  if num.wrapping_mul(num.min_value(), 0) != 0; do return 1; fi
+  if num.wrapping_mul(num.max_value(), 1) != num.max_value(); do return 2; fi
+  if num.wrapping_mul(num.min_value(), -1) != num.min_value(); do return 3; fi
+  if num.wrapping_mul(num.max_value(), num.max_value()) != 1; do return 4; fi
+  if num.wrapping_mul(7, -6) != -42; do return 5; fi
   val int a = num.abs(0 - 5) + num.signum(0 - 9) + num.min(3, 9) + num.max(3, 9);
   val int b = (num.saturating_add(num.max_value(), 1) - num.max_value()) + num.clamp(100, 0, 10);
   val int c = option.unwrap_or(num.checked_add(num.max_value(), 1), 7) + option.unwrap_or(num.checked_sub(10, 4), 0);
