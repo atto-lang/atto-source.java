@@ -193,6 +193,88 @@ final class CountedSelectReadCursorTest {
                 ChannelRuntime.SelectPolicy.FAIR).result());
     }
 
+    @Test void aggregateFuturePublishesOnlyAfterExactCardinalityAndRetirement() {
+        var ch = new ChannelRuntime.Channel<Long>(4);
+        ch.tryWrite(10L); ch.tryWrite(20L); ch.tryWrite(30L); ch.tryWrite(40L);
+        var b = new CountedSelectBatch(3, List.of(ChannelRuntime.read(ch.output())),
+                ChannelRuntime.SelectPolicy.FAIR);
+        var result = b.completion();
+        for (int i = 0; i < 3; i++) {
+            assertTrue(b.pump());
+            assertFalse(result.isDone(), "registration/commit is not batch settlement");
+            assertTrue(b.pump());
+            assertEquals(i == 2, result.isDone());
+        }
+        assertEquals(List.of(10L,20L,30L), result.join());
+        assertThrows(UnsupportedOperationException.class, () -> result.join().add(99L));
+        assertEquals(40L, ch.tryRead().orElseThrow());
+        assertEquals(0, ch.pendingRegistrations());
+        assertFalse(result.cancel(false));
+        assertFalse(b.pump());
+    }
+
+    @Test void aggregateCancellationDetachesAndNeverPublishesPrefix() {
+        var ch = new ChannelRuntime.Channel<Long>(2);
+        ch.tryWrite(10L);
+        var b = new CountedSelectBatch(2, List.of(ChannelRuntime.read(ch.output())),
+                ChannelRuntime.SelectPolicy.FAIR);
+        assertTrue(b.pump()); assertTrue(b.pump());
+        assertTrue(b.pump()); assertFalse(b.pump());
+        assertEquals(1, ch.pendingRegistrations());
+        var f = b.completion();
+        assertTrue(f.cancel(false));
+        while (!f.isDone()) assertTrue(b.pump());
+        assertTrue(f.isCancelled());
+        assertEquals(0, ch.pendingRegistrations());
+        ch.tryWrite(42L); assertEquals(42L, ch.tryRead().orElseThrow());
+        assertFalse(b.pump());
+    }
+
+    @Test void aggregateCancellationAfterCommitNeverConsumesAnotherMessage() {
+        var ch = new ChannelRuntime.Channel<Long>(2);
+        ch.tryWrite(10L); ch.tryWrite(20L);
+        var b = new CountedSelectBatch(2,List.of(ChannelRuntime.read(ch.output())),
+                ChannelRuntime.SelectPolicy.FAIR);
+        assertTrue(b.pump());
+        assertTrue(b.completion().cancel(false));
+        while (!b.completion().isDone()) assertTrue(b.pump());
+        assertTrue(b.completion().isCancelled());
+        assertEquals(20L, ch.tryRead().orElseThrow());
+    }
+
+    @Test void aggregateZeroAndExhaustionHaveDistinctTerminalResults() {
+        var zero = new CountedSelectBatch(0,null,ChannelRuntime.SelectPolicy.FAIR);
+        assertEquals(List.of(),zero.completion().join());
+        var f = OresFuture.completed(10L);
+        var b = new CountedSelectBatch(2,List.of(ChannelRuntime.await(f),ChannelRuntime.await(f)),
+                ChannelRuntime.SelectPolicy.FAIR);
+        assertTrue(b.pump()); assertTrue(b.pump());
+        assertTrue(b.completion().isCompletedExceptionally());
+        assertInstanceOf(CountedSelectReadCursor.SelectExhausted.class,
+                assertThrows(java.util.concurrent.CompletionException.class,
+                        b.completion()::join).getCause());
+        assertEquals(0, f.pendingRuntimeWaiterCount());
+    }
+
+    @Test void aggregateForeignOwnerCannotCancelOrPump() throws Exception {
+        var ch = new ChannelRuntime.Channel<Long>(1);
+        var b = new CountedSelectBatch(1,List.of(ChannelRuntime.read(ch.output())),
+                ChannelRuntime.SelectPolicy.FAIR);
+        var observed = new AtomicReference<Throwable>();
+        var foreign = Thread.startVirtualThread(() -> {
+            try {
+                assertFalse(b.completion().cancel(false));
+                b.pump();
+            } catch (Throwable error) { observed.set(error); }
+        });
+        foreign.join();
+        assertInstanceOf(IllegalStateException.class, observed.get());
+        assertFalse(b.completion().isDone());
+        assertEquals(0,ch.pendingRegistrations());
+        assertTrue(b.completion().cancel(false));
+        assertTrue(b.completion().isCancelled());
+    }
+
     @Test void foreignThreadCannotDriveOwnerCursor() throws Exception {
         var ch = new ChannelRuntime.Channel<Long>(1);
         var c = cursor(1,ch);

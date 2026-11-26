@@ -204,7 +204,10 @@ final class CountedSelectReadCursor {
         if (!drained.get() || !active.isDone()) return false;
         boolean stopping = state == State.STOPPING || active.isCancelled();
         try {
-            if (stopping) {
+            Throwable physicalFailure = active.cancellationHookFailureFromRuntime();
+            if (physicalFailure != null) {
+                fail(physicalFailure);
+            } else if (stopping) {
                 values.clear();
                 live.clear();
                 state = State.CANCELLED;
