@@ -1667,8 +1667,8 @@ public final class ChannelRuntime {
         // COORDINATOR while we probe aliases of that producer: without an
         // identity snapshot, an earlier alias can see PENDING while a later
         // alias sees READY in the very same PRIORITY/FAIR preference pass.
-        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
-                new java.util.IdentityHashMap<>();
+        // Channel-only rendezvous probes need no Future observation map.
+        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness = null;
 
         int start = fairStartLocked(selection);
         for (int offset = 0; offset < selection.order.length; offset++) {
@@ -1681,6 +1681,9 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (selectCase instanceof FutureCase<?> futureCase) {
+                if (observedFutureReadiness == null) {
+                    observedFutureReadiness = new java.util.IdentityHashMap<>();
+                }
                 OresFuture<?> producer = futureCase.future();
                 Boolean ready = observedFutureReadiness.get(producer);
                 if (ready == null) {
