@@ -234,6 +234,26 @@ final class DeterministicActorDispatchTest {
         decisions.set(0, new Decision(0, first.enabled(), "turn-999", first.observed()));
         assertThrows(IllegalStateException.class,
                 () -> run(17, new Trace(authentic.seed(), decisions, authentic.observed())));
+
+        // The selected choice alone is not evidence of a faithful replay.
+        // Reject omitted/extra decisions, a changed observation, and a wrong seed.
+        assertThrows(IllegalStateException.class,
+                () -> run(18, authentic));
+        var missing = new ArrayList<>(authentic.decisions());
+        missing.removeLast();
+        assertThrows(IllegalStateException.class,
+                () -> run(17, new Trace(authentic.seed(), missing, authentic.observed())));
+        var extra = new ArrayList<>(authentic.decisions());
+        extra.add(first);
+        assertThrows(IllegalStateException.class,
+                () -> run(17, new Trace(authentic.seed(), extra, authentic.observed())));
+        var changed = new ArrayList<>(authentic.decisions());
+        changed.set(0, new Decision(first.seq(), first.enabled(),
+                first.choice(), List.of("unexpected-observation")));
+        assertThrows(IllegalStateException.class,
+                () -> run(17, new Trace(authentic.seed(), changed, authentic.observed())));
+        assertThrows(IllegalStateException.class,
+                () -> run(17, new Trace(authentic.seed(), authentic.decisions(), List.of())));
     }
 
     @Test
