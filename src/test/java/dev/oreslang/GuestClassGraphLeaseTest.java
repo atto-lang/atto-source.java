@@ -121,6 +121,50 @@ final class GuestClassGraphLeaseTest {
         assertFalse(child.isReadOnly());
     }
 
+    @Test void snapshotReplacementRejectsInvalidRootsWithoutChangingSlotOrLease() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("n", 10));
+        var original = store(d, Map.of("data", child));
+        var foreign = store(new GuestClassSlots.Domain(), Map.of("n", 20));
+        var unpublished = new GuestClassSlots(d, Map.of("n", 30));
+        try (var snapshot = original.shallowSnapshot(1, 2)) {
+            deny("E_COPY_DOMAIN", () -> snapshot.replace("data", foreign));
+            assertThrows(IllegalStateException.class, () -> snapshot.replace("data", unpublished));
+            deny("E_COPY_UNPROVEN", () -> snapshot.replace("data", new Object()));
+            assertSame(child, snapshot.get("data"));
+            assertSame(child, original.get("data"));
+            assertTrue(child.isReadOnly());
+            assertFalse(foreign.isReadOnly());
+            unpublished.finishInitialization();
+            snapshot.replace("data", unpublished);
+            unpublished.replace("n", 31);
+            assertEquals(31, unpublished.get("n"));
+            deny("E_COPY_READONLY", () -> child.replace("n", 11));
+        }
+        child.replace("n", 12);
+        assertEquals(12, child.get("n"));
+    }
+
+    @Test void twoSnapshotsAndOriginalReplacementPreserveOtherLoan() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("n", 10));
+        var original = store(d, Map.of("data", child));
+        var first = original.shallowSnapshot(1, 2);
+        try (var second = original.shallowSnapshot(1, 2)) {
+            var fresh = store(d, Map.of("n", 20));
+            original.replace("data", fresh);
+            fresh.replace("n", 22);
+            first.replace("data", child); // same shared identity, not a thaw
+            deny("E_COPY_READONLY", () -> child.replace("n", 99));
+            first.close();
+            assertSame(child, second.get("data"));
+            assertSame(fresh, original.get("data"));
+            deny("E_COPY_READONLY", () -> child.replace("n", 99));
+        }
+        child.replace("n", 12);
+        assertEquals(12, child.get("n"));
+    }
+
     @Test void snapshotRootAndLeaseObserveSameConcurrentReplacement() throws Exception {
         var d = new GuestClassSlots.Domain();
         try(var pool=Executors.newFixedThreadPool(2)){
