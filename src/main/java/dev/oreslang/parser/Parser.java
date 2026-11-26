@@ -7759,11 +7759,17 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            // Lambda lookahead has already run. Empty and singleton tuples
+            // are real value shapes, not zero-argument calls or grouping.
+            if (match(RPAREN)) return new Ast.TupleExpr(List.of());
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
                 items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
+                while (!check(RPAREN)) {
+                    items.add(parseExpression());
+                    if (!match(COMMA)) break;
+                }
                 consume(RPAREN, "expected ')' after tuple");
                 return new Ast.TupleExpr(items);
             }
