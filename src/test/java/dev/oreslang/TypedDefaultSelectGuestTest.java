@@ -12,6 +12,19 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Restricted executable typed-default and checked scalar counted selection. */
 @Timeout(20)
 final class TypedDefaultSelectGuestTest {
+    @Test void exactSharedFutureDefaultGuestAndDenials() throws Exception {
+        var fixtures = java.nio.file.Path.of("tests/fixtures/select-source-v2");
+        String code = java.nio.file.Files.readString(fixtures.resolve("future-default.atto"));
+        try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code, "future-default.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong());
+        }
+        for (String name : new String[]{"reject-select-implicit-await", "reject-select-missing-result"}) {
+            String negative = java.nio.file.Files.readString(fixtures.resolve(name + ".atto"));
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(negative), name);
+        }
+    }
+
     @Test void inferredDefaultSelectProducesSameTrackedFutureAsTypedForm() throws Exception {
         assertEquals("42|43|44",run("""
                 pub async fnc main(): void {
