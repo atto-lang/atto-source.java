@@ -10,7 +10,7 @@ verify_blob() {
     exit 2
   fi
 }
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 3cab55b6afcd01377d6f59adf232c29e6f74deaf
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 9ba01dfc981395d8ef206059da44c717a564b434
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java eb84fea8ce35f786bdae3de8626c784f03cbfbe8
 verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java b307f5cbd8c9a460aedd5fd2fbe162784d2fcfbd
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java e6849c0d825f8af4b1ac140e5ac65822e49ee1da
@@ -19,7 +19,7 @@ verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIn
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java 9eb87ba39008840c7a4704e561b2fd94a7dd1fbd
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java 52ba83a7122b74696dc52d00da729403031f769f
 
-# The existing dependency-free 557-assertion host lane remains mandatory.
+# The existing dependency-free saturated-allocation host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
 
 # Compile the actual full ActorRuntime source tree and run real JUnit tests.
