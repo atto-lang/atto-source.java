@@ -410,6 +410,41 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void entryOnlyMapFactoryUsesCheckedStorageAndContextualWitness() {
+        String source = program("""
+            const explicit = Map.of_entries<string,int>(Entry.of("a", 1), "b" => 2);
+            val contextual: Map<string,int> = Map.of_entries("c" => 3);
+            const empty = Map.of_entries<string,int>();
+            stdio.println(explicit.size);
+            stdio.println(contextual.size);
+            stdio.println(empty.size);
+            """);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("2\n1\n0\n", guestStdout(source));
+    }
+
+    @Test
+    void entryOnlyMapFactoryRejectsPairFlatArgumentsAndWrongTypes() {
+        for (String expression : new String[]{
+            "Map.of_entries<string,int>(Pair.of(\"a\", 1))",
+            "Map.of_entries<string,int>(Entry.of(\"a\", 1), Pair.of(\"b\", 2))",
+            "Map.of_entries<string,int>(\"a\", 1)",
+            "Map.of_entries<string,int>(Entry.of(\"a\"))",
+            "Map.of_entries<string,int>(Entry.of(\"a\", true))",
+            "Map.of_entries<string,int>(Entry.of(1, 2))",
+            "Map.of_entries<string,int>(Entry.of(\"a\", 1), \"a\" => 2)",
+            "Map.of_entries()",
+            "Map.of_entries",
+            "Map.of_entries<string>(\"a\" => 1)"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program("const x = " + expression + ";")), expression);
+        }
+        assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
+            "define class Map as end\n" + program("const x = Map.of_entries(1, 2);")));
+    }
+
+    @Test
     void shadowedPairCannotBeConsumedAsStaticRecordField() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
             "define class Pair as end\n" + program("const r = Record.of(Pair.of(\"a\", 1));")));
