@@ -3090,7 +3090,21 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private RegisteredDefer bindDeferredFactory(Object value) {
+        private RegisteredDefer bindDeferredFactory(
+                Ast.CallExpr factory, List<Object> values, Env env) {
+            // Ownership admission proves the outer lambda has no external
+            // lexical captures. Do not snapshot unrelated caller slots,
+            // guards, actor receiver authority, or structured Task scope.
+            if (env.descendantsNonLexical() || env.instanceMethodOwner() != null
+                    || env.lexicalContainerClass() != null) {
+                throw new IllegalStateException("defer factory requires the checked lexical profile");
+            }
+            Env isolated = new Env(null, false, null, null, env.lexicalModule());
+            Object outer = eval(factory.callee(), isolated);
+            if (!(outer instanceof Invokable creator)) {
+                throw new IllegalStateException("checked defer factory is not callable");
+            }
+            Object value = invoke(invokableInvocation(creator, values));
             if (!(value instanceof Invokable callable)) {
                 throw new IllegalStateException("checked defer factory did not produce a callable");
             }
@@ -3329,15 +3343,15 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (stmt instanceof Ast.DeferStmt defer) {
                     if (defer.boundFactory() != null) {
-                        evalSuspendableExpr(task, defer.boundFactory(), env,
-                                (owner, value, failure) -> {
+                        evalSuspendableArguments(task, defer.boundFactory().arguments(), env,
+                                (owner, values, failure) -> {
                                     if (failure != null) {
                                         continuation.accept(owner, SourceFlow.throwing(failure));
                                         return;
                                     }
                                     RegisteredDefer registration;
                                     try {
-                                        registration = bindDeferredFactory(value);
+                                        registration = bindDeferredFactory(defer.boundFactory(), values, env);
                                     } catch (RuntimeException | Error invalid) {
                                         continuation.accept(owner, SourceFlow.throwing(invalid));
                                         return;
@@ -7702,7 +7716,8 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.DeferStmt defer) {
                 RegisteredDefer registration = defer.boundFactory() == null
                         ? new RegisteredDefer(defer.expression(), null)
-                        : bindDeferredFactory(eval(defer.boundFactory(), env));
+                        : bindDeferredFactory(defer.boundFactory(),
+                                evaluateArguments(defer.boundFactory().arguments(), env), env);
                 deferred.push(registration);
                 return;
             }
