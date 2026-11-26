@@ -11,6 +11,140 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresFutureCallbackTest {
 
     @Test
+    void acceptedDeferredCancellationNeverLosesItsRevokerToProducerSettlement()
+            throws Exception {
+        for (int i = 0; i < 256; i++) {
+            java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger revocations =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AtomicBoolean cancelled = new AtomicBoolean();
+            OresFuture<Integer> future = new OresFuture<>(
+                    revocations::incrementAndGet, () -> {}, true);
+            Thread cancellation = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    cancelled.set(future.cancel(false));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            Thread producer = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    future.completeFromRuntime(7);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            start.countDown();
+            cancellation.join(TimeUnit.SECONDS.toMillis(5));
+            producer.join(TimeUnit.SECONDS.toMillis(5));
+            assertFalse(cancellation.isAlive(), "cancellation race did not finish");
+            assertFalse(producer.isAlive(), "producer race did not finish");
+            assertTrue(future.isDone());
+            assertEquals(cancelled.get() ? 1 : 0, revocations.get(),
+                    "only an accepted cancellation may revoke, exactly once");
+            assertEquals(cancelled.get(), future.isCancelled(),
+                    "producer settlement cannot erase an accepted cancel");
+        }
+    }
+
+
+    @Test
+    void deferredCancelCannotNotifySubscribersUntilRevokerHasReturned()
+            throws Exception {
+        java.util.concurrent.CountDownLatch insideHook = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseHook = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger drained = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = new OresFuture<>(() -> {
+            insideHook.countDown();
+            try {
+                if (!releaseHook.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("test did not release cancellation revoker");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        }, drained::incrementAndGet, true);
+        future.whenCompleteRuntime((value, failure) -> {
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            callbacks.incrementAndGet();
+        });
+        AtomicBoolean claimed = new AtomicBoolean();
+        Thread canceller = Thread.ofVirtual().start(
+                () -> claimed.set(future.cancel(false)));
+        try {
+            assertTrue(insideHook.await(5, TimeUnit.SECONDS));
+            assertTrue(future.completeFromRuntime(42),
+                    "a racing producer claims terminal state after the cancel request");
+            future.whenCompleteRuntime((value, failure) -> {
+                assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+                callbacks.incrementAndGet();
+            });
+            assertEquals(0, callbacks.get(),
+                    "neither early nor late subscribers may bypass revocation");
+            assertEquals(0, drained.get(), "notification permit still belongs to revoker");
+        } finally {
+            releaseHook.countDown();
+            canceller.join(TimeUnit.SECONDS.toMillis(5));
+        }
+        assertFalse(canceller.isAlive());
+        assertTrue(claimed.get());
+        assertTrue(future.isCancelled());
+        assertEquals(2, callbacks.get(), "each registered subscriber fires exactly once");
+        assertEquals(1, drained.get(), "only one thread drains terminal notification");
+        assertEquals(0, future.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void fatalDeferredSettlementAlsoWaitsForCancellationRevocation()
+            throws Exception {
+        java.util.concurrent.CountDownLatch insideHook = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseHook = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger delivered = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger drained = new java.util.concurrent.atomic.AtomicInteger();
+        LinkageError fatal = new LinkageError("fatal cleanup");
+        OresFuture<Integer> future = new OresFuture<>(() -> {
+            insideHook.countDown();
+            try {
+                if (!releaseHook.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("test did not release cancellation revoker");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        }, drained::incrementAndGet, true);
+        future.whenCompleteRuntime((value, failure) -> {
+            assertSame(fatal, OresFuture.unwrap(failure));
+            delivered.incrementAndGet();
+        });
+        Thread canceller = Thread.ofVirtual().start(() -> future.cancel(false));
+        try {
+            assertTrue(insideHook.await(5, TimeUnit.SECONDS));
+            assertTrue(future.failFromRuntime(
+                    new java.util.concurrent.CompletionException(fatal)));
+            future.whenCompleteRuntime((value, failure) -> {
+                assertSame(fatal, OresFuture.unwrap(failure));
+                delivered.incrementAndGet();
+            });
+            assertEquals(0, delivered.get(), "fatal subscribers must await revocation");
+            assertEquals(0, drained.get());
+        } finally {
+            releaseHook.countDown();
+            canceller.join(TimeUnit.SECONDS.toMillis(5));
+        }
+        assertFalse(canceller.isAlive());
+        assertFalse(future.isCancelled(), "fatal dominates the accepted cancellation");
+        assertEquals(2, delivered.get());
+        assertEquals(1, drained.get());
+        assertEquals(0, future.pendingRuntimeWaiterCount());
+    }
+
+
+    @Test
     void fromCallbackMaySettleSynchronouslyButRemainsSingleShot() throws Exception {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
 

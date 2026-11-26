@@ -90,6 +90,59 @@ public final class OresScheduler implements AutoCloseable {
         Step<T> resume(Resume resume) throws Exception;
     }
 
+    /**
+     * A task whose lexical cleanup must finish on its scheduler lane before
+     * an accepted cancellation becomes externally terminal. This is trusted
+     * runtime metadata, never an automatic permission to execute after STOP.
+     */
+    public interface CleanupAwareTask<T> extends Task<T> { }
+
+    /**
+     * Runtime-owned dispatch capability. The wrapper is constructed only by
+     * the admitting scheduler: guest code cannot forge an authorized STOP turn.
+     * The origin and owning task remain fixed across cancellation races.
+     */
+    public static final class CleanupTurn implements Runnable {
+        private final OresScheduler owner;
+        private final Runnable action;
+        private final java.util.function.BooleanSupplier authorized;
+        private final java.util.function.BooleanSupplier entered;
+
+        private CleanupTurn(OresScheduler owner, Runnable action,
+                java.util.function.BooleanSupplier authorized,
+                java.util.function.BooleanSupplier entered) {
+            this.owner = owner;
+            this.action = action;
+            this.authorized = authorized;
+            this.entered = entered;
+        }
+
+        boolean ownedBy(OresScheduler expected) {
+            return expected != null && owner == expected;
+        }
+
+        boolean mayNeedLexicalCleanup() {
+            return entered.getAsBoolean();
+        }
+
+        public boolean authorizedBy(OresScheduler expected) {
+            return ownedBy(expected) && entered.getAsBoolean()
+                    && authorized.getAsBoolean();
+        }
+
+        @Override public void run() { action.run(); }
+    }
+
+    /** Return true only inside a cancelled source task's injected cleanup frame. */
+    public static boolean currentTaskInCleanup() {
+        Object current = CURRENT_TASK_DOMAIN.get();
+        return current instanceof OresScheduler.TaskRunner<?> runner
+                && runner.task instanceof CleanupAwareTask<?>
+                && runner.cancellationInjected.get()
+                && runner.completion.deferredCancellationCause() != null
+                && !runner.completion.isDone();
+    }
+
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
@@ -464,11 +517,13 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure,
+            java.util.function.BooleanSupplier cleanupAuthorized,
+            java.util.function.BooleanSupplier sourceEntered) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
-        executor.execute(() -> {
+        Runnable dispatch = () -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             OresScheduler previousCarrierScheduler = CURRENT_CARRIER_SCHEDULER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
@@ -498,7 +553,10 @@ public final class OresScheduler implements AutoCloseable {
                     }
                 }
             }
-        });
+        };
+        executor.execute(cleanupAuthorized == null ? dispatch
+                : new CleanupTurn(this, dispatch, cleanupAuthorized,
+                        Objects.requireNonNull(sourceEntered, "sourceEntered")));
     }
 
     private void ensureOpen() {
@@ -570,6 +628,9 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        private final AtomicBoolean cancellationInjected = new AtomicBoolean();
+        /** Monotonic proof that source code actually entered a lexical frame. */
+        private final AtomicBoolean sourceFrameEntered = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -594,7 +655,8 @@ public final class OresScheduler implements AutoCloseable {
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
             this.completion = new OresFuture<>(
-                    this::cancelFromFuture, this::notificationDrained);
+                    this::cancelFromFuture, this::notificationDrained,
+                    task instanceof CleanupAwareTask<?>);
         }
 
         private void reserveDeadlineSlot() {
@@ -669,11 +731,21 @@ public final class OresScheduler implements AutoCloseable {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn(ownsExecution);
                     }
-                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal);
+                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal,
+                        task instanceof CleanupAwareTask<?> ? this::cleanupAuthorized : null,
+                        task instanceof CleanupAwareTask<?> ? sourceFrameEntered::get : null);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
             }
+        }
+
+        private boolean cleanupAuthorized() {
+            return task instanceof CleanupAwareTask<?>
+                    && sourceFrameEntered.get()
+                    && completion.deferredCancellationCause() != null
+                    && !completion.isDone()
+                    && phase.get() != TERMINAL;
         }
 
         private void runTurn(AtomicBoolean ownsExecution) {
@@ -707,8 +779,23 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                // Only a previously entered source frame has lexical scopes
+                // to unwind. Cancellation injection happens on this scheduler
+                // carrier, never in Future.cancel() or a producer callback.
+                java.util.concurrent.CancellationException cancelled =
+                        completion.deferredCancellationCause();
+                if (cancelled != null
+                        && cancellationInjected.compareAndSet(false, true)) {
+                    if (resume.initial()) {
+                        failTerminal(cancelled);
+                        return;
+                    }
+                    resume = Resume.completed(null, cancelled);
+                }
+
                 final Step<T> step;
                 try {
+                    sourceFrameEntered.set(true);
                     step = Objects.requireNonNull(
                             task.resume(resume),
                             "OresScheduler task returned null Step");
@@ -798,6 +885,18 @@ public final class OresScheduler implements AutoCloseable {
 
         private void armAwait(OresFuture<?> awaited) {
             if (!phase.compareAndSet(RUNNING, WAITING)) {
+                return;
+            }
+
+            // Close the RUNNING->WAITING cancellation window. A cancellation
+            // hook observing RUNNING does not enqueue a resume; unless the
+            // newly parked frame checks here, a never-settling producer can
+            // permanently strand the lexical cleanup continuation.
+            java.util.concurrent.CancellationException requested =
+                    completion.deferredCancellationCause();
+            if (requested != null && !cancellationInjected.get()) {
+                pendingResume.set(Resume.completed(null, requested));
+                scheduleReadyResume();
                 return;
             }
 
@@ -891,6 +990,12 @@ public final class OresScheduler implements AutoCloseable {
 
         private void finish(T value) {
             detachActiveAwaitRegistration();
+            java.util.concurrent.CancellationException requested =
+                    completion.deferredCancellationCause();
+            if (requested != null) {
+                failTerminal(requested);
+                return;
+            }
             if (!phase.compareAndSet(RUNNING, TERMINAL)) {
                 return;
             }
@@ -970,7 +1075,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            // A cancellation request can race phase=TERMINAL publication while
+            // the guest carrier still owns the physical execution lease.
+            if (phase.get() != TERMINAL || executing.get() || completion.isDone())
+                return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
@@ -986,6 +1094,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void cancelFromFuture() {
+            if (task instanceof CleanupAwareTask<?>) {
+                requestCleanupCancellation();
+                return;
+            }
             detachActiveAwaitRegistration();
             int observed;
             do {
@@ -996,16 +1108,61 @@ public final class OresScheduler implements AutoCloseable {
             retireWhenQuiescent();
         }
 
+        private void requestCleanupCancellation() {
+            java.util.concurrent.CancellationException cause =
+                    completion.deferredCancellationCause();
+            if (cause == null) throw new IllegalStateException(
+                    "cleanup cancellation requires an accepted request");
+            detachActiveAwaitRegistration();
+            int observed = phase.get();
+            if (observed == TERMINAL) {
+                publishTerminalIfReady();
+                return;
+            }
+            if (observed == NEW
+                    || (observed == QUEUED && pendingResume.get() != null
+                        && pendingResume.get().initial())) {
+                // No guest frame ran; starting work after cancellation would
+                // create new lexical scopes rather than unwind existing ones.
+                failTerminal(cause);
+                return;
+            }
+            if (observed == RUNNING) return;
+            pendingResume.set(Resume.completed(null, cause));
+            if (observed == WAITING) scheduleReadyResume();
+        }
+
         private void revokeFromSchedulerClose() {
-            // Quiesce internal state even when another cancellation thread has
-            // settled the Future but is blocked notifying its waiters.
-            cancelFromFuture();
+            // Phase one revokes every task and detaches registrations before
+            // synchronous Future subscribers can block phase two.
+            if (!(task instanceof CleanupAwareTask<?>)) {
+                cancelFromFuture();
+                return;
+            }
+            detachActiveAwaitRegistration();
+            int observed;
+            do {
+                observed = phase.get();
+                if (observed == TERMINAL) return;
+            } while (!phase.compareAndSet(observed, TERMINAL));
+            pendingResume.set(null);
+            terminalOutcome.compareAndSet(null, new TerminalFailure<>(
+                    new RejectedExecutionException(
+                            "scheduler closed before lexical cleanup finished")));
+            retireWhenQuiescent();
         }
 
         private void publishCancelledFromSchedulerClose() {
-            // Task-local revocation for the entire snapshot has completed.
-            // Subscriber delivery is allowed to block, but cannot now delay
-            // cancellation/await detachment for any other admitted task.
+            if (task instanceof CleanupAwareTask<?>) {
+                // Revoke first, then install cancellation; the future stays
+                // unpublished until its real carrier has physically exited.
+                // No guest cleanup is allowed after this scheduler closes.
+                if (!completion.isDone() && completion.deferredCancellationCause() == null)
+                    completion.cancel(false);
+                publishTerminalIfReady();
+                return;
+            }
+            // Ordinary tasks retain immediate cancellation semantics.
             completion.cancel(false);
         }
     }
