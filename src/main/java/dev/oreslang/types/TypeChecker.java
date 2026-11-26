@@ -3264,7 +3264,7 @@ public final class TypeChecker {
         }
         String name = ref.name();
         if (generics.contains(name) || GENERIC_DEFAULT_BUILTINS.contains(name)
-                || Set.of("Object", "Any", "Unknown", "Error", "Symbol",
+                || Set.of("Object", "Any", "Unknown", "Error", "ArithmeticOverflowError", "DivisionByZeroError", "Symbol",
                         "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
                 || findClass(name) != null || findInterface(name) != null
                 || findTypeAlias(name) != null || modules.containsKey(name)
@@ -10303,6 +10303,10 @@ public final class TypeChecker {
      * identity relation, while open nominal types may share a future/common
      * subtype and therefore cannot be declared disjoint without a proof.
      */
+    private static boolean isNumericErrorName(String name) {
+        return name.equals("ArithmeticOverflowError") || name.equals("DivisionByZeroError");
+    }
+
     private boolean typesMayOverlap(Type a, Type b) {
         if (a == Unknown.INSTANCE || b == Unknown.INSTANCE
                 || a instanceof Generic || b instanceof Generic) return true;
@@ -10320,6 +10324,9 @@ public final class TypeChecker {
         }
 
         if (a instanceof Named an && b instanceof Named bn) {
+            if (checkedI64Arithmetic && an.arguments().isEmpty() && bn.arguments().isEmpty()
+                    && ((an.name().equals("Error") && isNumericErrorName(bn.name()))
+                        || (bn.name().equals("Error") && isNumericErrorName(an.name())))) return true;
             boolean aNominal = findClass(an.name()) != null || findInterface(an.name()) != null;
             boolean bNominal = findClass(bn.name()) != null || findInterface(bn.name()) != null;
             if (aNominal && bNominal) {
