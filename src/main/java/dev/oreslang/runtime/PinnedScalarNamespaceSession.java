@@ -18,7 +18,7 @@ import java.util.*;
  * stdout calls to zero-argument selected functions are admitted. No arbitrary
  * source rewriting, file resolution, host interop, or implicit namespace.
  * The actual compiler checks independent source units and the normal Truffle
- * linker executes them. The consumer is lowered to explicit function imports
+ * linker executes them. The consumer is lowered to explicit file wildcard bindings
  * from validated providers. Fresh runtime context each call; typed-unit reuse
  * is not machine-code or runtime-init reuse. Not the default launcher.
  */
@@ -83,7 +83,7 @@ public final class PinnedScalarNamespaceSession {
             if(!(call.callee() instanceof Ast.MemberExpr access)||!member(call.callee(),selected.localAlias(),access.member())||!call.arguments().isEmpty())throw deny("selected zero-argument call required");
             String name=access.member(),target=exports.get(name);
             if(target==null)throw new IllegalArgumentException("E_NAMESPACE_SYMBOL: not a public selected provider: "+name);
-            used.put(name,target);body.append("stdio.println(").append(name).append("());\n");
+            used.put(name,target);body.append("stdio.println(namespace_provider_").append(name).append(".").append(name).append("());\n");
         }
         if(used.isEmpty())throw deny("no selected calls");
         var lowered=new StringBuilder();
@@ -92,7 +92,7 @@ public final class PinnedScalarNamespaceSession {
         // arbitrary source; only AST-validated identifier names are emitted.
         var resolutions=new TreeMap<String,String>();
         used.forEach((name,id)->{
-            String path="../"+id;lowered.append("import fnc ").append(name).append(" from \"").append(path).append("\";\n");
+            String path="../"+id;lowered.append("import * as namespace_provider_").append(name).append(" from \"").append(path).append("\";\n");
             resolutions.put(path,id);
         });
         lowered.append("pub fnc main(): void {\n").append(body).append("}\n");
