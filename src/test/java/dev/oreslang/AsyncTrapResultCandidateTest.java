@@ -66,6 +66,39 @@ final class AsyncTrapResultCandidateTest {
     }
 
     @Test
+    void qualifiedAsyncTrapPreservesTextErrorAndWidensOnlyErrorArm() throws Exception {
+        String source = """
+                define module safely as
+                  pub async fnc ready(): int { rt cooperate; return 42; }
+                  pub async trap fnc reject_text(): Result<int, String> {
+                    val int n = await ready();
+                    return Err("original result error");
+                  }
+                  pub async trap fnc accept(): Result<int, String> {
+                    return Ok(await ready());
+                  }
+                end
+                pub fnc main(): void {
+                  val Future<Result<int, String | Error>> failed = safely.reject_text();
+                  val Result<int, String | Error> bad = await failed;
+                  val Result<int, String | Error> good = await safely.accept();
+                  stdio.stdout.write(bad.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(bad.unwrap_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(good.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:original result error:42", run(source));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source.replace(
+                        "Future<Result<int, String | Error>>",
+                        "Future<Result<Result<int, String>, Error>>")));
+    }
+
+    @Test
     void bothWrongFutureShapesAreRejected() {
         String source = """
                 async trap fnc later(): int { return 42; }
