@@ -5754,6 +5754,11 @@ public final class Parser {
      * MatchExpr rather than the enclosing callable's control flow.
      */
     private Ast.MatchExpr parseValueMatch() {
+        return parseValueMatch(null);
+    }
+
+    // Inject the already parsed pipeline operand, never reparse or duplicate it.
+    private Ast.MatchExpr parseValueMatch(Ast.Expr pipelineSubject) {
         // A single result type is an expression constraint, not the subject type.
         // Preserve the historical <ret=T> spelling while preferring <T>.
         boolean canonicalFirst = matchContextualIdentifier("first");
@@ -5779,7 +5784,7 @@ public final class Parser {
         suppressRefinementOperators = true;
         Ast.Expr subject;
         try {
-            subject = parseExpression();
+            subject = pipelineSubject == null ? parseExpression() : pipelineSubject;
         } finally {
             suppressRefinementOperators = previousSuppression;
         }
@@ -5814,7 +5819,23 @@ public final class Parser {
                 seenDefault = true;
             }
 
+            // A syntactic trap subject is a Result. Normalize explicit Err()
+            // to a wildcard payload without weakening custom ADT arity checks.
+            boolean discardTrapError = !defaultArm && subject instanceof Ast.TrapExpr
+                    && check(IDENT) && peek().lexeme().equals("Err")
+                    && checkNext(LPAREN) && current + 2 < tokens.size()
+                    && tokens.get(current + 2).type() == RPAREN;
             Ast.Pattern pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
+            if (discardTrapError) {
+                pattern = new Ast.ConstructorPattern("Err", List.of(new Ast.WildcardPattern()));
+            }
+            if (match(COLON)) {
+                Ast.TypeRef armType = parseTypeRef();
+                // Do not erase an independent arm constraint.
+                if (declaredResult == null || !declaredResult.equals(armType)) {
+                    throw error(previous(), "match arm type must equal explicit match result type");
+                }
+            }
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
                 if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
@@ -5897,7 +5918,7 @@ public final class Parser {
             // Retain ';' for compatibility, but the canonical over/on/default/end
             // grammar also allows adjacent arms without redundant punctuation.
             // Do not let arbitrary expressions substitute for an arm terminator.
-            if (!match(SEMICOLON)
+            if (!match(SEMICOLON, COMMA)
                     && !check(DEFAULT)
                     && !check(END)
                     && !(braced && check(RBRACE))
@@ -6408,6 +6429,10 @@ public final class Parser {
             Token operator = previous();
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
+            }
+            if (match(MATCH)) {
+                value = parseValueMatch(value);
+                continue;
             }
             // std.await is a *unary*, compiler-owned suspension stage, not a
             // callable value, factory, or Future.map/flat_map. Reuse the same
