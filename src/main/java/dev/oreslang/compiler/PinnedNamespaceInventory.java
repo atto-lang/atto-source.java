@@ -40,7 +40,18 @@ public final class PinnedNamespaceInventory {
         if(s==null||s.length()>512||!s.matches("[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\\.(?:atto|ores)"))throw deny("source path");return s;
     }
     private static TomlTable table(TomlTable t,String key){var v=t.getTable(List.of(key));if(v==null)throw deny("missing table "+key);return v;}
+    // Opaque, single accepted inventory. Never trust a memo from caller-built
+    // ASTs; only authenticated source parsed by this class enters it.
+    public static final class Memo {
+        private final String manifest;
+        private final Map<String,Provider> entries;
+        private Memo(String manifest,Map<String,Provider> entries){this.manifest=manifest;this.entries=Map.copyOf(entries);}
+    }
+    public record Prepared(Selection selection,Memo memo,int parsed,int reused){}
     public static Selection admit(Ast.ImportDecl selector,String consumerManifest,String providerManifest,Map<String,String> sourceSnapshot){
+        return prepare(selector,consumerManifest,providerManifest,sourceSnapshot,null).selection();
+    }
+    public static Prepared prepare(Ast.ImportDecl selector,String consumerManifest,String providerManifest,Map<String,String> sourceSnapshot,Memo previous){
         if(selector==null||selector.kind()!=Ast.ImportKind.ALL||!selector.wildcard()||!selector.names().isEmpty()||
            selector.namespace()==null||!selector.namespace().matches("[A-Za-z_][A-Za-z0-9_]{0,127}")||selector.path()==null||!selector.path().startsWith(ImportRules.NAMESPACE_PACKAGE_PREFIX))throw deny("selector required");
         String[] parts=selector.path().substring(ImportRules.NAMESPACE_PACKAGE_PREFIX.length()).split(":",-1);
@@ -73,10 +84,16 @@ public final class PinnedNamespaceInventory {
         sorted.forEach((p,s)->serialized.append(p).append('\n').append(digest(bytes(s,65536))).append('\n'));
         if(!digest(bytes(serialized.toString(),128*1024)).equals(dep.getString("sources_sha256")))throw deny("source pin mismatch");
         var chosen=new ArrayList<Provider>();var symbols=new HashSet<String>();
+        var next=new TreeMap<String,Provider>();int parsed=0,reused=0;
         for(var e:sorted.entrySet()){
             // Parse only after both pins and exact membership have been
             // validated. No inferred package/folder namespace.
-            Ast.Program program=Parser.parse(e.getValue());
+            Provider old=previous!=null&&providerManifest.equals(previous.manifest)?previous.entries.get(e.getKey()):null;
+            Provider item;
+            if(old!=null&&old.source().equals(e.getValue())){item=old;reused++;}
+            else{item=new Provider(e.getKey(),e.getValue(),Parser.parse(e.getValue()));parsed++;}
+            next.put(e.getKey(),item);
+            Ast.Program program=item.program();
             if(!ns.equals(program.namespace()))continue;
             for(var module:program.modules()){
                 if(!Parser.ROOT_MODULE.equals(module.name()))continue;
@@ -84,9 +101,9 @@ public final class PinnedNamespaceInventory {
                     if(d instanceof Ast.FunctionDecl fn&&!symbols.add(fn.name()))throw deny("duplicate function in selected namespace");
                 }
             }
-            chosen.add(new Provider(e.getKey(),e.getValue(),program));
+            chosen.add(item);
         }
         if(chosen.isEmpty())throw deny("namespace not present in pinned package");
-        return new Selection(alias,ns,selector.namespace(),chosen);
+        return new Prepared(new Selection(alias,ns,selector.namespace(),chosen),new Memo(providerManifest,next),parsed,reused);
     }
 }

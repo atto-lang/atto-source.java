@@ -25,7 +25,10 @@ import java.util.*;
 public final class PinnedScalarNamespaceSession {
     private final IncrementalCompiler compiler=new IncrementalCompiler();
     private static final String ENTRY="consumer/main.ores";
-    public record Result(IncrementalCompiler.BuildResult build,int exitStatus){}
+    private PinnedNamespaceInventory.Memo inventoryMemo;
+    private String acceptedConsumer;
+    private Ast.Program acceptedProgram;
+    public record Result(IncrementalCompiler.BuildResult build,int exitStatus,int inventoryParsed,int inventoryReused,int consumerParsed){}
     private static IllegalArgumentException deny(String detail){return new IllegalArgumentException("E_NAMESPACE_PROFILE: "+detail);}
     private static boolean identifier(String name){return name!=null&&name.matches("[A-Za-z_][A-Za-z0-9_]{0,127}")&&!Set.of("main","stdio","init",Parser.ROOT_MODULE).contains(name);}
     private static Ast.ModuleDecl root(Ast.Program p){
@@ -48,9 +51,11 @@ public final class PinnedScalarNamespaceSession {
     public synchronized Result run(String consumer,String consumerManifest,String providerManifest,Map<String,String> snapshot,OutputStream out,OutputStream err){
         Objects.requireNonNull(out);Objects.requireNonNull(err);
         if(consumer==null||consumer.length()>65536||!StandardCharsets.UTF_8.newEncoder().canEncode(consumer)||consumer.getBytes(StandardCharsets.UTF_8).length>65536)throw deny("consumer budget");
-        var program=Parser.parse(consumer);
+        boolean parseConsumer=!consumer.equals(acceptedConsumer);
+        var program=parseConsumer?Parser.parse(consumer):acceptedProgram;
         if(program.imports().size()!=1)throw deny("one namespace import required");
-        var selected=PinnedNamespaceInventory.admit(program.imports().getFirst(),consumerManifest,providerManifest,snapshot);
+        var prepared=PinnedNamespaceInventory.prepare(program.imports().getFirst(),consumerManifest,providerManifest,snapshot,inventoryMemo);
+        var selected=prepared.selection();
         if(!identifier(selected.localAlias()))throw deny("reserved alias");
         var m=root(program);
         if(m.declarations().size()!=1)throw deny("single entry");
@@ -113,7 +118,8 @@ public final class PinnedScalarNamespaceSession {
             for(var group:build.initializationGroups())for(String id:group)units.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
             var result=units.get(ENTRY).execute(OresEvalRootNode.MAIN_ONLY_COMMAND);
             if(!result.isNull()&&(!result.fitsInInt()||result.asInt()!=0))throw deny("nonzero entry result");
-            return new Result(build,0);
+            inventoryMemo=prepared.memo();acceptedConsumer=consumer;acceptedProgram=program;
+            return new Result(build,0,prepared.parsed(),prepared.reused(),parseConsumer?1:0);
         }
     }
 }
