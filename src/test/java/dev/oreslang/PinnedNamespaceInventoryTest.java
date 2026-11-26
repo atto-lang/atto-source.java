@@ -34,4 +34,39 @@ final class PinnedNamespaceInventoryTest {
         assertThrows(IllegalArgumentException.class,()->PinnedNamespaceInventory.admit(selector("billing"),consumer(changed),MANIFEST,changed));
         System.out.println("JAVA_NAMESPACE_INVENTORY|multi-provider|pins|no-implicit-namespace|duplicates-denied");
     }
+    @Test void pinnedConsumerAndUnrelatedEditReuseCheckedUnits()throws Exception{
+        var session=new dev.oreslang.runtime.PinnedScalarNamespaceSession();
+        String source="namespace app; import namespace billing as p from 'checkout'; pub fnc main(): void { stdio.println(p.a()); return; }";
+        String cm=consumer(SOURCES);
+        var out=new java.io.ByteArrayOutputStream();
+        var err=new java.io.ByteArrayOutputStream();
+        var cold=session.runPinned(source,cm,MANIFEST,SOURCES,hash(source),hash(cm),out,err);
+        assertEquals("1",out.toString(StandardCharsets.UTF_8).strip());
+        assertEquals(3,cold.inventoryParsed());
+        var local=new HashMap<>(SOURCES);local.put("src/c.ores","pub fnc c(): int { return 900; }");
+        String repinned=consumer(local);out.reset();
+        assertThrows(IllegalArgumentException.class,()->session.runPinned(source,repinned,MANIFEST,local,hash(source),hash(cm),out,err));
+        assertThrows(IllegalArgumentException.class,()->session.runPinned(source,cm,MANIFEST,local,hash(source),hash(cm),out,err));
+        assertEquals(0,out.size());
+        var warm=session.runPinned(source,repinned,MANIFEST,local,hash(source),hash(repinned),out,err);
+        assertEquals("1",out.toString(StandardCharsets.UTF_8).strip());
+        assertEquals(1,warm.inventoryParsed());assertEquals(2,warm.inventoryReused());
+        assertEquals(0,warm.consumerParsed());
+        assertTrue(warm.build().rebuiltUnits().isEmpty());
+        assertEquals(cold.build().units().keySet(),warm.build().units().keySet());
+        System.out.println("JAVA_PINNED_BOUND_CHECK|fresh-pins|local-edit|zero-rebuilt-units|actual-guest");
+    }
+    @Test void forkedCompilerDoesNotPublishToAcceptedSession(){
+        var accepted=new dev.oreslang.compiler.IncrementalCompiler();
+        var initial=Map.of("main.ores","pub fnc main(): int { return 42; }");
+        var edited=Map.of("main.ores","pub fnc main(): int { return 43; }");
+        accepted.compile(initial);
+        var candidate=accepted.fork();
+        assertFalse(candidate.compile(edited).rebuiltUnits().isEmpty());
+        assertTrue(accepted.compile(initial).rebuiltUnits().isEmpty());
+        assertTrue(candidate.compile(edited).rebuiltUnits().isEmpty());
+        candidate.compile(Map.of());
+        assertTrue(accepted.compile(initial).rebuiltUnits().isEmpty());
+        System.out.println("JAVA_CHECK_TRANSACTION|fork-isolation|discard|deletion-isolation");
+    }
 }
