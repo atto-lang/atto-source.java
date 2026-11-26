@@ -8,3 +8,9 @@ pub async fnc work(): int {
     stdio.println("body");
     return 42;
 }
+
+pub async fnc main(): void {
+    val result = await work();
+    stdio.println(result);
+    return;
+}
