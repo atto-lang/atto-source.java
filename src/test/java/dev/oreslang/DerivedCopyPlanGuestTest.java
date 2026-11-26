@@ -115,6 +115,29 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void flatDeepCopyRetainsPrivateAndInheritedFieldsWithoutAliasing() throws Exception {
+        assertEquals("42|99|7", run("""
+                define class Base as
+                  pub let int value = 42;
+                end
+                define class Child extends Base as
+                  pub let int tag = 7;
+                end
+                pub fnc main(): void {
+                  let mut Child original = new Child();
+                  let mut Child cloned = copy!! original;
+                  cloned.value = 99;
+                  stdio.stdout.write(original.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(cloned.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(cloned.tag);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void doubleBangHasDistinctAstAndExecutesAcyclicDeepCopy() throws Exception {
         String template = "fnc main(): int { val int x = 7; return %s; }";
         assertNotEquals(Parser.parse(template.formatted("copy! x")),
