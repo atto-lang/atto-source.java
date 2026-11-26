@@ -67,6 +67,9 @@ def main():
     failures = []
     for case in cases:
         meta = headers(case, args.backend)
+        if case.name in REQUIRED_CASES and meta["reject"] != case.name.startswith("neg_"):
+            failures.append(f"{case.name}: unexpected fixture polarity")
+            continue
         if not meta["reject"] and "exit" not in meta:
             failures.append(f"{case.name}: missing explicit expected exit")
             continue
