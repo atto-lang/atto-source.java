@@ -482,4 +482,54 @@ final class InlineTaskTerminalReturnTest {
         }
         assertEquals("inner|branch|outer|caller", output.toString(StandardCharsets.UTF_8));
     }
+
+    @Test void cancellationUnwindsInlineAndScheduledTaskDefersBeforeDone() throws Exception {
+        // Exercise the existing explicit-async scheduler lane. This is a
+        // cancellation regression, not evidence of strict Atto/AOT admission.
+        String source = """
+                define class Flag as
+                  pub let int value = 0;
+                end
+                pub async fnc main(): void {
+                  val flag = SharedMutex.new(new Flag());
+                  let Future<void> child = task {
+                    defer stdio.stdout.write("|outer");
+                    do sync task<void> {
+                      defer stdio.stdout.write("|inline");
+                      stdio.stdout.write("started");
+                      block {
+                        val g = flag.lock();
+                        g.value = 1;
+                      }
+                      loop {
+                        rt cooperate;
+                      }
+                    }
+                    stdio.stdout.write("|unreachable");
+                    return;
+                  };
+                  let mut int started = 0;
+                  while started == 0 {
+                    rt cooperate;
+                    block {
+                      val g = flag.lock();
+                      started = g.value;
+                    }
+                  }
+                  child.cancel();
+                  val outcome = await child.get_done();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(outcome);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        OresCompiler.parseAndTypeCheck(source);
+        try (var context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source,
+                    "inline-cancellation.ores").mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("started|inline|outer|#cancelled", output.toString(StandardCharsets.UTF_8));
+    }
 }
