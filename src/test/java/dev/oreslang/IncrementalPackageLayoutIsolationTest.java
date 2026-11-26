@@ -67,4 +67,37 @@ final class IncrementalPackageLayoutIsolationTest {
         var layout = new PackageLayout(Map.of("vendor/v1", "shop", "vendor/v2", "other"));
         assertNotEquals(layout.packageId("vendor/v1/a.atto"), layout.packageId("vendor/v2/a.atto"));
     }
+
+    @Test void structuredNamespaceMetadataDoesNotTruncatePackageIdentity() {
+        var compiler = new IncrementalCompiler();
+        var result = compiler.compile(Map.of("src#one.atto",
+                "pub fnc answer(): int { return 42; }"));
+        assertEquals(Set.of("file:src#one.atto"), result.packageInterfaces().keySet());
+        assertEquals(Set.of("file:src%23one.atto#"), result.namespaceInterfaces().keySet());
+        assertEquals(result.namespaceInterfaces().keySet(), result.rebuiltNamespaces());
+        assertEquals(1, result.structuredNamespaceInterfaces().size());
+    }
+
+    @Test void malformedUnicodeCannotAliasCachedSource() {
+        var compiler = new IncrementalCompiler();
+        var valid = compiler.compile(SOURCE, Map.of(), SHOP);
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(
+                Map.of(ID, SOURCE.get(ID) + "\ud800"), Map.of(), SHOP));
+        var warm = compiler.compile(SOURCE, Map.of(), SHOP);
+        assertSame(valid.units().get(ID), warm.units().get(ID));
+        assertTrue(warm.rebuiltUnits().isEmpty());
+    }
+
+    @Test void namespaceDigestTracksAbiNotImplementation() {
+        var compiler = new IncrementalCompiler();
+        var original = compiler.compile(SOURCE, Map.of(), SHOP);
+        var body = compiler.compile(Map.of(ID,
+                "pub fnc answer(): int { return 43; }"), Map.of(), SHOP);
+        assertEquals(original.namespaceInterfaces(), body.namespaceInterfaces());
+        assertEquals(original.packageInterfaces(), body.packageInterfaces());
+        var abi = compiler.compile(Map.of(ID,
+                "pub fnc answer(int n): int { return n; }"), Map.of(), SHOP);
+        assertNotEquals(body.namespaceInterfaces(), abi.namespaceInterfaces());
+        assertNotEquals(body.packageInterfaces(), abi.packageInterfaces());
+    }
 }
