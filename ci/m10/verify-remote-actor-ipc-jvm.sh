@@ -42,6 +42,7 @@ timeout 120 "$JAVA_HOME/bin/java" -cp "$work/classes" M6NioRuntimeProbe | tee "$
 grep -Fx 'M6_NIO_SCHEDULER_SUPERVISOR_NATIVE_HOST=PASS' "$work/m6.log" >/dev/null
 timeout 90 "$JAVA_HOME/bin/java" -cp "$work/classes" M6PerMessageTicketProbe | tee "$work/tickets.log"
 grep -Fx 'M6_PROXY_TENANT_TARGET_SCOPE_FENCE=PASS' "$work/tickets.log" >/dev/null
+grep -Fx 'M6_PROXY_FOREIGN_FULL_MAILBOX_256=PASS' "$work/tickets.log" >/dev/null
 grep -Fx 'M6_TICKET_128_CONCURRENT_MAIL_EXACT_CORRELATION=PASS' "$work/tickets.log" >/dev/null
 grep -Fx 'M6_TICKET_PANIC_ABANDON_CONTROL_REINCARNATION=PASS' "$work/tickets.log" >/dev/null
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RestrictedSenderCompilerProbe \
