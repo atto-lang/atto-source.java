@@ -7810,6 +7810,21 @@ public final class Parser {
         while (!check(EOF)) {
             if (verifiedFunctions.size() >= 64) throw error(peek(), "E_REFINEMENT_LIMIT: too many verified functions");
             if (mainSeen) throw error(peek(), "E_REFINEMENT_SCOPE: main must be the final verified function");
+            List<int[]> annotationSpans = new ArrayList<>();
+            while (match(AT)) {
+                if (annotationSpans.size() >= 16) throw error(peek(), "E_REFINEMENT_CONTRACT: contract budget");
+                boolean requires = isContextualIdentifier("requires");
+                if (!requires && !isContextualIdentifier("ensures")) throw error(peek(), "E_REFINEMENT_CONTRACT: unsupported annotation");
+                advance(); consume(LPAREN, "expected annotation predicate");
+                int start = current;
+                while (!check(RPAREN)) {
+                    if (isAtEnd() || current-start>=32 || check(LPAREN) || check(LBRACE) || check(RBRACE) || check(SEMICOLON) || check(AT))
+                        throw error(peek(), "E_REFINEMENT_CONTRACT: invalid bounded annotation predicate");
+                    advance();
+                }
+                annotationSpans.add(new int[]{start,current,requires?1:0});
+                advance();
+            }
             boolean isPublic = match(PUB);
             if (!isPublic) match(PRIVATE);
             consume(FNC, "E_REFINEMENT_SCOPE: expected a verified function declaration");
@@ -7843,21 +7858,41 @@ public final class Parser {
             if (isMain && (!parameters.isEmpty() || !result.equals(RefinedQuantity.SCALAR))) {
                 throw error(name, "E_REFINEMENT_EXPORT: main must have signature () -> int");
             }
-            int contractStart = current;
-            while (isContextualIdentifier("requires")) {
+            int contractStart = current, clauseCount = annotationSpans.size();
+            if (isMain && clauseCount != 0) throw error(name,"E_REFINEMENT_CONTRACT: entrypoint annotations");
+            int nextRequires=0;
+            while (true) {
+                while (nextRequires<annotationSpans.size() && annotationSpans.get(nextRequires)[2]==0) nextRequires++;
+                int resume=current;
+                int[] span=nextRequires<annotationSpans.size()?annotationSpans.get(nextRequires++):null;
+                if(span!=null) current=span[0];
+                else {
+                    if(!isContextualIdentifier("requires"))break;
+                    if(++clauseCount>16)throw error(peek(),"E_REFINEMENT_CONTRACT: contract budget");
+                    advance();
+                }
                 if (isMain) throw error(peek(), "E_REFINEMENT_EXPORT: main cannot require caller facts");
-                advance();
                 Token param = verifiedName("expected a parameter name in requires");
                 var type = verifiedLocals.get(param.lexeme());
                 if (type == null) throw error(param, "E_REFINEMENT_NAME: requires must name a parameter");
                 verifiedLocals.put(param.lexeme(), readVerifiedBound(type, readQuantityComparison()));
+                if(span!=null){if(current!=span[1])throw error(peek(),"E_REFINEMENT_CONTRACT: trailing annotation tokens");current=resume;}
             }
             List<RefinedQuantity> required = parameters.stream()
                     .map(param -> verifiedLocals.get(param.name())).toList();
             final RefinedQuantity returnType = result;
             List<Integer> upperParameters = new ArrayList<>();
-            while (isContextualIdentifier("ensures")) {
-                advance();
+            int nextEnsures=0;
+            while (true) {
+                while(nextEnsures<annotationSpans.size()&&annotationSpans.get(nextEnsures)[2]!=0)nextEnsures++;
+                int resume=current;
+                int[] span=nextEnsures<annotationSpans.size()?annotationSpans.get(nextEnsures++):null;
+                if(span!=null)current=span[0];
+                else {
+                    if(!isContextualIdentifier("ensures"))break;
+                    if(++clauseCount>16)throw error(peek(),"E_REFINEMENT_CONTRACT: contract budget");
+                    advance();
+                }
                 consumeContextualIdentifier("result", "E_REFINEMENT_PREDICATE: ensures must constrain result");
                 String comparison = readQuantityComparison();
                 if (comparison.equals("<=") && check(IDENT)) {
@@ -7869,9 +7904,10 @@ public final class Parser {
                 } else {
                     result = readVerifiedBound(result, comparison);
                 }
+                if(span!=null){if(current!=span[1])throw error(peek(),"E_REFINEMENT_CONTRACT: trailing annotation tokens");current=resume;}
             }
 
-            boolean contracted = current != contractStart;
+            boolean contracted = !annotationSpans.isEmpty() || current != contractStart;
             boolean endDelimited = false;
             if (!match(LBRACE)) {
                 if (match(DOUBLE_COLON)) endDelimited = true;
