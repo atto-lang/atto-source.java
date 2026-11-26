@@ -2290,6 +2290,21 @@ public final class OresEvalRootNode extends RootNode {
                         "checked Task capture admission execution domain does not match TaskExpr");
             }
 
+            if (taskExpr.zeroCountSourceName() != null) {
+                // Checked identity and empty capture admission are required
+                // before bypassing scheduler allocation. Never execute a
+                // retained body, look up the witness, or create a waiter.
+                if (!taskExpr.typedCountedSelectI64() || !admitted.isEmpty()
+                        || !syntactic.isEmpty() || taskExpr.body().size() != 1
+                        || !(taskExpr.body().getFirst() instanceof Ast.ReturnStmt ret)
+                        || !(ret.value() instanceof Ast.NewExpr empty)
+                        || !empty.type().equals(new Ast.TypeRef(
+                                "Array", List.of(Ast.TypeRef.simple("int")), false))
+                        || !empty.arguments().isEmpty())
+                    throw new IllegalStateException("invalid checked zero-count selection");
+                return SourceTaskHandles.completedWithoutWork(new NativeAttoSequence("Array"));
+            }
+
             TaskLaunchAuthority launchAuthority =
                     new TaskLaunchAuthority(
                             allocateTaskLaunchId(),

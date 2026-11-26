@@ -195,6 +195,36 @@ final class TypedDefaultSelectGuestTest {
                 """));
     }
 
+    @Test void zeroCountHasTerminalControlHandleBeforeAnyAwait() throws Exception {
+        assertEquals("false|success|0|42",run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 42;
+                  val Future<Array<int>> pending = select<int>(0) {
+                    when readch incoming: int n -> { return n * 2; }
+                  };
+                  stdio.stdout.write(pending.cancel());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await pending.get_done());
+                  stdio.stdout.write("|");
+                  val Array[int] result = await pending;
+                  stdio.stdout.write(result.size);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming);
+                  return;
+                }
+                """));
+    }
+
+    @Test void portableFiveNegativeCountedBlobsRejectBeforeExecution() throws Exception {
+        for (String name : new String[]{"reject-counted-negative", "reject-counted-bool",
+                "reject-counted-scalar", "reject-counted-default", "reject-counted-write"}) {
+            String code = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "tests/fixtures/select-source-v2", name + ".atto"));
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(code), name);
+        }
+    }
+
     @Test void countedProjectionBudgetAndWrongPayloadRejected() {
         String projection = "n" + " + 1".repeat(64);
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
