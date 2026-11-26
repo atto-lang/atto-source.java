@@ -42,8 +42,12 @@ final class SingleCarrierNioContinuationGuestTest {
         }
     }
 
-    private static Socket connect(int port) throws Exception {
+    private static Socket connect(int port, CompletableFuture<Void> finished) throws Exception {
         for (int i = 0; i < 500; i++) {
+            if (finished.isDone()) {
+                finished.get();
+                throw new AssertionError("guest exited before connection");
+            }
             try {
                 Socket s = new Socket("127.0.0.1", port);
                 s.setSoTimeout(5000);
@@ -95,7 +99,7 @@ final class SingleCarrierNioContinuationGuestTest {
         Thread guest = new Thread(() -> {
             try (Context ctx = Context.newBuilder(OresLanguage.ID)
                     .allowAllAccess(false)
-                    .arguments(OresLanguage.ID, new String[]{"--ores-capabilities=NETWORK"})
+                    .arguments(OresLanguage.ID, new String[]{"--ores-capabilities=NETWORK,STDOUT"})
                     .out(capture).build()) {
                 ctx.initialize(OresLanguage.ID);
                 ctx.enter();
@@ -118,7 +122,7 @@ final class SingleCarrierNioContinuationGuestTest {
         OresScheduler scheduler = vm.rootScheduler();
         assertEquals(1, vm.controlCarrierCount());
         assertEquals(1, scheduler.parallelism());
-        try (Socket a = connect(port)) {
+        try (Socket a = connect(port, finished)) {
             Marker armed = capture.armed.get(5, TimeUnit.SECONDS);
             assertSame(scheduler, armed.scheduler());
             assertNotNull(armed.domain());
@@ -130,7 +134,7 @@ final class SingleCarrierNioContinuationGuestTest {
                     scheduler.hasReleasedPendingAwaitForTest(armed.domain()))
                     .get(5, TimeUnit.SECONDS), "A must have released a pending read");
             assertFalse(capture.resumed.isDone());
-            try (Socket b = connect(port)) {
+            try (Socket b = connect(port, finished)) {
                 b.getOutputStream().write(7);
                 b.getOutputStream().flush();
                 assertEquals(7, b.getInputStream().read());
