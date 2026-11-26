@@ -14,6 +14,7 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/parser/Lexer.java'
       - 'src/test/java/dev/oreslang/MoveBangAliasTest.java'
+      - 'src/test/java/dev/oreslang/ShallowCopyLexicalLoanGuestTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DerivedGraphCopyPlanTest.java'
       - 'src/test/java/dev/oreslang/GraphCopyTransactionTest.java'
@@ -75,6 +76,11 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dtest=MoveBangAliasTest,DerivedCopyPlanGuestTest,CopyPolicyCompilerTest,OwnershipAndClosureTest,DerivedGraphCopyPlanTest,GraphCopyTransactionTest,CopyPlanCacheTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Run lexical shallow-copy and nominal consent target gates
+        if: always()
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ShallowCopyLexicalLoanGuestTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
       - name: Capture executed Surefire receipts
         if: always()
         shell: bash
