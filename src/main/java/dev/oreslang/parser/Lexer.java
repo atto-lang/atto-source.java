@@ -151,7 +151,7 @@ public final class Lexer {
                 else if (match('*')) blockComment();
                 else add(SLASH);
             }
-            case ' ', '\t' -> { }
+            case ' ', '\t', '\u000b', '\f' -> { }
             case '\r' -> { match('\n'); newline(); }
             case '\n' -> newline();
             case '"', '\'' -> string(c);

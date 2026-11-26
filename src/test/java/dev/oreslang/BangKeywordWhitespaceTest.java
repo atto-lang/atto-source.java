@@ -33,7 +33,7 @@ final class BangKeywordWhitespaceTest {
     }
 
     @Test void spacedTrapIsAResultBoundaryNotBooleanNegation() {
-        String guest = "pub fnc main(): int { val r = trap! (84 / 2); return r.unwrap(); }";
+        String guest = "pub fnc main(): int { val r = trap! (40 + 2); return r.unwrap(); }";
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(guest)));
         try (var context = org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).build()) {
