@@ -7135,20 +7135,29 @@ public final class Parser {
     // Restricted executable source slice. A single lexical Channel<int>
     // and pure integer projection need no mixed-source rotation. Each round
     // uses the real checked procedural select arbiter on the Task lane.
-    // Dynamic counts, zero, multiple sources, Future and arbitrary arm
-    // bodies still fail closed until general aggregate lowering exists.
+    // Literal/constant counts and lexical int counts are supported. Multiple
+    // sources, general dynamic expressions, Future and arbitrary arm bodies
+    // still fail closed until general aggregate lowering exists.
     private Ast.Expr parseRestrictedCountedSelect() {
         String unsupported = "counted select requires tracked Future result lowering outside restricted single-read slice";
         long count = -1;
         String dynamicCount = null;
-        if (match(INT)) {
-            count = parseSignedI64(previous());
-            if (count < 0 || count > 16) throw error(previous(), unsupported);
-        } else if (match(IDENT)) {
-            dynamicCount = previous().lexeme();
-            if (dynamicCount.startsWith("$")) throw error(previous(), unsupported);
-        } else throw error(peek(), unsupported);
+        Token countStart = peek();
+        Ast.Expr countExpression = parseExpression();
         if (!match(RPAREN)) throw error(peek(), unsupported);
+        if (countExpression instanceof Ast.NameExpr name && countStart.type() == IDENT) {
+            dynamicCount = name.name();
+            if (dynamicCount.startsWith("$")) throw error(countStart, unsupported);
+        } else {
+            // Pure constant integer expressions only: checked arithmetic, no
+            // evaluation or captures in the parser, bounded traversal.
+            try {
+                count = foldCountedConstant(countExpression, new int[]{64});
+            } catch (ArithmeticException | IllegalArgumentException invalid) {
+                throw error(countStart, "invalid or unsupported constant counted select expression");
+            }
+            if (count < 0 || count > 16) throw error(countStart, unsupported);
+        }
         Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.BLOCKING, true);
         if (selected.policy() == Ast.SelectPolicy.RANDOM || selected.arms().size() != 1)
             throw error(previous(), unsupported);
@@ -7211,6 +7220,23 @@ public final class Parser {
         }
         taskBody.add(new Ast.ReturnStmt(new Ast.ListExpr(values, true)));
         return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, taskBody, false, false, true);
+    }
+
+    private static long foldCountedConstant(Ast.Expr expression, int[] budget) {
+        if (--budget[0] < 0) throw new IllegalArgumentException("count expression budget");
+        if (expression instanceof Ast.LiteralExpr literal && literal.value() instanceof Long value)
+            return value;
+        if (expression instanceof Ast.BinaryExpr binary) {
+            long left = foldCountedConstant(binary.left(), budget);
+            long right = foldCountedConstant(binary.right(), budget);
+            return switch (binary.operator()) {
+                case "+" -> Math.addExact(left, right);
+                case "-" -> Math.subtractExact(left, right);
+                case "*" -> Math.multiplyExact(left, right);
+                default -> throw new IllegalArgumentException("unsupported count operator");
+            };
+        }
+        throw new IllegalArgumentException("nonconstant count expression");
     }
 
     private static boolean isCountedScalarProjection(Ast.Expr expression, String binding) {
