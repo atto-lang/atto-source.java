@@ -7647,6 +7647,39 @@ public final class Parser {
      * Map value becomes visible. Mixed record ':' syntax is not accepted.
      * The '=>' token is consumed outside parseExpression's pipeline grammar.
      */
+    // Only the unqualified, non-shadowed inline factory spelling is admitted
+    // here. Standalone Pair/Entry values and arbitrary constructor aliases
+    // require the resolved-symbol typed aggregate implementation.
+    private boolean inlineProductFactory(String name) {
+        return !shadowedOfTypes.contains(name) && current + 3 < tokens.size()
+                && check(IDENT) && peek().lexeme().equals(name)
+                && tokens.get(current + 1).type() == DOT
+                && tokens.get(current + 2).lexeme().equals("of")
+                && tokens.get(current + 3).type() == LPAREN;
+    }
+
+    private String readInlinePairString() {
+        Token key = consume(STRING, "Pair.of requires a string literal key in this bounded factory profile");
+        return key.lexeme();
+    }
+
+    private String readInlineRecordPairName() {
+        String name = readInlinePairString();
+        // Use the same lexer as parameter declarations, and require exact
+        // spelling, not merely one token after trivia/comment removal.
+        List<Token> parts = new Lexer(name).scan();
+        if (parts.size() != 2 || parts.getFirst().type() != IDENT
+                || !parts.getFirst().lexeme().equals(name)) {
+            throw error(previous(), "Record.of Pair key must be a valid static parameter identifier");
+        }
+        return name;
+    }
+
+    private void openInlineProductFactory() {
+        advance(); advance(); advance();
+        consume(LPAREN, "expected '(' after inline product factory");
+    }
+
     private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType) {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
         do {
@@ -7654,9 +7687,29 @@ public final class Parser {
                 throw error(peek(), "map spreads require explicit source-ownership "
                         + "and transactional batch proofs");
             }
-            Ast.Expr key = parseExpression();
-            consume(FAT_ARROW, "map literals require '=>' between key and value");
-            Ast.Expr value = parseExpression();
+            Ast.Expr key;
+            Ast.Expr value;
+            if (inlineProductFactory("Pair") || inlineProductFactory("Entry")) {
+                boolean pair = inlineProductFactory("Pair");
+                openInlineProductFactory();
+                // A literal-only Pair key is deliberately narrower than the
+                // target contract; never silently admit an untyped key.
+                if (pair) {
+                    if (!check(STRING)) throw error(peek(), "Pair.of requires a string key");
+                    key = parsePrimary();
+                    if (!(key instanceof Ast.LiteralExpr))
+                        throw error(previous(), "Pair.of requires a pure string literal key");
+                } else {
+                    key = parseExpression();
+                }
+                consume(COMMA, "product factory requires key and value");
+                value = parseExpression();
+                consume(RPAREN, "product factory requires exactly two arguments");
+            } else {
+                key = parseExpression();
+                consume(FAT_ARROW, "map literals require '=>' between key and value");
+                value = parseExpression();
+            }
             entries.add(new Ast.MapLiteralEntry(key, value));
             if (entries.size() > 4096) {
                 throw error(peek(), "map literal exceeds 4096 entries");
@@ -7677,15 +7730,26 @@ public final class Parser {
                 // their lifetime and partial-move proof is implemented.
                 fields.add(Ast.ObjectField.spreading(parseExpression()));
             } else {
-                String name = consumeStaticObjectKeyName("expected static Record.of field name");
+                boolean pair = inlineProductFactory("Pair");
+                String name;
+                if (pair) {
+                    openInlineProductFactory();
+                    name = readInlineRecordPairName();
+                    consume(COMMA, "Pair.of requires exactly two arguments");
+                } else {
+                    name = consumeStaticObjectKeyName("expected static Record.of field name");
+                    if (check(FAT_ARROW)) {
+                        throw error(peek(), "Record.of does not accept Entry arrows");
+                    }
+                    // Retain existing colon spelling for compatibility.
+                    if (!match(EQUAL)) consume(COLON, "Record.of requires '=' or legacy ':' after a field name");
+                }
                 if (!names.add(name)) {
                     throw error(previous(), "duplicate named field in Record.of: '" + name + "'");
                 }
-                if (check(FAT_ARROW)) {
-                    throw error(peek(), "mixed record ':' and map '=>' entries are forbidden");
-                }
-                consume(COLON, "Record.of fields use ':' after a static field name; Map.of keys use '=>'");
-                fields.add(Ast.ObjectField.named(name, parseExpression()));
+                Ast.Expr value = parseExpression();
+                if (pair) consume(RPAREN, "Pair.of requires exactly two arguments");
+                fields.add(Ast.ObjectField.named(name, value));
             }
             if (!match(COMMA)) break;
             if (check(RPAREN)) break; // an optional trailing comma
