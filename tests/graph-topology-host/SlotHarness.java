@@ -53,13 +53,41 @@ public final class SlotHarness {
         var large = small.create(true, false, Map.of("a",1,"b",2,"c",3), Set.of());
         deny("E_COPY_BUDGET", () -> small.moveInto(s, sr, "count", large));
         check(small.read(s,sr,"count").equals(1)); check(small.node(large)!=null); check(small.canWrite(s,sr));
+        // Exclusive loans protect all aliases, copy, move, detach, and drop.
+        var exOwner = root(d); var exRoot = d.node(exOwner); var exChild = root(d); var exNode = d.node(exChild);
+        d.moveInto(exOwner, exRoot, "child", exChild);
+        var ex = d.exclusiveLoan(exOwner, exNode);
+        deny("E_COPY_LOAN", () -> d.read(exOwner, exNode, "count"));
+        deny("E_COPY_LOAN", () -> d.setScalar(exOwner, exNode, "count", 2));
+        deny("E_COPY_LOAN", () -> d.shallowCopy(exOwner));
+        deny("E_COPY_LOAN", () -> d.readLoan(exOwner, exRoot));
+        deny("E_COPY_LOAN", () -> d.exclusiveLoan(exOwner, exRoot));
+        deny("E_COPY_LOAN", () -> d.remove(exOwner, exRoot, "child"));
+        var replacement = root(d);
+        deny("E_COPY_LOAN", () -> d.moveInto(exOwner, exRoot, "child", replacement));
+        check(d.node(replacement) != null);
+        deny("E_COPY_LOAN", () -> d.drop(exOwner));
+        deny("E_COPY_DOMAIN", () -> d.setExclusiveScalar(ex, exRoot, "count", 2));
+        deny("E_COPY_LAYOUT", () -> d.setExclusiveScalar(ex, exNode, "new", 2));
+        d.setExclusiveScalar(ex, exNode, "count", 99); check(d.readExclusive(ex, exNode, "count").equals(99));
+        d.setScalar(exOwner, exRoot, "count", 3); check(d.read(exOwner, exRoot, "count").equals(3));
+        d.release(ex); deny("E_COPY_STALE", () -> d.readExclusive(ex, exNode, "count"));
+        check(d.read(exOwner, exNode, "count").equals(99));
+        var exCopy = d.shallowCopy(exOwner); deny("E_COPY_READONLY", () -> d.exclusiveLoan(exOwner, exNode));
+        d.drop(exCopy); d.drop(exOwner); d.drop(replacement);
+        // Exact-budget scalar overwrite must not double-charge a slot.
+        var tight = new ShallowSlotDomain(3, 1, 2); var t = root(tight); var tr = tight.node(t);
+        for (int i = 0; i < 10000; i++) d.setScalar(a, ar, "count", i);
+        tight.setScalar(t, tr, "count", 8); check(tight.read(t, tr, "count").equals(8));
+        deny("E_COPY_BUDGET", () -> tight.setScalar(t, tr, "new", 2));
+        check(tight.read(t, tr, "count").equals(8));
         // Race: copying and mutating descendant serialize under one domain monitor.
         try (var pool = Executors.newFixedThreadPool(2)) {
             for (int i=0;i<1000;i++) {
                 var x=empty(d); var xr=d.node(x); var y=root(d); var yr=d.node(y); d.moveInto(x,xr,"child",y);
                 var gate = new CyclicBarrier(2);
                 var copy = pool.submit(() -> {gate.await(); return d.shallowCopy(x);});
-                var mutation = pool.submit(() -> {gate.await(); try {d.setScalar(x,yr,"count",2); return true;} catch(IllegalArgumentException ex){if(!ex.getMessage().equals("E_COPY_READONLY")) throw ex;return false;}});
+                var mutation = pool.submit(() -> {gate.await(); try {d.setScalar(x,yr,"count",2); return true;} catch(IllegalArgumentException failure){if(!failure.getMessage().equals("E_COPY_READONLY")) throw failure;return false;}});
                 var z=copy.get(); boolean wrote=mutation.get(); var zr=d.node(z);
                 check(d.read(z,yr,"count").equals(wrote?2:1)); check(!d.canWrite(x,yr));
                 deny("E_COPY_READONLY",()->d.setScalar(x,yr,"count",3)); d.remove(z,zr,"child"); check(d.canWrite(x,yr));
