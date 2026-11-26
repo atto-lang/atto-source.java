@@ -7899,19 +7899,24 @@ public final class Parser {
                 verifiedUpperBounds.put(localName, term.upperBounds());
                 body.add(new Ast.BindingStmt(Ast.BindingKind.VAL, VERIFIED_CARRIER, localName, term.expression(), false));
             }
-            consume(RETURN, "E_REFINEMENT_BODY: expected an explicit return after immutable bindings");
-            var term = parseVerifiedExpression(0);
-            returnType.require(term.type(), "E_REFINEMENT_RETURN", "return from " + name.lexeme());
-            result.require(term.type(), "E_REFINEMENT_POSTCONDITION", "ensures of " + name.lexeme());
-            for (int upper : upperParameters) {
-                String parameter = parameters.get(upper).name();
-                if (!term.upperBounds().contains(parameter) && !term.type().range().atMost(required.get(upper).range())) {
-                    throw error(name, "E_REFINEMENT_POSTCONDITION: cannot prove result <= " + parameter);
+            if (strictVerifiedI64)
+                body.addAll(strictVerifiedReturns(returnType,result,name,upperParameters,parameters,required,0));
+            else {
+                consume(RETURN, "E_REFINEMENT_BODY: expected an explicit return after immutable bindings");
+                var term = parseVerifiedExpression(0);
+                returnType.require(term.type(), "E_REFINEMENT_RETURN", "return from " + name.lexeme());
+                result.require(term.type(), "E_REFINEMENT_POSTCONDITION", "ensures of " + name.lexeme());
+                for (int upper : upperParameters) {
+                    String parameter = parameters.get(upper).name();
+                    if (!term.upperBounds().contains(parameter) && !term.type().range().atMost(required.get(upper).range())) {
+                        throw error(name, "E_REFINEMENT_POSTCONDITION: cannot prove result <= " + parameter);
+                    }
                 }
+                consume(SEMICOLON, "expected ';' after return");
+                body.add(new Ast.ReturnStmt(term.expression()));
+
             }
-            consume(SEMICOLON, "expected ';' after return");
             consume(RBRACE, "expected '}' after verified return");
-            body.add(new Ast.ReturnStmt(term.expression()));
 
             String lowered = isMain ? "main" : "$verified$" + name.lexeme();
             declarations.add(new Ast.FunctionDecl(lowered, Ast.CallableKind.FNC,
@@ -7922,6 +7927,89 @@ public final class Parser {
         }
         if (!mainSeen) throw error(peek(), "E_REFINEMENT_EXPORT: verified source requires a public main");
         return declarations;
+    }
+
+    private record StrictEdges(Ast.Expr test, Map<String,RefinedQuantity> yes, Map<String,RefinedQuantity> no) {}
+    private void restoreStrictFacts(Map<String,RefinedQuantity> facts) {
+        verifiedLocals.clear(); verifiedLocals.putAll(facts);
+    }
+    private static Map<String,RefinedQuantity> joinStrictFacts(Map<String,RefinedQuantity> a,Map<String,RefinedQuantity> b) {
+        Map<String,RefinedQuantity> out=new HashMap<>();
+        a.forEach((k,v)->out.put(k,new RefinedQuantity(v.unit(),v.range().join(b.get(k).range()),v.i32())));
+        return out;
+    }
+    private StrictEdges strictCondition(Map<String,RefinedQuantity> facts,int depth) {
+        if(depth>16)throw error(peek(),"E_VERIFY_UNSUPPORTED: condition depth");
+        var p=strictConjunction(facts,depth);
+        while(matchAdjacentPair(PIPE)) {
+            var q=strictConjunction(p.no(),depth);
+            p=new StrictEdges(new Ast.BinaryExpr("||",p.test(),q.test()),joinStrictFacts(p.yes(),q.yes()),q.no());
+        }
+        return p;
+    }
+    private StrictEdges strictConjunction(Map<String,RefinedQuantity> facts,int depth) {
+        var p=strictPredicate(facts,depth);
+        while(matchAdjacentPair(AMP)) {
+            var q=strictPredicate(p.yes(),depth);
+            p=new StrictEdges(new Ast.BinaryExpr("&&",p.test(),q.test()),q.yes(),joinStrictFacts(p.no(),q.no()));
+        }
+        return p;
+    }
+    private StrictEdges strictPredicate(Map<String,RefinedQuantity> facts,int depth) {
+        if(depth>16)throw error(peek(),"E_VERIFY_UNSUPPORTED: predicate depth");
+        restoreStrictFacts(facts);
+        if(match(BANG)) {
+            var p=strictPredicate(facts,depth+1);
+            return new StrictEdges(new Ast.UnaryExpr("!",p.test()),p.no(),p.yes());
+        }
+        if(match(LPAREN)) {
+            var p=strictCondition(facts,depth+1);consume(RPAREN,"expected ')'");return p;
+        }
+        var left=parseVerifiedExpression(0);
+        String op;
+        if(match(EQ,EQUAL_EQUAL))op="==";
+        else if(match(NEQ,BANG_EQUAL)||matchAdjacentBangEqKeyword())op="!=";
+        else if(match(LT,LTE,GT,GTE))op=previous().lexeme();
+        else throw error(peek(),"E_VERIFY_UNSUPPORTED: strict comparison required");
+        var right=parseVerifiedExpression(0);
+        left.unit().requireCompatible(right.unit());
+        Map<String,RefinedQuantity> yes=new HashMap<>(facts),no=new HashMap<>(facts);
+        if(left.expression() instanceof Ast.NameExpr read && facts.containsKey(read.name()) &&
+                right.type().range().minimum()==right.type().range().maximum()) {
+            var binding=facts.get(read.name());
+            long n=right.type().range().minimum();
+            String inverse=switch(op) {
+                case "<" -> ">="; case "<=" -> ">"; case ">" -> "<="; case ">=" -> "<"; case "==" -> "!="; default -> "==";
+            };
+            yes.put(read.name(),new RefinedQuantity(binding.unit(),binding.range().restrict(op,n),binding.i32()));
+            no.put(read.name(),new RefinedQuantity(binding.unit(),binding.range().restrict(inverse,n),binding.i32()));
+        }
+        return new StrictEdges(new Ast.BinaryExpr(op.equals("==")?"eq":op.equals("!=")?"neq":op,left.expression(),right.expression()),yes,no);
+    }
+    private List<Ast.Stmt> strictVerifiedReturns(RefinedQuantity declared,RefinedQuantity guaranteed,Token name,
+            List<Integer> upperParameters,List<Ast.Param> parameters,List<RefinedQuantity> required,int depth) {
+        if(depth>16)throw error(peek(),"E_VERIFY_UNSUPPORTED: strict return depth");
+        if(match(IF)) {
+            var p=strictCondition(new HashMap<>(verifiedLocals),0);
+            consume(LBRACE,"expected '{'");restoreStrictFacts(p.yes());
+            var yes=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
+            consume(RBRACE,"expected '}'");restoreStrictFacts(p.no());
+            boolean hasElse=match(ELSE);if(hasElse)consume(LBRACE,"expected '{'");
+            var no=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
+            if(hasElse)consume(RBRACE,"expected '}'");
+            return List.of(new Ast.IfStmt(List.of(new Ast.IfBranch(p.test(),yes)),no));
+        }
+        consume(RETURN,"E_VERIFY_UNSUPPORTED: strict returning conditionals only");
+        var term=parseVerifiedExpression(0);
+        declared.require(term.type(),"E_REFINEMENT_RETURN","return from "+name.lexeme());
+        guaranteed.require(term.type(),"E_REFINEMENT_POSTCONDITION","ensures of "+name.lexeme());
+        for(int upper:upperParameters) {
+            String parameter=parameters.get(upper).name();
+            if(!term.upperBounds().contains(parameter)&&!term.type().range().atMost(required.get(upper).range()))
+                throw error(name,"E_REFINEMENT_POSTCONDITION: cannot prove result <= "+parameter);
+        }
+        consume(SEMICOLON,"expected ';'");
+        return List.of(new Ast.ReturnStmt(term.expression()));
     }
 
     private QuantityTerm verifiedReference(int depth) {
