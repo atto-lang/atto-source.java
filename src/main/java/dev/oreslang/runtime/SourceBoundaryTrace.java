@@ -104,7 +104,9 @@ public final class SourceBoundaryTrace extends RuntimeException {
         // A fatal host VM failure may leave insufficient memory or stack to
         // allocate even a minimal source marker. Do not compound that failure
         // with diagnostic work; these are not recoverable Oreslang effects.
-        if (failure instanceof VirtualMachineError
+        if (failure instanceof ActorFrameArena.BudgetExceeded
+                || failure instanceof GuestCallDepthExceededException
+                || failure instanceof VirtualMachineError
                 || failure instanceof ThreadDeath
                 || failure instanceof LinkageError) {
             return failure;
