@@ -84,6 +84,34 @@ public final class OresMain {
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("--verify=strict")) {
+            boolean onlyCheck = args.length == 3 && args[1].equals("--check");
+            if (!(args.length == 2 || onlyCheck))
+                throw new UsageException("--verify=strict [--check] source.atto");
+            Path path = Path.of(args[args.length - 1]);
+            if (!isGuestSourceFile(path.toString()))
+                throw new UsageException("--verify=strict requires an Atto source file");
+            String source = readBoundedOresSource(path);
+            Ast.Program checked = OresCompiler.analyze(Parser.parseVerifiedStrictI64(source));
+            if (onlyCheck) return 0;
+            // Bind the checked AST to the exact immutable source snapshot.
+            // Never read the file a second time or invoke the ordinary parser.
+            String id = "strict-verified.atto";
+            var unit = org.graalvm.polyglot.Source.newBuilder(dev.oreslang.OresLanguage.ID, source, id)
+                .mimeType(dev.oreslang.OresLanguage.MIME_TYPE).buildLiteral();
+            try (var context = IsolatePolicy.developer().restrictedContextBuilder().build()) {
+                org.graalvm.polyglot.Value guest;
+                try (var scope = dev.oreslang.OresLanguage.openPrecheckedProgram(id, source, checked)) {
+                    guest = context.parse(unit);
+                }
+                guest.execute(dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
+                guest.execute(dev.oreslang.nodes.OresEvalRootNode.INIT_ONLY_COMMAND);
+                var value = guest.execute(dev.oreslang.nodes.OresEvalRootNode.MAIN_ONLY_COMMAND);
+                if (!value.fitsInInt() || value.asInt() < 0 || value.asInt() > 255)
+                    throw new IllegalArgumentException("strict main exit status must be in 0..255");
+                return value.asInt();
+            }
+        }
         if (args.length > 0 && args[0].equals("test")) {
             return ConcurrencyTestCommand.run(java.util.Arrays.copyOfRange(args, 1, args.length));
         }
