@@ -15,6 +15,7 @@ final class CountedSelectReadCursor {
     }
     private final Thread owner;
     private java.util.function.LongUnaryOperator projection = value -> value;
+    private ArrayList<java.util.function.LongUnaryOperator> armProjections;
     private final Object taskDomain;
     private final ActorRuntime taskActorRuntime;
     private final ActorRuntime.ContinuationTarget taskActorTarget;
@@ -159,6 +160,14 @@ final class CountedSelectReadCursor {
         projection = Objects.requireNonNull(projector);
     }
 
+    void setTaskArmProjections(List<? extends java.util.function.LongUnaryOperator> projectors) {
+        checkOwner();
+        if (taskDomain == null || state != State.READY || !values.isEmpty() || active != null
+                || projectors.size() != live.size())
+            throw new IllegalStateException("counted arm projections require initial tracked cursor and one projector per lexical arm");
+        armProjections = new ArrayList<>(List.copyOf(projectors));
+    }
+
     // Register cleanup and its physical receipt BEFORE publishing the round.
     // Abandoned Task retirement revokes only this selection, not its sources.
     // Producer callbacks publish host receipts, never execute guest code.
@@ -196,7 +205,11 @@ final class CountedSelectReadCursor {
             var round = published.get();
             if (round == null) physical.complete(null);
             else {
-                round.whenNotificationsDrainedRuntime(() -> physical.complete(null));
+                round.whenNotificationsDrainedRuntime(() -> {
+                    Throwable hookFailure = round.cancellationHookFailureFromRuntime();
+                    if (hookFailure == null) physical.complete(null);
+                    else physical.completeExceptionally(hookFailure);
+                });
                 round.cancel(false);
             }
             lease.disarmWithoutRelease();
@@ -251,6 +264,8 @@ final class CountedSelectReadCursor {
             return;
         }
         var remaining = new ArrayList<ChannelRuntime.SelectCase>(oldSize);
+        var remainingProjections = armProjections == null ? null :
+                new ArrayList<java.util.function.LongUnaryOperator>(oldSize);
         int nextIndex = -1;
         for (int k = 0; k < oldSize; k++) {
             int indexAfterWinner = (next + k) % oldSize;
@@ -267,10 +282,12 @@ final class CountedSelectReadCursor {
             if (!sameSource(candidate, winner)) {
                 if (i < nextIndex) cursor++;
                 remaining.add(candidate);
+                if (remainingProjections != null) remainingProjections.add(armProjections.get(i));
             }
         }
         live.clear();
         live.addAll(remaining);
+        armProjections = remainingProjections;
     }
 
     private static boolean sameSource(ChannelRuntime.SelectCase a, ChannelRuntime.SelectCase b) {
@@ -295,6 +312,7 @@ final class CountedSelectReadCursor {
             throw new IllegalStateException("no active round");
         if (!drained.get() || !active.isDone()) return false;
         boolean stopping = state == State.STOPPING || active.isCancelled();
+        driving = true;
         try {
             Throwable physicalFailure = active.cancellationHookFailureFromRuntime();
             if (physicalFailure != null) {
@@ -313,7 +331,9 @@ final class CountedSelectReadCursor {
                             && result.operation() != ChannelRuntime.SelectOperation.FUTURE)
                             || !(result.value() instanceof Long number))
                         throw new IllegalStateException("counted scalar selection received non-i64 result");
-                    values.add(projection.applyAsLong(number));
+                    // Projections track lexical occurrences, not source identity.
+                    var projector = armProjections == null ? projection : armProjections.get(result.index());
+                    values.add(projector.applyAsLong(number));
                     advance(result.index(), result.operation() == ChannelRuntime.SelectOperation.FUTURE);
                 }
                 if (values.size() == count) {
@@ -323,9 +343,11 @@ final class CountedSelectReadCursor {
                     fail(new SelectExhausted());
                 } else state = State.READY;
             }
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | Error exception) {
             fail(exception);
         } finally {
+            driving = false;
+            if (state != State.READY) armProjections = null;
             active = null;
             drained = null;
             if (taskRoundLease != null) {
@@ -341,6 +363,7 @@ final class CountedSelectReadCursor {
         if (state == State.READY) {
             values.clear();
             live.clear();
+            armProjections = null;
             state = State.CANCELLED;
             return true;
         }

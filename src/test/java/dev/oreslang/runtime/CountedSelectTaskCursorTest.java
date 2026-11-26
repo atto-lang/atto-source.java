@@ -115,4 +115,51 @@ final class CountedSelectTaskCursorTest {
             assertEquals(42L, channel.tryRead().orElseThrow());
         }
     }
+
+    @Test void mixedArmProjectionsFollowLexicalOccurrencesAfterAliasRetirement() throws Exception {
+        var a = new ChannelRuntime.Channel<Long>(2);
+        var b = new ChannelRuntime.Channel<Long>(1);
+        assertTrue(a.tryWrite(1L)); assertTrue(a.tryWrite(4L));
+        assertTrue(b.tryWrite(3L));
+        var f = OresFuture.completed(2L);
+        var aCase = ChannelRuntime.read(a);
+        var selection = new AtomicReference<CountedTaskSelection>();
+        try (var scheduler = new OresScheduler(2)) {
+            var task = scheduler.<List<Long>>startTracked(resume -> {
+                if (resume.initial()) {
+                    var cursor = new CountedTaskSelection(4,
+                            List.of(aCase, ChannelRuntime.await(f), ChannelRuntime.read(b),
+                                    aCase, ChannelRuntime.await(f)),
+                            ChannelRuntime.SelectPolicy.FAIR,
+                            List.of(v -> v + 10, v -> v + 20, v -> v + 30,
+                                    v -> v + 40, v -> { throw new AssertionError("retired alias"); }));
+                    selection.set(cursor);
+                    return OresScheduler.await(cursor.begin());
+                }
+                var cursor = selection.get();
+                if (cursor.retire()) return OresScheduler.done(cursor.result());
+                return OresScheduler.await(cursor.begin());
+            });
+            assertEquals(List.of(11L,22L,33L,44L), task.result().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Success.class, task.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0, a.pendingRegistrations());
+            assertEquals(0, b.pendingRegistrations());
+            assertEquals(0, f.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test void mismatchedArmProjectionsFailBeforeRegistration() throws Exception {
+        var channel = new ChannelRuntime.Channel<Long>(1);
+        try (var scheduler = new OresScheduler(2)) {
+            var task = scheduler.startTracked(resume -> {
+                assertThrows(IllegalStateException.class, () -> new CountedTaskSelection(1,
+                        List.of(ChannelRuntime.read(channel)), ChannelRuntime.SelectPolicy.FAIR,
+                        List.<java.util.function.LongUnaryOperator>of()));
+                assertEquals(0, channel.pendingRegistrations());
+                return OresScheduler.done(1);
+            });
+            assertEquals(1, task.result().get(5, TimeUnit.SECONDS));
+        }
+    }
+
 }

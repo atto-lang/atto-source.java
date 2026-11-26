@@ -17,6 +17,13 @@ public final class CountedTaskSelection {
         if (count != 0) cursor.setTaskProjection(projection);
     }
 
+    /** One checked projection for each lexical arm; alias retirement preserves alignment. */
+    public CountedTaskSelection(int count, List<? extends ChannelRuntime.SelectCase> cases,
+            ChannelRuntime.SelectPolicy policy, List<? extends LongUnaryOperator> projections) {
+        cursor = CountedSelectReadCursor.taskOwnedOrdered(count, cases, policy);
+        if (count != 0) cursor.setTaskArmProjections(projections);
+    }
+
     public OresFuture<Void> begin() { return cursor.beginTaskRound(); }
 
     public boolean retire() {
