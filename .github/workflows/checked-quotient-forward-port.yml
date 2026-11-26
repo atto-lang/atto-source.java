@@ -44,6 +44,8 @@ jobs:
               "signedBoundaryAndZeroAreDistinctFailures",
               "checkedNumericFaultsAreTypedOrdinaryGuestErrors",
               "ordinaryNumericFaultIdentityDoesNotReclassifyHostArithmetic",
+              "exactNumericOrderingMatchesIndependentOracle",
+              "guestOrderingPreservesIntegerPrecisionAndIeeeUnorderedValues",
           }
           cases = root.findall("testcase")
           assert root.tag == "testsuite"
@@ -53,7 +55,7 @@ jobs:
           assert all(case.attrib["classname"] == "dev.oreslang.CheckedQuotientProfileForwardPortTest"
                      and not any(case.find(tag) is not None for tag in ("error", "failure", "skipped"))
                      for case in cases)
-          print("CHECKED_QUOTIENT_PROFILE_JVM_PASS tests=6")
+          print("CHECKED_QUOTIENT_PROFILE_JVM_PASS tests=8")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
