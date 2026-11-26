@@ -334,7 +334,7 @@ public final class Lexer {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
         // Keep contextual bare identifiers and inequality tokens unchanged.
-        if (java.util.Set.of("trap", "throw", "raise", "panic", "copy", "take",
+        if (java.util.Set.of("trap", "throw", "raise", "panic", "copy", "take", "move",
                 "borrow", "share", "pin", "drop", "pipe", "rpipe", "stop", "expand").contains(text)
                 && peek() == '!' && peekNext() != '='
                 && !(source.startsWith("!eq", current)

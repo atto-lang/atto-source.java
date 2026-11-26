@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class BangKeywordWhitespaceTest {
     @Test void everyBangKeywordRequiresSeparator() {
         for (String keyword : List.of("trap!", "throw!", "raise!", "panic!", "copy!",
-                "copy!!", "take!", "borrow!", "share!", "pin!", "drop!", "pipe!",
+                "copy!!", "take!", "move!", "borrow!", "share!", "pin!", "drop!", "pipe!",
                 "rpipe!", "stop!", "expand!")) {
             for (String tail : List.of("value", "(42)", "/*comment*/ 42", "", "\u00a0value")) {
                 IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
