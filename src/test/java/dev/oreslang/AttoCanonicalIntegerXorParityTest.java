@@ -124,7 +124,7 @@ final class AttoCanonicalIntegerXorParityTest {
     void canonicalIntegerXorRhsFailureExecutesEffectsOnlyOnce() throws Exception {
         String source = """
                 fnc lhs(): int { stdio.println("left"); return 6; }
-                fnc rhs(): int { stdio.println("right"); return [1][99]; }
+                fnc rhs(): int { stdio.println("right"); val Array<int> values = [1]; return values[99]; }
                 pub fnc main(): void {
                     stdio.println(lhs() ^^ rhs());
                     return;
