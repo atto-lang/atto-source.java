@@ -232,7 +232,7 @@ final class ActorFfmArenaCurrentIntegrationTest {
                         admitted.countDown();
                         return OresScheduler.await(sourceGate);
                     }
-                    return OresScheduler.done(resume.value());
+                    return OresScheduler.done((Integer) resume.value());
                 }));
 
                 // Deliberately allocate after task admission. The active task
