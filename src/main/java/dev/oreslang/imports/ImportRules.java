@@ -73,17 +73,27 @@ public final class ImportRules {
     public static boolean isReservedUnsafeNativePath(String path) {
         if (path == null) return false;
         String unix = path.replace('\\', '/');
-        boolean rooted = unix.startsWith("std/") || unix.startsWith("atto.std/") ||
-                unix.startsWith("ores.std/");
+        if (hasUnsafeSegments(unix)) return true;
+        String[] slash = unix.split("/", -1);
+        String[] head = slash[0].split("[.:]+");
+        boolean vendor = head.length > 0 && (head[0].equals("atto") || head[0].equals("ores"));
+        int rootDepth = head.length == 1 && head[0].equals("std") ? 1 :
+                vendor && head.length == 2 && head[1].equals("std") ? 1 :
+                vendor && head.length == 1 && slash.length > 1 && slash[1].equals("std") ? 2 : 0;
         java.util.ArrayList<String> parts = new java.util.ArrayList<>();
         for (String part : unix.split("/+")) {
             if (part.isEmpty() || part.equals(".")) continue;
             if (part.equals("..")) {
-                if (rooted && parts.size() <= 1) return true;
+                if (rootDepth != 0 && parts.size() <= rootDepth) return true;
                 if (!parts.isEmpty()) parts.removeLast();
             } else parts.add(part);
         }
-        String[] segments = String.join("/", parts).split("[/.:]+");
+        return hasUnsafeSegments(String.join("/", parts));
+    }
+
+    private static boolean hasUnsafeSegments(String value) {
+        String[] segments = java.util.Arrays.stream(value.split("[/.:]+"))
+                .filter(part -> !part.isEmpty()).toArray(String[]::new);
         int offset = segments.length > 0 && (segments[0].equals("atto") ||
                 segments[0].equals("ores")) ? 1 : 0;
         return segments.length > offset + 1 && segments[offset].equals("std") &&
