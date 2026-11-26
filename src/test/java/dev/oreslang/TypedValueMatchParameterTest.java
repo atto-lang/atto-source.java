@@ -15,6 +15,73 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class TypedValueMatchParameterTest {
     @Test
+    void pipelineMatchReusesTypedValueMatchAndEvaluatesSubjectOnce() throws Exception {
+        String guest = """
+                fnc input(): int {
+                    stdio.println(7);
+                    return 42;
+                }
+                pub fnc main(): void {
+                    val int n = input() |> match<int> over
+                        on 42: int -> 42,
+                        on _: int -> 0,
+                    end;
+                    stdio.println(n);
+                    return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(guest));
+        OwnershipChecker.check(typed);
+        var output = new ByteArrayOutputStream();
+        var source = Source.newBuilder(OresLanguage.ID, guest, "piped-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("7\\n42", output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+    }
+
+    @Test
+    void checkedUnwrapPipelineKeepsTrapInsideMatchSubject() {
+        String guest = """
+                fnc choose(Option<int> x): int {
+                    return trap! x.unwrap() |> match<int> over
+                        on Ok(n): int -> n,
+                        on Err(): int -> 42,
+                    end;
+                }
+                """;
+        var parsed = Parser.parse(guest);
+        var fn = (Ast.FunctionDecl) parsed.modules().getFirst().declarations().getFirst();
+        var returned = (Ast.ReturnStmt) fn.body().getFirst();
+        var match = assertInstanceOf(Ast.MatchExpr.class, returned.value());
+        assertInstanceOf(Ast.TrapExpr.class, match.subject());
+        var err = assertInstanceOf(Ast.ConstructorPattern.class, match.arms().get(1).pattern());
+        assertEquals("Err", err.constructor());
+        assertEquals(1, err.arguments().size());
+        assertInstanceOf(Ast.WildcardPattern.class, err.arguments().getFirst());
+        assertEquals("int", match.resultType().name());
+        var checked = TypeChecker.check(parsed);
+        OwnershipChecker.check(checked);
+    }
+
+    @Test
+    void pipelineArmAnnotationCannotEraseIndependentTypeConstraint() {
+        String valid = "fnc choose(int x): int { return x |> match<int> over "
+                + "on 42: int -> 42, on _: int -> 0, end; }";
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(valid.replace("on 42: int", "on 42: string")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(valid.replace("match<int>", "match")));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(valid.replace("-> 42", "-> true"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(valid.replace("on _: int -> 0,", ""))));
+    }
+
+    @Test
     void positionalAndNamedReturnTypeRemainArmLocal() throws Exception {
         String guest = """
             fnc value(bool selected): int {
