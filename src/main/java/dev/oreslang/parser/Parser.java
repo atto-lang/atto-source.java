@@ -7724,6 +7724,7 @@ public final class Parser {
         consume(LPAREN, "expected '(' after Record.of");
         List<Ast.ObjectField> fields = new ArrayList<>();
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        Boolean pairStyle = null;
         while (!check(RPAREN)) {
             if (match(ELLIPSIS)) {
                 // The existing type/ownership checker rejects spreads until
@@ -7731,18 +7732,25 @@ public final class Parser {
                 fields.add(Ast.ObjectField.spreading(parseExpression()));
             } else {
                 boolean pair = inlineProductFactory("Pair");
+                if (pairStyle != null && pairStyle != pair)
+                    throw error(peek(), "Record.of cannot mix named fields and Pair items in this profile");
+                pairStyle = pair;
                 String name;
                 if (pair) {
                     openInlineProductFactory();
                     name = readInlineRecordPairName();
                     consume(COMMA, "Pair.of requires exactly two arguments");
                 } else {
+                    Token fieldToken = peek();
                     name = consumeStaticObjectKeyName("expected static Record.of field name");
                     if (check(FAT_ARROW)) {
                         throw error(peek(), "Record.of does not accept Entry arrows");
                     }
                     // Retain existing colon spelling for compatibility.
-                    if (!match(EQUAL)) consume(COLON, "Record.of requires '=' or legacy ':' after a field name");
+                    if (match(EQUAL)) {
+                        if (fieldToken.type() != IDENT)
+                            throw error(fieldToken, "Record.of equals field must be a parameter identifier");
+                    } else consume(COLON, "Record.of requires '=' or legacy ':' after a field name");
                 }
                 if (!names.add(name)) {
                     throw error(previous(), "duplicate named field in Record.of: '" + name + "'");
