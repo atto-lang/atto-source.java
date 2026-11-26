@@ -3543,7 +3543,7 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
-        if (attoCallableVersion != null && match(CARET)) {
+        if (match(CARET)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
                     ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "caret return requires ';'");
