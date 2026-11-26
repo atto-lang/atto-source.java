@@ -75,6 +75,57 @@ final class SchedulerQueuedCancellationQuiescenceTest {
         }
     }
 
+    @Test
+    void replayedRevokedDispatchCannotEnterContextOrRetireTwice() {
+        Queue<Runnable> admitted = new ArrayDeque<>();
+        AtomicInteger contextEntries = new AtomicInteger();
+        AtomicInteger retirements = new AtomicInteger();
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cancel-replay-test", 1, admitted::add, turn -> {
+                    contextEntries.incrementAndGet();
+                    turn.run();
+                })) {
+            OresFuture<Integer> future = scheduler.start(resume -> {
+                throw new AssertionError("revoked dispatch entered guest");
+            }, retirements::incrementAndGet);
+            assertEquals(1, admitted.size());
+            assertTrue(future.cancel(false));
+            assertEquals(1, retirements.get(), "unclaimed wrapper must not retain guest ownership");
+            Runnable stale = admitted.remove();
+            stale.run();
+            stale.run();
+            assertEquals(0, contextEntries.get(), "even a replay cannot regain admission");
+            assertEquals(1, retirements.get());
+            assertTrue(future.isCancelled());
+        }
+    }
+
+    @Test
+    void revokedWrapperDoesNotPreventIndependentTaskAdmission() throws Exception {
+        Queue<Runnable> admitted = new ArrayDeque<>();
+        AtomicInteger contextEntries = new AtomicInteger();
+        AtomicInteger retirements = new AtomicInteger();
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cancel-sibling-test", 1, admitted::add, turn -> {
+                    contextEntries.incrementAndGet();
+                    turn.run();
+                })) {
+            OresFuture<Integer> cancelled = scheduler.start(resume -> {
+                throw new AssertionError("revoked dispatch entered guest");
+            }, retirements::incrementAndGet);
+            OresFuture<Integer> sibling = scheduler.start(resume -> OresScheduler.done(42));
+            assertEquals(2, admitted.size());
+            assertTrue(cancelled.cancel(false));
+            assertEquals(1, retirements.get());
+            admitted.remove().run();
+            assertEquals(0, contextEntries.get());
+            admitted.remove().run();
+            assertEquals(42, sibling.get(3, TimeUnit.SECONDS));
+            assertEquals(1, contextEntries.get());
+            assertEquals(1, retirements.get());
+        }
+    }
+
     private static OresScheduler.CleanupAwareTask<Void> cleanupAwareTask() {
         return resume -> {
             throw new AssertionError("cancelled initial dispatch ran source code");
