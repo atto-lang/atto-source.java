@@ -24,7 +24,7 @@ import java.util.*;
  * is not machine-code or runtime-init reuse. Not the default launcher.
  */
 public final class PinnedScalarNamespaceSession {
-    private final IncrementalCompiler compiler=new IncrementalCompiler();
+    private IncrementalCompiler compiler=new IncrementalCompiler();
     static final String ENTRY="consumer/main.ores";
     record Lowered(Map<String,String> sources,Map<String,String> resolutions){}
     private PinnedNamespaceInventory.Memo inventoryMemo;
@@ -50,6 +50,23 @@ public final class PinnedScalarNamespaceSession {
     private static boolean member(Ast.Expr e,String receiver,String method){
         return e instanceof Ast.MemberExpr m&&m.receiver() instanceof Ast.NameExpr n&&n.name().equals(receiver)&&m.member().equals(method);
     }
+    /** Trusted host must independently approve the current consumer and
+     * manifest hashes. No authentication derived from the supplied bytes.
+     * Existing run remains available for the older trusted-host profile.
+     */
+    public synchronized Result runPinned(String consumer,String consumerManifest,String providerManifest,
+            Map<String,String> snapshot,String expectedConsumerSha256,String expectedManifestSha256,
+            OutputStream out,OutputStream err){
+        requirePin(consumer,expectedConsumerSha256);
+        requirePin(consumerManifest,expectedManifestSha256);
+        return run(consumer,consumerManifest,providerManifest,snapshot,out,err);
+    }
+    private static void requirePin(String text,String expected){
+        if(text==null||text.length()>65536||!StandardCharsets.UTF_8.newEncoder().canEncode(text)||
+            text.indexOf(0)>=0||text.getBytes(StandardCharsets.UTF_8).length>65536||
+            expected==null||!expected.matches("[a-f0-9]{64}")||!digest(text).equals(expected))
+            throw deny("independently pinned consumer input required");
+    }
     public synchronized Result run(String consumer,String consumerManifest,String providerManifest,Map<String,String> snapshot,OutputStream out,OutputStream err){
         Objects.requireNonNull(out);Objects.requireNonNull(err);
         if(consumer==null||consumer.length()>65536||!StandardCharsets.UTF_8.newEncoder().canEncode(consumer)||consumer.getBytes(StandardCharsets.UTF_8).length>65536)throw deny("consumer budget");
@@ -61,7 +78,8 @@ public final class PinnedScalarNamespaceSession {
         var owners=new TreeMap<String,String>();
         String identity="p_"+digest(prepared.selection().packageAlias()+"\0"+providerManifest);
         for(String id:plan.sources().keySet())if(!id.equals(ENTRY))owners.put(id,identity);
-        var build=compiler.compile(plan.sources(),Map.of(ENTRY,plan.resolutions()),PackageLayout.pinned(owners));
+        var stagedCompiler=compiler.fork();
+        var build=stagedCompiler.compile(plan.sources(),Map.of(ENTRY,plan.resolutions()),PackageLayout.pinned(owners));
         var resolutions=plan.resolutions();
         var policy=new IsolatePolicy(Set.of(IsolatePolicy.Capability.STDOUT),64L*1024*1024,64,Duration.ofSeconds(10));
         try(Context context=policy.restrictedContextBuilder(ExecutionProfile.serverJit()).out(out).err(err).build()){
@@ -76,7 +94,7 @@ public final class PinnedScalarNamespaceSession {
             for(var group:build.initializationGroups())for(String id:group)units.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
             var result=units.get(ENTRY).execute(OresEvalRootNode.MAIN_ONLY_COMMAND);
             if(!result.isNull()&&(!result.fitsInInt()||result.asInt()!=0))throw deny("nonzero entry result");
-            inventoryMemo=prepared.memo();acceptedConsumer=consumer;acceptedProgram=program;
+            compiler=stagedCompiler;inventoryMemo=prepared.memo();acceptedConsumer=consumer;acceptedProgram=program;
             return new Result(build,0,prepared.parsed(),prepared.reused(),parseConsumer?1:0);
         }
     }
