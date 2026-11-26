@@ -12,6 +12,8 @@ on:
       - 'tests/graph-topology-host/CopyScalarAdmissionTest.java'
       - 'tests/graph-topology-host/TopologyTest.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/parser/Lexer.java'
+      - 'src/test/java/dev/oreslang/MoveBangAliasTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/DerivedGraphCopyPlanTest.java'
       - 'src/test/java/dev/oreslang/GraphCopyTransactionTest.java'
@@ -72,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=DerivedCopyPlanGuestTest,CopyPolicyCompilerTest,OwnershipAndClosureTest,DerivedGraphCopyPlanTest,GraphCopyTransactionTest,CopyPlanCacheTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -ntp -Dtest=MoveBangAliasTest,DerivedCopyPlanGuestTest,CopyPolicyCompilerTest,OwnershipAndClosureTest,DerivedGraphCopyPlanTest,GraphCopyTransactionTest,CopyPlanCacheTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
       - name: Capture executed Surefire receipts
         if: always()
         shell: bash
