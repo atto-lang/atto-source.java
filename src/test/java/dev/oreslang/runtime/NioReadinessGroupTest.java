@@ -5,6 +5,11 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.Pipe;
 import java.nio.channels.SelectionKey;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -95,6 +100,124 @@ final class NioReadinessGroupTest {
                     "the same channel must be reusable after cancellation retirement");
             assertTrue(rearmed.cancel(false));
             assertTrue(group.awaitIdle(5, TimeUnit.SECONDS));
+        } finally {
+            group.close();
+            assertTrue(group.awaitStopped(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void reactorCompletionCanImmediatelyRearmSameChannel() throws Exception {
+        NioReadinessGroup group = new NioReadinessGroup(4, 8);
+        Pipe pipe = Pipe.open();
+        try (Pipe.SourceChannel source = pipe.source();
+             Pipe.SinkChannel sink = pipe.sink()) {
+            OresFuture<Integer> first = group.watch(source, SelectionKey.OP_READ);
+            CompletableFuture<OresFuture<Integer>> next = new CompletableFuture<>();
+            // Runtime plumbing only: publish a new registration, never guest code.
+            // The first pipe byte is not written until this waiter is installed.
+            first.whenCompleteRuntime((mask, failure) -> {
+                if (failure != null) {
+                    next.completeExceptionally(failure);
+                    return;
+                }
+                try {
+                    next.complete(group.watch(source, SelectionKey.OP_READ));
+                } catch (Throwable error) {
+                    next.completeExceptionally(error);
+                }
+            });
+            sink.write(ByteBuffer.wrap(new byte[] { 1 }));
+            assertNotEquals(0, first.get(5, TimeUnit.SECONDS) & SelectionKey.OP_READ);
+            OresFuture<Integer> second = next.get(5, TimeUnit.SECONDS);
+            // The unread byte is still ready; the new watch must not see the
+            // cancelled SelectionKey of the old watch or lose the wakeup.
+            assertNotEquals(0, second.get(5, TimeUnit.SECONDS) & SelectionKey.OP_READ);
+            assertTrue(group.awaitIdle(5, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingCount());
+            assertEquals(1, group.reactorCount());
+        } finally {
+            group.close();
+            assertTrue(group.awaitStopped(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void repeatedReadinessAndRearmKeepsBothChannelsLive() throws Exception {
+        NioReadinessGroup group = new NioReadinessGroup(4, 8);
+        Pipe a = Pipe.open();
+        Pipe b = Pipe.open();
+        try (Pipe.SourceChannel aSource = a.source();
+             Pipe.SinkChannel aSink = a.sink();
+             Pipe.SourceChannel bSource = b.source();
+             Pipe.SinkChannel bSink = b.sink()) {
+            aSink.write(ByteBuffer.wrap(new byte[] { 1 }));
+            bSink.write(ByteBuffer.wrap(new byte[] { 2 }));
+            for (int i = 0; i < 128; i++) {
+                OresFuture<Integer> first = group.watch(aSource, SelectionKey.OP_READ);
+                OresFuture<Integer> second = group.watch(bSource, SelectionKey.OP_READ);
+                assertNotEquals(0, first.get(2, TimeUnit.SECONDS) & SelectionKey.OP_READ);
+                assertNotEquals(0, second.get(2, TimeUnit.SECONDS) & SelectionKey.OP_READ);
+            }
+            assertTrue(group.awaitIdle(5, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingCount());
+        } finally {
+            group.close();
+            assertTrue(group.awaitStopped(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void nioAwaitReleasesOnlyCarrierAndPreservesExecutionAcrossTwoResumes() throws Exception {
+        NioReadinessGroup group = new NioReadinessGroup(4, 8);
+        Pipe pipe = Pipe.open();
+        try (Pipe.SourceChannel source = pipe.source();
+             Pipe.SinkChannel sink = pipe.sink();
+             OresScheduler scheduler = new OresScheduler(1, 16)) {
+            AtomicInteger phase = new AtomicInteger();
+            AtomicReference<ExecutionContext> context = new AtomicReference<>();
+            AtomicLong dispatch = new AtomicLong();
+            CountDownLatch suspended = new CountDownLatch(1);
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int turn = phase.getAndIncrement();
+                assertSame(scheduler, OresScheduler.current());
+                assertFalse(OresVM.onNioWorker(),
+                        "reactor must never execute scheduler continuation");
+                long currentDispatch = OresScheduler.currentDispatchId();
+                assertNotEquals(0L, currentDispatch);
+                if (turn == 0) {
+                    assertTrue(resume.initial());
+                    context.set(OresScheduler.currentExecutionContext());
+                    assertNotNull(context.get());
+                    dispatch.set(currentDispatch);
+                    OresFuture<Integer> watch = group.watch(source, SelectionKey.OP_READ);
+                    suspended.countDown();
+                    return OresScheduler.await(watch);
+                }
+                assertFalse(resume.initial());
+                assertNull(resume.failure());
+                assertEquals(SelectionKey.OP_READ, resume.value());
+                assertSame(context.get(), OresScheduler.currentExecutionContext());
+                assertNotEquals(dispatch.getAndSet(currentDispatch), currentDispatch);
+                if (turn == 1) {
+                    return OresScheduler.await(group.watch(source, SelectionKey.OP_READ));
+                }
+                assertEquals(2, turn, "each readiness must resume exactly once");
+                return OresScheduler.done(42);
+            });
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            OresFuture<Integer> peer = scheduler.start(resume -> {
+                assertNotSame(context.get(), OresScheduler.currentExecutionContext());
+                return OresScheduler.done(7);
+            });
+            assertEquals(7, peer.get(5, TimeUnit.SECONDS),
+                    "unresolved I/O must release the only carrier");
+            assertFalse(result.isDone());
+            sink.write(ByteBuffer.wrap(new byte[] { 1 }));
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(3, phase.get());
+            assertTrue(group.awaitIdle(5, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingCount());
         } finally {
             group.close();
             assertTrue(group.awaitStopped(5, TimeUnit.SECONDS));
