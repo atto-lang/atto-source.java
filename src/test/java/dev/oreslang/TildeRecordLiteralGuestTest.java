@@ -181,7 +181,7 @@ final class TildeRecordLiteralGuestTest {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
             context.eval(OresLanguage.ID, program);
         }
-        assertEquals("41\\n42\\n", out.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+        assertEquals("41\n42\n", out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
     @Test
