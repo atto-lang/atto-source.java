@@ -14,6 +14,11 @@ final class CountedSelectReadCursor {
         SelectExhausted() { super("all counted selection sources exhausted"); }
     }
     private final Thread owner;
+    private java.util.function.LongUnaryOperator projection = value -> value;
+    private final Object taskDomain;
+    private final ActorRuntime taskActorRuntime;
+    private final ActorRuntime.ContinuationTarget taskActorTarget;
+    private TaskOwnedLeases.Lease taskRoundLease;
     private final ActorRuntime actorRuntime;
     private final ActorRuntime.ContinuationTarget actorTarget;
     private final int count;
@@ -74,7 +79,19 @@ final class CountedSelectReadCursor {
 
     private CountedSelectReadCursor(int count, ChannelRuntime.SelectPolicy policy,
             ActorRuntime runtime, List<? extends ChannelRuntime.SelectCase> cases) {
-        this(count, policy, runtime);
+        this(count, policy, runtime, cases, false);
+    }
+
+    static CountedSelectReadCursor taskOwnedOrdered(int count,
+            List<? extends ChannelRuntime.SelectCase> cases,
+            ChannelRuntime.SelectPolicy policy) {
+        return new CountedSelectReadCursor(count, policy, null, cases, true);
+    }
+
+    private CountedSelectReadCursor(int count, ChannelRuntime.SelectPolicy policy,
+            ActorRuntime runtime, List<? extends ChannelRuntime.SelectCase> cases,
+            boolean taskOwned) {
+        this(count, policy, runtime, taskOwned);
         if (count == 0) return;
         Objects.requireNonNull(cases);
         int length = cases.size();
@@ -91,11 +108,21 @@ final class CountedSelectReadCursor {
 
     private CountedSelectReadCursor(int count, ChannelRuntime.SelectPolicy policy,
             ActorRuntime runtime) {
+        this(count, policy, runtime, false);
+    }
+
+    private CountedSelectReadCursor(int count, ChannelRuntime.SelectPolicy policy,
+            ActorRuntime runtime, boolean taskOwned) {
         if (count < 0 || count > MAX_COUNT)
             throw new IllegalArgumentException("SelectCountInvalid");
+        if (taskOwned && (runtime != null || !TaskHandle.isCurrentTrackedTaskTurn()))
+            throw new IllegalStateException("counted task cursor requires tracked Task turn");
+        taskDomain = taskOwned ? Objects.requireNonNull(OresScheduler.currentTaskDomain()) : null;
+        taskActorRuntime = taskOwned ? ActorRuntime.currentActorRuntime() : null;
+        taskActorTarget = taskActorRuntime == null ? null : taskActorRuntime.captureCurrentContinuationTarget();
         actorRuntime = runtime;
         actorTarget = runtime == null ? null : runtime.captureCurrentContinuationTarget();
-        owner = runtime == null ? Thread.currentThread() : null;
+        owner = runtime == null && !taskOwned ? Thread.currentThread() : null;
         checkOwner();
         this.count = count;
         this.policy = Objects.requireNonNull(policy);
@@ -108,8 +135,11 @@ final class CountedSelectReadCursor {
     }
 
     private void checkOwner() {
-        if (driving || (actorRuntime == null
-                ? Thread.currentThread() != owner
+        if (driving || (taskDomain != null
+                ? taskDomain != OresScheduler.currentTaskDomain() || !TaskHandle.isCurrentTrackedTaskTurn()
+                    || ActorRuntime.currentActorRuntime() != taskActorRuntime
+                    || (taskActorRuntime != null && !taskActorRuntime.ownsCountedCursorTurn(taskActorTarget))
+                : actorRuntime == null ? Thread.currentThread() != owner
                 : !actorRuntime.ownsCountedCursorTurn(actorTarget)))
             throw new IllegalStateException("counted read cursor requires its serialized owner");
     }
@@ -117,9 +147,61 @@ final class CountedSelectReadCursor {
     State state() { checkOwner(); return state; }
 
     OresFuture<ChannelRuntime.SelectResult> beginRound() {
-        if (actorRuntime != null)
-            throw new IllegalStateException("actor-owned cursor requires retirement continuation");
+        if (actorRuntime != null || taskDomain != null)
+            throw new IllegalStateException("owned cursor requires its retirement continuation");
         return beginRoundInternal();
+    }
+
+    void setTaskProjection(java.util.function.LongUnaryOperator projector) {
+        checkOwner();
+        if (taskDomain == null || state != State.READY || !values.isEmpty() || active != null)
+            throw new IllegalStateException("counted projection requires initial tracked cursor");
+        projection = Objects.requireNonNull(projector);
+    }
+
+    // Register cleanup and its physical receipt BEFORE publishing the round.
+    // Abandoned Task retirement revokes only this selection, not its sources.
+    // Producer callbacks publish host receipts, never execute guest code.
+    OresFuture<Void> beginTaskRound() {
+        checkOwner();
+        if (taskDomain == null || state != State.READY)
+            throw new IllegalStateException("task-owned cursor round not ready");
+        var physical = new java.util.concurrent.CompletableFuture<Void>();
+        var published = new java.util.concurrent.atomic.AtomicReference<OresFuture<ChannelRuntime.SelectResult>>();
+        var lease = TaskOwnedLeases.register(() -> {
+            var round = published.get();
+            if (round != null) round.cancel(false);
+        });
+        try {
+            TaskHandle.registerPhysicalSettlement(physical);
+            var round = beginRoundInternal();
+            published.set(round);
+            taskRoundLease = lease;
+            // Actor STOP also owns the physical round receipt. Task getDone
+            // alone is not the actor arena finalization fence.
+            if (taskActorRuntime != null)
+                taskActorRuntime.ownTrackedCountedRound(taskActorTarget, round);
+            var ready = new OresFuture<Void>(() -> false, () -> {});
+            AtomicBoolean observed = drained;
+            round.whenNotificationsDrainedRuntime(() -> {
+                observed.set(true);
+                Throwable failure = round.cancellationHookFailureFromRuntime();
+                if (failure == null) physical.complete(null);
+                else physical.completeExceptionally(failure);
+                // Retire on the logical Task, not on this producer.
+                ready.completeFromRuntime(null);
+            });
+            return ready;
+        } catch (RuntimeException | Error failed) {
+            var round = published.get();
+            if (round == null) physical.complete(null);
+            else {
+                round.whenNotificationsDrainedRuntime(() -> physical.complete(null));
+                round.cancel(false);
+            }
+            lease.disarmWithoutRelease();
+            throw failed;
+        }
     }
 
     void beginActorRound(Runnable retirement) {
@@ -231,7 +313,7 @@ final class CountedSelectReadCursor {
                             && result.operation() != ChannelRuntime.SelectOperation.FUTURE)
                             || !(result.value() instanceof Long number))
                         throw new IllegalStateException("counted scalar selection received non-i64 result");
-                    values.add(number);
+                    values.add(projection.applyAsLong(number));
                     advance(result.index(), result.operation() == ChannelRuntime.SelectOperation.FUTURE);
                 }
                 if (values.size() == count) {
@@ -246,6 +328,10 @@ final class CountedSelectReadCursor {
         } finally {
             active = null;
             drained = null;
+            if (taskRoundLease != null) {
+                taskRoundLease.disarmWithoutRelease();
+                taskRoundLease = null;
+            }
         }
         return true;
     }
