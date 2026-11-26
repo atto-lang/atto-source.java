@@ -45,6 +45,7 @@ public final class CheckCanonicalXorReports {
         check(BOOL_SUITE, methods(
                 "builtinGlobalsNeedNoImportsAndSurviveBuildAdmission",
                 "exhaustiveTruthTablesForGlobalAndQualifiedScalarAndArrayForms",
+                "exactTypedNamedReductionDeclarationsAndEffectOrder",
                 "typedArrayVariablesWorkForEveryIntrinsic",
                 "scalarShortCircuitingSkipsOnlyOperandsAfterTheDecisiveValue",
                 "everyIntrinsicRejectsEmptyCallsScalarSingletonsAndNonBooleanOperands",
