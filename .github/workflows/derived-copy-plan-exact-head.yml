@@ -8,6 +8,8 @@ on:
       - 'src/main/java/dev/oreslang/types/GraphTopology.java'
       - 'src/main/java/dev/oreslang/types/CopyScalarAdmission.java'
       - 'src/main/java/dev/oreslang/types/CopyPlanCache.java'
+      - 'src/main/java/dev/oreslang/types/ShallowSlotDomain.java'
+      - 'tests/graph-topology-host/SlotHarness.java'
       - 'src/main/java/dev/oreslang/types/CheckedCopyPlanSeeds.java'
       - 'src/test/java/dev/oreslang/CopyPlanCacheTest.java'
       - 'tests/graph-topology-host/CopyScalarAdmissionTest.java'
@@ -69,6 +71,14 @@ jobs:
             tests/graph-topology-host/CopyScalarAdmissionTest.java
           java -cp "$RUNNER_TEMP/copy-scalar" CopyScalarAdmissionTest
           echo 'COPY_SCALAR_SCOPE=HOST_COMPONENT_ONLY'
+      - name: Execute exact shallow-slot ownership substrate tests
+        run: |
+          set -euo pipefail
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/shallow-slots" \
+            src/main/java/dev/oreslang/types/ShallowSlotDomain.java \
+            tests/graph-topology-host/SlotHarness.java
+          java -Xss256k -cp "$RUNNER_TEMP/shallow-slots" SlotHarness
+          echo 'SHALLOW_SLOT_SCOPE=HOST_COMPONENT_ONLY'
       - name: Run actual type-checker and GraalVM guest-copy JUnit
         shell: bash
         run: |
