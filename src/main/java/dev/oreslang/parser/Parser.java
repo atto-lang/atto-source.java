@@ -8015,7 +8015,8 @@ public final class Parser {
                 if(type!=null||verifiedLocals.containsKey(key))
                     throw error(first,"E_VERIFY_UNSUPPORTED: fixed array requires fresh inferred val");
                 advance();consume(DOT,"expected '.'");
-                if(!consume(IDENT,"expected of").lexeme().equals("of"))throw error(peek(),"E_VERIFY_UNSUPPORTED: expected Array.of");
+                if(!peek().lexeme().equals("of"))throw error(peek(),"E_VERIFY_UNSUPPORTED: expected Array.of");
+                advance();
                 consume(LPAREN,"expected '('");
                 var cells=new ArrayList<QuantityTerm>();var statements=new ArrayList<Ast.Stmt>();
                 do{
