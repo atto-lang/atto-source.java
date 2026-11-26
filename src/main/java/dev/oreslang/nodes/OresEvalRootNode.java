@@ -2448,7 +2448,7 @@ public final class OresEvalRootNode extends RootNode {
                             taskBody,
                             true,
                             launchAuthority);
-            if (taskExpr.typedCountedSelectI64() && !ActorRuntime.inActorExecution()) {
+            if (taskExpr.typedCountedSelectI64()) {
                 task.countedGuestPlan = checkedCountedGuestPlan(taskBody, dynamicCount);
             }
             Env.DetachedTaskSnapshot transfer =

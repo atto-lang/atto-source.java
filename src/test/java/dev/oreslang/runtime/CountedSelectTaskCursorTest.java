@@ -52,6 +52,42 @@ final class CountedSelectTaskCursorTest {
         }
     }
 
+    @Test void actorTrackedCursorStopRevokesRoundAndFencesForeignTask() throws Exception {
+        var channel = new ChannelRuntime.Channel<Long>(1);
+        var producer = new OresFuture<Long>();
+        var armed = new CountDownLatch(1);
+        var handle = new AtomicReference<TaskHandle<Integer>>();
+        var cursor = new AtomicReference<CountedSelectReadCursor>();
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                handle.set(runtime.startTrackedActorTask(resume -> {
+                    if (!resume.initial()) throw new AssertionError("stopped actor resumed guest");
+                    var c = CountedSelectReadCursor.taskOwnedOrdered(2,
+                            List.of(ChannelRuntime.read(channel), ChannelRuntime.await(producer)),
+                            ChannelRuntime.SelectPolicy.FAIR);
+                    cursor.set(c);
+                    var ready = c.beginTaskRound();
+                    armed.countDown();
+                    return OresScheduler.await(ready);
+                }));
+            });
+            actor.send("start");
+            assertTrue(armed.await(5, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, cursor.get()::state);
+            assertEquals(1, channel.pendingRegistrations());
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, channel.pendingRegistrations());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertFalse(producer.isDone());
+            assertTrue(producer.completeFromRuntime(42L));
+            assertTrue(channel.tryWrite(7L));
+            assertEquals(7L, channel.tryRead().orElseThrow());
+            assertInstanceOf(TaskHandle.Cancelled.class, handle.get().getDone().get(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void abandonedTrackedTaskRevokesRoundBeforeDoneWithoutCancellingProducer() throws Exception {
         var channel = new ChannelRuntime.Channel<Long>(1);
         var producer = new OresFuture<Long>();

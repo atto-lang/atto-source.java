@@ -16,6 +16,8 @@ final class CountedSelectReadCursor {
     private final Thread owner;
     private java.util.function.LongUnaryOperator projection = value -> value;
     private final Object taskDomain;
+    private final ActorRuntime taskActorRuntime;
+    private final ActorRuntime.ContinuationTarget taskActorTarget;
     private TaskOwnedLeases.Lease taskRoundLease;
     private final ActorRuntime actorRuntime;
     private final ActorRuntime.ContinuationTarget actorTarget;
@@ -116,6 +118,8 @@ final class CountedSelectReadCursor {
         if (taskOwned && (runtime != null || !TaskHandle.isCurrentTrackedTaskTurn()))
             throw new IllegalStateException("counted task cursor requires tracked Task turn");
         taskDomain = taskOwned ? Objects.requireNonNull(OresScheduler.currentTaskDomain()) : null;
+        taskActorRuntime = taskOwned ? ActorRuntime.currentActorRuntime() : null;
+        taskActorTarget = taskActorRuntime == null ? null : taskActorRuntime.captureCurrentContinuationTarget();
         actorRuntime = runtime;
         actorTarget = runtime == null ? null : runtime.captureCurrentContinuationTarget();
         owner = runtime == null && !taskOwned ? Thread.currentThread() : null;
@@ -133,6 +137,8 @@ final class CountedSelectReadCursor {
     private void checkOwner() {
         if (driving || (taskDomain != null
                 ? taskDomain != OresScheduler.currentTaskDomain() || !TaskHandle.isCurrentTrackedTaskTurn()
+                    || ActorRuntime.currentActorRuntime() != taskActorRuntime
+                    || (taskActorRuntime != null && !taskActorRuntime.ownsCountedCursorTurn(taskActorTarget))
                 : actorRuntime == null ? Thread.currentThread() != owner
                 : !actorRuntime.ownsCountedCursorTurn(actorTarget)))
             throw new IllegalStateException("counted read cursor requires its serialized owner");
@@ -171,6 +177,10 @@ final class CountedSelectReadCursor {
             var round = beginRoundInternal();
             published.set(round);
             taskRoundLease = lease;
+            // Actor STOP also owns the physical round receipt. Task getDone
+            // alone is not the actor arena finalization fence.
+            if (taskActorRuntime != null)
+                taskActorRuntime.ownTrackedCountedRound(taskActorTarget, round);
             var ready = new OresFuture<Void>(() -> false, () -> {});
             AtomicBoolean observed = drained;
             round.whenNotificationsDrainedRuntime(() -> {
