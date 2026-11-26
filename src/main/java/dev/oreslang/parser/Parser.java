@@ -5062,13 +5062,15 @@ public final class Parser {
         if (!(type.equals("int") || type.equals("bool")
                 || type.equals("string") || type.equals("String"))) return false;
         return tokens.get(current + 1).type() == IDENT
-                && tokens.get(current + 2).type() == EQUAL;
+                && (tokens.get(current + 2).type() == EQUAL
+                    || tokens.get(current + 2).type() == SEMICOLON);
     }
 
     private Ast.BindingStmt parsePrimitiveTypeFirstImmutableBinding() {
         Ast.TypeRef type = parseTypeRef();
         String name = consume(IDENT,
                 "expected binding name after immutable-default local type").lexeme();
+        if(check(SEMICOLON))throw error(peek(),"E_MISSING_INITIALIZER: type-first local binding requires initializer");
         consume(EQUAL, "immutable-default local binding requires initializer");
         Ast.Expr initializer = parseExpression();
         consumeExpressionStatementTerminator(
