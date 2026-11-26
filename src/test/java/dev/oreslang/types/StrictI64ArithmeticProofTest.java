@@ -75,9 +75,13 @@ final class StrictI64ArithmeticProofTest {
             "fnc f(int x) -> int { if x != 0 { return 42/x; } return 0; } pub fnc main() -> int { return f(1); }",
             "fnc f(int x) -> int { if x != 0 && 42/x > 0 { return 1; } return 42; } pub fnc main() -> int { return f(0); }",
             "fnc f(int x) -> int { if x == 0 || 42/x > 0 { return 42; } return 0; } pub fnc main() -> int { return f(0); }",
-            "fnc f(int x) -> int { if x != 0 && x != -1 { return -9223372036854775808/x; } return 0; } pub fnc main() -> int { return f(2); }"
+            "fnc f(int x) -> int { if x != 0 && x != -1 { return -9223372036854775808/x; } return 0; } pub fnc main() -> int { return f(2); }",
+            "pub fnc main() -> int { let Bounded x = 1; while x < 42 { x = x+1; } return x; }",
+            "pub fnc main() -> int { let int x = 1; x = 42; return x; }",
+            "pub fnc main() -> int { let int x = 42; while x > 0 { x = x-1; } return x+42; }",
+            "pub fnc main() -> int { let int x = 0; while x < 21 { x = x+1; } while x < 42 { x = x+1; } return x; }"
         };
-        long[] want={42,42,42,42,-4611686018427387904L};
+        long[] want={42,42,42,42,-4611686018427387904L,42,42,42,42};
         for(int i=0;i<bodies.length;i++){
             String text=pre+bodies[i],name="strict-guest-"+i+".atto";
             var ast=dev.oreslang.compiler.OresCompiler.analyze(Parser.parseVerifiedStrictI64(text));
@@ -87,6 +91,24 @@ final class StrictI64ArithmeticProofTest {
                 var value=context.eval(source);
                 assertEquals(want[i],value.asLong(),name);
             }
+        }
+    }
+
+    @Test void rejectStaleOrUnsafeLoopProofs() {
+        String pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42; ";
+        String[] bodies={
+            "pub fnc main() -> int { let int x = 1; x = 0; return 42/x; }",
+            "pub fnc main() -> int { let int x = 0; while x >= 0 { x = x+1; } return x; }",
+            "pub fnc main() -> int { let Bounded x = 1; while x <= 42 { x = x+1; } return x; }",
+            "pub fnc main() -> int { let int x = 1; while x > 0 { x = x-1; } return 42/x; }",
+            "fnc f(int x) -> int { let int d = x; if d != 0 { d = 1; return 42/d; } return 42/d; } pub fnc main() -> int { return f(0); }",
+            "pub fnc main() -> int { let int x = 1; while x < 42 { x = x+1; x = x+1; } return x; }"
+        };
+        String[] codes={"E_VERIFY_UNPROVEN","E_VERIFY_UNPROVEN","E_REFINEMENT_BINDING","E_VERIFY_UNPROVEN","E_VERIFY_UNPROVEN","E_VERIFY_UNSUPPORTED"};
+        for(int i=0;i<bodies.length;i++){
+            String source=pre+bodies[i];
+            var fault=assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(source));
+            assertTrue(fault.getMessage().contains(codes[i]+":"),fault.getMessage());
         }
     }
 
