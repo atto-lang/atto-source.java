@@ -7818,7 +7818,7 @@ public final class Parser {
                 advance(); consume(LPAREN, "expected annotation predicate");
                 int start = current;
                 while (!check(RPAREN)) {
-                    if (isAtEnd() || current-start>=32 || check(LPAREN) || check(LBRACE) || check(RBRACE) || check(SEMICOLON) || check(AT))
+                    if (check(EOF) || current-start>=32 || check(LPAREN) || check(LBRACE) || check(RBRACE) || check(SEMICOLON) || check(AT))
                         throw error(peek(), "E_REFINEMENT_CONTRACT: invalid bounded annotation predicate");
                     advance();
                 }
