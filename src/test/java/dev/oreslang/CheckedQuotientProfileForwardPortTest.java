@@ -115,10 +115,14 @@ final class CheckedQuotientProfileForwardPortTest {
                         fnc checked(int a, int b): int { return %s; }
                         pub fnc main(): int {
                           val outcome = %s checked(%s, %s);
-                          if outcome.is_err() then
-                            if outcome.unwrap_err() is type %s then return 42; fi
-                          fi
-                          return 1;
+                          do match outcome over
+                            on Ok(value) -> { return 1; }
+                            on Err(error) -> {
+                              if error is type %s then return 42; fi
+                              return 2;
+                            }
+                          end
+                          return 3;
                         }
                         """.formatted(c[0], spelling, c[1], c[2], c[3]);
                 assertEquals(42.0, run(source, "typed-fault.ores"), c[0] + " " + spelling);
