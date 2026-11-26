@@ -54,7 +54,7 @@ final class TernaryAggregateArmTest {
                 fnc unexpected(): int { stdio.stdout.write("X"); return 9; }
                 pub routine main(): void {
                     val s = true ? struct{x: first(), y: second()} : struct{x: unexpected(), y: unexpected()};
-                    val r = false ? Record.of(x: unexpected(), y: unexpected()) : { ^ Record.of(x: first(), y: second()); };
+                    const r = false ? Record.of(x: unexpected(), y: unexpected()) : { ^ Record.of(x: first(), y: second()); };
                     stdio.stdout.write(s.x + s.y + r.x + r.y);
                 }
                 """;

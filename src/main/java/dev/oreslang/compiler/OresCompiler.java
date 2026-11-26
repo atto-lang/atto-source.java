@@ -150,6 +150,14 @@ public final class OresCompiler {
         return new IncrementalCompiler().compileStrictAtto(sources, importResolutions);
     }
 
+    /**
+     * Compile a restricted source-checked affine transfer/drop instruction
+     * plan. The result is compiler IR, not native code or runtime admission.
+     */
+    public static AffineDropPlanV1.Plan elaborateAffineDropsStrictAtto(String source) {
+        return AffineDropPlanV1.lowerChecked(parseAndTypeCheckStrictAtto(source));
+    }
+
     /** Strict source-profile front end for closed-world build optimization. */
     public static TreeShaker.Result compileForBuildStrictAtto(
             String source, BuildOptions options) {

@@ -1335,11 +1335,8 @@ public final class OwnershipChecker {
                     ValueInfo value = checkExpr(arm.value(), armScope, consuming);
                     // Do not let branch-scoped loans become expression values:
                     // a returned borrow could outlive its pattern bindings.
-                    if (isBorrowValue(value) || value.borrowSource != null
-                            || containsBorrowType(value.type)) {
-                        throw error(E_LIFETIME, "value match cannot return a borrowed branch-local value (including nested borrows)");
-                    }
-                    if (result == null) result = value;
+                    requireOwnedDispatchResult(value, "value match");
+                    result = result == null ? value : joinOwnedDispatchResults(result, value);
                 } finally {
                     armScope.close();
                 }
@@ -1715,20 +1712,16 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
 
             ValueInfo left = checkExpr(conditional.whenTrue(), scope, consuming);
+            requireOwnedDispatchResult(left, "conditional");
             Map<VarState, StateSnapshot> leftExit = stateSnapshot(scope);
 
             restoreState(base);
             ValueInfo right = checkExpr(conditional.whenFalse(), scope, consuming);
+            requireOwnedDispatchResult(right, "conditional");
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
-            Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
-            return new ValueInfo(
-                    joinedType,
-                    left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
-                            ? ValueKind.COPY
-                            : ValueKind.MOVE_ONLY,
-                    null);
+            return joinOwnedDispatchResults(left, right);
         }
         if (expr instanceof Ast.SpreadExpr spread) {
             return checkExpr(spread.expression(), scope, consuming);
@@ -6674,6 +6667,25 @@ public final class OwnershipChecker {
         Ast.TypeRef sequence = sequenceDestructureSourceType(concrete);
         if (!sequence.equals(concrete)) return iterableElementType(sequence, asyncIteration);
         return Ast.TypeRef.inferred();
+    }
+
+    /**
+     * A dispatch result has no branch-specific lifetime witness in the
+     * current AST evaluator ABI. Never erase a loan at a value join or
+     * publish an owned result until the branch-aware loan CFG exists.
+     */
+    private void requireOwnedDispatchResult(ValueInfo value, String construct) {
+        if (isBorrowValue(value) || value.borrowSource != null || containsBorrowType(value.type)) {
+            throw error(E_LIFETIME, construct
+                    + " cannot return a borrowed branch-local value (including nested borrows)");
+        }
+    }
+
+    /** Every predecessor contributes to the joined ownership classification. */
+    private ValueInfo joinOwnedDispatchResults(ValueInfo left, ValueInfo right) {
+        return new ValueInfo(joinConditionalType(left.type, right.type),
+                left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
+                        ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
     }
 
     private Ast.TypeRef joinConditionalType(Ast.TypeRef left, Ast.TypeRef right) {
