@@ -220,9 +220,19 @@ public final class PersistentClassfileCacheTest {
         assertThrows(IllegalArgumentException.class,()->providerBuild(root,wide,pins(wide),1,null,false));
         assertThrows(IllegalArgumentException.class,()->providerBuild(root,List.of(local.getFirst(),local.getFirst()),localPins,1,null,false));
         var cp=System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"));
-        var child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),"-cp",cp,
-            PersistentClassfileCacheTest.class.getName(),root.toString(),"provider").inheritIO().start();
-        assertTrue(child.waitFor(90,java.util.concurrent.TimeUnit.SECONDS));assertEquals(0,child.exitValue());
+        Path receipt=Files.createTempFile("atto-java-provider-child-",".log");
+        try{
+            var child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),"-cp",cp,
+                PersistentClassfileCacheTest.class.getName(),root.toString(),"provider")
+                .redirectErrorStream(true).redirectOutput(receipt.toFile()).start();
+            if(!child.waitFor(90,java.util.concurrent.TimeUnit.SECONDS)){
+                child.destroyForcibly();throw new AssertionError("provider child timed out");
+            }
+            String output=Files.readString(receipt);
+            assertEquals(0,child.exitValue(),output);
+            assertTrue(output.contains("JAVA_I32_BOUND_CHILD|hit|guest=42"),output);
+            System.out.println("JAVA_I32_BOUND_CHILD|hit|guest=42");
+        }finally{Files.deleteIfExists(receipt);}
         var edit=providers(true,true);var next=providerBuild(root,edit,pins(edit),1,null,false);assertFalse(next.reused());execute(root,next.bytes(),43);assertArrayEquals(compile(root,B),next.bytes());
         var p=edit.get(1);var rename=List.of(edit.getFirst(),new PersistentPrimitiveClassfileSession.ProviderInput("src/renamed.atto",p.namespace(),p.symbol(),p.arity(),p.source()));
         var changed=providerBuild(root,rename,pins(rename),1,null,false);assertFalse(changed.reused());assertArrayEquals(next.bytes(),changed.bytes());
