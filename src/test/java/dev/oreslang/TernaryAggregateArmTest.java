@@ -47,6 +47,27 @@ final class TernaryAggregateArmTest {
         assertDoesNotThrow(() -> Parser.parse("fnc f(): void { val x = infer struct{status: 42}; return; }"));
     }
 
+    @Test void aggregateResultsPreserveFieldsAndSourceOrder() throws Exception {
+        String program = """
+                fnc first(): int { stdio.stdout.write("A"); return 40; }
+                fnc second(): int { stdio.stdout.write("B"); return 2; }
+                fnc unexpected(): int { stdio.stdout.write("X"); return 9; }
+                pub routine main(): void {
+                    val s = true ? struct{x: first(), y: second()} : struct{x: unexpected(), y: unexpected()};
+                    val r = false ? Record.of(x: unexpected(), y: unexpected()) : { ^ Record.of(x: first(), y: second()); };
+                    stdio.stdout.write(s.x + s.y + r.x + r.y);
+                }
+                """;
+        var checked = OresCompiler.parseAndTypeCheckStrictAtto(program);
+        var out = new ByteArrayOutputStream();
+        String name = "ternary-aggregate-result.ores";
+        try (var lease = OresLanguage.openPrecheckedProgram(name, program, checked);
+             Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, program, name).build());
+        }
+        assertEquals("ABAB84", out.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void armReturnDoesNotReturnFromFunctionAndOnlySelectedArmExecutes() throws Exception {
         String program = """
                 fnc yes(): int { stdio.stdout.write("Y"); return 40; }
