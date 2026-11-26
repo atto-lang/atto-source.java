@@ -50,6 +50,8 @@ final class ActorFrameArena {
     private final BudgetExceeded quotaExhausted;
     private final BudgetExceeded identityExhausted;
     private final BudgetExceeded poisonedFailure;
+    private final BudgetExceeded schedulerPoisonedFailure;
+    private BudgetExceeded firstBudgetFailure;
     private final Map<ExecutionContext.ExecutionId, ArrayDeque<Frame>> stacks = new HashMap<>();
     private final Map<ExecutionContext.ExecutionId, FrameRef> suspended = new HashMap<>();
     private long nonce = 1;
@@ -70,6 +72,7 @@ final class ActorFrameArena {
         this.quotaExhausted = new BudgetExceeded("actor frame or byte quota exhausted");
         this.identityExhausted = new BudgetExceeded("actor execution identity space exhausted");
         this.poisonedFailure = new BudgetExceeded("poisoned actor frame arena");
+        this.schedulerPoisonedFailure = new BudgetExceeded("actor-owned frame byte quota exhausted");
     }
 
     /** Runtime-only domain for minting a matching logical ExecutionContext. */
@@ -99,6 +102,7 @@ final class ActorFrameArena {
         requireExecutable();
         if (nextLogicalExecution == Long.MAX_VALUE) {
             poisoned = true;
+            firstBudgetFailure = identityExhausted;
             throw identityExhausted;
         }
         return ExecutionContext.actor(schedulerDomain, nextLogicalExecution++,
@@ -151,6 +155,7 @@ final class ActorFrameArena {
         if (byteCount <= 0) throw new IllegalArgumentException("frame must have positive byte size");
         if (frames >= maxFrames || byteCount > maxBytes - usedBytes || nonce == Long.MAX_VALUE) {
             poisoned = true;
+            firstBudgetFailure = quotaExhausted;
             throw quotaExhausted;
         }
         FrameRef ref = new FrameRef(this, execution.id(), nonce++);
@@ -214,7 +219,8 @@ final class ActorFrameArena {
         suspended.remove(execution.id());
         var stack = stacks.remove(execution.id());
         if (stack == null) return;
-        for (var frame : stack) {
+        while (!stack.isEmpty()) {
+            var frame = stack.removeLast();
             Arrays.fill(frame.bytes, (byte) 0);
             frames--;
             usedBytes -= frame.bytes.length;
@@ -241,6 +247,15 @@ final class ActorFrameArena {
     /** A synchronous guest guard breach is terminal for the same incarnation. */
     synchronized void poisonFromGuestGuard() {
         if (!retired) poisoned = true;
+    }
+
+    /** Scheduler boundary: preserve the first budget failure even after cleanup.
+     * No new Throwable is needed if a guest or host wrapper swallowed it.
+     */
+    synchronized void checkTerminalBudgetFailure() {
+        if (poisoned) {
+            throw firstBudgetFailure == null ? schedulerPoisonedFailure : firstBudgetFailure;
+        }
     }
 
     synchronized boolean isPoisoned() { return poisoned; }
