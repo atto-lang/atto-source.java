@@ -40,16 +40,19 @@ final class GuestScalarActorInvocationLanguageTest {
                 .build();
 
         var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        // Context creation and language initialization install supervisor-only
+        // retirement hooks. Keep that work on the host, never inside actor code.
+        // The actual guest evaluation still executes on the actor carrier.
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit())
+                .out(output)
+                .build();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            context.initialize(OresLanguage.ID);
             AtomicInteger peak = new AtomicInteger();
             var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
-                ByteArrayOutputStream output = new ByteArrayOutputStream();
-                try (Context context = IsolatePolicy.developer()
-                        .restrictedContextBuilder(ExecutionProfile.serverJit())
-                        .out(output)
-                        .build()) {
-                    context.eval(source);
-                }
+                context.eval(source);
                 assertEquals("10", output.toString(StandardCharsets.UTF_8));
                 peak.set(ActorFrameTestProbe.currentPeakBytes());
                 turn.self().stop();
