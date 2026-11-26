@@ -7901,9 +7901,10 @@ public final class Parser {
                 verifiedUpperBounds.put(localName, term.upperBounds());
                 body.add(new Ast.BindingStmt(Ast.BindingKind.VAL, VERIFIED_CARRIER, localName, term.expression(), false));
             }
-            if (strictVerifiedI64)
+            if (strictVerifiedI64) {
                 body.addAll(strictVerifiedReturns(returnType,result,name,upperParameters,parameters,required,0));
-            else {
+                if(!strictAlwaysReturns(body))throw error(peek(),"E_VERIFY_UNSUPPORTED: strict function must return on all paths");
+            } else {
                 consume(RETURN, "E_REFINEMENT_BODY: expected an explicit return after immutable bindings");
                 var term = parseVerifiedExpression(0);
                 returnType.require(term.type(), "E_REFINEMENT_RETURN", "return from " + name.lexeme());
@@ -7991,6 +7992,7 @@ public final class Parser {
     private List<Ast.Stmt> strictVerifiedReturns(RefinedQuantity declared,RefinedQuantity guaranteed,Token name,
             List<Integer> upperParameters,List<Ast.Param> parameters,List<RefinedQuantity> required,int depth) {
         if(depth>16)throw error(peek(),"E_VERIFY_UNSUPPORTED: strict return depth");
+        if(check(RBRACE))return List.of();
         if(match(VAL)) {
             Token first=consume(IDENT,"expected immutable binding type or name");
             String key;
@@ -8062,18 +8064,42 @@ public final class Parser {
             return tail;
         }
         if(match(IF)) {
-            var p=strictCondition(new HashMap<>(verifiedLocals),0);
+            var incoming=new HashMap<>(verifiedLocals);
+            var p=strictCondition(incoming,0);
             var savedBounds=new HashMap<>(verifiedUpperBounds);
             var savedMutable=new HashMap<>(strictMutable);
             consume(LBRACE,"expected '{'");restoreStrictFacts(p.yes());
             var yes=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
-            consume(RBRACE,"expected '}'");restoreStrictFacts(p.no());
+            consume(RBRACE,"expected '}'");
+            var yesFacts=new HashMap<>(verifiedLocals);
+            var yesBounds=new HashMap<>(verifiedUpperBounds);
+            restoreStrictFacts(p.no());
             verifiedUpperBounds.clear();verifiedUpperBounds.putAll(savedBounds);
             strictMutable.clear();strictMutable.putAll(savedMutable);
-            boolean hasElse=match(ELSE);if(hasElse)consume(LBRACE,"expected '{'");
-            var no=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
-            if(hasElse)consume(RBRACE,"expected '}'");
-            return List.of(new Ast.IfStmt(List.of(new Ast.IfBranch(p.test(),yes)),no));
+            List<Ast.Stmt> no=List.of();
+            if(match(ELSE)){
+                consume(LBRACE,"expected '{'");
+                no=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
+                consume(RBRACE,"expected '}'");
+            }
+            var noFacts=new HashMap<>(verifiedLocals);
+            var noBounds=new HashMap<>(verifiedUpperBounds);
+            boolean yr=strictAlwaysReturns(yes),nr=strictAlwaysReturns(no);
+            var statements=new ArrayList<Ast.Stmt>();
+            statements.add(new Ast.IfStmt(List.of(new Ast.IfBranch(p.test(),yes)),no));
+            // Only bindings in the incoming lexical scope can reach the continuation.
+            // Returning edges contribute no facts; intersect relational proofs otherwise.
+            restoreStrictFacts(incoming);
+            verifiedUpperBounds.clear();strictMutable.clear();strictMutable.putAll(savedMutable);
+            for(var key:incoming.keySet()){
+                var y=yesFacts.get(key);var n=noFacts.get(key);
+                verifiedLocals.put(key,yr?n:nr?y:new RefinedQuantity(y.unit(),y.range().join(n.range()),y.i32()));
+                var bounds=new HashSet<>(yr?noBounds.get(key):yesBounds.get(key));
+                if(!yr&&!nr)bounds.retainAll(noBounds.get(key));
+                verifiedUpperBounds.put(key,Set.copyOf(bounds));
+            }
+            if(!yr||!nr)statements.addAll(strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1));
+            return statements;
         }
         consume(RETURN,"E_VERIFY_UNSUPPORTED: strict returning conditionals only");
         var term=parseVerifiedExpression(0);
@@ -8086,6 +8112,16 @@ public final class Parser {
         }
         consume(SEMICOLON,"expected ';'");
         return List.of(new Ast.ReturnStmt(term.expression()));
+    }
+
+    private static boolean strictAlwaysReturns(List<Ast.Stmt> body) {
+        if(body.isEmpty())return false;
+        var last=body.get(body.size()-1);
+        if(last instanceof Ast.ReturnStmt)return true;
+        if(last instanceof Ast.IfStmt branch)
+            return branch.branches().stream().allMatch(arm->strictAlwaysReturns(arm.body()))
+                && strictAlwaysReturns(branch.elseBody());
+        return false;
     }
 
     private QuantityTerm verifiedReference(int depth) {
