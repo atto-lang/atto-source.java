@@ -5207,9 +5207,14 @@ public final class Parser {
 
     private Ast.TypeRef moduleLiteralShape(String kind, Ast.Expr expr) {
         if (kind.equals("Tuple") && expr instanceof Ast.TupleExpr tuple) {
+            if (tuple.elements().isEmpty() || tuple.elements().size() > 64)
+                throw error(previous(), "E_AGGREGATE_FIELD_BUDGET: expected 1..64 tuple slots");
             return Ast.TypeRef.tupleType(tuple.elements().stream().map(this::moduleLiteralScalarType).toList());
         }
-        if (kind.equals("Record") && expr instanceof Ast.ObjectExpr record) {
+        if (kind.equals("Record") && expr instanceof Ast.ObjectExpr record
+                && record.kind() == Ast.ObjectKind.INFERRED_RECORD) {
+            if (record.fields().isEmpty() || record.fields().size() > 64)
+                throw error(previous(), "E_AGGREGATE_FIELD_BUDGET: expected 1..64 record fields");
             var fields = new java.util.LinkedHashMap<String, Ast.TypeRef>();
             for (Ast.ObjectField field : record.fields()) {
                 if (field.spread()) throw error(previous(), "E_MODULE_AGGREGATE_INFER_UNSUPPORTED: spread");
@@ -5266,7 +5271,7 @@ public final class Parser {
         if (!anonymous && !introduce && !aggregate.equals(namedAggregateKind(alias))) {
             throw error(wrapper, "inferred aggregate kind mismatch for '" + alias + "'");
         }
-        if (introduce && (isAggregateWrapper(alias) || alias.equals("infer") || alias.equals("_")
+        if (introduce && (alias.length() > 128 || isAggregateWrapper(alias) || alias.equals("infer") || alias.equals("_")
                 || dev.oreslang.types.CoreTypeRegistry.lookup(alias).isPresent()
                 || java.util.Set.of("void","null","self","int","float","bool","string","String",
                         "Map","List","Array","Option","Result","Future").contains(alias))) {
@@ -5307,6 +5312,8 @@ public final class Parser {
         if (moduleBinding) {
             Ast.TypeRef shape = moduleLiteralShape(aggregate, value);
             if (introduce) {
+                if (moduleAggregateShapes.size() >= 64)
+                    throw error(wrapper, "E_AGGREGATE_TYPE_BUDGET: at most 64 inferred module types");
                 moduleAggregateShapes.put(alias, new ModuleAggregateShape(aggregate, shape));
             } else if (!shape.equals(moduleAggregateType(alias))) {
                 throw error(wrapper, "E_TYPE_MISMATCH: module aggregate literal does not match " + alias);
@@ -5314,9 +5321,23 @@ public final class Parser {
             return new Ast.BindingStmt(bindingKind, shape, variable, value, false, null);
         }
         Ast.TypeRef moduleShape = anonymous || introduce ? null : moduleAggregateType(alias);
-        if (moduleShape != null && (value instanceof Ast.TupleExpr || value instanceof Ast.ObjectExpr)
-                && !moduleLiteralShape(aggregate, value).equals(moduleShape)) {
-            throw error(wrapper, "E_TYPE_MISMATCH: aggregate literal does not match " + alias);
+        if (moduleShape != null && value instanceof Ast.TupleExpr tuple) {
+            if (!moduleShape.isTupleType() || tuple.elements().size() != moduleShape.arguments().size())
+                throw error(wrapper, "E_TYPE_MISMATCH: aggregate tuple arity does not match " + alias);
+            // Later contextual construction uses the static types of actual
+            // expressions, not the literal-only inference exemplar grammar.
+        }
+        if (moduleShape != null && value instanceof Ast.ObjectExpr object) {
+            if (!moduleShape.isRecordType()
+                    || object.kind() != Ast.ObjectKind.INFERRED_RECORD
+                    || object.fields().stream().anyMatch(Ast.ObjectField::spread))
+                throw error(wrapper, "E_AGGREGATE_KIND: expected closed Record literal");
+            var keys = new java.util.HashSet<String>();
+            for (Ast.ObjectField field : object.fields()) keys.add(field.name());
+            if (!keys.equals(moduleShape.aggregateMembers().keySet()))
+                throw error(wrapper, "E_TYPE_MISMATCH: closed record fields do not match " + alias);
+            // Preserve expressions and source order for the ordinary type
+            // checker and runtime, rather than evaluating them in the parser.
         }
         if (introduce) localTypeScopes.peek().put(alias, aggregate);
         return new Ast.BindingStmt(bindingKind, anonymous ? null
