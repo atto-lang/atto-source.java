@@ -119,10 +119,44 @@ final class NamedAggregateTypeBinderTest {
                     () -> TypeChecker.check(Parser.parse(MODULE_SHAPES + decl + "\nfnc main(): int { return 0; }")), decl);
         }
     }
-    @Test void moduleBinderFailsWithExplicitAdmissionDiagnosticUntilModuleRegistrationExists() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("const Record<infer T> r=(a=1); fnc main(): int { return 0; }"));
-        assertTrue(error.getMessage().contains("E_MODULE_AGGREGATE_INFER_UNSUPPORTED"), error.getMessage());
+    @Test void moduleLiteralShapesExpandInLaterCallableSignatures() {
+        Ast.Program ast = Parser.parse(MODULE_SHAPES
+                + "fnc process(Record<T1> input) -> Tuple<T2> { return (input.a,input.b,input.c); }");
+        Ast.FunctionDecl fn = ast.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance).map(Ast.FunctionDecl.class::cast)
+                .findFirst().orElseThrow();
+        assertTrue(fn.parameters().getFirst().type().isRecordType());
+        assertTrue(fn.returnType().isTupleType());
+        assertEquals("int", fn.parameters().getFirst().type().aggregateMembers().get("c").name());
+        assertDoesNotThrow(() -> TypeChecker.check(ast));
+    }
+
+    @Test void unsupportedModuleInitializersAndCollisionsReject() {
+        for (String source : new String[]{
+                "const struct<infer S> s={a:1}; fnc main(): int { return 0; }",
+                "const Record<infer T> r=(a=1+2); fnc main(): int { return 0; }",
+                "const Record<infer T> r=(a=1); const Tuple<infer T> t=(1,2);",
+                "type T = int; const Record<infer T> r=(a=1);",
+                "const Record<infer T> r=(a=1); type T = int;",
+                "const Record<infer T> r=(a=1); const Record<T> r2=(a=1,b=2);"
+        }) assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+    }
+
+    @Test void moduleShapeNamesAreNotVisibleInSiblingModuleParserScopes() {
+        Ast.Program ast = Parser.parse("""
+                define module first as
+                    const Record<infer T> r=(a=1);
+                    fnc f(Record<T> input): int { return input.a; }
+                end
+                define module second as
+                    const Tuple<infer T> t=(true,2);
+                    fnc f(Tuple<T> input): int { return input[1]; }
+                end
+                """);
+        var first = (Ast.FunctionDecl) ast.modules().get(0).declarations().getLast();
+        var second = (Ast.FunctionDecl) ast.modules().get(1).declarations().getLast();
+        assertTrue(first.parameters().getFirst().type().isRecordType());
+        assertTrue(second.parameters().getFirst().type().isTupleType());
     }
 
     @Test void wrapperParserActuallyDispatchesInsideCallableBody() {
