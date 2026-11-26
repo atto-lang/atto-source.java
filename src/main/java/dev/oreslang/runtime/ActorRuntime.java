@@ -2916,8 +2916,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
-                    new OresFuture<>(() -> read.cancel(false));
+                    new OresFuture<>(() -> read.cancel(false), () -> { });
             read.whenCompleteRuntime((envelope, failure) -> {
+                // The private read's cancellation is initiated by result.cancel().
+                // Let that caller publish cancellation only after the channel
+                // arbitration wins. If a read was already committed, cancelling
+                // the outer Future must fail rather than discard its output.
+                if (read.isCancelled()) return;
                 final boolean shutdownWon;
                 synchronized (runtimeLifecycleLock) {
                     // Linearize output observation against admission sealing.
