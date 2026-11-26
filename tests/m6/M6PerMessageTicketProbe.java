@@ -12,9 +12,18 @@ public final class M6PerMessageTicketProbe {
     private static void require(boolean truth, String why) {
         if (!truth) throw new AssertionError(why);
     }
+    private static long targetId(String name) {
+        return switch (name) {
+            case "slow" -> 17;
+            case "fast" -> 18;
+            case "multi" -> 19;
+            case "restarting" -> 20;
+            default -> throw new AssertionError("unknown fixture target");
+        };
+    }
     private static AttoM6Runtime.ReceiptRoute route(
             AttoM6Runtime.ActorRef ref, long value) {
-        return new AttoM6Runtime.ReceiptRoute(1, 11, 77, 17, ref.generation(),
+        return new AttoM6Runtime.ReceiptRoute(1, 11, 77, targetId(ref.name()), ref.generation(),
             31, 6, Math.addExact(Math.abs(value), 100), 1);
     }
     private static AttoM6Runtime.Ticket accept(AttoM6Runtime runtime,
@@ -32,7 +41,7 @@ public final class M6PerMessageTicketProbe {
         try (var runtime = new AttoM6Runtime(2, 5)) {
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
-            var slow = runtime.spawn_with_result("slow", 1, v -> {
+            var slow = runtime.spawn_scoped_with_result("slow", 1, 11, targetId("slow"), v -> {
                 if (v == 11) {
                     entered.countDown();
                     if (!release.await(5, TimeUnit.SECONDS))
@@ -40,7 +49,7 @@ public final class M6PerMessageTicketProbe {
                 }
                 return Math.addExact(v, 100);
             });
-            var fast = runtime.spawn_with_result("fast", 2, v -> v * 2);
+            var fast = runtime.spawn_scoped_with_result("fast", 2, 11, targetId("fast"), v -> v * 2);
             var first = accept(runtime, slow, 11);
             require(entered.await(5, TimeUnit.SECONDS), "slow turn never started");
             var queued = accept(runtime, slow, 12);
@@ -96,7 +105,7 @@ public final class M6PerMessageTicketProbe {
     private record Send(long value, AttoM6Runtime.Ticket ticket) {}
     private static void concurrent_exact_results() throws Exception {
         try (var runtime = new AttoM6Runtime(4, 4)) {
-            var target = runtime.spawn_with_result("multi", 256, v -> Math.multiplyExact(v, 3));
+            var target = runtime.spawn_scoped_with_result("multi", 256, 11, targetId("multi"), v -> Math.multiplyExact(v, 3));
             var sends = new java.util.concurrent.ConcurrentLinkedQueue<Send>();
             var ready = new CountDownLatch(4);
             var go = new CountDownLatch(1);
@@ -143,7 +152,7 @@ public final class M6PerMessageTicketProbe {
         try (var runtime = new AttoM6Runtime(1, 2)) {
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
-            var target = runtime.spawn_with_result("restarting", 2, value -> {
+            var target = runtime.spawn_scoped_with_result("restarting", 2, 11, targetId("restarting"), value -> {
                 if (value == -1) {
                     entered.countDown();
                     if (!release.await(5, TimeUnit.SECONDS))
@@ -171,7 +180,7 @@ public final class M6PerMessageTicketProbe {
                 snapshot.lastControl() == AttoM6Runtime.ControlKind.PANIC,
                 "panic accounting or CONTROL corrupted");
             AttoM6Runtime.check_conservation(snapshot);
-            var restarted = runtime.spawn_with_result("restarting", 1, value -> value + 42);
+            var restarted = runtime.spawn_scoped_with_result("restarting", 1, 11, targetId("restarting"), value -> value + 42);
             require(restarted.generation() == target.generation() + 1,
                 "actor incarnation not rotated");
             var old = runtime.try_send_ticket(target, 9, route(target, 9));
