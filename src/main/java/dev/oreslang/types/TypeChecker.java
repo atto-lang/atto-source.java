@@ -7732,7 +7732,7 @@ public final class TypeChecker {
                 if (task.dynamicCountName().equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
                     if (task.body().size() != 5
                             || !(task.body().getFirst() instanceof Ast.BindingStmt snapshot)
-                            || snapshot.kind() != Ast.BindingKind.CONST
+                            || snapshot.kind() != Ast.BindingKind.VAL || snapshot.mutableReferent()
                             || !snapshot.name().equals(task.dynamicCountName())
                             || !Ast.TypeRef.simple("int").equals(snapshot.declaredType()))
                         throw new IllegalArgumentException("invalid counted select count snapshot");

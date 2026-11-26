@@ -2301,7 +2301,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
                     if (taskBody.size() != 5
                             || !(taskBody.getFirst() instanceof Ast.BindingStmt snapshot)
-                            || snapshot.kind() != Ast.BindingKind.CONST
+                            || snapshot.kind() != Ast.BindingKind.VAL || snapshot.mutableReferent()
                             || !snapshot.name().equals(name)
                             || !Ast.TypeRef.simple("int").equals(snapshot.declaredType()))
                         throw new IllegalStateException("invalid checked count snapshot");

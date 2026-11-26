@@ -7214,8 +7214,8 @@ public final class Parser {
                 // Type/ownership passes check this synthetic initializer.
                 // Runtime evaluates it in the caller and injects the snapshot
                 // rather than executing the initializer again on the task lane.
-                body.add(new Ast.BindingStmt(Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
-                        dynamicCount, countExpression));
+                body.add(new Ast.BindingStmt(Ast.BindingKind.VAL, Ast.TypeRef.simple("int"),
+                        dynamicCount, countExpression, false));
             }
             body.addAll(List.of(result, reserve, new Ast.LoopStmt(List.of(stop, round)),
                     new Ast.ReturnStmt(new Ast.NameExpr(output))));
