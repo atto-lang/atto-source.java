@@ -60,14 +60,14 @@ final class PipelineMatchExpressionTest {
     void standaloneTypeArmAndPipelineTypeArmAreCheckedAndExecuted() throws Exception {
         String source = """
                 fnc choose(int | string value): int {
-                    return match first value over {
+                    return match value over {
                         on 42 -> 100;
                         is int -> -20;
                         on _ -> 0;
                     };
                 }
                 fnc piped(int | string value): int {
-                    return value |> match first over {
+                    return value |> match over {
                         on 42 -> 100;
                         is int -> -20;
                         on _ -> 0;
