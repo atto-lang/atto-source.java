@@ -993,11 +993,31 @@ public final class ChannelRuntime {
         }
 
         /**
+         * Admit only sealed immutable scalar key implementations. Never invoke
+         * user hashCode/equals while holding the plan monitor or retain mutable
+         * key identity in a pending snapshot. Exact classes also exclude
+         * subclasses of BigInteger/BigDecimal with overridden host behavior.
+         */
+        private static void requireStableKey(Object key) {
+            Objects.requireNonNull(key, "key");
+            Class<?> type = key.getClass();
+            if (type != String.class && type != Boolean.class
+                    && type != Character.class && type != Byte.class
+                    && type != Short.class && type != Integer.class
+                    && type != Long.class && type != Float.class
+                    && type != Double.class && type != java.math.BigInteger.class
+                    && type != java.math.BigDecimal.class && type != OresSymbol.class) {
+                throw new IllegalArgumentException(
+                        "dynamic select key requires immutable scalar identity");
+            }
+        }
+
+        /**
          * Mutations publish a new generation. Replacements retain their key's
          * insertion position; failed duplicates and quota checks are atomic.
          */
         public synchronized void put(K key, SelectCase selectCase) {
-            Objects.requireNonNull(key, "key");
+            requireStableKey(key);
             requireReusableCase(Objects.requireNonNull(selectCase, "selectCase"));
             if (!entries.containsKey(key) && entries.size() >= MAX_SELECT_CASES) {
                 throw new SelectAdmissionException(
@@ -1021,7 +1041,7 @@ public final class ChannelRuntime {
 
         /** Existing in-flight selections keep their original snapshot. */
         public synchronized boolean remove(K key) {
-            Objects.requireNonNull(key, "key");
+            requireStableKey(key);
             if (!entries.containsKey(key)) return false;
             long nextVersion = Math.addExact(version, 1L);
             entries.remove(key);
