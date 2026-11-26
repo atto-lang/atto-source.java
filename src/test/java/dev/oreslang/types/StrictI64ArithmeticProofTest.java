@@ -79,9 +79,10 @@ final class StrictI64ArithmeticProofTest {
             "pub fnc main() -> int { let Bounded x = 1; while x < 42 { x = x+1; } return x; }",
             "pub fnc main() -> int { let int x = 1; x = 42; return x; }",
             "pub fnc main() -> int { let int x = 42; while x > 0 { x = x-1; } return x+42; }",
-            "pub fnc main() -> int { let int x = 0; while x < 21 { x = x+1; } while x < 42 { x = x+1; } return x; }"
+            "pub fnc main() -> int { let int x = 0; while x < 21 { x = x+1; } while x < 42 { x = x+1; } return x; }",
+            "pub fnc main() -> int { let int x = 1; while x < 42 { x = x+1; x = x+1; } return x; }"
         };
-        long[] want={42,42,42,42,-4611686018427387904L,42,42,42,42};
+        long[] want={42,42,42,42,-4611686018427387904L,42,42,42,42,43};
         for(int i=0;i<bodies.length;i++){
             String text=pre+bodies[i],name="strict-guest-"+i+".atto";
             var ast=dev.oreslang.compiler.OresCompiler.analyze(Parser.parseVerifiedStrictI64(text));
@@ -102,9 +103,9 @@ final class StrictI64ArithmeticProofTest {
             "pub fnc main() -> int { let Bounded x = 1; while x <= 42 { x = x+1; } return x; }",
             "pub fnc main() -> int { let int x = 1; while x > 0 { x = x-1; } return 42/x; }",
             "fnc f(int x) -> int { let int d = x; if d != 0 { d = 1; return 42/d; } return 42/d; } pub fnc main() -> int { return f(0); }",
-            "pub fnc main() -> int { let int x = 1; while x < 42 { x = x+1; x = x+1; } return x; }"
+            "pub fnc main() -> int { let int x = 9223372036854775806; while x < 9223372036854775807 { x = x+1; x = x+1; } return x; }"
         };
-        String[] codes={"E_VERIFY_UNPROVEN","E_VERIFY_UNPROVEN","E_REFINEMENT_BINDING","E_VERIFY_UNPROVEN","E_VERIFY_UNPROVEN","E_VERIFY_UNSUPPORTED"};
+        String[] codes={"E_VERIFY_UNPROVEN","E_VERIFY_UNPROVEN","E_REFINEMENT_BINDING","E_VERIFY_UNPROVEN","E_VERIFY_UNPROVEN","E_VERIFY_UNPROVEN"};
         for(int i=0;i<bodies.length;i++){
             String source=pre+bodies[i];
             var fault=assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(source));
