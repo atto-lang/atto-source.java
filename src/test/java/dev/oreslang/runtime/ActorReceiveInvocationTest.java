@@ -120,4 +120,56 @@ final class ActorReceiveInvocationTest {
         ActorReceiveInvocation.begin(sibling).finish();
         assertFalse(sibling.isPoisoned());
     }
+
+    @Test
+    void schedulerPreservesFirstBudgetFailureAfterUnwind() {
+        ActorFrameArena frames = arena(18, 1, 2, ActorReceiveInvocation.ROOT_BYTES);
+        ActorReceiveInvocation first = ActorReceiveInvocation.begin(frames);
+        var original = assertThrows(ActorFrameArena.BudgetExceeded.class,
+                () -> ActorReceiveInvocation.begin(frames));
+        first.cancelAfterFailure();
+        assertEquals(0, frames.usedBytes());
+        assertSame(original, assertThrows(ActorFrameArena.BudgetExceeded.class,
+                frames::checkTerminalBudgetFailure));
+        assertSame(original, assertThrows(ActorFrameArena.BudgetExceeded.class,
+                frames::checkTerminalBudgetFailure));
+        assertEquals(0, original.getStackTrace().length);
+        assertEquals(0, original.getSuppressed().length);
+        ActorFrameArena sibling = arena(19, 1, 2, ActorReceiveInvocation.ROOT_BYTES);
+        assertDoesNotThrow(sibling::checkTerminalBudgetFailure);
+    }
+
+    @Test
+    void guardPoisonHasReservedSchedulerFailureEvenWithoutQuotaThrow() {
+        ActorFrameArena frames = arena(20, 1, 2, 128);
+        frames.poisonFromGuestGuard();
+        var first = assertThrows(ActorFrameArena.BudgetExceeded.class,
+                frames::checkTerminalBudgetFailure);
+        assertEquals("actor-owned frame byte quota exhausted", first.getMessage());
+        assertSame(first, assertThrows(ActorFrameArena.BudgetExceeded.class,
+                frames::checkTerminalBudgetFailure));
+    }
+
+    @Test
+    void oneHundredThousandIncarnationsDrainFramesAndKeepFailureIdentityLocal() {
+        ActorFrameArena.BudgetExceeded previous = null;
+        for (long generation = 1; generation <= 100_000; generation++) {
+            ActorFrameArena frames = arena(21, generation, 2, 128);
+            ActorReceiveInvocation first = ActorReceiveInvocation.begin(frames);
+            first.suspendAfterHandlerExit();
+            ActorReceiveInvocation second = ActorReceiveInvocation.begin(frames);
+            var cause = assertThrows(ActorFrameArena.BudgetExceeded.class,
+                    () -> ActorReceiveInvocation.begin(frames));
+            assertNotSame(previous, cause);
+            first.cancelAfterFailure();
+            second.cancelAfterFailure();
+            assertEquals(0, frames.usedBytes());
+            assertEquals(0, frames.liveFrames());
+            assertSame(cause, assertThrows(ActorFrameArena.BudgetExceeded.class,
+                    frames::checkTerminalBudgetFailure));
+            frames.retireQuiesced();
+            assertTrue(frames.isRetired());
+            previous = cause;
+        }
+    }
 }
