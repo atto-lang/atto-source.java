@@ -419,8 +419,18 @@ pipeline        = conditional { "|>" pipeline_stage } ;
 pipeline_stage  = IDENT [ call_suffix ]
                 | ( "Option" | "Result" ) "." IDENT call_suffix
                 | pipe_lambda
-                | "nlex" pipe_lambda ;
-(* Stages are existing callables, including existing |x| -> expr lambdas.
+                | "nlex" pipe_lambda
+                | pipeline_match ;
+pipeline_match  = "match" [ "first" ] [ "<" [ "ret" "=" ] type_ref ">" ]
+                  "over" value_match_stage_arm { value_match_stage_arm } "end" ;
+value_match_stage_arm
+                = ( "on" pattern [ "when" expression ] | "default" )
+                  "->" ( expression | block | "::" { statement } "end" ) [ "," | ";" ] ;
+(* A forward match stage supplies its subject from the preceding expression.
+   Its result is the next pipeline value; existing match typing, exhaustiveness,
+   ownership and arm-result restrictions apply. No implicit closure or copy.
+   Comma-separated over/end value arms are also accepted in standalone matches.
+   Other stages are existing callables, including existing |x| -> expr lambdas.
    No separate |> (name) binding syntax. A single lambda parameter receives
    the entire upstream value, including Tuple[T1,...,TN]. Two or more lambda
    parameters destructure ONE statically typed, exact-arity Tuple of the same
