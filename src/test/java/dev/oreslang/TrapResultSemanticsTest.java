@@ -691,6 +691,80 @@ final class TrapResultSemanticsTest {
         assertEquals("Dtrue", run(source));
     }
 
+    @Test
+    void directUnwrapAndNestedTrapsPreserveOneResultLayer() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val Option<int> missing = None;
+                  val Option<int> present = Some(42);
+                  val Result<int, Error> bad = trap! missing.unwrap();
+                  val Result<int, Error> nested = trap! (trap! missing.unwrap());
+                  val Result<int, Error> good = trap! present.unwrap();
+                  val Result<Option<int>, Error> ordinary = trap! missing;
+                  stdio.stdout.write(bad.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(nested.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(good.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(ordinary.unwrap().is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:true:42:true", run(source));
+    }
+
+    @Test
+    void shortCircuitSkipsFailedUnwrapAndEvaluatesLiveRhsOnce() throws Exception {
+        String source = """
+                fnc rhs(): bool {
+                  stdio.stdout.write("R");
+                  val Option<bool> missing = None;
+                  return missing.unwrap();
+                }
+                fnc conjunction(bool run): bool { return run && rhs(); }
+                fnc disjunction(bool skip): bool { return skip || rhs(); }
+                pub fnc main(): void {
+                  val Result<bool, Error> a = trap! conjunction(false);
+                  val Result<bool, Error> b = trap! disjunction(true);
+                  stdio.stdout.write(a.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(b.unwrap());
+                  stdio.stdout.write(":");
+                  val Result<bool, Error> c = trap! conjunction(true);
+                  val Result<bool, Error> d = trap! disjunction(false);
+                  stdio.stdout.write(c.is_err());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(d.is_err());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("false:true:RRtrue:true", run(source));
+    }
+
+    @Test
+    void catchReceivesOrdinaryUnwrapFailureAndFinallyRunsOnce() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val Option<int> missing = None;
+                  try {
+                    val int value = missing.unwrap();
+                    stdio.stdout.write("unreachable");
+                  } catch (err) {
+                    stdio.stdout.write("C");
+                  } finally {
+                    stdio.stdout.write("F");
+                  }
+                  stdio.stdout.write("after");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("CFafter", run(source));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "trap-option.ores")
