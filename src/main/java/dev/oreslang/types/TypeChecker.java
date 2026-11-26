@@ -9629,7 +9629,13 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.LiteralPattern literal) {
             Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), bindings, generics, self);
-            if (!assignable(literalType, subject) && !assignable(subject, literalType)) {
+            // Historical value-pattern equality uses the exact integer/float
+            // comparison, not an implicit numeric assignment or rounded cast.
+            // Preserve the explicit strict Atto equality boundary.
+            boolean legacyMixedScalar = !strictAttoEquality
+                    && ((literalType == Primitive.FLOAT && subject == Primitive.INT)
+                        || (literalType == Primitive.INT && subject == Primitive.FLOAT));
+            if (!legacyMixedScalar && !assignable(literalType, subject) && !assignable(subject, literalType)) {
                 throw new IllegalArgumentException("literal pattern type " + literalType + " is incompatible with " + subject);
             }
             return;
