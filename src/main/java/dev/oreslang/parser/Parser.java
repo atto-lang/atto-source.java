@@ -5856,7 +5856,22 @@ public final class Parser {
                 seenDefault = true;
             }
 
+            // Normalize explicit Err() only for a syntactic trap Result;
+            // arbitrary nominal constructors retain their declared arity.
+            boolean discardTrapError = !defaultArm && subject instanceof Ast.TrapExpr
+                    && check(IDENT) && peek().lexeme().equals("Err")
+                    && checkNext(LPAREN) && current + 2 < tokens.size()
+                    && tokens.get(current + 2).type() == RPAREN;
             Ast.Pattern pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
+            if (discardTrapError) {
+                pattern = new Ast.ConstructorPattern("Err", List.of(new Ast.WildcardPattern()));
+            }
+            if (match(COLON)) {
+                Ast.TypeRef armType = parseTypeRef();
+                if (declaredResult == null || !declaredResult.equals(armType)) {
+                    throw error(previous(), "match arm type must equal explicit match result type");
+                }
+            }
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
                 if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
