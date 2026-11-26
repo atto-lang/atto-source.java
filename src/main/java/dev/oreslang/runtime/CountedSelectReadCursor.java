@@ -14,7 +14,8 @@ final class CountedSelectReadCursor {
         SelectExhausted() { super("all counted selection sources exhausted"); }
     }
     private final Thread owner;
-    private java.util.function.LongUnaryOperator projection = value -> value;
+    private static final java.util.function.LongUnaryOperator IDENTITY = value -> value;
+    private java.util.function.LongUnaryOperator projection = IDENTITY;
     private ArrayList<java.util.function.LongUnaryOperator> armProjections;
     private final Object taskDomain;
     private final ActorRuntime taskActorRuntime;
@@ -246,7 +247,7 @@ final class CountedSelectReadCursor {
             }
             state = State.WAITING;
             return active;
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | Error exception) {
             fail(exception);
             throw exception;
         } finally { driving = false; }
@@ -303,6 +304,8 @@ final class CountedSelectReadCursor {
                 ? exception.getCause() : exception;
         values.clear();
         live.clear();
+        projection = IDENTITY;
+        armProjections = null;
         state = State.FAILED;
     }
 
@@ -347,7 +350,10 @@ final class CountedSelectReadCursor {
             fail(exception);
         } finally {
             driving = false;
-            if (state != State.READY) armProjections = null;
+            if (state != State.READY) {
+                projection = IDENTITY;
+                armProjections = null;
+            }
             active = null;
             drained = null;
             if (taskRoundLease != null) {
@@ -363,6 +369,7 @@ final class CountedSelectReadCursor {
         if (state == State.READY) {
             values.clear();
             live.clear();
+            projection = IDENTITY;
             armProjections = null;
             state = State.CANCELLED;
             return true;
