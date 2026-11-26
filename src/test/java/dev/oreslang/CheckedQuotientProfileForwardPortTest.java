@@ -144,4 +144,47 @@ final class CheckedQuotientProfileForwardPortTest {
         signal.addSuppressed(new java.util.concurrent.CancellationException());
         assertFalse(dev.oreslang.runtime.TrapFailurePolicy.isTrappable(signal, IllegalStateException.class));
     }
+
+    @Test void exactNumericOrderingMatchesIndependentOracle() {
+        long[] ints = {Long.MIN_VALUE, Long.MIN_VALUE + 1, -9007199254740993L, -1, 0, 1,
+                9007199254740992L, 9007199254740993L, Long.MAX_VALUE - 1, Long.MAX_VALUE};
+        double[] doubles = {Double.NaN, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY,
+                -0x1.0p63, 0x1.0p63, Math.nextDown(0x1.0p63), -0.0, 0.0,
+                -0.5, 0.5, Double.MIN_VALUE, -Double.MIN_VALUE, 9007199254740992d,
+                Math.nextUp(9007199254740992d)};
+        for (long a : ints) for (double b : doubles) checkOrder(a, b);
+        Random random = new Random(8187);
+        for (int i = 0; i < 100000; i++) {
+            long a = random.nextLong();
+            checkOrder(a, Double.longBitsToDouble(random.nextLong()));
+            checkOrder(a, (double) a);
+        }
+        assertEquals(-1, dev.oreslang.types.NumericValueOrdering.compare(new java.math.BigDecimal("0.1"), 0.1d));
+        assertEquals(0, dev.oreslang.types.NumericValueOrdering.compare(-0.0, +0.0));
+        for (String op : new String[]{"<", "<=", ">", ">="})
+            assertFalse(dev.oreslang.types.NumericValueOrdering.ordered(Double.NaN, 1.0, op));
+    }
+
+    private static void checkOrder(long a, double b) {
+        int expected = Double.isNaN(b) ? dev.oreslang.types.NumericValueOrdering.UNORDERED
+                : b == Double.POSITIVE_INFINITY ? -1 : b == Double.NEGATIVE_INFINITY ? 1
+                : Integer.signum(java.math.BigDecimal.valueOf(a).compareTo(new java.math.BigDecimal(b)));
+        assertEquals(expected, dev.oreslang.types.NumericValueOrdering.compare(a, b));
+        assertEquals(expected == dev.oreslang.types.NumericValueOrdering.UNORDERED ? expected : -expected,
+                dev.oreslang.types.NumericValueOrdering.compare(b, a));
+    }
+
+    @Test void guestOrderingPreservesIntegerPrecisionAndIeeeUnorderedValues() throws Exception {
+        assertEquals(42.0, run("""
+                pub fnc main(): int {
+                  val int high = 9007199254740993;
+                  val int low = 9007199254740992;
+                  val float nan = 0.0 / 0.0;
+                  if nan < 1.0 || nan <= 1.0 || nan > 1.0 || nan >= 1.0 then return 1; fi
+                  if -0.0 < 0.0 || -0.0 > 0.0 then return 2; fi
+                  if high > low then return 42; fi
+                  return 3;
+                }
+                """, "ordering.atto"));
+    }
 }
