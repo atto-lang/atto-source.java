@@ -17,6 +17,7 @@ public final class Parser {
     public static final String DERIVED_NAMESPACE_PREFIX = "$default$";
     // Unspellable root slots; leaf names never change callable ABI or arity.
     public static final String CALLABLE_PATTERN_ROOT = "$param_pattern$";
+    private static final String CALLABLE_PATTERN_DISCARD = "$param_discard$";
 
     public static boolean isCallablePatternRoot(Ast.Expr expression) {
         return expression instanceof Ast.NameExpr name
@@ -115,7 +116,8 @@ public final class Parser {
         // Literal strings, template text and #unsafe symbols are data, not
         // executable identifier tokens.
         for (Token token : this.tokens) {
-            if (token.type() == IDENT && token.lexeme().startsWith(CALLABLE_PATTERN_ROOT)) {
+            if (token.type() == IDENT && (token.lexeme().startsWith(CALLABLE_PATTERN_ROOT)
+                    || token.lexeme().startsWith(CALLABLE_PATTERN_DISCARD))) {
                 throw error(token, "compiler-owned callable pattern root is not a source identifier");
             }
             if (token.type() == UNSAFE ||
@@ -3428,29 +3430,46 @@ public final class Parser {
         java.util.Set<String> selectors = new java.util.HashSet<>();
         int entries = 0;
         boolean comma = false;
-        if (check(closer)) throw error(peek(), "empty callable patterns are not supported in this initial slice");
-        do {
+        if (!tuple && check(closer)) throw error(peek(), "field pattern cannot be empty");
+        while (!check(closer)) {
             if (++entries > 64) throw error(peek(), "callable pattern exceeds 64 bindings");
+            Ast.BindingKind kind = Ast.BindingKind.VAL;
+            boolean explicitKind = false;
+            if (tuple) {
+                if (match(LET)) { kind = Ast.BindingKind.LET; explicitKind = true; }
+                else if (match(VAL)) { explicitKind = true; }
+            }
             String selected = consume(IDENT, "expected flat callable pattern binding").lexeme();
             if (tuple) {
                 Ast.TypeRef slot = match(COLON) ? parseTypeRef() : null;
+                if (selected.equals("_") && (slot != null || explicitKind)) {
+                    throw error(previous(), "tuple discard has no binding modifier or type annotation; annotate the whole root instead");
+                }
                 slots.add(slot);
                 bindings.add(selected.equals("_") ? Ast.DestructureBinding.discard()
-                        : new Ast.DestructureBinding(Ast.BindingKind.VAL, selected, false, false));
+                        : new Ast.DestructureBinding(kind, selected, false, false));
             } else {
                 if (selected.equals("_") || !selectors.add(selected)) {
                     throw error(previous(), "invalid or duplicate callable field selector '" + selected + "'");
                 }
-                String name = match(AS) ? consume(IDENT, "expected flat field alias").lexeme() : selected;
-                // A discard still requires field existence; do not silently
-                // skip checking it until an explicit checked discard IR exists.
-                if (name.equals("_")) throw error(previous(), "field discard is not supported in this initial slice");
-                prelude.add(new Ast.BindingStmt(Ast.BindingKind.VAL, null, name,
+                String name = selected;
+                if (match(AS)) {
+                    if (match(LET)) { kind = Ast.BindingKind.LET; explicitKind = true; }
+                    else if (match(VAL)) { explicitKind = true; }
+                    name = consume(IDENT, "expected flat field alias").lexeme();
+                }
+                if (name.equals("_")) {
+                    if (explicitKind) throw error(previous(), "field discard cannot declare a local binding");
+                    // Still resolve and check the selected scalar, including
+                    // visibility. The result has no source-visible name.
+                    name = CALLABLE_PATTERN_DISCARD + root + "$" + entries;
+                }
+                prelude.add(new Ast.BindingStmt(kind, null, name,
                         new Ast.MemberExpr(new Ast.NameExpr(root), selected), false));
             }
             if (!match(COMMA)) break;
             comma = true;
-        } while (!check(closer));
+        }
         consume(closer, "expected closing callable parameter pattern");
         if (tuple && entries == 1 && !comma) throw error(previous(), "singleton tuple pattern requires trailing comma");
         Ast.TypeRef explicit = match(COLON) ? (contextual ? parsePipeParameterType() : parseTypeRef()) : null;
@@ -3458,6 +3477,7 @@ public final class Parser {
         Ast.TypeRef type = nominal != null ? nominal : explicit;
         if (tuple) {
             boolean anyTyped = slots.stream().anyMatch(java.util.Objects::nonNull);
+            if (entries == 0 && type == null) type = Ast.TypeRef.tupleType(List.of());
             if (anyTyped) {
                 if (type != null || slots.stream().anyMatch(java.util.Objects::isNull)) {
                     throw error(previous(), "use either all typed tuple leaves or one root annotation");
