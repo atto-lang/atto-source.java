@@ -49,6 +49,15 @@ final class StrictI64ArithmeticProofTest {
         assertTrue(i32.getMessage().contains("E_VERIFY_UNSUPPORTED:"));
     }
 
+    @Test void contractedBodyDelimiters() {
+        String pre="type Bounded = int where self >= 1 and self <= 42; ";
+        String header="fnc f(int x) -> int requires x >= 1 requires x <= 42";
+        for (String body : new String[]{" { return 84/x; }", "\nbegin return 84/x; end", " :: return 84/x; end", "\n:: return 84/x; end"})
+            assertNotNull(TypeChecker.check(Parser.parseVerifiedStrictI64(pre+header+body+" pub fnc main() -> int { return f(2); }")));
+        for (String body : new String[]{" begin return 84/x; end", " :: return 84/x; }", " :: return 84/x;"})
+            assertThrows(RuntimeException.class,()->Parser.parseVerifiedStrictI64(pre+header+body+" pub fnc main() -> int { return f(2); }"));
+    }
+
     @Test void strictReturningConditionals() {
         String pre="define dimension Time; define unit Second: Time; type Bounded = int where self >= 1 and self <= 42; ";
         for(String source:new String[]{"fnc f(int x) -> int { if x != 0 { return 42/x; } return 0; } pub fnc main() -> int { return f(1); }",
