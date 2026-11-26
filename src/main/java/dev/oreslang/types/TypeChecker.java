@@ -3342,7 +3342,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("callable field pattern requires a statically resolved data shape");
                 }
                 Type field = objectDestructureMemberType(source, member.member());
-                if (!callablePatternCopyScalar(field) || binding.kind() != Ast.BindingKind.VAL
+                if (!callablePatternCopyScalar(field) || (binding.kind() != Ast.BindingKind.VAL && binding.kind() != Ast.BindingKind.LET)
                         || binding.mutableReferent() || binding.declaredType() != null) {
                     throw new IllegalArgumentException("callable field pattern currently requires an immutable Copy scalar field");
                 }
@@ -3534,7 +3534,7 @@ public final class TypeChecker {
                         || tuple.elements().stream().anyMatch(t -> !callablePatternCopyScalar(t))
                         || destructure.kind() != Ast.DestructureKind.SEQUENCE
                         || destructure.bindings().stream().anyMatch(b -> b.rest()
-                                || b.mutableReferent() || (!b.isDiscard() && b.kind() != Ast.BindingKind.VAL))) {
+                                || b.mutableReferent() || (!b.isDiscard() && b.kind() != Ast.BindingKind.VAL && b.kind() != Ast.BindingKind.LET))) {
                     throw new IllegalArgumentException("callable tuple pattern requires an exact-arity tuple of Copy scalars");
                 }
             }
