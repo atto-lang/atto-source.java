@@ -320,7 +320,8 @@ match_stmt      = [ "do" ] "match" [ "first" ] expression
                     | canonical_match_arm { canonical_match_arm } "end" )
                   | [ ";" ] match_arm { match_arm } "end" ) ;
 canonical_match_arm
-                = "on" pattern [ "when" expression ] [ "->" ] block ;
+                = match_arm_head [ "when" expression ] [ "->" ] block ;
+match_arm_head  = "on" pattern | type_test_pattern ;
 match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
 (* "over" is reserved. "on" and "when" remain contextual arm words.
    "structural" remains contextual and is consumed only where grammar requires it.
@@ -331,7 +332,8 @@ pattern         = "_"
                 | structural_match_pattern
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
-                | "is" type_ref [ "as" IDENT | IDENT ] ;
+                | type_test_pattern ;
+type_test_pattern = "is" type_ref [ "as" IDENT | IDENT ] ;
 structural_match_pattern
                 = ( "~" | "structural" ) type_ref [ "as" IDENT ] ;
 (* 'structural TypeName name' remains an accepted legacy binding form, but
@@ -441,7 +443,7 @@ value_match_stage_arm
 braced_value_match_stage_arm
                 = value_match_stage_arm | value_match_stage_pattern block [ "," ] ;
 value_match_stage_pattern
-                = "on" pattern [ "when" expression ] | "default" ;
+                = match_arm_head [ "when" expression ] | "default" ;
 value_match_stage_result
                 = expression [ "," | ";" ] | block [ "," ]
                 | "::" { statement } "end" [ "," ] ;
