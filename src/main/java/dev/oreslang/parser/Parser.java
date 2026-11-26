@@ -8043,24 +8043,37 @@ public final class Parser {
         if(match(WHILE)) {
             int brace=current;
             while(brace<tokens.size()&&tokens.get(brace).type()!=LBRACE&&tokens.get(brace).type()!=EOF)brace++;
-            if(brace+2>=tokens.size()||tokens.get(brace+1).type()!=IDENT||tokens.get(brace+2).type()!=EQUAL)
-                throw error(peek(),"E_VERIFY_UNSUPPORTED: strict while needs one direct mutable update");
-            String key=tokens.get(brace+1).lexeme();
-            var invariant=strictMutable.get(key);
-            if(invariant==null)throw error(peek(),"E_VERIFY_UNSUPPORTED: loop target not mutable");
-            invariant.require(verifiedLocals.get(key),"E_REFINEMENT_BINDING","loop entry "+key);
-            var header=new HashMap<>(verifiedLocals);header.put(key,invariant);
-            verifiedUpperBounds.put(key,Set.of());
+            if(brace>=tokens.size()||tokens.get(brace).type()!=LBRACE)
+                throw error(peek(),"E_VERIFY_UNSUPPORTED: loop block required");
+            var savedMutable=new HashMap<>(strictMutable);
+            var writes=new HashSet<String>();
+            int nesting=1,k=brace+1;
+            for(;k<tokens.size()&&nesting>0;k++){
+                var tok=tokens.get(k);
+                if(tok.type()==LBRACE)nesting++;
+                else if(tok.type()==RBRACE)nesting--;
+                else if(tok.type()==IDENT&&k+1<tokens.size()&&tokens.get(k+1).type()==EQUAL
+                        &&savedMutable.containsKey(tok.lexeme()))writes.add(tok.lexeme());
+            }
+            if(nesting!=0)throw error(peek(),"E_VERIFY_UNSUPPORTED: unterminated loop");
+            var header=new HashMap<>(verifiedLocals);
+            for(var key:writes){
+                var invariant=savedMutable.get(key);
+                invariant.require(header.get(key),"E_REFINEMENT_BINDING","loop entry "+key);
+                header.put(key,invariant);verifiedUpperBounds.put(key,Set.of());
+            }
+            var headerBounds=new HashMap<>(verifiedUpperBounds);
             var edges=strictCondition(header,0);
             consume(LBRACE,"expected '{'");restoreStrictFacts(edges.yes());
-            if(!verifiedName("expected loop target").lexeme().equals(key))
-                throw error(peek(),"E_VERIFY_UNSUPPORTED: wrong loop target");
-            consume(EQUAL,"expected '='");var update=parseVerifiedExpression(0);consume(SEMICOLON,"expected ';'");
-            invariant.require(update.type(),"E_REFINEMENT_BINDING","loop backedge "+key);
-            if(!match(RBRACE))throw error(peek(),"E_VERIFY_UNSUPPORTED: one direct loop update only");
+            var loopBody=strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1);
+            consume(RBRACE,"expected '}'");
+            if(!strictAlwaysReturns(loopBody))for(var key:writes)
+                savedMutable.get(key).require(verifiedLocals.get(key),"E_REFINEMENT_BINDING","loop backedge "+key);
             restoreStrictFacts(edges.no());
+            verifiedUpperBounds.clear();verifiedUpperBounds.putAll(headerBounds);
+            strictMutable.clear();strictMutable.putAll(savedMutable);
             var tail=new ArrayList<>(strictVerifiedReturns(declared,guaranteed,name,upperParameters,parameters,required,depth+1));
-            tail.add(0,new Ast.ForStmt(null,edges.test(),null,List.of(new Ast.ExprStmt(new Ast.AssignExpr(new Ast.NameExpr(key),update.expression())))));
+            tail.add(0,new Ast.ForStmt(null,edges.test(),null,loopBody));
             return tail;
         }
         if(match(IF)) {
