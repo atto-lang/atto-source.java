@@ -12,9 +12,18 @@ public final class M6PerMessageTicketProbe {
     private static void require(boolean truth, String why) {
         if (!truth) throw new AssertionError(why);
     }
+    private static long targetId(String name) {
+        return switch (name) {
+            case "slow" -> 17;
+            case "fast" -> 18;
+            case "multi" -> 19;
+            case "restarting" -> 20;
+            default -> throw new AssertionError("unknown fixture target");
+        };
+    }
     private static AttoM6Runtime.ReceiptRoute route(
             AttoM6Runtime.ActorRef ref, long value) {
-        return new AttoM6Runtime.ReceiptRoute(1, 11, 77, 17, ref.generation(),
+        return new AttoM6Runtime.ReceiptRoute(1, 11, 77, targetId(ref.name()), ref.generation(),
             31, 6, Math.addExact(Math.abs(value), 100), 1);
     }
     private static AttoM6Runtime.Ticket accept(AttoM6Runtime runtime,
@@ -32,7 +41,7 @@ public final class M6PerMessageTicketProbe {
         try (var runtime = new AttoM6Runtime(2, 5)) {
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
-            var slow = runtime.spawn_with_result("slow", 1, v -> {
+            var slow = runtime.spawn_scoped_with_result("slow", 1, 11, targetId("slow"), v -> {
                 if (v == 11) {
                     entered.countDown();
                     if (!release.await(5, TimeUnit.SECONDS))
@@ -40,13 +49,42 @@ public final class M6PerMessageTicketProbe {
                 }
                 return Math.addExact(v, 100);
             });
-            var fast = runtime.spawn_with_result("fast", 2, v -> v * 2);
+            var fast = runtime.spawn_scoped_with_result("fast", 2, 11, targetId("fast"), v -> v * 2);
             var first = accept(runtime, slow, 11);
             require(entered.await(5, TimeUnit.SECONDS), "slow turn never started");
             var queued = accept(runtime, slow, 12);
             var full = runtime.try_send_ticket(slow, 13, route(slow, 13));
             require(full.admission() == AttoM6Runtime.Admission.FULL && full.ticket() == null,
                 "full mailbox minted phantom ticket");
+            // Wrong tenant must be STALE, not FULL, while the valid ticket is pinned.
+            var foreign = new AttoM6Runtime.ReceiptRoute(1, 22, 77, targetId("slow"),
+                slow.generation(), 31, 6, 999, 1);
+            var attackFailure = new AtomicInteger();
+            var startAttack = new CountDownLatch(1);
+            List<Thread> attackers = new ArrayList<>();
+            for (int p = 0; p < 4; p++) {
+                Thread attacker = new Thread(() -> {
+                    try {
+                        if (!startAttack.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("attack start timeout");
+                        for (int i = 0; i < 64; i++) {
+                            var denied = runtime.try_send_ticket(slow, 99, foreign);
+                            require(denied.admission() == AttoM6Runtime.Admission.STALE &&
+                                denied.ticket() == null, "foreign tenant minted or masked ticket");
+                        }
+                    } catch (Throwable t) { attackFailure.incrementAndGet(); }
+                }, "foreign-proxy-admission-" + p);
+                attackers.add(attacker);
+                attacker.start();
+            }
+            startAttack.countDown();
+            for (Thread attacker : attackers) attacker.join(2_000);
+            require(attackers.stream().noneMatch(Thread::isAlive) && attackFailure.get() == 0,
+                "foreign admission race failed");
+            require(runtime.snapshot(slow).accepted() == 2, "foreign attack spent mailbox credit");
+            require(runtime.ticket_snapshot(queued).state() == AttoM6Runtime.TicketState.ADMITTED,
+                "foreign attack changed pending receipt");
+            System.out.println("M6_PROXY_FOREIGN_FULL_MAILBOX_256=PASS");
             var other = accept(runtime, fast, 70);
             var otherDone = await(runtime, other);
             require(otherDone.state() == AttoM6Runtime.TicketState.PROCESSED
@@ -71,9 +109,9 @@ public final class M6PerMessageTicketProbe {
             var forged = runtime.try_send_ticket(forgedRef, 999, route(forgedRef, 999));
             require(forged.admission() == AttoM6Runtime.Admission.STALE &&
                 forged.ticket() == null, "forged record became mailbox authority");
-            try (var foreign = new AttoM6Runtime(1, 1)) {
+            try (var foreignRuntime = new AttoM6Runtime(1, 1)) {
                 boolean denied = false;
-                try { foreign.ticket_snapshot(first); }
+                try { foreignRuntime.ticket_snapshot(first); }
                 catch (IllegalArgumentException expected) { denied = true; }
                 require(denied, "foreign runtime read an alien ticket");
             }
@@ -96,7 +134,7 @@ public final class M6PerMessageTicketProbe {
     private record Send(long value, AttoM6Runtime.Ticket ticket) {}
     private static void concurrent_exact_results() throws Exception {
         try (var runtime = new AttoM6Runtime(4, 4)) {
-            var target = runtime.spawn_with_result("multi", 256, v -> Math.multiplyExact(v, 3));
+            var target = runtime.spawn_scoped_with_result("multi", 256, 11, targetId("multi"), v -> Math.multiplyExact(v, 3));
             var sends = new java.util.concurrent.ConcurrentLinkedQueue<Send>();
             var ready = new CountDownLatch(4);
             var go = new CountDownLatch(1);
@@ -143,7 +181,7 @@ public final class M6PerMessageTicketProbe {
         try (var runtime = new AttoM6Runtime(1, 2)) {
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
-            var target = runtime.spawn_with_result("restarting", 2, value -> {
+            var target = runtime.spawn_scoped_with_result("restarting", 2, 11, targetId("restarting"), value -> {
                 if (value == -1) {
                     entered.countDown();
                     if (!release.await(5, TimeUnit.SECONDS))
@@ -171,7 +209,7 @@ public final class M6PerMessageTicketProbe {
                 snapshot.lastControl() == AttoM6Runtime.ControlKind.PANIC,
                 "panic accounting or CONTROL corrupted");
             AttoM6Runtime.check_conservation(snapshot);
-            var restarted = runtime.spawn_with_result("restarting", 1, value -> value + 42);
+            var restarted = runtime.spawn_scoped_with_result("restarting", 1, 11, targetId("restarting"), value -> value + 42);
             require(restarted.generation() == target.generation() + 1,
                 "actor incarnation not rotated");
             var old = runtime.try_send_ticket(target, 9, route(target, 9));
@@ -186,8 +224,45 @@ public final class M6PerMessageTicketProbe {
             System.out.println("M6_TICKET_PANIC_ABANDON_CONTROL_REINCARNATION=PASS");
         }
     }
+    private static void immutable_route_scope() throws Exception {
+        try (var runtime = new AttoM6Runtime(2, 5)) {
+            var a = runtime.spawn_scoped_with_result("slow", 1, 11, 17, v -> v);
+            var b = runtime.spawn_scoped_with_result("fast", 1, 22, 17, v -> v);
+            var local = runtime.spawn_with_result("local", 1, v -> v);
+            var wrongTenant = new AttoM6Runtime.ReceiptRoute(1, 22, 77, 17,
+                a.generation(), 31, 6, 101, 1);
+            var wrongTarget = new AttoM6Runtime.ReceiptRoute(1, 11, 77, 18,
+                a.generation(), 31, 6, 101, 1);
+            for (var wrong : List.of(wrongTenant, wrongTarget)) {
+                var denied = runtime.try_send_ticket(a, 1, wrong);
+                require(denied.admission() == AttoM6Runtime.Admission.STALE &&
+                    denied.ticket() == null, "wrong route minted ticket in empty mailbox");
+            }
+            require(runtime.snapshot(a).accepted() == 0, "wrong route consumed credit");
+            require(runtime.try_send_ticket(local, 1, route(a, 1)).ticket() == null,
+                "local actor acquired proxy authority");
+            require(runtime.try_send(local, 1) == AttoM6Runtime.Admission.ACCEPTED,
+                "local ABI changed");
+            require(await(runtime, accept(runtime, a, 1)).result() == 1, "valid retry failed");
+            var other = runtime.try_send_ticket(b, 2, wrongTenant);
+            require(other.admission() == AttoM6Runtime.Admission.ACCEPTED &&
+                await(runtime, other.ticket()).result() == 2, "same numeric target in sibling tenant denied");
+            require(runtime.request_stop(a) && runtime.await_terminal(a, 10_000),
+                "scope owner did not retire");
+            boolean duplicate = false;
+            try { runtime.spawn_scoped_with_result("alias", 1, 11, 17, v -> v); }
+            catch (IllegalStateException expected) { duplicate = true; }
+            require(duplicate, "retired route reassigned with fresh generation");
+            var replacement = runtime.spawn_scoped_with_result("slow", 1, 11, 17, v -> v);
+            require(replacement.generation() == a.generation() + 1, "replacement generation reused");
+            require(runtime.try_send_ticket(a, 1, route(a, 1)).ticket() == null, "stale reference admitted");
+            require(await(runtime, accept(runtime, replacement, 3)).result() == 3, "replacement failed");
+            System.out.println("M6_PROXY_TENANT_TARGET_SCOPE_FENCE=PASS");
+        }
+    }
     public static void main(String[] args) throws Exception {
         require(args.length == 0, "host probe does not accept guest source");
+        immutable_route_scope();
         separate_actors_and_mailbox_capacity();
         concurrent_exact_results();
         failure_abandon_and_restart();

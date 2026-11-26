@@ -83,6 +83,7 @@ public final class AttoM6Runtime implements AutoCloseable {
         final Receive handler;
         final ReceiveWithResult resultHandler;
         final int capacity;
+        final long tenant, targetActor;
         final ArrayDeque<Mail> inbox = new ArrayDeque<>();
         long nextTicketSequence;
         final Set<Long> workers = new HashSet<>();
@@ -93,7 +94,9 @@ public final class AttoM6Runtime implements AutoCloseable {
         boolean controlQueued;
         ControlKind pendingControl, lastControl;
         String failureType;
-        Actor(ActorRef ref, Receive handler, ReceiveWithResult resultHandler, int capacity) {
+        Actor(ActorRef ref, Receive handler, ReceiveWithResult resultHandler, int capacity,
+              long tenant, long targetActor) {
+            this.tenant = tenant; this.targetActor = targetActor;
             this.ref = ref; this.handler = handler;
             this.resultHandler = resultHandler; this.capacity = capacity;
         }
@@ -163,14 +166,22 @@ public final class AttoM6Runtime implements AutoCloseable {
 
     public ActorRef spawn(String name, int capacity, Receive handler) {
         if (handler == null) throw new IllegalArgumentException("null receive");
-        return spawn_internal(name, capacity, handler, null);
+        return spawn_internal(name, capacity, handler, null, 0, 0);
     }
     public ActorRef spawn_with_result(String name, int capacity, ReceiveWithResult handler) {
         if (handler == null) throw new IllegalArgumentException("null result receive");
-        return spawn_internal(name, capacity, null, handler);
+        return spawn_internal(name, capacity, null, handler, 0, 0);
+    }
+    // Trusted placement only; never derive scope from inbound receipt metadata.
+    public ActorRef spawn_scoped_with_result(String name, int capacity, long tenant,
+                                              long targetActor, ReceiveWithResult handler) {
+        if (tenant <= 0 || targetActor <= 0 || handler == null)
+            throw new IllegalArgumentException("invalid scoped actor placement");
+        return spawn_internal(name, capacity, null, handler, tenant, targetActor);
     }
     private ActorRef spawn_internal(String name, int capacity, Receive handler,
-                                    ReceiveWithResult resultHandler) {
+                                    ReceiveWithResult resultHandler,
+                                    long tenant, long targetActor) {
         if (name == null || name.isEmpty() || name.length() > 128 ||
             capacity < 1 || capacity > 4096)
             throw new IllegalArgumentException("invalid actor");
@@ -178,12 +189,19 @@ public final class AttoM6Runtime implements AutoCloseable {
             if (stopping || closing) throw new IllegalStateException("runtime stopping");
             Actor prior = actors.get(name);
             if (prior != null && !prior.retired) throw new IllegalStateException("actor already live");
+            // Keep scope ownership even after retirement: a different name must
+            // not reuse a numeric route with a reset per-name generation.
+            if (prior != null && (prior.tenant != tenant || prior.targetActor != targetActor))
+                throw new IllegalStateException("actor placement scope changed");
+            if (tenant != 0 && actors.values().stream().anyMatch(a ->
+                    a != prior && a.tenant == tenant && a.targetActor == targetActor))
+                throw new IllegalStateException("actor placement scope already reserved");
             if (prior == null && actors.size() >= maxActors)
                 throw new IllegalStateException("actor registry full");
             long generation = Math.addExact(generations.getOrDefault(name, 0L), 1L);
             generations.put(name, generation);
             ActorRef ref = new ActorRef(name, generation);
-            actors.put(name, new Actor(ref, handler, resultHandler, capacity));
+            actors.put(name, new Actor(ref, handler, resultHandler, capacity, tenant, targetActor));
             return ref;
         }
     }
@@ -193,6 +211,16 @@ public final class AttoM6Runtime implements AutoCloseable {
         Actor actor = actors.get(ref.name());
         // Reference identity matters: a record with matching fields is not a valid handle.
         return actor != null && actor.ref == ref && !actor.retired ? actor : null;
+    }
+
+    // Host gateway obtains the exact provisioned numeric target, not a name hash.
+    public long scoped_target(ActorRef ref, long tenant) {
+        synchronized (gate) {
+            Actor actor = resolve(ref);
+            if (tenant <= 0 || actor == null || actor.tenant != tenant)
+                throw new IllegalArgumentException("unbound or foreign proxy destination");
+            return actor.targetActor;
+        }
     }
 
     public Admission try_send(ActorRef ref, long value) {
@@ -219,7 +247,9 @@ public final class AttoM6Runtime implements AutoCloseable {
     }
     private TicketAdmission enqueue(ActorRef ref, long value, ReceiptRoute route) {
         Actor actor = resolve(ref);
-        if (actor == null) return new TicketAdmission(Admission.STALE, null);
+        if (actor == null || actor.tenant != route.tenant() ||
+                actor.targetActor != route.targetActor())
+            return new TicketAdmission(Admission.STALE, null);
         if (!actor.accepting || actor.fenced || stopping || closing)
             return new TicketAdmission(Admission.CLOSED, null);
         if (actor.inbox.size() >= actor.capacity)

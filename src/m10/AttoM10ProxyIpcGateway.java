@@ -61,6 +61,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
     private final Path socketPath;
     private final Object socketFileKey;
     private final long tenant;
+    private final long targetActor;
     // Fresh server-issued actor association incarnation, not an OS PID or
     // per-runtime generation counter (which may restart at one).
     private final long incarnation;
@@ -79,6 +80,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
         if (runtime == null || target == null || socketPath == null ||
             tenant <= 0 || incarnation <= 0)
             throw new IllegalArgumentException("invalid authorized gateway");
+        this.targetActor = runtime.scoped_target(target, tenant);
         validate_secret(key);
         if (!socketPath.isAbsolute() || Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
             throw new IllegalArgumentException("socket path not absolute or already occupied");
@@ -245,7 +247,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                 // these are correlation bindings, NEVER authorization tokens.
                 var route = new AttoM6Runtime.ReceiptRoute(
                     1, tenant, incarnation,
-                    Integer.toUnsignedLong(target.name().hashCode()) + 1L,
+                    targetActor,
                     target.generation(), incarnation, incarnation,
                     f.message_id(), f.attempt());
                 var admitted = runtime.try_send_ticket(target, f.value(), route);
