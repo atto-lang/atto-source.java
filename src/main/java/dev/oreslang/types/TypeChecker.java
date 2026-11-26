@@ -13328,6 +13328,28 @@ public final class TypeChecker {
         }
         try {
             String binding = returns.queriedBinding();
+            int projection = binding.indexOf('.');
+            if (projection >= 0) {
+                String parameter = binding.substring(0, projection);
+                String member = binding.substring(projection + 1);
+                List<Ast.Param> formals = params.stream()
+                        .filter(p -> p.name().equals(parameter)).toList();
+                if (formals.size() != 1) {
+                    throw new IllegalArgumentException("E_TYPE_QUERY_SCOPE: projected typeof needs one formal parameter: " + parameter);
+                }
+                Type base = resolveParam(formals.getFirst(), generics, self);
+                if (!(base instanceof Record record)) {
+                    throw new IllegalArgumentException("E_TYPE_QUERY_UNSUPPORTED: projected typeof requires a statically typed record parameter");
+                }
+                Type result = record.members().get(member);
+                if (result == null) {
+                    throw new IllegalArgumentException("E_NO_FIELD: " + binding);
+                }
+                if (containsUnknown(result)) {
+                    throw new IllegalArgumentException("E_TYPE_QUERY_UNSUPPORTED: unresolved field type: " + binding);
+                }
+                return result;
+            }
             List<Ast.Param> foundParams = params.stream()
                     .filter(p -> p.name().equals(binding)).toList();
             if (foundParams.size() == 1) return resolveParam(foundParams.getFirst(), generics, self);
@@ -13390,6 +13412,9 @@ public final class TypeChecker {
     }
 
     private Type resolveTypeQueryValue(String binding, Set<String> generics, Type self) {
+        if (binding.indexOf('.') >= 0) {
+            throw new IllegalArgumentException("E_TYPE_QUERY_SCOPE: field projection currently requires a callable return annotation");
+        }
         if (currentTypeScope != null) {
             Env.Binding local = currentTypeScope.lookup(binding);
             if (local != null) return local.type();

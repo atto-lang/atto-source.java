@@ -3495,13 +3495,16 @@ public final class Parser {
             if (check(BANG)) {
                 throw error(peek(), "typeof! is not an ownership operator; use 'typeof name'");
             }
-            if (match(LPAREN)) {
-                Token binding = consume(IDENT, "typeof(...) expects exactly one binding name");
-                consume(RPAREN, "typeof(...) expects exactly one binding name");
-                return Ast.TypeRef.typeQuery(binding.lexeme());
+            boolean grouped = match(LPAREN);
+            String binding = consume(IDENT, "typeof requires a binding name").lexeme();
+            // A single field of a formal parameter is a static projection.
+            // Preserve the existing query AST; never parse an expression or call.
+            if (match(DOT)) {
+                binding += "." + consume(IDENT, "typeof requires a static field name").lexeme();
+                if (check(DOT)) throw error(peek(), "E_TYPE_QUERY_UNSUPPORTED: nested field projections");
             }
-            return Ast.TypeRef.typeQuery(
-                    consume(IDENT, "typeof requires a binding name").lexeme());
+            if (grouped) consume(RPAREN, "typeof(...) expects a binding or static field projection");
+            return Ast.TypeRef.typeQuery(binding);
         }
 
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
