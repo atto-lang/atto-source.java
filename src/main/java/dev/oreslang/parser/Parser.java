@@ -6404,6 +6404,15 @@ public final class Parser {
                 value = parseValueMatch(value);
                 continue;
             }
+            // Bare await is the ordinary prefix operator with its operand
+            // supplied by the accumulated pipeline value, not std.await.
+            if (match(AWAIT)) {
+                if (check(LPAREN) || check(LT)) {
+                    throw error(peek(), "pipeline await takes only the left-hand value");
+                }
+                value = new Ast.AwaitExpr(value);
+                continue;
+            }
             // std.await is a *unary*, compiler-owned suspension stage, not a
             // callable value, factory, or Future.map/flat_map. Reuse the same
             // checked AwaitExpr as the prefix keyword. Its origin flag lets
