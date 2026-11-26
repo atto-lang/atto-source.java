@@ -26,6 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Timeout;
@@ -127,13 +128,15 @@ final class AttoNioReactorStressGuestTest {
             socket.setTcpNoDelay(true);
             OutputStream out = socket.getOutputStream();
             InputStream in = socket.getInputStream();
+            AtomicReference<Throwable> readerFailure = new AtomicReference<>();
             Thread reader = new Thread(() -> {
                 try {
                     in.transferTo(echoed);
-                } catch (Exception ignored) {
-                    // The assertion on the echoed bytes reports any loss.
+                } catch (Throwable failure) {
+                    readerFailure.set(failure);
                 }
             }, "nio-stress-reader-" + seed);
+            reader.setDaemon(true);
             reader.start();
             int chunks = 1 + random.nextInt(8);
             for (int c = 0; c < chunks; c++) {
@@ -146,6 +149,8 @@ final class AttoNioReactorStressGuestTest {
             }
             socket.shutdownOutput();
             reader.join(20_000);
+            assertTrue(!reader.isAlive(), "echo client did not reach EOF");
+            assertEquals(null, readerFailure.get(), "echo reader failed before EOF");
         }
         return new byte[][] {sent.toByteArray(), echoed.toByteArray()};
     }
