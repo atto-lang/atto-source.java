@@ -11,6 +11,53 @@ import org.junit.jupiter.api.Test;
  */
 final class DynamicSelectPlanGenerationTest {
     @Test
+    void unstableKeysRejectBeforeHashOrEqualsAndPreservePendingSnapshot() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<Object>();
+        plan.put("stable", ChannelRuntime.read(channel));
+        var original = plan.selectSetSnapshot();
+        var pending = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        Object hostile = new Object() {
+            @Override public int hashCode() {
+                throw new AssertionError("untrusted hashCode executed");
+            }
+            @Override public boolean equals(Object other) {
+                throw new AssertionError("untrusted equals executed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.put(hostile, ChannelRuntime.read(channel)));
+        assertThrows(IllegalArgumentException.class, () -> plan.remove(hostile));
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.put(new StringBuilder("mutable"), ChannelRuntime.read(channel)));
+        assertEquals(1L, plan.version());
+        assertEquals(1, plan.size());
+        assertSame(original, plan.selectSetSnapshot());
+        assertTrue(channel.tryWrite(42));
+        var winner = pending.join();
+        assertEquals("stable", winner.key());
+        assertEquals(1L, winner.version());
+        assertEquals(42, winner.selection().value());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void immutableScalarKeysPreserveReplacementAndLogicalSymbolIdentity() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<Object>();
+        var key = OresSymbol.process("inbox");
+        plan.put(key, ChannelRuntime.read(channel));
+        plan.put(OresSymbol.process("inbox"), ChannelRuntime.read(channel));
+        assertEquals(1, plan.size());
+        assertEquals(2L, plan.version());
+        assertTrue(channel.tryWrite(42));
+        assertEquals(key, plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR)
+                .orElseThrow().key());
+        assertTrue(plan.remove(OresSymbol.process("inbox")));
+        assertEquals(3L, plan.version());
+    }
+
+    @Test
     void repeatedLoopSelectionsReuseTheDescriptorButNotWinnerOrWaiters() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
