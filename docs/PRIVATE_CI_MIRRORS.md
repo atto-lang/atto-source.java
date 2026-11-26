@@ -11,15 +11,26 @@ Before any Git blob/tree creation, branch creation containing source, commit, ar
 3. Invoke the gate before any source bytes are transferred:
 
        python3 scripts/ci_private_mirror_preflight.py \
-         --source ores-truffle-oreslang/oreslang-source.java \
+         --source atto-lang/atto-source.java \
          --source-id "$PINNED_SOURCE_REPOSITORY_ID" \
          --destination "$AUTHORIZED_PRIVATE_CARRIER_FULL_NAME" \
          --destination-id "$PINNED_DESTINATION_REPOSITORY_ID"
 
 4. Treat missing credentials, 404/403, network failures, redirects, public/internal/unknown visibility, mismatched identities or malformed metadata as hard failures. NO source-transfer operations are permitted after denial.
 5. Recheck before each source-transfer batch and immediately after. This preflight is not atomic with Git writes; enforce organizational controls against visibility changes during transfer and use a dedicated private carrier.
-6. Verify the full resulting Git tree, not only selected blobs. An Actions failure with zero executed job steps is not evidence of running tests.
-7. Never put private code in a public benchmark or documentation dashboard; use non-sensitive provenance and aggregate results only.
+6. Require an independently authorized exact-source-PR, destination-repository
+   and workflow/test-plan tuple before copying any private source. An example
+   allowlist entry for a **different** PR is NOT blanket export permission.
+   Connector access to both repositories is not itself export authorization.
+7. Verify actual runner admission **before** any private export with a recent
+   source-free workflow on that destination. Require a completed job with at
+   least one genuinely executed step; a queued, skipped, or zero-step failure
+   cannot establish capacity. Older historical successes do not establish
+   current Actions budget.
+8. Verify every source blob and the full resulting Git tree (including exact
+   current head SHA), not only selected files. An Actions failure with zero
+   executed job steps is not evidence of running tests.
+9. Never put private code in a public benchmark or documentation dashboard; use non-sensitive provenance and aggregate results only.
 
 Offline unit tests:
 
@@ -38,10 +49,13 @@ with no token value reflected in diagnostic errors.
 
 **Integration limitation:** `scripts/ci_private_mirror_preflight.py` is a
 standalone verifier; its presence alone does not prove the actual snapshot
-publisher invokes it. Until issue #962's independently reviewed publisher
-provenance and both-repository admission are enforced, the protected source
+publisher invokes it. Until the **separately and independently reviewed**
+publisher provenance, exact source-PR/destination/workflow allowlist,
+and both-repository admission are enforced, the protected source
 destination allowlist must remain unapproved and private-source publishing
-must not be treated as authorized.
+must not be treated as authorized. The former reference to issue #962
+was stale after the migration to the atto-lang organization: that issue
+now concerns Send/Sync typing rather than mirror-publisher authorization.
 
 The gate intentionally has no skip/public override or offline metadata admission mode. GitHub connector-based and other direct API mirroring tools MUST perform equivalent authenticated private/private checks before writes; this utility cannot intercept their calls.
 

@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * SQLite adapter for {@link DurableActorStore}. One instance serializes access to
@@ -79,6 +80,21 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
                       UNIQUE(tenant,workflow,run,node,idempotency_key),
                       FOREIGN KEY(tenant,workflow,run,node)
                         REFERENCES durable_actors(tenant,workflow,run,node)
+                    )""");
+                // Old store files gain this additive table without losing
+                // inbox/state/outbox data. Receipt writes share commitTurn.
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS durable_command_receipts (
+                      tenant TEXT NOT NULL, workflow TEXT NOT NULL,
+                      run TEXT NOT NULL, node TEXT NOT NULL,
+                      delivery_id TEXT NOT NULL, original_sha256 TEXT NOT NULL,
+                      format_version INTEGER NOT NULL, schema_version INTEGER NOT NULL,
+                      code_generation TEXT NOT NULL,
+                      state_version INTEGER NOT NULL CHECK(state_version > 0),
+                      result BLOB NOT NULL, result_sha256 TEXT NOT NULL,
+                      PRIMARY KEY(tenant,workflow,run,node,delivery_id),
+                      FOREIGN KEY(tenant,workflow,run,node,delivery_id)
+                        REFERENCES durable_inbox(tenant,workflow,run,node,delivery_id)
                     )""");
             }
         } catch (SQLException failure) {
@@ -192,17 +208,92 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
         Objects.requireNonNull(a, "address");
         Objects.requireNonNull(message, "message");
         checkBytes(message.payload());
+        return transaction(() -> insertInbound(a, message));
+    }
+
+    /**
+     * Fenced actor-origin admission. Old epochs MUST fail before the
+     * idempotency lookup, even for an identical already-consumed delivery.
+     */
+    @Override
+    public synchronized boolean enqueueFenced(Address a, long epoch, Inbound message) {
+        Objects.requireNonNull(a, "address");
+        Objects.requireNonNull(message, "message");
+        if (epoch <= 0) throw new IllegalArgumentException("invalid activation epoch");
+        checkBytes(message.payload());
         return transaction(() -> {
-            try (PreparedStatement q = db.prepareStatement("""
-                    INSERT OR IGNORE INTO durable_inbox
-                    (tenant,workflow,run,node,delivery_id,payload)
-                    VALUES (?,?,?,?,?,?)""")) {
-                bind(q, a);
-                q.setString(5, message.deliveryId());
-                q.setBytes(6, message.payload());
-                return q.executeUpdate() == 1;
-            }
+            requireActiveRow(a, epoch, null);
+            return insertInbound(a, message);
         });
+    }
+
+    /**
+     * The same delivery ID MUST bind the same original bytes for the entire
+     * retention period, regardless of whether its turn was already consumed.
+     * Conflict resolution runs inside the caller's BEGIN IMMEDIATE transaction.
+     */
+    private boolean insertInbound(Address a, Inbound message) throws SQLException {
+        byte[] incoming = message.payload();
+        try (PreparedStatement q = db.prepareStatement("""
+                INSERT INTO durable_inbox
+                (tenant,workflow,run,node,delivery_id,payload)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(tenant,workflow,run,node,delivery_id) DO NOTHING""")) {
+            bind(q, a);
+            q.setString(5, message.deliveryId());
+            q.setBytes(6, incoming);
+            int changed = q.executeUpdate();
+            if (changed == 1) return true;
+            if (changed != 0) throw new IllegalStateException("invalid inbox insertion count");
+        }
+        try (PreparedStatement q = db.prepareStatement("""
+                SELECT payload FROM durable_inbox
+                WHERE tenant=? AND workflow=? AND run=? AND node=? AND delivery_id=?""")) {
+            bind(q, a);
+            q.setString(5, message.deliveryId());
+            try (ResultSet existing = q.executeQuery()) {
+                if (!existing.next())
+                    throw new IllegalStateException("missing duplicate inbox record");
+                if (!MessageDigest.isEqual(incoming, existing.getBytes(1)))
+                    throw new IllegalStateException("DURABLE_DELIVERY_ID_PAYLOAD_CONFLICT");
+            }
+        }
+        return false;
+    }
+
+    /**
+     * A current-epoch read can linearize at the SQLite SELECT. The caller
+     * must keep its own actor turn / local state lease until it copies the
+     * checked value; this method does not expose mutable state.
+     */
+    @Override
+    public synchronized void requireActive(Address a, long epoch, long version) {
+        Objects.requireNonNull(a, "address");
+        if (epoch <= 0 || version < 0)
+            throw new IllegalArgumentException("invalid activation read fence");
+        try {
+            requireActiveRow(a, epoch, version);
+        } catch (SQLException failure) {
+            throw new IllegalStateException("durable activation read fence failed", failure);
+        }
+    }
+
+    /** Caller owns the SQLite connection monitor; a transaction is optional. */
+    private void requireActiveRow(Address a, long epoch, Long expectedVersion)
+            throws SQLException {
+        try (PreparedStatement q = db.prepareStatement("""
+                SELECT epoch,active,state_version FROM durable_actors
+                WHERE tenant=? AND workflow=? AND run=? AND node=?""")) {
+            bind(q, a);
+            try (ResultSet r = q.executeQuery()) {
+                if (!r.next() || r.getLong(1) != epoch || r.getInt(2) != 1
+                        || (expectedVersion != null
+                            && r.getLong(3) != expectedVersion)) {
+                    throw new IllegalStateException(
+                            "stale or inactive durable actor activation");
+                }
+            }
+        }
     }
 
     @Override
@@ -228,6 +319,20 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
                             || !r.getString(5).equals(next.codeGeneration())) {
                         throw new IllegalStateException("snapshot migration required");
                     }
+                }
+            }
+            // The earliest unconsumed delivery defines per-actor admission
+            // order. A stale or racing sender cannot leapfrog an older message
+            // simply by supplying its own known delivery ID.
+            try (PreparedStatement oldest = db.prepareStatement("""
+                    SELECT delivery_id FROM durable_inbox
+                    WHERE tenant=? AND workflow=? AND run=? AND node=?
+                      AND consumed=0 ORDER BY sequence LIMIT 1""")) {
+                bind(oldest, a);
+                try (ResultSet pending = oldest.executeQuery()) {
+                    if (!pending.next()
+                            || !turn.consumedDeliveryId().equals(pending.getString(1)))
+                        throw new IllegalStateException("out-of-order or missing durable delivery");
                 }
             }
             try (PreparedStatement u = db.prepareStatement("""
@@ -266,7 +371,86 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
                     u.executeUpdate(); // unique IDs/keys fail the whole turn
                 }
             }
+
+            // Commit the original command result with inbox consumption, state
+            // CAS and outbox insertion. Never synthesize it after the commit.
+            byte[] originalPayload;
+            try (PreparedStatement q = db.prepareStatement("""
+                    SELECT payload FROM durable_inbox
+                    WHERE tenant=? AND workflow=? AND run=? AND node=?
+                      AND delivery_id=? AND consumed=1""")) {
+                bind(q, a);
+                q.setString(5, turn.consumedDeliveryId());
+                try (ResultSet r = q.executeQuery()) {
+                    if (!r.next()) throw new IllegalStateException("missing committed input");
+                    originalPayload = r.getBytes(1);
+                }
+            }
+            try (PreparedStatement u = db.prepareStatement("""
+                    INSERT INTO durable_command_receipts
+                    (tenant,workflow,run,node,delivery_id,original_sha256,
+                     format_version,schema_version,code_generation,
+                     state_version,result,result_sha256)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""")) {
+                bind(u, a);
+                u.setString(5, turn.consumedDeliveryId());
+                u.setString(6, digest(originalPayload));
+                u.setInt(7, next.formatVersion());
+                u.setInt(8, next.stateSchemaVersion());
+                u.setString(9, next.codeGeneration());
+                u.setLong(10, next.stateVersion());
+                u.setBytes(11, next.encodedState());
+                u.setString(12, digest(next.encodedState()));
+                u.executeUpdate();
+            }
             return next.stateVersion();
+        });
+    }
+
+    /**
+     * A duplicate result is read only under a fresh current-writer epoch
+     * fence; a stale caller cannot obtain even an old cached receipt.
+     */
+    @Override
+    public synchronized Optional<Snapshot> committedDelivery(
+            Address a, long epoch, Inbound original) {
+        Objects.requireNonNull(a, "address");
+        Objects.requireNonNull(original, "original");
+        if (epoch <= 0) throw new IllegalArgumentException("invalid activation epoch");
+        byte[] incoming = original.payload();
+        checkBytes(incoming);
+        return transaction(() -> {
+            requireActiveRow(a, epoch, null);
+            try (PreparedStatement q = db.prepareStatement("""
+                    SELECT payload FROM durable_inbox
+                    WHERE tenant=? AND workflow=? AND run=? AND node=?
+                      AND delivery_id=?""")) {
+                bind(q, a);
+                q.setString(5, original.deliveryId());
+                try (ResultSet r = q.executeQuery()) {
+                    if (!r.next()) return Optional.empty();
+                    if (!MessageDigest.isEqual(incoming, r.getBytes(1)))
+                        throw new IllegalStateException("DURABLE_DELIVERY_ID_PAYLOAD_CONFLICT");
+                }
+            }
+            try (PreparedStatement q = db.prepareStatement("""
+                    SELECT original_sha256,format_version,schema_version,
+                           code_generation,state_version,result,result_sha256
+                    FROM durable_command_receipts
+                    WHERE tenant=? AND workflow=? AND run=? AND node=?
+                      AND delivery_id=?""")) {
+                bind(q, a);
+                q.setString(5, original.deliveryId());
+                try (ResultSet r = q.executeQuery()) {
+                    if (!r.next()) return Optional.empty(); // admitted, not committed
+                    byte[] result = r.getBytes(6);
+                    if (!digest(incoming).equals(r.getString(1))
+                            || !digest(result).equals(r.getString(7)))
+                        throw new IllegalStateException("durable command receipt checksum mismatch");
+                    return Optional.of(new Snapshot(r.getInt(2), r.getInt(3),
+                            r.getString(4), r.getLong(5), result));
+                }
+            }
         });
     }
 
