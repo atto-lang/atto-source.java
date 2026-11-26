@@ -184,6 +184,30 @@ public final class PersistentClassfileCacheTest {
         assertFalse(apiBuild(different,B,false).reused());
         System.out.println("JAVA_RESTRICTED_API|guest=42/43|restart|rollback|toolchain-fence");
     }
+    @Test void authenticatedMalformedClassfileRejectedBeforeCacheReturn(@TempDir Path root)throws Exception{
+        var session=api(root);
+        var original=apiBuild(session,A,true);
+        var exposed=original.bytes();exposed[0]^=1;
+        assertNotEquals(exposed[0],original.bytes()[0]);
+        execute(root,original.bytes(),42);
+        Path cached;
+        try(var files=Files.list(root)){
+            cached=files.filter(p->p.getFileName().toString().startsWith("slot-")).findFirst().orElseThrow();
+        }
+        byte[] envelope=Files.readAllBytes(cached);
+        String k=HexFormat.of().formatHex(envelope,8,40);
+        byte[] record=CompilerCacheLedger.record("tenant/api",2,MASTER);
+        byte[] secret=CompilerCacheLedger.admit("tenant/api",record,hash(record),MASTER);
+        try{
+            byte[] malformed=original.bytes();malformed[0]=0;
+            Files.write(cached,CompilerArtifactReceipt.seal(k,malformed,secret));
+            assertThrows(IllegalArgumentException.class,()->apiBuild(session,A,false));
+            Files.write(cached,envelope);
+            var warm=apiBuild(session,A,false);assertTrue(warm.reused());
+            assertArrayEquals(original.bytes(),warm.bytes());execute(root,warm.bytes(),42);
+        }finally{Arrays.fill(secret,(byte)0);}
+        System.out.println("JAVA_PINNED_CLASSFILE|rehmac_malformed=DENIED|snapshot=DEFENSIVE|actual_guest=42");
+    }
     public static void main(String[] args)throws Exception{
         if(args.length==2&&args[1].equals("api")){
             Path root=Path.of(args[0]);var warm=apiBuild(api(root),A,false);assertTrue(warm.reused());execute(root,warm.bytes(),42);
