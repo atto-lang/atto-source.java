@@ -19,7 +19,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Real guest A cannot receive data until real guest B signals the external peer. */
 final class SingleCarrierNioContinuationGuestTest {
-    private record Marker(OresScheduler scheduler, Object domain, long dispatch) {}
+    private record Marker(OresScheduler scheduler, Object domain, long dispatch,
+            Thread carrier, boolean schedulerCarrier) {}
     private static final class Capture extends ByteArrayOutputStream {
         private final CompletableFuture<Marker> armed = new CompletableFuture<>();
         private final CompletableFuture<Marker> resumed = new CompletableFuture<>();
@@ -27,7 +28,8 @@ final class SingleCarrierNioContinuationGuestTest {
         private void observe() {
             String value = toString(StandardCharsets.UTF_8);
             Marker m = new Marker(OresScheduler.current(),
-                    OresScheduler.currentTaskDomain(), OresScheduler.currentDispatchId());
+                    OresScheduler.currentTaskDomain(), OresScheduler.currentDispatchId(),
+                    Thread.currentThread(), OresScheduler.isSchedulerCarrierThread());
             if (value.contains("ARMED|") && !armed.isDone()) armed.complete(m);
             if (value.contains("SIGNAL|") && !signal.isDone()) signal.complete(m);
             if (value.contains("RESUMED|") && !resumed.isDone()) resumed.complete(m);
@@ -97,19 +99,22 @@ final class SingleCarrierNioContinuationGuestTest {
         CompletableFuture<OresVM> vmReady = new CompletableFuture<>();
         CompletableFuture<Void> finished = new CompletableFuture<>();
         Thread guest = new Thread(() -> {
-            try (Context ctx = Context.newBuilder(OresLanguage.ID)
-                    .allowAllAccess(false)
-                    .arguments(OresLanguage.ID, new String[]{"--ores-capabilities=NETWORK,STDOUT"})
-                    .out(capture).build()) {
-                ctx.initialize(OresLanguage.ID);
-                ctx.enter();
-                try {
-                    vmReady.complete(OresContext.get(null).vm());
-                } finally {
-                    ctx.leave();
+            try {
+                try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false)
+                        .arguments(OresLanguage.ID, new String[]{"--ores-capabilities=NETWORK,STDOUT"})
+                        .out(capture).build()) {
+                    ctx.initialize(OresLanguage.ID);
+                    ctx.enter();
+                    try {
+                        vmReady.complete(OresContext.get(null).vm());
+                    } finally {
+                        ctx.leave();
+                    }
+                    ctx.eval(Source.newBuilder(OresLanguage.ID, source, "single-carrier-nio.atto")
+                            .mimeType(OresLanguage.MIME_TYPE).build());
                 }
-                ctx.eval(Source.newBuilder(OresLanguage.ID, source, "single-carrier-nio.atto")
-                        .mimeType(OresLanguage.MIME_TYPE).build());
+                // A successful receipt also requires Context.close() to succeed.
                 finished.complete(null);
             } catch (Throwable failure) {
                 vmReady.completeExceptionally(failure);
@@ -127,11 +132,14 @@ final class SingleCarrierNioContinuationGuestTest {
             assertSame(scheduler, armed.scheduler());
             assertNotNull(armed.domain());
             assertTrue(armed.dispatch() > 0);
+            assertTrue(armed.schedulerCarrier(), "reader must execute on scheduler carrier");
             // The marker precedes the read with no intervening suspension.
             // A host barrier on the same scheduler cannot execute if A pins
             // its only carrier. The exact A task must still be parked after it.
             assertTrue(scheduler.startSync(() ->
-                    scheduler.hasReleasedPendingAwaitForTest(armed.domain()))
+                    Thread.currentThread() == armed.carrier()
+                            && OresScheduler.isSchedulerCarrierThread()
+                            && scheduler.hasReleasedPendingAwaitForTest(armed.domain()))
                     .get(5, TimeUnit.SECONDS), "A must have released a pending read");
             assertFalse(capture.resumed.isDone());
             try (Socket b = connect(port, finished)) {
@@ -142,6 +150,9 @@ final class SingleCarrierNioContinuationGuestTest {
                 assertSame(scheduler, signal.scheduler());
                 assertNotSame(armed.domain(), signal.domain());
                 assertTrue(signal.dispatch() > 0);
+                assertTrue(signal.schedulerCarrier());
+                assertSame(armed.carrier(), signal.carrier(), "sibling must use the released physical carrier");
+                assertNotEquals(armed.dispatch(), signal.dispatch());
                 assertFalse(capture.resumed.isDone(), "A resumed before external release");
                 a.getOutputStream().write(42);
                 a.getOutputStream().flush();
@@ -150,6 +161,9 @@ final class SingleCarrierNioContinuationGuestTest {
                 assertSame(scheduler, resumed.scheduler());
                 assertSame(armed.domain(), resumed.domain());
                 assertNotEquals(armed.dispatch(), resumed.dispatch());
+                assertNotEquals(signal.dispatch(), resumed.dispatch());
+                assertTrue(resumed.schedulerCarrier());
+                assertSame(armed.carrier(), resumed.carrier(), "reader must resume on the sole physical carrier");
                 assertEquals(-1, a.getInputStream().read());
                 assertEquals(-1, b.getInputStream().read());
             }
