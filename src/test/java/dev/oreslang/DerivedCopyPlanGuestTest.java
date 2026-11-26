@@ -115,7 +115,7 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
-    void flatDeepCopyRetainsPrivateAndInheritedFieldsWithoutAliasing() throws Exception {
+    void flatDeepCopyRetainsInheritedFieldsWithoutAliasing() throws Exception {
         assertEquals("42|99|7", run("""
                 define class Base as
                   pub let int value = 42;
