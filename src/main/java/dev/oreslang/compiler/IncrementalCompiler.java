@@ -52,6 +52,25 @@ public final class IncrementalCompiler {
             String sourceDigest, String abiDigest,
             Ast.Program rawProgram, Ast.Program program) { }
 
+    /**
+     * Stage a separate process-local compilation transaction. Cache maps
+     * and layouts are independent; immutable source-derived units are shared.
+     * A caller may discard the fork if a later link or execution gate fails.
+     * This is not a serializable typed proof or persistent cache.
+     */
+    public synchronized IncrementalCompiler fork() {
+        var next=new IncrementalCompiler();
+        next.cache.putAll(cache);
+        next.strictAttoCache.putAll(strictAttoCache);
+        next.parsedCache.putAll(parsedCache);
+        next.strictAttoParsedCache.putAll(strictAttoParsedCache);
+        next.importBindingCache.putAll(importBindingCache);
+        next.strictAttoImportBindingCache.putAll(strictAttoImportBindingCache);
+        next.legacyLayout=legacyLayout;
+        next.strictLayout=strictLayout;
+        return next;
+    }
+
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
     }
