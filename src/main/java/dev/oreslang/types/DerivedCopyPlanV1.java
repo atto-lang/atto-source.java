@@ -43,7 +43,42 @@ public final class DerivedCopyPlanV1 {
     public static Plan derive(
             Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
         if (findClass == null) throw new IllegalArgumentException("E_COPY_UNPROVEN: missing class resolver");
-        return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0);
+        return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0, false);
+    }
+
+    /**
+     * Deep guest admission. Structural derivation alone is not consent.
+     * The core marker is reserved by TypeChecker; resolve its self argument
+     * to the exact declaration, not a name-equivalent foreign class.
+     */
+    public static Plan deriveDeep(Ast.TypeRef type, Function<String, Ast.ClassDecl> findClass) {
+        if (findClass == null) throw fail("E_COPY_UNPROVEN", "missing class resolver");
+        return build(type, findClass, new LinkedHashSet<>(), new int[]{0}, 0, true);
+    }
+
+    public static void validateDeepMarker(Ast.ClassDecl klass, Ast.TypeRef marker,
+                                          Function<String, Ast.ClassDecl> lookup) {
+        if (klass.actorKind() != Ast.ActorKind.NONE || klass.isAbstract()
+                || !klass.genericParameters().isEmpty()
+                || marker.inferArguments() || marker.arguments().size() != 1) {
+            throw fail("E_COPY_OPT_IN_REQUIRED", "DeepCopyable requires concrete non-generic self: " + klass.name());
+        }
+        Ast.TypeRef self = marker.arguments().getFirst();
+        if (self.inferArguments() || !self.arguments().isEmpty()
+                || lookup.apply(self.name()) != klass) {
+            throw fail("E_COPY_OPT_IN_REQUIRED", "DeepCopyable must name exact concrete self: " + klass.name());
+        }
+        if (has(klass.annotations(), "NoCopy")) {
+            throw fail("E_COPY_FORBIDDEN", "@NoCopy conflicts with DeepCopyable: " + klass.name());
+        }
+    }
+
+    private static void requireDeepConsent(Ast.ClassDecl klass, Function<String, Ast.ClassDecl> lookup) {
+        var markers = klass.interfaces().stream().filter(i -> i.name().equals("DeepCopyable")).toList();
+        if (markers.size() != 1) {
+            throw fail("E_COPY_OPT_IN_REQUIRED", "explicit DeepCopyable<" + klass.name() + "> required");
+        }
+        validateDeepMarker(klass, markers.getFirst(), lookup);
     }
 
     /**
@@ -82,7 +117,7 @@ public final class DerivedCopyPlanV1 {
 
     private static Plan build(
             Ast.TypeRef type, Function<String, Ast.ClassDecl> lookup,
-            Set<String> visiting, int[] work, int depth) {
+            Set<String> visiting, int[] work, int depth, boolean deepConsent) {
         // Acyclic diamond layouts can expand exponentially despite a depth
         // cap. Charge each plan occurrence before allocating its subtree.
         if (++work[0] > MAX_PLAN_NODES) {
@@ -104,7 +139,7 @@ public final class DerivedCopyPlanV1 {
                 throw fail("E_COPY_UNPROVEN", "typed Array/List requires exactly one element type");
             }
             return new Sequence(type.name(), build(
-                    type.arguments().getFirst(), lookup, visiting, work, depth + 1));
+                    type.arguments().getFirst(), lookup, visiting, work, depth + 1, deepConsent));
         }
         // Every other nominal or resource type remains noncopyable until its
         // compiler/runtime shape is explicitly supported.
@@ -118,6 +153,7 @@ public final class DerivedCopyPlanV1 {
         if (has(klass.annotations(), "NoCopy")) {
             throw fail("E_COPY_FORBIDDEN", "@NoCopy class " + klass.name());
         }
+        if (deepConsent) requireDeepConsent(klass, lookup);
         if (has(klass.annotations(), "ManualCopy")) {
             throw fail("E_COPY_UNPROVEN", "@ManualCopy requires checked custom lowering: " + klass.name());
         }
@@ -142,7 +178,7 @@ public final class DerivedCopyPlanV1 {
                     }
                     continue; // builtin, field-free base only
                 }
-                Plan parentPlan = build(parentType, lookup, visiting, work, depth + 1);
+                Plan parentPlan = build(parentType, lookup, visiting, work, depth + 1, deepConsent);
                 if (!(parentPlan instanceof Instance base)) {
                     throw fail("E_COPY_UNPROVEN", "class parent is not copyable: " + parentType.name());
                 }
@@ -164,7 +200,7 @@ public final class DerivedCopyPlanV1 {
                 }
                 Plan fieldPlan;
                 try {
-                    fieldPlan = build(field.type(), lookup, visiting, work, depth + 1);
+                    fieldPlan = build(field.type(), lookup, visiting, work, depth + 1, deepConsent);
                 } catch (IllegalArgumentException failure) {
                     throw fail("E_COPY_TRANSITIVE", klass.name() + "." + field.name()
                             + ": " + failure.getMessage());
