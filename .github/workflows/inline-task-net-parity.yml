@@ -210,6 +210,9 @@ jobs:
               "voidTaskLocalLoopAndNestedScopeRemainIndependent",
               "voidTaskRejectsNonlocalTransfersAndValueReturns",
               "inlineTaskDefersExecuteOnceInLexicalOrderBeforeCallerContinues",
+              "conditionalVoidReturnsSkipSuffixAndResumeCaller",
+              "nestedValueReturnsKeepBothBranchScopesAndSkipSuffixes",
+              "nestedEarlyReturnsUnwindBothDefersOnce",
           }
           cases = result.findall("testcase")
           assert result.tag == "testsuite", result.tag
