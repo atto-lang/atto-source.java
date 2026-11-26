@@ -112,12 +112,16 @@ public final class LinkedProgramRunner {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
-        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
-        projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+        // The v2 legacy manifest is an explicit closed scalar namespace
+        // profile. Use the same compiler and policy-controlled runner below.
+        if (!PinnedNamespaceFilePlan.loadIfPresent(entry, units, importResolutions)) {
+            OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+            projectConfig.requireStdJavaBackend();
+            collectImportClosure(entry, units, projectConfig, importResolutions,
+                    new SourceAdmissionBudget(), 0);
+        }
         ensureJavaEntryContainsOres(entry, units);
 
         if (policy != null) {
@@ -280,12 +284,16 @@ public final class LinkedProgramRunner {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
-        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
-        projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+        // The v2 legacy manifest is an explicit closed scalar namespace
+        // profile. Use the same compiler and policy-controlled runner below.
+        if (!PinnedNamespaceFilePlan.loadIfPresent(entry, units, importResolutions)) {
+            OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+            projectConfig.requireStdJavaBackend();
+            collectImportClosure(entry, units, projectConfig, importResolutions,
+                    new SourceAdmissionBudget(), 0);
+        }
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {

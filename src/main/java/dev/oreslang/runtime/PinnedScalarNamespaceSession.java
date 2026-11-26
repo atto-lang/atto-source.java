@@ -24,7 +24,8 @@ import java.util.*;
  */
 public final class PinnedScalarNamespaceSession {
     private final IncrementalCompiler compiler=new IncrementalCompiler();
-    private static final String ENTRY="consumer/main.ores";
+    static final String ENTRY="consumer/main.ores";
+    record Lowered(Map<String,String> sources,Map<String,String> resolutions){}
     private PinnedNamespaceInventory.Memo inventoryMemo;
     private String acceptedConsumer;
     private Ast.Program acceptedProgram;
@@ -55,7 +56,28 @@ public final class PinnedScalarNamespaceSession {
         var program=parseConsumer?Parser.parse(consumer):acceptedProgram;
         if(program.imports().size()!=1)throw deny("one namespace import required");
         var prepared=PinnedNamespaceInventory.prepare(program.imports().getFirst(),consumerManifest,providerManifest,snapshot,inventoryMemo);
-        var selected=prepared.selection();
+        var plan=lower(program,prepared.selection());
+        var build=compiler.compile(plan.sources(),Map.of(ENTRY,plan.resolutions()));
+        var resolutions=plan.resolutions();
+        var policy=new IsolatePolicy(Set.of(IsolatePolicy.Capability.STDOUT),64L*1024*1024,64,Duration.ofSeconds(10));
+        try(Context context=policy.restrictedContextBuilder(ExecutionProfile.serverJit()).out(out).err(err).build()){
+            var units=new TreeMap<String,Value>();
+            for(var id:new TreeSet<>(build.units().keySet())){
+                var unit=build.units().get(id);
+                var source=Source.newBuilder(OresLanguage.ID,unit.sourceText(),id).mimeType(OresLanguage.MIME_TYPE).cached(false).buildLiteral();
+                try(var scope=OresLanguage.openPrecheckedProgram(id,unit.sourceText(),unit.program())){units.put(id,context.parse(source));}
+            }
+            for(var resolution:resolutions.entrySet())units.get(ENTRY).execute(OresEvalRootNode.REGISTER_IMPORT_COMMAND,resolution.getKey(),resolution.getValue());
+            for(var unit:units.values())unit.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+            for(var group:build.initializationGroups())for(String id:group)units.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            var result=units.get(ENTRY).execute(OresEvalRootNode.MAIN_ONLY_COMMAND);
+            if(!result.isNull()&&(!result.fitsInInt()||result.asInt()!=0))throw deny("nonzero entry result");
+            inventoryMemo=prepared.memo();acceptedConsumer=consumer;acceptedProgram=program;
+            return new Result(build,0,prepared.parsed(),prepared.reused(),parseConsumer?1:0);
+        }
+    }
+    // Package-private: only trusted inventory admission supplies the selection.
+    static Lowered lower(Ast.Program program,PinnedNamespaceInventory.Selection selected){
         if(!identifier(selected.localAlias()))throw deny("reserved alias");
         var m=root(program);
         if(m.declarations().size()!=1)throw deny("single entry");
@@ -102,24 +124,6 @@ public final class PinnedScalarNamespaceSession {
         });
         lowered.append("pub fnc main(): void {\n").append(body).append("}\n");
         sources.put(ENTRY,lowered.toString());
-        var build=compiler.compile(sources,Map.of(ENTRY,resolutions));
-        var policy=new IsolatePolicy(Set.of(IsolatePolicy.Capability.STDOUT),64L*1024*1024,64,Duration.ofSeconds(10));
-        try(Context context=policy.restrictedContextBuilder(ExecutionProfile.serverJit()).out(out).err(err).build()){
-            var units=new TreeMap<String,Value>();
-            for(var id:new TreeSet<>(build.units().keySet())){
-                var unit=build.units().get(id);
-                var source=Source.newBuilder(OresLanguage.ID,unit.sourceText(),id).mimeType(OresLanguage.MIME_TYPE).cached(false).buildLiteral();
-                try(var scope=OresLanguage.openPrecheckedProgram(id,unit.sourceText(),unit.program())){
-                    units.put(id,context.parse(source));
-                }
-            }
-            for(var resolution:resolutions.entrySet())units.get(ENTRY).execute(OresEvalRootNode.REGISTER_IMPORT_COMMAND,resolution.getKey(),resolution.getValue());
-            for(var unit:units.values())unit.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
-            for(var group:build.initializationGroups())for(String id:group)units.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
-            var result=units.get(ENTRY).execute(OresEvalRootNode.MAIN_ONLY_COMMAND);
-            if(!result.isNull()&&(!result.fitsInInt()||result.asInt()!=0))throw deny("nonzero entry result");
-            inventoryMemo=prepared.memo();acceptedConsumer=consumer;acceptedProgram=program;
-            return new Result(build,0,prepared.parsed(),prepared.reused(),parseConsumer?1:0);
-        }
+        return new Lowered(Map.copyOf(sources),Map.copyOf(resolutions));
     }
 }
