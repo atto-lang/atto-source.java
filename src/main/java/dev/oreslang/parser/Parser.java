@@ -7215,14 +7215,12 @@ public final class Parser {
         return new Ast.ChannelOpExpr(operation, mode, channel, value);
     }
 
-    // Restricted executable source slice. A single lexical Channel<int>
-    // and pure integer projection need no mixed-source rotation. Each round
-    // uses the real checked procedural select arbiter on the Task lane.
-    // Literal/constant and pure lexical i64 arithmetic counts are supported. Multiple
-    // sources, general dynamic expressions, Future and arbitrary arm bodies
-    // still fail closed until general aggregate lowering exists.
+    // Restricted executable source slice: bounded lexical Channel<int> and
+    // Future<int> arms with pure integer projections. The synthetic select
+    // bodies pass normal type/ownership checks before scheduler lowering.
+    // General dynamic expressions and arbitrary arm bodies fail closed.
     private Ast.Expr parseRestrictedCountedSelect() {
-        String unsupported = "counted select requires tracked Future result lowering outside restricted single-read slice";
+        String unsupported = "counted select requires tracked Future result lowering outside restricted scalar read/Future slice";
         long count = -1;
         String dynamicCount = null;
         Token countStart = peek();
@@ -7248,18 +7246,20 @@ public final class Parser {
             }
         }
         Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.BLOCKING, true);
-        if (selected.policy() == Ast.SelectPolicy.RANDOM || selected.arms().size() != 1)
+        if (selected.policy() == Ast.SelectPolicy.RANDOM || selected.arms().isEmpty()
+                || selected.arms().size() > 8)
             throw error(previous(), unsupported);
-        Ast.SelectArm arm = selected.arms().getFirst();
-        if (arm.operation() != Ast.ChannelOperation.READ
-                || !(arm.channel() instanceof Ast.NameExpr source)
-                || source.name().startsWith("$") || arm.bindingName() == null
-                || arm.bindingName().startsWith("$") || arm.mutableReferent()
-                || !Ast.TypeRef.simple("int").equals(arm.bindingType())
-                || arm.body().size() != 1
-                || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
-                || !isCountedScalarProjection(returned.value(), arm.bindingName()))
-            throw error(previous(), unsupported);
+        for (Ast.SelectArm arm : selected.arms()) {
+            if ((arm.operation() != Ast.ChannelOperation.READ && arm.operation() != Ast.ChannelOperation.AWAIT)
+                    || !(arm.channel() instanceof Ast.NameExpr source)
+                    || source.name().startsWith("$") || arm.bindingName() == null
+                    || arm.bindingName().startsWith("$") || arm.mutableReferent()
+                    || !Ast.TypeRef.simple("int").equals(arm.bindingType())
+                    || arm.body().size() != 1
+                    || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
+                    || !isCountedScalarProjection(returned.value(), arm.bindingName()))
+                throw error(previous(), unsupported);
+        }
         if (dynamicCount != null) {
             // Runtime snapshots the lexical count once before source admission.
             // Fixed-size checked body; no count-dependent AST unrolling.
@@ -7273,12 +7273,18 @@ public final class Parser {
             var stop = new Ast.IfStmt(List.of(new Ast.IfBranch(
                     new Ast.BinaryExpr(">=", new Ast.MemberExpr(new Ast.NameExpr(output), "size"),
                             new Ast.NameExpr(dynamicCount)), List.of(new Ast.BreakStmt()))), List.of());
-            var add = new Ast.ExprStmt(new Ast.CallExpr(
-                    new Ast.MemberExpr(new Ast.NameExpr(output), "add"),
-                    List.of(copyCountedScalarProjection(returned.value()))));
+            List<Ast.SelectArm> roundArms = new ArrayList<>();
+            for (Ast.SelectArm arm : selected.arms()) {
+                var returned = (Ast.ReturnStmt) arm.body().getFirst();
+                var source = (Ast.NameExpr) arm.channel();
+                var add = new Ast.ExprStmt(new Ast.CallExpr(
+                        new Ast.MemberExpr(new Ast.NameExpr(output), "add"),
+                        List.of(copyCountedScalarProjection(returned.value()))));
+                roundArms.add(new Ast.SelectArm(arm.operation(), new Ast.NameExpr(source.name()),
+                        null, arm.bindingKind(), arm.bindingName(), List.of(add), false, arm.bindingType()));
+            }
             var round = new Ast.SelectStmt(Ast.WaitMode.BLOCKING, selected.policy(),
-                    List.of(new Ast.SelectArm(Ast.ChannelOperation.READ, new Ast.NameExpr(source.name()),
-                            null, arm.bindingKind(), arm.bindingName(), List.of(add), false, arm.bindingType())), true);
+                    List.copyOf(roundArms), true);
             List<Ast.Stmt> body = new ArrayList<>();
             if (dynamicCount.equals(dev.oreslang.ast.CountedSelectCount.SNAPSHOT)) {
                 // Type/ownership passes check this synthetic initializer.
@@ -7293,6 +7299,13 @@ public final class Parser {
                     false, false, true, null, dynamicCount);
         }
         if (count == 0) {
+            // The existing zero-count AST has only one Channel type witness.
+            // Multi-source literal zero remains fail-closed until all witnesses
+            // can be checked without capturing or evaluating any source.
+            if (selected.arms().size() != 1
+                    || selected.arms().getFirst().operation() != Ast.ChannelOperation.READ)
+                throw error(previous(), unsupported);
+            var source = (Ast.NameExpr) selected.arms().getFirst().channel();
             // Retain only a static lexical type witness, never capture or
             // evaluate the source and never materialize an executable arm.
             var array = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
@@ -7306,13 +7319,17 @@ public final class Parser {
             String slot = "$counted_select_value_" + i;
             taskBody.add(new Ast.BindingStmt(Ast.BindingKind.LET, Ast.TypeRef.simple("int"),
                     slot, new Ast.LiteralExpr(0L)));
-            var projected = copyCountedScalarProjection(returned.value());
-            var assignment = new Ast.ExprStmt(new Ast.AssignExpr(new Ast.NameExpr(slot), projected));
-            var roundArm = new Ast.SelectArm(Ast.ChannelOperation.READ,
-                    new Ast.NameExpr(source.name()), null, arm.bindingKind(),
-                    arm.bindingName(), List.of(assignment), false, arm.bindingType());
+            List<Ast.SelectArm> roundArms = new ArrayList<>();
+            for (Ast.SelectArm arm : selected.arms()) {
+                var returned = (Ast.ReturnStmt) arm.body().getFirst();
+                var source = (Ast.NameExpr) arm.channel();
+                var projected = copyCountedScalarProjection(returned.value());
+                var assignment = new Ast.ExprStmt(new Ast.AssignExpr(new Ast.NameExpr(slot), projected));
+                roundArms.add(new Ast.SelectArm(arm.operation(), new Ast.NameExpr(source.name()),
+                        null, arm.bindingKind(), arm.bindingName(), List.of(assignment), false, arm.bindingType()));
+            }
             taskBody.add(new Ast.SelectStmt(Ast.WaitMode.BLOCKING,
-                    selected.policy(), List.of(roundArm), true));
+                    selected.policy(), List.copyOf(roundArms), true));
             values.add(new Ast.NameExpr(slot));
         }
         taskBody.add(new Ast.ReturnStmt(new Ast.ListExpr(values, true)));
