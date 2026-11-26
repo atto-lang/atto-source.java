@@ -424,6 +424,22 @@ public final class OresScheduler implements AutoCloseable {
         return parallelism;
     }
 
+    /** Package-private test observation only; no guest API or hot-path hook.
+     * Used after a same-carrier barrier while the external peer withholds data.
+     */
+    boolean hasReleasedPendingAwaitForTest(Object taskDomain) {
+        for (TaskRunner<?> runner : tasks) {
+            if (runner.executionContext == taskDomain
+                    && runner.phase.get() == TaskRunner.WAITING
+                    && !runner.executing.get()
+                    && runner.activeAwaitRegistration.get() != null
+                    && runner.pendingResume.get() == null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Number of physical dispatch turns flagged by the independent watchdog. */
     public long watchdogOverruns() {
         return watchdogOverruns.get();
