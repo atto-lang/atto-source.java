@@ -14,7 +14,18 @@ import java.util.Optional;
  */
 public record TraceParent(String traceId, String spanId, int flags) {
     private static final int HEADER_LENGTH = 55;
-    private static final SecureRandom RANDOM = new SecureRandom();
+    // Avoid storing a seeded provider in the Native Image heap. Lazily
+    // publish the runtime provider on first trusted HTTP boundary use.
+    private static final java.util.concurrent.atomic.AtomicReference<SecureRandom> RANDOM =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    private static SecureRandom runtimeRandom() {
+        SecureRandom existing = RANDOM.get();
+        if (existing != null) return existing;
+        SecureRandom candidate = new SecureRandom();
+        if (RANDOM.compareAndSet(null, candidate)) return candidate;
+        return RANDOM.get();
+    }
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     public TraceParent {
@@ -73,7 +84,7 @@ public record TraceParent(String traceId, String spanId, int flags) {
     private static String randomHex(int bytes) {
         byte[] entropy = new byte[bytes];
         for (int attempt = 0; attempt < 16; attempt++) {
-            RANDOM.nextBytes(entropy);
+            runtimeRandom().nextBytes(entropy);
             boolean anyNonzero = false;
             for (byte b : entropy) anyNonzero |= b != 0;
             if (!anyNonzero) continue;
