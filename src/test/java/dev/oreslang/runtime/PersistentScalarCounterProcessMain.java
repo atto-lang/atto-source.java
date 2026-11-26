@@ -33,8 +33,20 @@ public final class PersistentScalarCounterProcessMain {
             } else if (args[0].equals("recover")) {
                 if (counter.get_count() != 2L)
                     throw new AssertionError("snapshot not restored");
-                if (counter.increment("second", 999).isPresent())
-                    throw new AssertionError("duplicate delivery was reprocessed");
+                if (counter.increment("second", 1).orElseThrow() != 2L || counter.get_count() != 2L)
+                    throw new AssertionError("exact committed replay lost its original receipt");
+                try {
+                    counter.increment("second", 999);
+                    throw new AssertionError("conflicting replay admitted");
+                } catch (IllegalStateException denied) {
+                    if (!"DURABLE_DELIVERY_ID_PAYLOAD_CONFLICT".equals(denied.getMessage()))
+                        throw denied;
+                }
+                // Conflict poisons the old activation. Recover again and prove
+                // the failed replay did not mutate committed state.
+                counter = PersistentScalarActorV1.open(plan, store, ID);
+                if (counter.get_count() != 2L)
+                    throw new AssertionError("conflicting replay modified durable state");
                 if (counter.increment("third", 1).orElseThrow() != 3L)
                     throw new AssertionError("post-crash transition lost");
                 System.out.println("AFTER_RECOVERY=" + counter.get_count());
