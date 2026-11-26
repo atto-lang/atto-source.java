@@ -1,0 +1,1 @@
+suspends fnc main(): int { val int result = select<int> { default: -> { return 42; } }; return result; }
