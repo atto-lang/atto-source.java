@@ -180,6 +180,23 @@ public final class TaskHandle<T> {
         revoker = cancellation.onRevoke(this::cancelResultIfBound);
     }
 
+    /**
+     * A compiler-proved no-work operation has no scheduled turn, children,
+     * leases or pending registration. Create a terminal control handle
+     * without creating a scheduler task; preserve normal terminal observers.
+     */
+    static <T> TaskHandle<T> completedWithoutWork(T value) {
+        TaskHandle<T> handle = new TaskHandle<>(null);
+        OresFuture<T> source = OresFuture.completed(value);
+        if (!handle.result.compareAndSet(null, source))
+            throw new IllegalStateException("terminal result bound more than once");
+        handle.onSettled(source, value, null);
+        handle.onQuiescent();
+        if (!handle.done.isDone() || !handle.cleanupFailures.isDone())
+            throw new IllegalStateException("no-work handle did not settle synchronously");
+        return handle;
+    }
+
     /** The result Future may become terminal before the physical task exits. */
     public OresFuture<T> result() {
         OresFuture<T> current = result.get();
