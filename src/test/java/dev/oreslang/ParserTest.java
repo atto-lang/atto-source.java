@@ -14,6 +14,52 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
+
+    @Test
+    void deferDoesNotSilentlyDiscardCallableValuesOrFactories() {
+        for (String expression : List.of("factory()", "callback")) {
+            String source = """
+                    fnc factory(): (() => void) {
+                        return || -> { return; };
+                    }
+                    pub fnc main(): int {
+                        const callback: (() => void) = factory();
+                        defer %s;
+                        return 42;
+                    }
+                    """.formatted(expression);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains("checked registration-time lowering"), failure::toString);
+        }
+    }
+
+    @Test
+    void deferStillAcceptsOrdinaryVoidCallAndNullaryLambda() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc cleanup(): void { return; }
+                pub fnc main(): int {
+                    defer cleanup();
+                    defer || -> { cleanup(); };
+                    return 42;
+                }
+                """)));
+    }
+
+    @Test
+    void deferRejectsDiscardedFallibleResult() {
+        String source = """
+                fnc cleanup(): Result<int,string> { return Ok(42); }
+                pub fnc main(): int {
+                    defer cleanup();
+                    return 40;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("defer must handle a fallible Result"), failure::toString);
+    }
+
     @Test
     void inlineTrapCannotHideExpressionBodiedLambdaMissingTerminator() {
         String invalid = """
