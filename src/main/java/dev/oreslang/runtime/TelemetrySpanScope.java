@@ -64,7 +64,30 @@ public final class TelemetrySpanScope implements AutoCloseable {
     }
 
     private static final class RandomId {
-        private static final SecureRandom RANDOM = new SecureRandom();
+        // Native Image may initialize this holder at build time. Never put a
+        // seeded RNG in its image heap; only trusted runtime activation may
+        // publish a provider, after it has been warmed.
+        private static final AtomicReference<SecureRandom> RANDOM = new AtomicReference<>();
+
+        private static void warm() {
+            SecureRandom existing = RANDOM.get();
+            SecureRandom candidate = existing != null ? existing : new SecureRandom();
+            byte[] bytes = new byte[16];
+            try {
+                candidate.nextBytes(bytes);
+            } finally {
+                java.util.Arrays.fill(bytes, (byte) 0);
+            }
+            if (existing == null) RANDOM.compareAndSet(null, candidate);
+        }
+
+        private static SecureRandom runtimeProvider() {
+            SecureRandom provider = RANDOM.get();
+            if (provider == null) {
+                throw new IllegalStateException("telemetry random provider was not initialized by host control");
+            }
+            return provider;
+        }
     }
 
     private static void requireHostControl() {
@@ -97,9 +120,7 @@ public final class TelemetrySpanScope implements AutoCloseable {
         if (samplePercent > 0) {
             // Initialize the random provider on a trusted host control turn,
             // not the first actor carrier entering a newly enabled span.
-            byte[] warm = new byte[16];
-            RandomId.RANDOM.nextBytes(warm);
-            java.util.Arrays.fill(warm, (byte) 0);
+            RandomId.warm();
         }
         POLICY.set(new Policy(true, samplePercent, System.nanoTime() + nanos,
                 spanNamePrefix));
@@ -161,7 +182,7 @@ public final class TelemetrySpanScope implements AutoCloseable {
         byte[] buffer = new byte[bytes];
         char[] result = new char[bytes * 2];
         do {
-            RandomId.RANDOM.nextBytes(buffer);
+            RandomId.runtimeProvider().nextBytes(buffer);
             boolean nonzero = false;
             for (int i = 0; i < bytes; i++) {
                 int b = buffer[i] & 0xff;
