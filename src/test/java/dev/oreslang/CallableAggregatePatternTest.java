@@ -268,4 +268,115 @@ final class CallableAggregatePatternTest {
                 fnc bad(): int { return total(a: 1, b: 2); }
                 """));
     }
+
+    // Independent bounded source generator. Do not derive the oracle from
+    // Parser/TypeChecker output, or a wrong lowering can certify itself.
+    private record GeneratedPattern(int arity, int code, String name,
+                                    String pattern, String tupleType, String tupleValue,
+                                    String body, long expected) { }
+
+    private static String tupleSyntax(java.util.List<String> items) {
+        return "(" + String.join(", ", items) + (items.size() == 1 ? "," : "") + ")";
+    }
+
+    private static java.util.List<GeneratedPattern> generatedPatterns(int maxArity) {
+        java.util.List<GeneratedPattern> result = new java.util.ArrayList<>();
+        int combinations = 1;
+        for (int n = 0; n <= maxArity; n++, combinations *= 3) {
+            for (int code = 0; code < combinations; code++) {
+                java.util.List<String> leaves = new java.util.ArrayList<>();
+                java.util.List<String> types = new java.util.ArrayList<>();
+                java.util.List<String> values = new java.util.ArrayList<>();
+                StringBuilder body = new StringBuilder();
+                StringBuilder expression = new StringBuilder("tail");
+                long expected = 19;
+                int digits = code;
+                for (int i = 0; i < n; i++, digits /= 3) {
+                    int mode = digits % 3; // fixed, locally rebindable, discard
+                    String name = "p_" + i;
+                    int value = i * 3 + 2;
+                    long weight = i + 2;
+                    types.add("int");
+                    values.add(Integer.toString(value));
+                    leaves.add(mode == 2 ? "_" : (mode == 1 ? "let " : "val ") + name);
+                    if (mode == 2) continue;
+                    if (mode == 1) body.append(name).append(" = ").append(name).append(" + 1; ");
+                    expression.append(" + ").append(weight).append(" * ").append(name);
+                    expected += weight * (value + (mode == 1 ? 1 : 0));
+                }
+                body.append("return ").append(expression).append(";");
+                result.add(new GeneratedPattern(n, code, "case_" + n + "_" + code,
+                        tupleSyntax(leaves), tupleSyntax(types), tupleSyntax(values),
+                        body.toString(), expected));
+            }
+        }
+        return result;
+    }
+
+    private static String generatedDeclaration(GeneratedPattern p) {
+        return "fnc " + p.name() + "(" + p.pattern() + ": " + p.tupleType()
+                + ", int tail): int { " + p.body() + " }\n";
+    }
+
+    @Test
+    void generatedTuplePlansPreserveActualFormalSlotsAndProjectionOrder() {
+        var cases = generatedPatterns(4); // all 121 binding-mode combinations
+        assertEquals(121, cases.size());
+        String source = "define module app as\n"
+                + String.join("", cases.stream().map(CallableAggregatePatternTest::generatedDeclaration).toList())
+                + "end";
+        Ast.Program program = check(source);
+        var declarations = program.modules().getFirst().declarations();
+        assertEquals(cases.size(), declarations.size());
+        for (int k = 0; k < cases.size(); k++) {
+            GeneratedPattern p = cases.get(k);
+            Ast.FunctionDecl f = assertInstanceOf(Ast.FunctionDecl.class, declarations.get(k));
+            assertEquals(p.name(), f.name());
+            assertEquals(2, f.parameters().size(), p.name());
+            assertTrue(f.parameters().getFirst().type().isTupleType(), p.name());
+            assertEquals(p.arity(), f.parameters().getFirst().type().arguments().size(), p.name());
+            assertEquals("tail", f.parameters().get(1).name());
+            Ast.DestructureStmt d = assertInstanceOf(Ast.DestructureStmt.class, f.body().getFirst());
+            assertEquals(Ast.DestructureKind.SEQUENCE, d.kind());
+            Ast.NameExpr root = assertInstanceOf(Ast.NameExpr.class, d.initializer());
+            assertEquals(f.parameters().getFirst().name(), root.name(), p.name());
+            assertEquals(p.arity(), d.bindings().size(), p.name());
+            int digits = p.code();
+            for (int i = 0; i < p.arity(); i++, digits /= 3) {
+                int mode = digits % 3;
+                Ast.DestructureBinding slot = d.bindings().get(i);
+                assertEquals(mode == 2, slot.isDiscard(), p.name());
+                assertFalse(slot.rest());
+                assertFalse(slot.mutableReferent());
+                if (mode != 2) {
+                    assertEquals("p_" + i, slot.name(), p.name());
+                    assertEquals(mode == 1 ? Ast.BindingKind.LET : Ast.BindingKind.VAL, slot.kind());
+                }
+            }
+        }
+    }
+
+    @Test
+    void generatedGuestResultsAndArgumentTraceRefineIndependentScalarOracle() throws Exception {
+        var cases = generatedPatterns(3); // 40 independently computed oracles
+        assertEquals(40, cases.size());
+        StringBuilder source = new StringBuilder();
+        for (int n = 0; n <= 3; n++) {
+            final int arity = n;
+            var sample = cases.stream().filter(p -> p.arity() == arity).findFirst().orElseThrow();
+            source.append("fnc source_").append(n).append("(): ").append(sample.tupleType())
+                    .append(" { stdio.stdout.write(\"A\"); return ").append(sample.tupleValue()).append("; }\n");
+        }
+        source.append("fnc next_tail(): int { stdio.stdout.write(\"B\"); return 19; }\n");
+        for (GeneratedPattern p : cases) source.append(generatedDeclaration(p));
+        source.append("pub routine main(): void {\n");
+        StringBuilder expected = new StringBuilder();
+        for (GeneratedPattern p : cases) {
+            source.append("stdio.stdout.write(").append(p.name()).append("(source_")
+                    .append(p.arity()).append("(), next_tail())); stdio.stdout.write(\";\");\n");
+            expected.append("AB").append(p.expected()).append(";");
+        }
+        source.append("return; }\n");
+        execute(source.toString(), expected.toString());
+    }
 }
