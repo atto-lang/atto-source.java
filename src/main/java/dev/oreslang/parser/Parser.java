@@ -7129,9 +7129,18 @@ public final class Parser {
     }
 
     private Ast.DynamicSelectExpr parseDynamicSelect(Ast.WaitMode mode) {
+        // Static select expressions will return a tracked Future, including
+        // explicit select<T>. Do not lower them as legacy blocking/detached
+        // statements or pretend that parsing a generic admits the feature.
+        if (check(LT)) {
+            throw error(peek(), "typed static select<T> requires tracked Future result lowering");
+        }
         Ast.SelectPolicy policy = parseSelectPolicy();
-        consume(FROM,
-                "dynamic select requires 'select from cases'; static select uses 'select { when ... }'");
+        if (check(LBRACE) || check(OVER)
+                || (check(IDENT) && peek().lexeme().equals("over"))) {
+            throw error(peek(), "static select expression requires tracked Future result lowering");
+        }
+        consume(FROM, "dynamic select requires 'select from cases'");
         Ast.Expr cases = parseUnary();
         return new Ast.DynamicSelectExpr(mode, policy, cases);
     }
