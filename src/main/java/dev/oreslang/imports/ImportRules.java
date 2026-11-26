@@ -69,11 +69,38 @@ public final class ImportRules {
         };
     }
 
+    /** Native unsafe libraries are not part of the guest source catalog. */
+    public static boolean isReservedUnsafeNativePath(String path) {
+        if (path == null) return false;
+        String unix = path.replace('\\', '/');
+        boolean rooted = unix.startsWith("std/") || unix.startsWith("atto.std/") ||
+                unix.startsWith("ores.std/");
+        java.util.ArrayList<String> parts = new java.util.ArrayList<>();
+        for (String part : unix.split("/+")) {
+            if (part.isEmpty() || part.equals(".")) continue;
+            if (part.equals("..")) {
+                if (rooted && parts.size() <= 1) return true;
+                if (!parts.isEmpty()) parts.removeLast();
+            } else parts.add(part);
+        }
+        String[] segments = String.join("/", parts).split("[/.:]+");
+        int offset = segments.length > 0 && (segments[0].equals("atto") ||
+                segments[0].equals("ores")) ? 1 : 0;
+        return segments.length > offset + 1 && segments[offset].equals("std") &&
+                segments[offset + 1].equals("unsafe");
+    }
+
+    public static void requireGuestSafePath(String path) {
+        if (isReservedUnsafeNativePath(path))
+            throw new IllegalArgumentException("E_UNSAFE_DOMAIN: native unsafe standard-library import unavailable in guest domains");
+    }
+
     public static void validate(Ast.ImportDecl imported) {
         if (imported == null) throw new IllegalArgumentException("import declaration cannot be null");
         if (imported.path() == null || imported.path().isBlank()) {
             throw new IllegalArgumentException("import path cannot be empty");
         }
+        requireGuestSafePath(imported.path());
         // Import grammar admission does not authorize linking. A synthetic
         // package identity must never fall through to a relative-file
         // resolver or host interop lookup.
