@@ -16,17 +16,39 @@ import java.util.Set;
 public final class RefinementProofs {
     private RefinementProofs() { }
 
-    public record Interval(long minimum, long maximum) {
+    public record Interval(long minimum, long maximum, int exclusions) {
+        public Interval(long minimum, long maximum) { this(minimum, maximum, 0); }
+        private static int bit(long value) { return value == 0 ? 1 : value == -1 ? 2 : 0; }
         public Interval {
-            if (minimum > maximum) {
-                throw new IllegalArgumentException("empty refinement interval");
-            }
+            if ((exclusions & ~3) != 0) throw new IllegalArgumentException("invalid exclusion mask");
+            while (minimum <= maximum && (exclusions & bit(minimum)) != 0) minimum++;
+            while (minimum <= maximum && (exclusions & bit(maximum)) != 0) maximum--;
+            if (minimum > maximum) throw new IllegalArgumentException("empty refinement interval");
+            if (minimum > 0 || maximum < 0) exclusions &= ~1;
+            if (minimum > -1 || maximum < -1) exclusions &= ~2;
+        }
+        public boolean containsValue(long value) {
+            return minimum <= value && value <= maximum && (exclusions & bit(value)) == 0;
+        }
+        public Interval excluding(long value) {
+            if (!containsValue(value)) return this;
+            if (minimum == maximum) throw emptyConstraint();
+            if (minimum == value) return new Interval(minimum + 1, maximum, exclusions);
+            if (maximum == value) return new Interval(minimum, maximum - 1, exclusions);
+            return new Interval(minimum, maximum, exclusions | bit(value));
+        }
+        public Interval union(Interval other) {
+            int mask = (!containsValue(0) && !other.containsValue(0) ? 1 : 0)
+                    | (!containsValue(-1) && !other.containsValue(-1) ? 2 : 0);
+            return new Interval(Math.min(minimum, other.minimum), Math.max(maximum, other.maximum), mask);
         }
         public static Interval exactly(long n) { return new Interval(n, n); }
         public static Interval anyI64() { return new Interval(Long.MIN_VALUE, Long.MAX_VALUE); }
         public boolean entails(Interval expected) {
             Objects.requireNonNull(expected);
-            return minimum >= expected.minimum && maximum <= expected.maximum;
+            return minimum >= expected.minimum && maximum <= expected.maximum
+                    && (!containsValue(0) || expected.containsValue(0))
+                    && (!containsValue(-1) || expected.containsValue(-1));
         }
         public Interval plus(Interval b) {
             Objects.requireNonNull(b);
@@ -74,7 +96,7 @@ public final class RefinementProofs {
                 default -> throw new IllegalArgumentException("E_REFINEMENT_PREDICATE: expected an interval comparison");
             }
             if (lower > upper) throw emptyConstraint();
-            return new Interval(lower, upper);
+            return new Interval(lower, upper, exclusions);
         }
 
         public Interval plusOnNormalResult(Interval b) {
