@@ -84,11 +84,16 @@ define module bitset as
     }
 
     pub first_set(): Option<int> {
-      for (let int i = 0; i < self.bits; i = i + 1) {
-        let int word = self.words.get(self.idiv(i, 63));
-        let int mask = self.masks.get(Integer.rem(i, 63));
-        if (Integer.rem((self.idiv(word, mask)), 2)) != 0; do
-          return Some(i);
+      // Scan packed words first; sparse empty regions cost one read per word.
+      for (let int slot = 0; slot < self.words.size; slot = slot + 1) {
+        let mut int word = self.words.get(slot);
+        if word != 0; do
+          for (let int bit = 0; bit < 63; bit = bit + 1) {
+            if Integer.rem(word, 2) != 0; do
+              return Some(slot * 63 + bit);
+            fi
+            word = self.idiv(word, 2);
+          }
         fi
       }
       return None;

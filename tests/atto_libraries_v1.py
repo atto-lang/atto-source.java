@@ -31,7 +31,7 @@ def validate_corpus(cases):
 
 def check_rejection(run, errors):
     output = run.stderr + run.stdout
-    return run.returncode > 0 and bool(output.strip()) and all(e in output for e in errors)
+    return 0 < run.returncode < 128 and bool(output.strip()) and all(e in output for e in errors)
 
 
 def headers(path, backend):

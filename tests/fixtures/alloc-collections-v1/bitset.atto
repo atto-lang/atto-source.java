@@ -22,7 +22,32 @@ pub fnc main(): int {
   if bits.count_ones() != 1; do return 5; fi
   bits.try_union_with(rt borrow other);
   if bits.count_ones() != 2; do return 6; fi
+  match bits.first_set() over
+    on Some(v) -> { if v != 62; do return 8; fi }
+    on None -> { return 9; }
+  end
   bits.clear_all();
   if bits.count_ones() != 0; do return 7; fi
+  match bits.first_set() over
+    on Some(v) -> { return 10; }
+    on None -> {}
+  end
+  // Sparse input crosses many empty packed words and ends in a partial word.
+  let mut sparse = bitset.new_bitset(4097);
+  sparse.try_set(4096, true);
+  match sparse.first_set() over
+    on Some(v) -> { if v != 4096; do return 11; fi }
+    on None -> { return 12; }
+  end
+  sparse.try_set(63, true);
+  match sparse.first_set() over
+    on Some(v) -> { if v != 63; do return 13; fi }
+    on None -> { return 14; }
+  end
+  sparse.try_set(0, true);
+  match sparse.first_set() over
+    on Some(v) -> { if v != 0; do return 15; fi }
+    on None -> { return 16; }
+  end
   return 42;
 }
