@@ -490,6 +490,27 @@ final class TypedDefaultSelectGuestTest {
         assertTrue(failure.getMessage().contains("all counted selection sources exhausted"), failure.getMessage());
     }
 
+    // A tracked default task is not necessarily ready at select construction.
+    // Observe its physical completion without consuming the Future's value.
+    // This is a distinct readiness-controlled regression, not a replacement
+    // for the exact shared fixture or its unresolved scheduling assumption.
+    @Test void distinctAliasProjectionWithExplicitReadinessFence() throws Exception {
+        String original = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "tests/fixtures/select-source-v2/counted-distinct-alias-projection.atto"));
+        String anchor = "  val Array[int] values = await select<int>(4) fair over";
+        assertTrue(original.contains(anchor));
+        String code = original.replace(anchor,
+                "  await pending.get_done();\n" + anchor);
+        for (int trial = 0; trial < 32; trial++) {
+            try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+                assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code,
+                        "distinct-alias-readiness-fence.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong(),
+                        "readiness-fenced trial " + trial);
+            }
+        }
+    }
+
     @Test void portableMixedCountedExactBlobsReturn42() throws Exception {
         for (String name : new String[]{"counted-mixed-future-alias", "counted-multi-channel-fair", "counted-distinct-alias-projection", "counted-mixed-zero"}) {
             String code = java.nio.file.Files.readString(java.nio.file.Path.of(
