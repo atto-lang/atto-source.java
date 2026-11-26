@@ -86,7 +86,7 @@ public final class ChannelRuntime {
      */
     public static OresFuture<Void> selectionDrained(OresFuture<SelectResult> selection) {
         Objects.requireNonNull(selection, "selection");
-        OresFuture<Void> receipt = new OresFuture<>();
+        OresFuture<Void> receipt = new OresFuture<>(() -> false, () -> {});
         selection.whenNotificationsDrainedRuntime(() -> {
             Throwable failure = selection.cancellationHookFailureFromRuntime();
             if (failure != null) receipt.failFromRuntime(failure);
