@@ -68,6 +68,18 @@ public final class DerivedCopyPlanV1 {
         return plan;
     }
 
+    /** Exact expanded plan weight, bounded by admission's node ceiling. */
+    public static int weight(Plan plan) {
+        if (plan instanceof Scalar) return 1;
+        if (plan instanceof Sequence sequence) return 1 + weight(sequence.element());
+        if (plan instanceof Instance instance) {
+            int count = 1;
+            for (Field field : instance.fields()) count += weight(field.plan());
+            return count;
+        }
+        throw fail("E_COPY_UNPROVEN", "unknown plan");
+    }
+
     private static Plan build(
             Ast.TypeRef type, Function<String, Ast.ClassDecl> lookup,
             Set<String> visiting, int[] work, int depth) {
@@ -114,7 +126,7 @@ public final class DerivedCopyPlanV1 {
             throw fail("E_COPY_UNPROVEN", "polymorphic/generic class not admitted in copy v1: " + klass.name());
         }
         // An unverified handwritten method cannot replace compiler allocation.
-        if (klass.methods().stream().anyMatch(m -> m.name().equals("copy") && !m.isStatic())) {
+        if (klass.methods().stream().anyMatch(m -> (m.name().equals("copy") || m.name().equals("copy_deep")) && !m.isStatic())) {
             throw fail("E_COPY_OVERRIDE", "class copy override requires verified super.copy lowering: " + klass.name());
         }
         if (!visiting.add(type.name())) {
@@ -123,8 +135,12 @@ public final class DerivedCopyPlanV1 {
         try {
             LinkedHashMap<String, Field> fields = new LinkedHashMap<>();
             for (Ast.TypeRef parentType : klass.parents()) {
-                if (parentType.name().equals("Object") || parentType.name().equals("List")) {
-                    continue; // builtin, field-free base
+                if ((parentType.name().equals("Object") || parentType.name().equals("List"))
+                        && lookup.apply(parentType.name()) == null) {
+                    if (!parentType.arguments().isEmpty()) {
+                        throw fail("E_COPY_UNPROVEN", "unproved generic builtin parent");
+                    }
+                    continue; // builtin, field-free base only
                 }
                 Plan parentPlan = build(parentType, lookup, visiting, work, depth + 1);
                 if (!(parentPlan instanceof Instance base)) {
