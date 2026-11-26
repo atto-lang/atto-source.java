@@ -69,6 +69,7 @@ public final class Parser {
     private static final int MAX_UNARY_NESTING = 128;
     private int unaryNesting;
     private boolean suppressRefinementOperators;
+    private boolean strictVerifiedI64;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
     private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
             new java.util.ArrayDeque<>();
@@ -325,6 +326,13 @@ public final class Parser {
         return new ParseResult(program, parser.warnings);
     }
 
+    /** Explicit strict source admission, with no ordinary-parser fallback. */
+    public static Ast.Program parseVerifiedStrictI64(String source) {
+        Parser parser = new Parser(new Lexer(source).scan());
+        parser.strictVerifiedI64 = true;
+        return parser.parseProgram();
+    }
+
     public Ast.Program parseProgram() {
         return parseProgram(false);
     }
@@ -454,6 +462,8 @@ public final class Parser {
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
         parseQuantityDeclarations();
+        if (strictVerifiedI64 && !atRefinedQuantityAlias())
+            throw error(peek(), "E_VERIFY_UNSUPPORTED: strict refinement profile required");
         if (atRefinedQuantityAlias() || atProtocolDeclaration()) {
             if (namespace != null || !imports.isEmpty() || !exports.isEmpty()) {
                 throw error(peek(), "E_REFINEMENT_SCOPE: Verified Core requires a standalone source file");
@@ -7449,6 +7459,7 @@ public final class Parser {
         consume(EQUAL, "expected '=' before refinement carrier");
         Token carrier = consume(IDENT, "expected int or i32 refinement carrier");
         boolean i32 = carrier.lexeme().equals("i32");
+        if (strictVerifiedI64 && i32) throw error(carrier, "E_VERIFY_UNSUPPORTED: i32 strict proof pending");
         consumeContextualIdentifier("where", "expected 'where' before refinement");
         VerifiedQuantityUnit unit = null;
         var range = i32 ? SIGNED_I32 : Interval.anyI64();
@@ -7488,7 +7499,10 @@ public final class Parser {
 
     private RefinedQuantity readRefinedType(Token name) {
         if (name.lexeme().equals("int")) return RefinedQuantity.SCALAR;
-        if (name.lexeme().equals("i32")) return RefinedQuantity.SCALAR_I32;
+        if (name.lexeme().equals("i32")) {
+            if (strictVerifiedI64) throw error(name, "E_VERIFY_UNSUPPORTED: i32 strict proof pending");
+            return RefinedQuantity.SCALAR_I32;
+        }
         var type = refinementAliases.get(name.lexeme());
         if (type == null) throw error(name, "E_REFINEMENT_NAME: unknown verified scalar type");
         return type;
@@ -7775,6 +7789,8 @@ public final class Parser {
 
     private List<Ast.Decl> parseVerifiedFunctions(boolean protocolActorsRequired) {
         while (atRefinedQuantityAlias()) parseRefinedQuantityAlias();
+        if (strictVerifiedI64 && (atProtocolDeclaration() || atProtocolActor()))
+            throw error(peek(), "E_VERIFY_UNSUPPORTED: strict protocol effects not established");
         List<Ast.Decl> declarations = new ArrayList<>();
         Map<String, Ast.ProtocolDecl> protocols = new HashMap<>();
         Set<String> names = new HashSet<>();
@@ -7968,6 +7984,8 @@ public final class Parser {
         target.unit().requireCompatible(term.unit());
         if (term.depth() >= MAX_UNARY_NESTING)
             throw error(name, "E_UNIT_LIMIT: quantity expression is too deep");
+        if (strictVerifiedI64 && !term.type().range().entails(target.range()))
+            throw error(name, "E_VERIFY_UNPROVEN: refinement cast may fail");
         var range = term.type().range().onNormalResultWithin(target.range());
         var checked = new Ast.RuntimeCallExpr(Ast.VerifiedI64.CHECK_REFINEMENT, List.of(
                 term.expression(), new Ast.LiteralExpr(target.range().minimum()),
@@ -8003,7 +8021,7 @@ public final class Parser {
             Token op = previous();
             var right = parseQuantityAtom(depth);
             boolean divide = op.type() == SLASH;
-            if (divide && !left.type().i32() && !right.type().i32()
+            if (!strictVerifiedI64 && divide && !left.type().i32() && !right.type().i32()
                     && left.unit().equals(VerifiedQuantityUnit.SCALAR)
                     && right.unit().equals(VerifiedQuantityUnit.SCALAR)) {
                 throw error(op, "E_UNIT_SCALAR_DIVISION: two plain int operands use ordinary division");
@@ -8020,6 +8038,17 @@ public final class Parser {
         if (depth > MAX_UNARY_NESTING) throw error(peek(), "E_UNIT_LIMIT: quantity expression is too deep");
         var leftRange = left.type().range();
         var rightRange = right.type().range();
+        if (strictVerifiedI64) {
+            String proofOp = switch (operator) {
+                case Ast.VerifiedI64.ADD -> "+";
+                case Ast.VerifiedI64.SUBTRACT -> "-";
+                case Ast.VerifiedI64.MULTIPLY -> "*";
+                case Ast.VerifiedI64.DIVIDE -> "/";
+                default -> throw error(peek(), "E_VERIFY_UNSUPPORTED: unknown strict arithmetic");
+            };
+            if (!leftRange.provesArithmetic(proofOp, rightRange))
+                throw error(peek(), "E_VERIFY_UNPROVEN: signed arithmetic may overflow or divide by zero");
+        }
         boolean i32 = left.type().i32() || right.type().i32();
         if (i32 && (!leftRange.entails(SIGNED_I32) || !rightRange.entails(SIGNED_I32))) {
             throw error(peek(), "E_I32_RANGE: checked i32 arithmetic requires both operands to fit i32");
