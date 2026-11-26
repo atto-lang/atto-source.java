@@ -86,9 +86,17 @@ final class CheckedQuotientProfileForwardPortTest {
         if (b == 0) {
             assertTrue(assertThrows(ArithmeticException.class, () -> StrictIntegerArithmetic.div(a, b))
                     .getMessage().contains("ORES_I64_DIVISION_BY_ZERO"));
+            assertThrows(ArithmeticException.class, () -> StrictIntegerArithmetic.rem(a, b));
+            assertThrows(ArithmeticException.class, () -> StrictIntegerArithmetic.mod(a, b));
             return;
         }
-        BigInteger quotient = BigInteger.valueOf(a).divide(BigInteger.valueOf(b));
+        BigInteger dividend = BigInteger.valueOf(a);
+        BigInteger divisor = BigInteger.valueOf(b);
+        // Remainder and Euclidean modulus stay defined even for MIN/-1.
+        // BigInteger.abs also handles the magnitude of the minimum divisor.
+        assertEquals(dividend.remainder(divisor).longValueExact(), StrictIntegerArithmetic.rem(a, b));
+        assertEquals(dividend.mod(divisor.abs()).longValueExact(), StrictIntegerArithmetic.mod(a, b));
+        BigInteger quotient = dividend.divide(divisor);
         if (quotient.bitLength() > 63) {
             assertTrue(assertThrows(ArithmeticException.class, () -> StrictIntegerArithmetic.div(a, b))
                     .getMessage().contains("ORES_I64_OVERFLOW"));
