@@ -273,6 +273,26 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
     }
 
     @Test
+    void closedEmergencyCarrierCannotAuthorizeRestart() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = new SupervisorEmergencyControlV1()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(runtime, bridge, control, ignored -> true);
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { throw new IllegalStateException("injected"); });
+            long node = recovery.attach(actor, null);
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("fail");
+            assertThrows(ExecutionException.class, () -> actor.done().get(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(node), () -> { }));
+            assertTrue(control.closeWithin(5, TimeUnit.SECONDS));
+            assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.CONTROL_FAILED,
+                    recovery.restartBlocker(node));
+            assertThrows(IllegalStateException.class, () -> recovery.reserveRestart(node));
+        }
+    }
+
+    @Test
     void inlineControlExecutorFailsClosedInsteadOfRunningUnderActorLock()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {

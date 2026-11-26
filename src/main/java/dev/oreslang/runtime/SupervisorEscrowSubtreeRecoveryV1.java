@@ -327,7 +327,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
 
     private Throwable currentControlFault() {
         if (control instanceof SupervisorEmergencyControlV1 reserved) {
-            Throwable failure = reserved.failure();
+            Throwable failure = reserved.availabilityFault();
             if (failure != null) controlFault.compareAndSet(null, failure);
         }
         return controlFault.get();
