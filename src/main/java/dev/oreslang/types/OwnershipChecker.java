@@ -53,6 +53,7 @@ public final class OwnershipChecker {
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
     private final List<String> copyWarnings = new ArrayList<>();
+    private final CheckedCopyPlanSeeds.Builder copySeeds = new CheckedCopyPlanSeeds.Builder();
     /** Opt-in in-pass trace; never permits guest code emission. */
     private BorrowMirAuditV1.Collector borrowMirAudit;
     private int mutexCriticalSectionDepth;
@@ -196,6 +197,7 @@ public final class OwnershipChecker {
                 checkedProgram,
                 taskCheckEpoch,
                 pendingTaskCaptures);
+        CheckedCopyPlanSeeds.publish(checkedProgram, taskCheckEpoch, copySeeds.snapshot());
     }
 
     private void index(Ast.Program program) {
@@ -1366,9 +1368,24 @@ public final class OwnershipChecker {
                         // classification: classes remain move-only on normal
                         // arguments and assignments, while rt copy produces an
                         // independently allocated owned result.
-                        DerivedCopyPlanV1.Plan plan = runtime.operation().equals("copy_shallow")
-                                ? DerivedCopyPlanV1.deriveShallow(source.type, this::findClass)
-                                : DerivedCopyPlanV1.derive(source.type, this::findClass);
+                        boolean shallow = runtime.operation().equals("copy_shallow");
+                        // Record every resolver result, including absent builtin
+                        // names. A seed is usable only in an identical code image.
+                        Map<String, Ast.ClassDecl> dependencies = new HashMap<>();
+                        java.util.function.Function<String, Ast.ClassDecl> resolver = name -> {
+                            Ast.ClassDecl declaration = findClass(name);
+                            dependencies.put(name, declaration);
+                            return declaration;
+                        };
+                        DerivedCopyPlanV1.Plan plan = shallow
+                                ? DerivedCopyPlanV1.deriveShallow(source.type, resolver)
+                                : DerivedCopyPlanV1.derive(source.type, resolver);
+                        if (sourceClass != null && source.type.name().equals(sourceClass.name())
+                                && !linkedClassLayouts.contains(sourceClass)
+                                && checkedProgram.imports().isEmpty()
+                                && plan instanceof DerivedCopyPlanV1.Instance) {
+                            copySeeds.add(sourceClass, shallow, plan, dependencies);
+                        }
                         if (!(plan instanceof DerivedCopyPlanV1.Instance
                                 || plan instanceof DerivedCopyPlanV1.Sequence)) {
                             throw error("E_COPY_UNPROVEN: only proven class or typed sequence roots have copy lowering in v1");
