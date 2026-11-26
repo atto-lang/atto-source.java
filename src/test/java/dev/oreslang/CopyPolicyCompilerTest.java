@@ -156,14 +156,14 @@ final class CopyPolicyCompilerTest {
     }
 
     @Test
-    void copyableClassOptInUsesTheSameDerivedCopyProofAsAnUnannotatedClass() {
+    void shallowCopyableAnnotationDoesNotRequireDeepConsent() {
         String source = """
                 @Copyable
                 define class Config as
                   pub val int version = 1;
                 end
                 fnc duplicate(Config original): Config {
-                  return rt copy original;
+                  return copy! original;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
@@ -489,4 +489,54 @@ final class CopyPolicyCompilerTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
     }
+    @Test
+    void deepCopyRequiresExplicitConsentEvenThroughLegacyDeepOperator() {
+        String source = """
+                define class Flat as pub let int value = 42; end
+                fnc duplicate(Flat x): Flat { return %s x; }
+                """;
+        for (String op : java.util.List.of("copy!!", "rt copy")) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source.formatted(op)));
+            assertTrue(failure.getMessage().contains("E_COPY_OPT_IN_REQUIRED"), failure::toString);
+        }
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source.formatted("copy!")));
+    }
+
+    @Test
+    void deepConsentCannotBeInheritedOrSmuggledThroughEmptyContainer() {
+        String nested = """
+                define class Leaf as pub let int value = 42; end
+                define class Root implements DeepCopyable<Root> as
+                    pub val Array<Leaf> items = new Array<Leaf>();
+                end
+                fnc duplicate(Root x): Root { return copy!! x; }
+                """;
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(nested));
+        assertTrue(error.getMessage().contains("E_COPY_OPT_IN_REQUIRED"), error::toString);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(nested.replace(
+                "define class Leaf as", "define class Leaf implements DeepCopyable<Leaf> as")));
+        String inherited = """
+                define class Base implements DeepCopyable<Base> as pub let int n = 1; end
+                define class Child extends Base as pub let int m = 2; end
+                fnc duplicate(Child x): Child { return copy!! x; }
+                """;
+        var inheritedError = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(inherited));
+        assertTrue(inheritedError.getMessage().contains("E_COPY_OPT_IN_REQUIRED"), inheritedError::toString);
+    }
+
+    @Test
+    void coreDeepMarkerCannotBeSpoofedOrNameWrongSelf() {
+        for (String source : java.util.List.of(
+                "define class DeepCopyable as end",
+                "define class Other as end define class Wrong implements DeepCopyable<Other> as end",
+                "define class Wrong implements DeepCopyable<int> as end")) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("DeepCopyable"), error::toString);
+        }
+    }
+
 }
