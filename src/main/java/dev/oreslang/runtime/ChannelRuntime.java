@@ -79,6 +79,22 @@ public final class ChannelRuntime {
         }
     }
 
+    /**
+     * Compiler-owned selection retirement receipt. Unlike isDone(), this
+     * completes only after notification and cancellation cleanup has drained.
+     * No guest callback runs on the settling producer thread.
+     */
+    public static OresFuture<Void> selectionDrained(OresFuture<SelectResult> selection) {
+        Objects.requireNonNull(selection, "selection");
+        OresFuture<Void> receipt = new OresFuture<>();
+        selection.whenNotificationsDrainedRuntime(() -> {
+            Throwable failure = selection.cancellationHookFailureFromRuntime();
+            if (failure != null) receipt.failFromRuntime(failure);
+            else receipt.completeFromRuntime(null);
+        });
+        return receipt;
+    }
+
     /** Admission exhaustion is distinct from closure; no waiter is retained. */
     public static final class ChannelBackpressureException extends IllegalStateException {
         public ChannelBackpressureException(String message) {
