@@ -23,6 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.graalvm.polyglot.Context;
@@ -121,19 +122,16 @@ final class AttoNioReactorStressGuestTest {
     private static byte[][] client(int port, long seed) throws Exception {
         Random random = new Random(seed);
         ByteArrayOutputStream sent = new ByteArrayOutputStream();
-        ByteArrayOutputStream echoed = new ByteArrayOutputStream();
+        Thread reader = null;
         try (Socket socket = connect(port)) {
             socket.setSoTimeout(20_000);
             socket.setTcpNoDelay(true);
             OutputStream out = socket.getOutputStream();
             InputStream in = socket.getInputStream();
-            Thread reader = new Thread(() -> {
-                try {
-                    in.transferTo(echoed);
-                } catch (Exception ignored) {
-                    // The assertion on the echoed bytes reports any loss.
-                }
-            }, "nio-stress-reader-" + seed);
+            // A matching prefix is insufficient: successful EOF is part of the
+            // half-close contract. Propagate read failures and timeouts.
+            FutureTask<byte[]> response = new FutureTask<>(in::readAllBytes);
+            reader = new Thread(response, "nio-stress-reader-" + seed);
             reader.start();
             int chunks = 1 + random.nextInt(8);
             for (int c = 0; c < chunks; c++) {
@@ -145,9 +143,15 @@ final class AttoNioReactorStressGuestTest {
                 if (random.nextInt(3) == 0) Thread.sleep(random.nextInt(4));
             }
             socket.shutdownOutput();
-            reader.join(20_000);
+            return new byte[][] {sent.toByteArray(), response.get(20, TimeUnit.SECONDS)};
+        } finally {
+            // The socket has closed even if write, read or get failed; ensure
+            // the helper cannot leak into subsequent stress seeds.
+            if (reader != null) {
+                reader.join(5_000);
+                assertTrue(!reader.isAlive(), "echo reader did not terminate: " + reader.getName());
+            }
         }
-        return new byte[][] {sent.toByteArray(), echoed.toByteArray()};
     }
 
     @ParameterizedTest(name = "seed {0}")
