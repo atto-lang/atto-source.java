@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Host scheduler and actor-runtime tests for actor-bound SourceTask leases.
  * They do not demonstrate compiler-lowered .atto local/return frames.
  */
+// Host-owned instrumentation captures are intentional; never use this factory path in guest lowering.
 final class ActorSourceTaskFrameTest {
     private static void awaitCondition(BooleanSupplier ready) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
@@ -33,7 +34,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ExecutionContext> after = new AtomicReference<>();
             AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
             AtomicInteger runs = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) {
                     turn.self().stop();
                     return;
@@ -84,7 +85,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ExecutionContext> first = new AtomicReference<>();
             AtomicReference<ExecutionContext> second = new AtomicReference<>();
             AtomicInteger calls = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 arena.set(ActorRuntime.currentActorFrameArena());
                 result.set(runtime.startActorTask(resume -> {
@@ -123,7 +124,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<OresFuture<Integer>> secondResult = new AtomicReference<>();
             AtomicInteger firstCount = new AtomicInteger();
             AtomicInteger secondCount = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 arena.set(ActorRuntime.currentActorFrameArena());
                 firstResult.set(runtime.startActorTask(resume -> {
@@ -169,7 +170,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
             AtomicReference<OresFuture<Integer>> running = new AtomicReference<>();
             AtomicInteger entered = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 arena.set(ActorRuntime.currentActorFrameArena());
                 running.set(runtime.startActorTask(resume -> {
@@ -264,7 +265,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
             AtomicInteger turns = new AtomicInteger();
 
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 ActorFrameArena owner = ActorRuntime.currentActorFrameArena();
                 arena.set(owner);
@@ -358,7 +359,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<Long> firstDispatch = new AtomicReference<>();
             AtomicReference<Long> secondDispatch = new AtomicReference<>();
 
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 ActorFrameArena owner = ActorRuntime.currentActorFrameArena();
                 arena.set(owner);
@@ -446,7 +447,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
             AtomicInteger turns = new AtomicInteger();
 
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 arena.set(ActorRuntime.currentActorFrameArena());
                 result.set(runtime.startActorTask(resume -> {
@@ -523,7 +524,7 @@ final class ActorSourceTaskFrameTest {
                             ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.TRAP)))
             ));
 
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 arena.set(ActorRuntime.currentActorFrameArena());
                 result.set(runtime.startActorTask(resume -> {

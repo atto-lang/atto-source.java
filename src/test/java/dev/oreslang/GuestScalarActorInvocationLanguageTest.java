@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * This is NOT a canonical .atto actor A/B stack-overflow proof, nor an
  * independently switchable interpreter stack. It requires stepful Maven CI.
  */
+// Host-owned instrumentation captures are intentional; never use this factory path in guest lowering.
 final class GuestScalarActorInvocationLanguageTest {
     @Test
     void evaluatorBindsPrimitiveCallArgumentsFromActorFrameStorage() throws Exception {
@@ -41,7 +42,7 @@ final class GuestScalarActorInvocationLanguageTest {
         var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             AtomicInteger peak = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 try (Context context = IsolatePolicy.developer()
                         .restrictedContextBuilder(ExecutionProfile.serverJit())
