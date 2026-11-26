@@ -10,12 +10,12 @@ verify_blob() {
     exit 2
   fi
 }
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 53fafa708ad2bc6c13e36e2739335379efccb532
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java eb84fea8ce35f786bdae3de8626c784f03cbfbe8
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 1286b22fcd65da3c6546d5c4c9eb87149dcc5d39
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java bebf5585ff9e242814b9b4f6c4a8109ca58a437a
 verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java b307f5cbd8c9a460aedd5fd2fbe162784d2fcfbd
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java 3007d4150f90e395248eee038ea808458e439700
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java a5bab48360f8c6adb4c727d820dccb7e722d53d9
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java 73e7fe37e1f5cbc45c07bb8bf7c30db6bb6ab532
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java bd773283ceb8157ff5848b1e0a663aa5a267b03a
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java d55ab3ae2f7485b450cdb0cc744fcb6915565a37
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java 4f44466d69b4440400d1d5de533917d1b7257521
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java 31e72b7afa224d6d9351be478bf9dd03d0943186
 
@@ -27,21 +27,26 @@ verify_blob src/test/java/dev/oreslang/runtime/SupervisorEmergencyControlV1Stand
 
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEmergencyControlShutdownStandalone.java 6bbc5b4aed720256fa98964446fddfcc8556048f
 
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java 11b998eda8b2a235b594c2cdd0e94da2818b0200
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1Standalone.java 51b007499474875be6a94b5837a420cf4074c00b
+
 # The existing dependency-free saturated-allocation host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java src/main/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1.java src/test/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1Standalone.java
+javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java src/main/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1.java src/test/java/dev/oreslang/runtime/SupervisorRecoveryQueueV1Standalone.java
 java -cp "$work" dev.oreslang.runtime.SupervisorRecoveryQueueV1Standalone
 javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorEmergencyControlV1.java src/test/java/dev/oreslang/runtime/SupervisorEmergencyControlV1Standalone.java
 java -cp "$work" dev.oreslang.runtime.SupervisorEmergencyControlV1Standalone
 javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorEmergencyControlV1.java src/test/java/dev/oreslang/runtime/SupervisorEmergencyControlShutdownStandalone.java
 java -cp "$work" dev.oreslang.runtime.SupervisorEmergencyControlShutdownStandalone
+javac -Xlint:all -Werror -d "$work" src/main/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1.java src/test/java/dev/oreslang/runtime/SupervisorRecoveryWorkspaceV1Standalone.java
+java -cp "$work" dev.oreslang.runtime.SupervisorRecoveryWorkspaceV1Standalone
 
 # Compile the actual full ActorRuntime source tree and run real JUnit tests.
 mvn -B -q -Dtest=SupervisorFailureEscrowRuntimeIntegrationTest,SupervisorEscrowSubtreeRecoveryIntegrationTest,SupervisorEscrowAdmissionLinearizationIntegrationTest -DfailIfNoTests=true test
 
-for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:4' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:7' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:6'; do
+for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:4' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:8' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:6'; do
   suite="${spec%%:*}"
   count="${spec##*:}"
   report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
@@ -50,4 +55,4 @@ for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:4' 'SupervisorEscrowS
     grep -Fq "$metric" "$report" || { echo "BAD_SUREFIRE_METRIC: $suite $metric" >&2; exit 4; }
   done
 done
-echo 'PASS exact-source supervisor runtime bridge: 17 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
+echo 'PASS exact-source supervisor runtime bridge: 18 real ActorRuntime JUnit tests, 0 failed/errored/skipped'

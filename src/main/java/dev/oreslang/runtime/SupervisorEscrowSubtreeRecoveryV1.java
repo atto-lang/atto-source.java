@@ -1,10 +1,7 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -50,7 +47,9 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     private final SupervisorFailureEscrowRuntimeBridgeV1 bridge;
     private final Executor control;
     private final PhysicalReleaseVerifier physicalRelease;
-    private final Map<Long, ActorRuntime.ActorRef<?>> refs = new HashMap<>();
+    private final SupervisorRecoveryWorkspaceV1.RefIndex<ActorRuntime.ActorRef<?>> refs =
+            new SupervisorRecoveryWorkspaceV1.RefIndex<>(SupervisorFailureEscrowV1.MAX_NODES);
+    private final long[] cancellationIds = new long[SupervisorFailureEscrowV1.MAX_NODES];
     private final Object lock = new Object();
     private final SupervisorRecoveryQueueV1 pendingRoots =
             new SupervisorRecoveryQueueV1(SupervisorFailureEscrowV1.MAX_NODES);
@@ -175,23 +174,14 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     }
 
     private void cancelRegisteredSubtree(long root) {
-        Map<Long, SupervisorFailureEscrowV1.NodeStatus> states = bridge.snapshot();
-        if (!states.containsKey(root)) throw new IllegalStateException("unknown failing supervisor");
-        List<Long> descendants = new ArrayList<>();
-        for (long candidate : states.keySet()) {
-            if (candidate == root || isBelow(candidate, root, states)) descendants.add(candidate);
-        }
-        descendants.sort(Comparator.comparingInt(
-                (Long id) -> depth(id, states)).reversed());
-        for (long id : descendants) {
+        // The single scheduled drain owns this buffer. No ledger or
+        // coordinator monitor is held across runtime.cancel().
+        int count = bridge.copyFencedSubtreeDeepestFirst(root, cancellationIds);
+        for (int i = 0; i < count; i++) {
             ActorRuntime.ActorRef<?> ref;
-            synchronized (lock) { ref = refs.get(id); }
+            synchronized (lock) { ref = refs.get(cancellationIds[i]); }
             if (ref == null) throw new IllegalStateException("missing registered CONTROL ActorRef");
-            if (!ref.done().isDone()) {
-                // cancel() is a nonblocking structured request. stop() would
-                // park a host worker for up to CLOSE_WAIT_NANOS and is forbidden.
-                runtime.cancel(ref);
-            }
+            if (!ref.done().isDone()) runtime.cancel(ref);
         }
     }
 

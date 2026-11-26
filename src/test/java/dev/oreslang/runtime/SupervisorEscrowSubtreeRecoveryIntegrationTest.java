@@ -293,6 +293,41 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
     }
 
     @Test
+    void fencedTraversalIncludesEveryDescendantDeepestFirstAndExcludesSibling() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = new SupervisorEmergencyControlV1()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(runtime, bridge, control, ignored -> false);
+            ActorRuntime.ActorRef<String> root = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { throw new IllegalStateException("injected"); });
+            ActorRuntime.ActorRef<String> child = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            ActorRuntime.ActorRef<String> leaf = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            ActorRuntime.ActorRef<String> sibling = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            long r = recovery.attach(root, null);
+            long c = recovery.attach(child, root);
+            long l = recovery.attach(leaf, child);
+            recovery.attach(sibling, null);
+            long[] ids = new long[SupervisorFailureEscrowV1.MAX_NODES];
+            assertThrows(IllegalStateException.class, () -> bridge.copyFencedSubtreeDeepestFirst(r, ids));
+            root.getReady().get(5, TimeUnit.SECONDS);
+            root.send("panic");
+            assertThrows(ExecutionException.class, () -> root.done().get(5, TimeUnit.SECONDS));
+            assertEquals(3, bridge.copyFencedSubtreeDeepestFirst(r, ids));
+            assertEquals(l, ids[0]);
+            assertEquals(c, ids[1]);
+            assertEquals(r, ids[2]);
+            assertTrue(child.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(leaf.awaitTermination(5, TimeUnit.SECONDS));
+            sibling.getReady().get(5, TimeUnit.SECONDS);
+            assertTrue(sibling.isAlive());
+            assertNull(recovery.controlFault());
+        }
+    }
+
+    @Test
     void inlineControlExecutorFailsClosedInsteadOfRunningUnderActorLock()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {

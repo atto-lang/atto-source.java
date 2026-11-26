@@ -234,6 +234,10 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         ledger.finishDataAdmission(permit, committed);
     }
 
+    int copyFencedSubtreeDeepestFirst(long id, long[] output) {
+        return ledger.copyFencedSubtreeDeepestFirst(id, output);
+    }
+
     int dataInFlightInSubtree(long id) {
         return ledger.dataInFlightInSubtree(id);
     }

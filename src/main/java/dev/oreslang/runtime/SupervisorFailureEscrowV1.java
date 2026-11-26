@@ -49,7 +49,7 @@ final class SupervisorFailureEscrowV1 {
         long controllerGeneration() { return controllerGeneration; }
     }
 
-    private static final class Cell {
+    private static final class Cell implements SupervisorRecoveryWorkspaceV1.Node {
         final long id, parentId, generation, reservation;
         final int depth;
         final Cell parent;
@@ -63,6 +63,10 @@ final class SupervisorFailureEscrowV1 {
         int dataInFlight;
         long dataCommitted;
         long dataAborted;
+
+        public long recoveryId() { return id; }
+        public int recoveryDepth() { return depth; }
+        public Cell recoveryParent() { return parent; }
 
         Cell(long id, long parentId, long generation, long reservation, int depth, Cell parent) {
             this.id = id;
@@ -288,6 +292,16 @@ final class SupervisorFailureEscrowV1 {
         int count = 0;
         for (int i = 0; i < terminalIndexSize; i++) if (terminalIndex[i].pending) count++;
         return count;
+    }
+
+    /** Capture deepest-first cancellation membership after the root fence.
+     * No new descendant can be admitted under a fenced ancestor. The caller
+     * owns the reusable output and invokes cancellation outside this monitor. */
+    synchronized int copyFencedSubtreeDeepestFirst(long root, long[] output) {
+        Cell cell = requireTerminalNode(root);
+        if (!cell.fenced) throw new IllegalStateException("recovery root not fenced");
+        return SupervisorRecoveryWorkspaceV1.collect(
+                terminalIndex, terminalIndexSize, cell, MAX_DEPTH, output);
     }
 
     synchronized Map<Long, NodeStatus> snapshot() {
