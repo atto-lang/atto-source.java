@@ -7894,7 +7894,7 @@ public final class OresEvalRootNode extends RootNode {
                     declarationIdentity,
                     () -> shallow
                             ? dev.oreslang.types.DerivedCopyPlanV1.deriveShallow(type, this::findClass)
-                            : dev.oreslang.types.DerivedCopyPlanV1.derive(type, this::findClass),
+                            : dev.oreslang.types.DerivedCopyPlanV1.deriveDeep(type, this::findClass),
                     dev.oreslang.types.DerivedCopyPlanV1::weight);
         }
 
