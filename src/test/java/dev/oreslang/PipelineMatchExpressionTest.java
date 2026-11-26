@@ -43,6 +43,57 @@ final class PipelineMatchExpressionTest {
     }
 
     @Test
+    void optionalOnBeforeIsIsIdenticalInStandaloneAndPipelineMatches() {
+        var expected = returned("match flag over { on is bool -> 42; }");
+        assertEquals(expected, returned("match flag over { is bool -> 42; }"));
+        assertEquals(expected, returned("flag |> match over { is bool -> 42; }"));
+        assertEquals(expected, returned("flag |> match over is bool -> 42; end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> returned("flag |> match over { true -> 42; on _ -> 0; }"));
+        assertThrows(IllegalArgumentException.class,
+                () -> returned("flag |> match over { _ -> 0; }"));
+        assertThrows(IllegalArgumentException.class,
+                () -> returned("flag |> match over { is -> 42; }"));
+    }
+
+    @Test
+    void standaloneTypeArmAndPipelineTypeArmAreCheckedAndExecuted() throws Exception {
+        String source = """
+                fnc choose(int | string value): int {
+                    return match first value over {
+                        on 42 -> 100;
+                        is int -> -20;
+                        on _ -> 0;
+                    };
+                }
+                fnc piped(int | string value): int {
+                    return value |> match first over {
+                        on 42 -> 100;
+                        is int -> -20;
+                        on _ -> 0;
+                    };
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(choose(42));
+                    stdio.stdout.write(choose(7));
+                    stdio.stdout.write(choose("other"));
+                    stdio.stdout.write(piped(42));
+                    stdio.stdout.write(piped(7));
+                    stdio.stdout.write(piped("other"));
+                }
+                """;
+        var program = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        var output = new ByteArrayOutputStream();
+        String name = "optional-on-type-match.ores";
+        try (var lease = OresLanguage.openPrecheckedProgram(name, source, program);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
+        }
+        assertEquals("100-200100-200", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void braceDelimitedResultMatchContinuesPipeline() {
         String source = """
                 fnc increment(int n): int { return n + 1; }
