@@ -40,6 +40,9 @@ public final class TrapFailurePolicy {
         Objects.requireNonNull(failure, "failure");
         Objects.requireNonNull(panicType, "panicType");
 
+        // Direct resource failures must fail closed before allocating traversal state.
+        if (isTerminal(failure, panicType, explicitGuestCatch)) return false;
+
         ArrayDeque<Throwable> pending = new ArrayDeque<>();
         IdentityHashMap<Throwable, Boolean> visited = new IdentityHashMap<>();
         pending.addLast(failure);
@@ -47,20 +50,7 @@ public final class TrapFailurePolicy {
             if (visited.size() >= MAX_FAILURE_NODES) return false;
             Throwable current = pending.removeFirst();
             if (visited.put(current, Boolean.TRUE) != null) return false;
-            if (panicType.isInstance(current)
-                    || current instanceof GuestCallDepthExceededException
-                    || current instanceof ActorFrameArena.BudgetExceeded
-                    || current instanceof Error
-                    || current instanceof CancellationException
-                    || current instanceof InterruptedException
-                    || current instanceof RejectedExecutionException) {
-                return false;
-            }
-            if (!explicitGuestCatch
-                    && (current instanceof SecurityException
-                            || current instanceof TimeoutException)) {
-                return false;
-            }
+            if (isTerminal(current, panicType, explicitGuestCatch)) return false;
             Throwable cause = current.getCause();
             if (cause != null) pending.addLast(cause);
             for (Throwable suppressed : current.getSuppressed()) {
@@ -75,5 +65,18 @@ public final class TrapFailurePolicy {
             if (pending.size() + visited.size() > MAX_FAILURE_NODES) return false;
         }
         return true;
+    }
+
+    private static boolean isTerminal(Throwable current, Class<? extends Throwable> panicType,
+                                      boolean explicitGuestCatch) {
+        return panicType.isInstance(current)
+                || current instanceof GuestCallDepthExceededException
+                || current instanceof ActorFrameArena.BudgetExceeded
+                || current instanceof Error
+                || current instanceof CancellationException
+                || current instanceof InterruptedException
+                || current instanceof RejectedExecutionException
+                || (!explicitGuestCatch && (current instanceof SecurityException
+                        || current instanceof TimeoutException));
     }
 }
