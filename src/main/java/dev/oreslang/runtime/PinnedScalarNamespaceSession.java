@@ -4,6 +4,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.PinnedNamespaceInventory;
+import dev.oreslang.compiler.PackageLayout;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.*;
@@ -57,7 +58,10 @@ public final class PinnedScalarNamespaceSession {
         if(program.imports().size()!=1)throw deny("one namespace import required");
         var prepared=PinnedNamespaceInventory.prepare(program.imports().getFirst(),consumerManifest,providerManifest,snapshot,inventoryMemo);
         var plan=lower(program,prepared.selection());
-        var build=compiler.compile(plan.sources(),Map.of(ENTRY,plan.resolutions()));
+        var owners=new TreeMap<String,String>();
+        String identity="p_"+digest(prepared.selection().packageAlias()+"\0"+providerManifest);
+        for(String id:plan.sources().keySet())if(!id.equals(ENTRY))owners.put(id,identity);
+        var build=compiler.compile(plan.sources(),Map.of(ENTRY,plan.resolutions()),PackageLayout.pinned(owners));
         var resolutions=plan.resolutions();
         var policy=new IsolatePolicy(Set.of(IsolatePolicy.Capability.STDOUT),64L*1024*1024,64,Duration.ofSeconds(10));
         try(Context context=policy.restrictedContextBuilder(ExecutionProfile.serverJit()).out(out).err(err).build()){
@@ -75,6 +79,10 @@ public final class PinnedScalarNamespaceSession {
             inventoryMemo=prepared.memo();acceptedConsumer=consumer;acceptedProgram=program;
             return new Result(build,0,prepared.parsed(),prepared.reused(),parseConsumer?1:0);
         }
+    }
+    private static String digest(String value){
+        try{return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}
+        catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
     }
     // Package-private: only trusted inventory admission supplies the selection.
     // Render only checked closed integer expression nodes; the compiler, not
