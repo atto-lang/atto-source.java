@@ -155,6 +155,49 @@ final class GuestClassGraphLeaseTest {
         assertFalse(child.isReadOnly());
     }
 
+    @Test void originalSideFreshReplacementRecoversCopyImmediately() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d,Map.of("n",10));
+        var a = store(d,Map.of("data",child));
+        try(var b=a.shallowSnapshot(2,4)){
+            var fresh=b.replaceOriginalWithFresh("data",Map.of("n",20));
+            assertSame(fresh,a.get("data"));
+            assertSame(child,b.get("data"));
+            assertEquals(0,b.protectedCount());
+            child.replace("n",22);
+            fresh.replace("n",20);
+            assertEquals(42,(int)child.get("n")+(int)fresh.get("n"));
+            deny("E_COPY_UNPROVEN",()->a.replace("data",child));
+        }
+    }
+
+    @Test void originalDetachWithSiblingsRemainsConservative() {
+        var d = new GuestClassSlots.Domain();
+        var child=store(d,Map.of("n",10));
+        var a=store(d,Map.of("data",child));
+        try(var b=a.shallowSnapshot(2,4);var c=a.shallowSnapshot(2,4)){
+            b.replaceOriginalWithFresh("data",Map.of("n",20));
+            assertSame(child,b.get("data"));assertSame(child,c.get("data"));
+            assertEquals(1,b.protectedCount());assertEquals(1,c.protectedCount());
+            deny("E_COPY_READONLY",()->child.replace("n",22));
+        }
+        assertFalse(child.isReadOnly());
+    }
+
+    @Test void originalDetachFailureAndReadLoanPreserveRights() {
+        var d=new GuestClassSlots.Domain();
+        var child=store(d,Map.of("n",10));
+        var a=store(d,Map.of("data",child));
+        try(var b=a.shallowSnapshot(1,2);var loan=child.retainReadOnly()){
+            deny("E_COPY_BUDGET",()->b.replaceOriginalWithFresh("data",Map.of("x",1,"y",2)));
+            assertSame(child,a.get("data"));assertEquals(1,b.protectedCount());
+            b.replaceOriginalWithFresh("data",Map.of("n",20));
+            assertEquals(0,b.protectedCount());assertTrue(child.isReadOnly());
+            deny("E_COPY_READONLY",()->child.replace("n",22));
+        }
+        assertFalse(child.isReadOnly());
+    }
+
     @Test void snapshotRootAndLeaseObserveSameConcurrentReplacement() throws Exception {
         var d = new GuestClassSlots.Domain();
         try(var pool=Executors.newFixedThreadPool(2)){
@@ -169,16 +212,19 @@ final class GuestClassGraphLeaseTest {
                 });
                 var update=pool.submit(()->{
                     barrier.await(5,TimeUnit.SECONDS);
-                    original.replace("data",fresh);
-                    return true;
+                    try { original.replace("data",fresh); return true; }
+                    catch(IllegalArgumentException e){
+                        if(!e.getMessage().startsWith("E_COPY_UNPROVEN"))throw e;
+                        return false;
+                    }
                 });
                 try(var snapshot=copy.get(10,TimeUnit.SECONDS)){
-                    assertTrue(update.get(10,TimeUnit.SECONDS));
+                    boolean wrote=update.get(10,TimeUnit.SECONDS);
                     Object held=snapshot.get("data");
                     assertTrue(held==old||held==fresh);
                     assertEquals(held==old,old.isReadOnly());
                     assertEquals(held==fresh,fresh.isReadOnly());
-                    assertSame(fresh,original.get("data"));
+                    assertSame(wrote?fresh:old,original.get("data"));
                 }
                 assertFalse(old.isReadOnly());
                 assertFalse(fresh.isReadOnly());
