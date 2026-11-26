@@ -7176,12 +7176,23 @@ public final class Parser {
     }
 
     private static boolean isCountedScalarProjection(Ast.Expr expression, String binding) {
-        if (expression instanceof Ast.LiteralExpr literal) return literal.value() instanceof Long;
-        if (expression instanceof Ast.NameExpr name) return name.name().equals(binding);
-        return expression instanceof Ast.BinaryExpr binary
-                && List.of("+", "-", "*").contains(binary.operator())
-                && isCountedScalarProjection(binary.left(), binding)
-                && isCountedScalarProjection(binary.right(), binding);
+        // Check the projection with a bounded iterative walk before cloning.
+        // Unrolling a large source tree must not amplify compiler stack or AST use.
+        if (expression == null) return false;
+        java.util.ArrayDeque<Ast.Expr> pending = new java.util.ArrayDeque<>();
+        pending.push(expression);
+        int budget = 64;
+        while (!pending.isEmpty()) {
+            if (--budget < 0) return false;
+            Ast.Expr item = pending.pop();
+            if (item instanceof Ast.LiteralExpr literal && literal.value() instanceof Long) continue;
+            if (item instanceof Ast.NameExpr name && name.name().equals(binding)) continue;
+            if (!(item instanceof Ast.BinaryExpr binary)
+                    || !List.of("+", "-", "*").contains(binary.operator())) return false;
+            pending.push(binary.right());
+            pending.push(binary.left());
+        }
+        return true;
     }
 
     private static Ast.Expr copyCountedScalarProjection(Ast.Expr expression) {

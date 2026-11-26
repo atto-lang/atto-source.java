@@ -151,6 +151,38 @@ final class TypedDefaultSelectGuestTest {
                 """));
     }
 
+    // Exact bytes from atto-platform-conformance #608, head
+    // 62471273cf3d62abdf24bbfbdf312645a08d578e. Keep unsupported targets separate.
+    @Test void portableCountedThreeAndAliasExactBlobsReturn42() throws Exception {
+        for (String name : new String[]{"counted-three", "counted-alias"}) {
+            String code = java.nio.file.Files.readString(java.nio.file.Path.of("tests/fixtures/select-source-v2", name + ".atto"));
+            try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+                assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code, name+".atto")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong(), name);
+            }
+        }
+    }
+
+    @Test void portableUnsupportedCountedBlobsFailClosed() throws Exception {
+        for (String name : new String[]{"counted-one", "counted-zero"}) {
+            String code = java.nio.file.Files.readString(java.nio.file.Path.of("tests/fixtures/select-source-v2", name + ".atto"));
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(code), name);
+        }
+    }
+
+    @Test void countedProjectionBudgetAndWrongPayloadRejected() {
+        String projection = "n" + " + 1".repeat(64);
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(4); val Future<Array<int>> result = select<int>(1) { when readch incoming: int n -> { return "+projection+"; } }; return; }"));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  val Channel<bool> incoming = Channel.new<bool>(4);
+                  val Future<Array<int>> result = select<int>(1) { when readch incoming: int n -> { return n; } };
+                  return;
+                }
+                """));
+    }
+
     private static String run(String program) throws Exception {
         var out=new ByteArrayOutputStream();
         try(var context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()){

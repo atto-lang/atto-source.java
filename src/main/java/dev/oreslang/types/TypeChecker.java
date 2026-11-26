@@ -7714,6 +7714,20 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "untrusted actor task blocks require quota-aware tracked task admission");
         }
+        if (task.typedCountedSelectI64()) {
+            // This first lowering snapshots exactly one lexical channel
+            // capability at task admission. Do not repeatedly resolve a
+            // global/imported value or admit a broader event payload.
+            if (task.body().size() < 3
+                    || !(task.body().get(1) instanceof Ast.SelectStmt selected)
+                    || selected.arms().size() != 1
+                    || !(selected.arms().getFirst().channel() instanceof Ast.NameExpr source))
+                throw new IllegalArgumentException("invalid restricted counted select lowering");
+            Env.Binding sourceBinding = env.lookup(source.name());
+            if (sourceBinding == null
+                    || !new Named("Channel", List.of(Primitive.INT)).equals(sourceBinding.type()))
+                throw new IllegalArgumentException("restricted counted select requires lexical Channel<int>");
+        }
         validateAsyncBoundaryType(result, true, "CPU task result");
 
         Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
