@@ -6,6 +6,10 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Pipe;
 import java.nio.channels.SelectionKey;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -155,6 +159,63 @@ final class NioReadinessGroupTest {
                 assertNotEquals(0, first.get(2, TimeUnit.SECONDS) & SelectionKey.OP_READ);
                 assertNotEquals(0, second.get(2, TimeUnit.SECONDS) & SelectionKey.OP_READ);
             }
+            assertTrue(group.awaitIdle(5, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingCount());
+        } finally {
+            group.close();
+            assertTrue(group.awaitStopped(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void nioAwaitReleasesOnlyCarrierAndPreservesExecutionAcrossTwoResumes() throws Exception {
+        NioReadinessGroup group = new NioReadinessGroup(4, 8);
+        Pipe pipe = Pipe.open();
+        try (Pipe.SourceChannel source = pipe.source();
+             Pipe.SinkChannel sink = pipe.sink();
+             OresScheduler scheduler = new OresScheduler(1, 16)) {
+            AtomicInteger phase = new AtomicInteger();
+            AtomicReference<ExecutionContext> context = new AtomicReference<>();
+            AtomicLong dispatch = new AtomicLong();
+            CountDownLatch suspended = new CountDownLatch(1);
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int turn = phase.getAndIncrement();
+                assertSame(scheduler, OresScheduler.current());
+                assertFalse(OresVM.onNioWorker(),
+                        "reactor must never execute scheduler continuation");
+                long currentDispatch = OresScheduler.currentDispatchId();
+                assertNotEquals(0L, currentDispatch);
+                if (turn == 0) {
+                    assertTrue(resume.initial());
+                    context.set(OresScheduler.currentExecutionContext());
+                    assertNotNull(context.get());
+                    dispatch.set(currentDispatch);
+                    OresFuture<Integer> watch = group.watch(source, SelectionKey.OP_READ);
+                    suspended.countDown();
+                    return OresScheduler.await(watch);
+                }
+                assertFalse(resume.initial());
+                assertNull(resume.failure());
+                assertEquals(SelectionKey.OP_READ, resume.value());
+                assertSame(context.get(), OresScheduler.currentExecutionContext());
+                assertNotEquals(dispatch.getAndSet(currentDispatch), currentDispatch);
+                if (turn == 1) {
+                    return OresScheduler.await(group.watch(source, SelectionKey.OP_READ));
+                }
+                assertEquals(2, turn, "each readiness must resume exactly once");
+                return OresScheduler.done(42);
+            });
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            OresFuture<Integer> peer = scheduler.start(resume -> {
+                assertNotSame(context.get(), OresScheduler.currentExecutionContext());
+                return OresScheduler.done(7);
+            });
+            assertEquals(7, peer.get(5, TimeUnit.SECONDS),
+                    "unresolved I/O must release the only carrier");
+            assertFalse(result.isDone());
+            sink.write(ByteBuffer.wrap(new byte[] { 1 }));
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(3, phase.get());
             assertTrue(group.awaitIdle(5, TimeUnit.SECONDS));
             assertEquals(0, group.pendingCount());
         } finally {
