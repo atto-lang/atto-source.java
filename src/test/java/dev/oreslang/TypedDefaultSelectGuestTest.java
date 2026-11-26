@@ -153,8 +153,8 @@ final class TypedDefaultSelectGuestTest {
 
     // Exact bytes from atto-platform-conformance #608, head
     // 62471273cf3d62abdf24bbfbdf312645a08d578e. Keep unsupported targets separate.
-    @Test void portableFourPositiveCountedExactBlobsReturn42() throws Exception {
-        for (String name : new String[]{"counted-three", "counted-alias", "counted-one", "counted-zero"}) {
+    @Test void portableSixPositiveCountedExactBlobsReturn42() throws Exception {
+        for (String name : new String[]{"counted-three", "counted-alias", "counted-one", "counted-zero", "counted-dynamic", "counted-dynamic-zero"}) {
             String code = java.nio.file.Files.readString(java.nio.file.Path.of("tests/fixtures/select-source-v2", name + ".atto"));
             try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
                 assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code, name+".atto")
@@ -216,9 +216,9 @@ final class TypedDefaultSelectGuestTest {
                 """));
     }
 
-    @Test void portableFiveNegativeCountedBlobsRejectBeforeExecution() throws Exception {
+    @Test void portableSevenNegativeCountedBlobsRejectBeforeExecution() throws Exception {
         for (String name : new String[]{"reject-counted-negative", "reject-counted-bool",
-                "reject-counted-scalar", "reject-counted-default", "reject-counted-write"}) {
+                "reject-counted-scalar", "reject-counted-default", "reject-counted-write", "reject-counted-dynamic-bool", "reject-counted-dynamic-unknown"}) {
             String code = java.nio.file.Files.readString(java.nio.file.Path.of(
                     "tests/fixtures/select-source-v2", name + ".atto"));
             assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(code), name);
