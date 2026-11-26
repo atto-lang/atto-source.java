@@ -13,7 +13,9 @@ final class CountedSelectReadCursor {
     static final class SelectExhausted extends IllegalStateException {
         SelectExhausted() { super("all counted selection sources exhausted"); }
     }
-    private final Thread owner = Thread.currentThread();
+    private final Thread owner;
+    private final ActorRuntime actorRuntime;
+    private final ActorRuntime.ContinuationTarget actorTarget;
     private final int count;
     private final ChannelRuntime.SelectPolicy policy;
     private final ArrayList<Long> values;
@@ -32,8 +34,25 @@ final class CountedSelectReadCursor {
 
     CountedSelectReadCursor(int count, List<ChannelRuntime.ReadChannel<Long>> sources,
             List<OresFuture<Long>> futures, ChannelRuntime.SelectPolicy policy) {
+        this(count, sources, futures, policy, null);
+    }
+
+    static CountedSelectReadCursor actorOwned(ActorRuntime runtime, int count,
+            List<ChannelRuntime.ReadChannel<Long>> sources,
+            List<OresFuture<Long>> futures, ChannelRuntime.SelectPolicy policy) {
+        return new CountedSelectReadCursor(count, sources, futures, policy,
+                Objects.requireNonNull(runtime));
+    }
+
+    private CountedSelectReadCursor(int count, List<ChannelRuntime.ReadChannel<Long>> sources,
+            List<OresFuture<Long>> futures, ChannelRuntime.SelectPolicy policy,
+            ActorRuntime runtime) {
         if (count < 0 || count > MAX_COUNT)
             throw new IllegalArgumentException("SelectCountInvalid");
+        actorRuntime = runtime;
+        actorTarget = runtime == null ? null : runtime.captureCurrentContinuationTarget();
+        owner = runtime == null ? Thread.currentThread() : null;
+        checkOwner();
         this.count = count;
         this.policy = Objects.requireNonNull(policy);
         values = new ArrayList<>(count);
@@ -52,13 +71,30 @@ final class CountedSelectReadCursor {
     }
 
     private void checkOwner() {
-        if (Thread.currentThread() != owner || driving)
-            throw new IllegalStateException("counted read cursor requires its serialized host owner");
+        if (driving || (actorRuntime == null
+                ? Thread.currentThread() != owner
+                : !actorRuntime.ownsCountedCursorTurn(actorTarget)))
+            throw new IllegalStateException("counted read cursor requires its serialized owner");
     }
 
     State state() { checkOwner(); return state; }
 
     OresFuture<ChannelRuntime.SelectResult> beginRound() {
+        if (actorRuntime != null)
+            throw new IllegalStateException("actor-owned cursor requires retirement continuation");
+        return beginRoundInternal();
+    }
+
+    void beginActorRound(Runnable retirement) {
+        checkOwner();
+        if (actorRuntime == null)
+            throw new IllegalStateException("not an actor-owned cursor");
+        Objects.requireNonNull(retirement);
+        var round = beginRoundInternal();
+        actorRuntime.enqueueCountedRoundRetirement(round, actorTarget, retirement);
+    }
+
+    private OresFuture<ChannelRuntime.SelectResult> beginRoundInternal() {
         checkOwner();
         if (state != State.READY) throw new IllegalStateException("round not ready");
         driving = true;

@@ -22,3 +22,5 @@ read registration and resumption, cancellation on either side of commit,
 close after prefix, graceful EOF, alias retirement, producer errors and foreign-thread rejection. Run focused JUnit with
 CountedSelectReadCursorTest and FutureChannelSelectTest. No guest or native
 image parity claimed.
+
+Actor-owned host cursor variant: binds to the exact actor cell/code generation and active carrier lease instead of a physical thread. Round retirement is enqueued only after the notification drain receipt; actor-owned pending Future is revoked at STOP. This is scheduler plumbing only: no guest arm execution, aggregate Future, or quota admission. A pending actor round must use beginActorRound; foreign callers cannot drive it. STOP fences late continuation execution; batch-level cancellation/cleanup settlement still needs a structured task owner.
