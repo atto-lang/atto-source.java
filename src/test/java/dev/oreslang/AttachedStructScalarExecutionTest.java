@@ -100,6 +100,30 @@ pub fnc main():int { let mut p = Point(1, 2); let q = Point(4, 6); let mut Recta
             assertEquals(42L,result.asLong());
         }
     }
+    @Test void signedMinimumAndMaximumThroughActualNominalGuest() {
+        String prefix = """
+define struct Range { int lo; int hi; } with {
+ constructor(int lo, int hi) { self.lo = lo; self.hi = hi; }
+ mtd sum() -> int { return self.lo + self.hi; }
+}
+pub fnc main():int { let r = Range(-9223372036854775808, 9223372036854775807); return
+""";
+        String source=prefix+"r.sum() + 43; }";
+        String lowered=AttachedStructScalarLowering.lowerChecked(source);
+        try(Context context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()){
+            var result=context.eval(Source.newBuilder(OresLanguage.ID,lowered,"attached-i64-boundary.atto").mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+            assertEquals(42L,result.asLong());
+        }
+        for(String bad:new String[]{
+            source.replace("-9223372036854775808","9223372036854775808"),
+            source.replace("-9223372036854775808","-9223372036854775809")
+        })assertThrows(IllegalArgumentException.class,()->AttachedStructScalarLowering.lowerChecked(bad),bad);
+        String overflow=AttachedStructScalarLowering.lowerChecked(prefix+"-r.lo; }");
+        try(Context context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()){
+            var failure=assertThrows(org.graalvm.polyglot.PolyglotException.class,()->context.eval(Source.newBuilder(OresLanguage.ID,overflow,"attached-i64-overflow.atto").mimeType(OresLanguage.MIME_TYPE).buildLiteral()));
+            assertTrue(failure.getMessage().toLowerCase(java.util.Locale.ROOT).contains("overflow"),failure.getMessage());
+        }
+    }
     @Test void malformedOrUnsupportedNeverReturnsScalarArtifact() {
         for(String bad:new String[]{
             SOURCE.replace("let Rectangle r = Rectangle(p,q)","let Point r = Rectangle(p,q)"),
