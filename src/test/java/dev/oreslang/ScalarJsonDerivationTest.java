@@ -61,13 +61,28 @@ final class ScalarJsonDerivationTest {
             "define class Bad as @ToJson(\"x\") val int x; end",
             "define class Bad as @ToJson(\"x\") pub val String x; end",
             "define class Bad as @ToJson(\"x\") pub val int x; pub to_json(): int { return 1; } end",
-            "define class Bad as @ToJson(\"x\") @ToJson(\"y\") pub val int x; end",
             "define class Bad as @ToJson(\"a b\") pub val int x; end"
         }) {
             var ex = assertThrows(IllegalArgumentException.class,
                     () -> AnnotationExpander.expand(Parser.parse(source)), source);
             assertTrue(ex.getMessage().contains("E_TO_JSON"), ex.getMessage());
         }
+    }
+
+    @Test void duplicateAnnotationIsRejectedAtParserBoundary() {
+        var ex = assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+            "define class Bad as @ToJson(\"x\") @ToJson(\"y\") pub val int x; end"));
+        assertTrue(ex.getMessage().contains("duplicate @ToJson annotation"), ex.getMessage());
+    }
+
+    @Test void projectionFieldCountIsBounded() {
+        StringBuilder source = new StringBuilder("define class TooWide as\n");
+        for (int i = 0; i < 33; i++)
+            source.append("@ToJson(\"k").append(i).append("\") pub val int f").append(i).append(";\n");
+        source.append("end");
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> AnnotationExpander.expand(Parser.parse(source.toString())));
+        assertTrue(ex.getMessage().contains("E_TO_JSON: too many projected fields"), ex.getMessage());
     }
 
     @Test void noImplicitMethodsOnUnannotatedClass() {
