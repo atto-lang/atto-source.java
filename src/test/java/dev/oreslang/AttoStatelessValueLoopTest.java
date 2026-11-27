@@ -17,7 +17,8 @@ final class AttoStatelessValueLoopTest {
         var out = new ByteArrayOutputStream();
         var err = new ByteArrayOutputStream();
         try (Context ctx = Context.newBuilder(OresLanguage.ID).allowAllAccess(false)
-                .out(out).err(err).build()) {
+                // Host Truffle diagnostics are not guest stderr. Keep both visible.
+                .logHandler(System.err).out(out).err(err).build()) {
             var value = ctx.eval(Source.newBuilder(OresLanguage.ID, source, "value-loop.atto")
                     .mimeType(OresLanguage.MIME_TYPE).build());
             assertTrue(value.fitsInLong(), "expected i64 guest result");
