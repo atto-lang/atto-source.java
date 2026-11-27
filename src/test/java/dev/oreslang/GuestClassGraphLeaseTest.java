@@ -92,6 +92,31 @@ final class GuestClassGraphLeaseTest {
         assertFalse(b.isReadOnly());
     }
 
+    @Test void shallowSnapshotRejectsRootBackEdgesWithoutFreezingAnySlots() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("next", 0));
+        var root = store(d, Map.of("child", child, "count", 1));
+        child.replace("next", root);
+        deny("E_COPY_SHALLOW_ALIAS", () -> root.shallowSnapshot(2, 3));
+        assertFalse(root.isReadOnly());
+        assertFalse(child.isReadOnly());
+        root.replace("count", 2);
+        child.replace("next", 0);
+        try (var snapshot = root.shallowSnapshot(1, 3)) {
+            snapshot.replace("count", 3);
+            root.replace("count", 4);
+            assertEquals(3, snapshot.get("count"));
+            assertEquals(4, root.get("count"));
+            deny("E_COPY_READONLY", () -> child.replace("next", 1));
+        }
+        // Direct self-edge is subject to the same fail-atomic policy.
+        root.replace("child", root);
+        deny("E_COPY_SHALLOW_ALIAS", () -> root.shallowSnapshot(1, 4));
+        assertFalse(root.isReadOnly());
+        root.replace("child", child);
+        assertFalse(child.isReadOnly());
+    }
+
     @Test void snapshotRootReplacementAndLexicalRelease() {
         var d = new GuestClassSlots.Domain();
         var child = store(d, Map.of("n", 10));
