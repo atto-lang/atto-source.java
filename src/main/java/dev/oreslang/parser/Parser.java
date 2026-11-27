@@ -4436,6 +4436,11 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        if (explicitLocalUpdateHere()) {
+            Ast.Expr update = parseExplicitLocalUpdate();
+            consumeExpressionStatementTerminator(update, "explicit update should end with ';'");
+            return new Ast.ExprStmt(update);
+        }
         if (check(STOP) && (checkNext(IDENT) || checkNext(SELF) || checkNext(BANG))) {
             Token operator = advance();
             consumeActorOperatorBang(operator, "E_STOP_BANG_BOUNDARY");
@@ -5286,7 +5291,7 @@ public final class Parser {
             throw error(peek(), "'for await' requires iterator syntax: for await (const x of asyncIterable)");
         }
 
-        if (looksLikeTypedForInitializer()) {
+        if (!explicitLocalUpdateHere() && looksLikeTypedForInitializer()) {
             Ast.TypeRef type = parseTypeRef();
             String name = consume(IDENT, "expected typed loop binding name").lexeme();
             consume(EQUAL, "typed for initializer requires '='");
@@ -5312,7 +5317,8 @@ public final class Parser {
         }
 
         Ast.Stmt initializer = null;
-        if (!check(SEMICOLON)) initializer = new Ast.ExprStmt(parseExpression());
+        if (!check(SEMICOLON)) initializer = new Ast.ExprStmt(
+                explicitLocalUpdateHere() ? parseExplicitLocalUpdate() : parseExpression());
         consume(SEMICOLON, "expected ';' after for initializer");
         Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
         consume(SEMICOLON, "expected ';' after for condition");
@@ -5386,6 +5392,7 @@ public final class Parser {
 
     private Ast.Stmt parseUnparenthesizedForInitializer() {
         if (check(SEMICOLON)) return null;
+        if (explicitLocalUpdateHere()) return new Ast.ExprStmt(parseExplicitLocalUpdate());
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
@@ -5404,7 +5411,7 @@ public final class Parser {
                     kind, type, name, parseExpression(), mutableReferent);
         }
 
-        if (looksLikeTypedForInitializer()) {
+        if (!explicitLocalUpdateHere() && looksLikeTypedForInitializer()) {
             Ast.TypeRef type = parseTypeRef();
             String name = consume(IDENT, "expected typed loop binding name").lexeme();
             consume(EQUAL, "typed for initializer requires '='");
@@ -5426,7 +5433,49 @@ public final class Parser {
         }
     }
 
+    // Contextual, statement-only preview; calls to set(...) remain legal.
+    // Existing assignment checking/lowering still owns write authority.
+    private boolean explicitLocalUpdateHere() {
+        if (!check(IDENT) || !peek().lexeme().equals("set")) return false;
+        if (checkNext(IDENT) || checkNext(BANG)) return true;
+        if (current + 2 >= tokens.size()) return false;
+        Token first = tokens.get(current + 1);
+        Token second = tokens.get(current + 2);
+        return (first.type() == PLUS || first.type() == MINUS)
+                && first.type() == second.type() && adjacent(first, second);
+    }
+
+    private Ast.Expr parseExplicitLocalUpdate() {
+        advance(); // contextual set
+        boolean bang = match(BANG);
+        boolean wrapped = bang && match(LPAREN);
+        String op = null;
+        if (matchAdjacentPair(PLUS)) op = "+";
+        else if (matchAdjacentPair(MINUS)) op = "-";
+        String name = consume(IDENT, "explicit update requires a local binding name").lexeme();
+        Ast.NameExpr target = new Ast.NameExpr(name);
+        Ast.Expr value;
+        if (op != null) {
+            value = new Ast.BinaryExpr(op, new Ast.NameExpr(name), new Ast.LiteralExpr(1L));
+        } else if (matchAdjacentPair(PLUS)) {
+            value = new Ast.BinaryExpr("+", new Ast.NameExpr(name), new Ast.LiteralExpr(1L));
+        } else if (matchAdjacentPair(MINUS)) {
+            value = new Ast.BinaryExpr("-", new Ast.NameExpr(name), new Ast.LiteralExpr(1L));
+        } else if ((check(PLUS) || check(MINUS) || check(STAR) || check(SLASH))
+                && checkNext(EQUAL) && adjacent(peek(), tokens.get(current + 1))) {
+            op = advance().lexeme();
+            consume(EQUAL, "expected contiguous compound update");
+            value = new Ast.BinaryExpr(op, new Ast.NameExpr(name), parseExpression());
+        } else {
+            consume(EQUAL, "expected '=' or explicit update operator");
+            value = parseExpression();
+        }
+        if (wrapped) consume(RPAREN, "expected ')' after explicit update");
+        return new Ast.AssignExpr(target, value);
+    }
+
     private Ast.Expr parseForUpdate() {
+        if (explicitLocalUpdateHere()) return parseExplicitLocalUpdate();
         int mark = current;
         if (check(IDENT)) {
             String name = advance().lexeme();
@@ -5575,6 +5624,11 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
+        // Ordinary local const mut is exactly val; normalize before any
+        // initializer admission, so the checker cannot apply const-only rules.
+        if (kind == Ast.BindingKind.CONST && mutableReferent) {
+            kind = Ast.BindingKind.VAL;
+        }
         Ast.TypeRef type = null;
         String name;
         boolean functionShorthand = match(FNC);
@@ -5588,9 +5642,9 @@ public final class Parser {
         } else if (looksLikeNamedCallableBindingSignature()) {
             name = advance().lexeme();
             type = parseNamedCallableBindingSignature();
-        } else if (check(IDENT) && checkNext(COLON)) {
+        } else if (check(IDENT) && (checkNext(COLON) || checkNext(AS))) {
             name = advance().lexeme();
-            consume(COLON, "expected ':' after binding name");
+            advance(); // name-first ':' or 'as' type annotation; not an expression cast
             type = parseTypeRef();
         } else if (check(IDENT) && checkNext(EQUAL)) {
             name = advance().lexeme();
