@@ -1948,7 +1948,7 @@ public final class Parser {
      * Parse only the bounded payload-free flat machine profile; even a valid
      * graph must fail closed until typed state/ownership lowering exists.
      */
-    private IllegalArgumentException parseFlatActorMachine() {
+    private void parseFlatActorMachine() {
         Token start = peek();
         consumeContextualIdentifier("state", "expected state");
         consumeContextualIdentifier("machine", "expected machine");
@@ -2009,7 +2009,7 @@ public final class Parser {
         }
         if (seen.size() != nodes.size())
             throw error(start, "E_MACHINE_GRAPH: unreachable behavioral state");
-        return error(start, "E_MACHINE_LOWERING_UNSUPPORTED: flat actor state machine parsed; typed ownership/effect lowering is not implemented");
+
     }
 
     private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
@@ -2091,6 +2091,7 @@ public final class Parser {
         // allocation and critical loan lowering are proven.
         List<Ast.ProtectedStateField> sealedStateFields = new ArrayList<>();
         boolean declaredSealedState = false;
+        Token machineStart = null;
         int requestConcurrency = 1;
         int messageConcurrency = 1;
         boolean declaredRequestConcurrency = false;
@@ -2111,7 +2112,11 @@ public final class Parser {
                         || mods.shared || mods.untrusted || mods.structural
                         || mods.nonLexical || mods.trapped)
                     throw error(peek(), "state machine cannot have modifiers or annotations");
-                throw parseFlatActorMachine();
+                if (machineStart != null)
+                    throw error(peek(), "E_MACHINE_GRAPH: duplicate state machine");
+                machineStart = peek();
+                parseFlatActorMachine();
+                continue;
             }
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
                 if (declaredSealedState)
@@ -2358,6 +2363,8 @@ public final class Parser {
         }
         if (declaredSealedState && !fields.isEmpty())
             throw error(previous(), "sealed actor state cannot mix ordinary actor fields");
+        if (machineStart != null)
+            throw error(machineStart, "E_MACHINE_LOWERING_UNSUPPORTED: flat actor state machine parsed; typed ownership/effect lowering is not implemented");
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
