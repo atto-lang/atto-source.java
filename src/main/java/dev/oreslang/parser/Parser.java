@@ -78,6 +78,9 @@ public final class Parser {
             explicitlyPrivate.add(declaration);
         return declaration;
     }
+    // Denotations are complete aliases, not implementations of forward declarations.
+    private final java.util.Set<Ast.TypeAliasDecl> typeDenotations =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final List<ForwardType> rootForwards = new ArrayList<>();
     private List<ForwardType> moduleForwards;
     public Parser(List<Token> tokens) {
@@ -453,6 +456,11 @@ public final class Parser {
 
             if (isContextualIdentifier("declare")) {
                 rootForwards.add(parseForwardType(annotations, modifiers));
+                continue;
+            }
+
+            if (isContextualIdentifier("denote") && !looksLikeReturnFirstCallableHead()) {
+                rootDeclarations.add(parseTypeDenotation(annotations, modifiers));
                 continue;
             }
 
@@ -933,6 +941,10 @@ public final class Parser {
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
             return null;
+        }
+
+        if (isContextualIdentifier("denote") && !looksLikeReturnFirstCallableHead()) {
+            return parseTypeDenotation(annotations, modifiers);
         }
 
         if (match(CLASS)) {
@@ -2820,6 +2832,10 @@ public final class Parser {
                         || candidate instanceof Ast.InterfaceDecl
                         || candidate instanceof Ast.ClassDecl)) continue;
                 if (!forward.name().equals(definedName(candidate))) continue;
+                if (candidate instanceof Ast.TypeAliasDecl alias && typeDenotations.contains(alias)) {
+                    throw new IllegalArgumentException("type denotation '" + forward.name()
+                            + "' cannot complete a forward declaration in " + scope);
+                }
                 if (definition != null) {
                     throw new IllegalArgumentException("ambiguous forward type '" + forward.name()
                             + "': multiple definitions in " + scope);
@@ -2863,6 +2879,25 @@ public final class Parser {
                         + forward.name() + "' in " + scope + "; cannot widen or narrow visibility");
             }
         }
+    }
+
+    private Ast.TypeAliasDecl parseTypeDenotation(List<Ast.Annotation> annotations, Modifiers before) {
+        Token start = advance(); // contextual, only at a declaration boundary
+        validateNoModifiers(before, "modifiers before denote");
+        if (!annotations.isEmpty()) throw error(start, "denote does not accept declaration annotations");
+        Modifiers after = parseModifiers();
+        validateOnlyVisibilityModifiers(after, "type denotations");
+        consume(TYPE, "expected 'type' after denote");
+        String name = consumeTypeDeclarationName("expected denoted type name");
+        List<String> generics = parseGenericParameters();
+        consume(EQUAL, "expected '=' in type denotation");
+        Ast.TypeRef target = parseTypeRef();
+        // Never route through the legacy alias parser's attachment or optional
+        // terminator rules. This construct creates only a transparent type slot.
+        consume(SEMICOLON, "type denotation must end with ';'");
+        Ast.TypeAliasDecl alias = new Ast.TypeAliasDecl(name, after.visibility, generics, target);
+        typeDenotations.add(alias);
+        return recordVisibility(alias, after);
     }
 
     private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
