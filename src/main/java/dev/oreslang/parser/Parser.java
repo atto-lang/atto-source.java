@@ -3279,6 +3279,37 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            // Contextual copied-scalar rebind. The old Ast.Param mutable bit
+            // remains a local-slot permission for this subset only; do not
+            // use it to grant reference mutation or ownership.
+            if (isContextualIdentifier("rebind") && current + 2 < tokens.size()
+                    && tokens.get(current + 1).type() != COLON
+                    && (tokens.get(current + 2).type() == IDENT
+                        || tokens.get(current + 2).type() == COLON
+                        || tokens.get(current + 2).type() == LT
+                        || tokens.get(current + 1).type() == MUT
+                        || tokens.get(current + 1).lexeme().equals("borrow")
+                        || tokens.get(current + 1).lexeme().equals("structural"))) {
+                Token marker = advance();
+                if (check(MUT) || isContextualIdentifier("borrow") || isContextualIdentifier("structural"))
+                    throw error(marker, "E_REBIND_UNSUPPORTED: rebind requires a copied scalar parameter");
+                if (isContextualIdentifier("rebind") && !checkNext(COLON))
+                    throw error(peek(), "E_REBIND_MODIFIER: duplicate rebind marker");
+                String nameFirst = null;
+                if (check(IDENT) && checkNext(COLON)) {
+                    nameFirst = advance().lexeme();
+                    consume(COLON, "expected ':' after parameter name");
+                }
+                Ast.TypeRef scalar = parseTypeRef();
+                if (scalar.inferArguments() || !scalar.arguments().isEmpty()
+                        || !java.util.Set.of("int", "bool").contains(scalar.name()))
+                    throw error(marker, "E_REBIND_UNSUPPORTED: rebind requires a copied int/bool parameter");
+                if (check(MUT)) throw error(peek(), "E_REBIND_MODIFIER: conflicting mut marker");
+                String name = nameFirst != null ? nameFirst
+                        : consume(IDENT, "expected rebind parameter name").lexeme();
+                params.add(new Ast.Param(scalar, name, false, true));
+                continue;
+            }
             // The parameter-specific structural sigil must not bypass
             // the retired lowercase collection type alias rejection.
             if (check(TILDE) && current + 2 < tokens.size()
