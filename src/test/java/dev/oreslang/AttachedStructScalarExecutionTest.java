@@ -51,6 +51,17 @@ pub fnc main():int { let mut p = Point(1, 2); let q = Point(4, 6); let mut Recta
             MUTABLE.replace("mut mtd shift(int n):void { self.x","mtd shift(int n):void { self.x")
         })assertThrows(IllegalArgumentException.class,()->AttachedStructScalarLowering.lowerChecked(bad),bad);
     }
+    @Test void orderedMutationAndScalarConstructorArguments() {
+        String source="define struct Flag { bool value; } with { constructor(bool value) { self.value = value; } }\n"+
+            MUTABLE.replace("p.shift(10);","p.shift(10); let f = Flag(p.is_origin()); let g = Flag(false && p.is_origin());")
+                   .replace("r.shift(1)","r.shift(r.a.x)")
+                   .replace("self.b.y = self.b.y + n;","self.b.y = self.b.y + self.a.x;");
+        String lowered=AttachedStructScalarLowering.lowerChecked(source);
+        try(Context context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()){
+            var result=context.eval(Source.newBuilder(OresLanguage.ID,lowered,"attached-ordered.atto").mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+            assertEquals(1336L,result.asLong());
+        }
+    }
     @Test void actualCheckedJavaGuest() {
         String lowered=AttachedStructScalarLowering.lowerChecked(SOURCE);
         assertEquals(lowered,AttachedStructScalarLowering.lowerChecked(SOURCE));

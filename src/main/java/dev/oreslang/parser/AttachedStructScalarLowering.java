@@ -240,7 +240,7 @@ public final class AttachedStructScalarLowering {
                 List<Arg> args=new ArrayList<>();expect("(");
                 if(!eat(")")){
                     do{
-                        Value v=values.get(word());
+                        Value v=at+1<tokens.size()&&tokens.get(at+1).lexeme().equals(".")?null:values.get(word());
                         if(v!=null){at++;Map<String,Expr> ss=new LinkedHashMap<>();for(Leaf l:v.owner.leaves)ss.put(l.path,snapshot(v.slots.get(l.path)));args.add(new Arg(v.owner.name,ss));}
                         else{Expr e=snapshot(expr(null,1));args.add(new Arg(e.type,Map.of("",e)));}
                         require(args.stream().mapToInt(a->a.slots.size()).sum()<=16,"E_SOURCE_LIMIT","argument slots");
