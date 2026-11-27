@@ -29,6 +29,7 @@ final class ContextualIntLowering {
         int at,slots,depth;
         String owner,member;
         int contextCount,ordinaryCount;
+        List<String> schema;
         Reader(List<Token> input) {
             this.input=input;
             if(input.size()>8192)throw deny("token budget");
@@ -108,7 +109,7 @@ final class ContextualIntLowering {
             need(DEFINE);need(CLASS);owner=name();need(AS);need(PUB);need(STATIC);need(FNC);
             member=name();need(DOUBLE_COLON);
             List<String> captures=params(),ordinary=params();
-            contextCount=captures.size();ordinaryCount=ordinary.size();
+            schema=List.copyOf(captures);contextCount=captures.size();ordinaryCount=ordinary.size();
             List<String> all=new ArrayList<>(captures);all.addAll(ordinary);
             if(contextCount<1||contextCount>8||all.size()>16||new HashSet<>(all).size()!=all.size()||all.contains(owner))
                 throw deny("invalid context schema");
@@ -128,13 +129,22 @@ final class ContextualIntLowering {
                 if(token().type()==IDENT&&aliases.containsKey(token().lexeme())){
                     aliases.put(n,aliases.get(token().lexeme()));at++;need(SEMICOLON);continue;
                 }
-                word(owner);need(DOUBLE_COLON);List<String> values=args(contextCount);need(SEMICOLON);
-                List<String> captured=new ArrayList<>();
-                for(String v:values){
+                word(owner);need(DOUBLE_COLON);need(LPAREN);
+                boolean named=token().type()==IDENT&&at+1<input.size()&&input.get(at+1).type()==EQUAL;
+                List<String> captured=new ArrayList<>(Collections.nCopies(contextCount,null));
+                for(int k=0;k<contextCount;k++){
+                    if(k>0)need(COMMA);
+                    int index=k;
+                    if(named){
+                        String key=name();need(EQUAL);index=schema.indexOf(key);
+                        if(index<0||captured.get(index)!=null)throw deny("unknown or duplicate named context");
+                    }
+                    String v=plain(false);
                     String slot=PREFIX+"slot_"+slots++;
                     out.append("val int ").append(slot).append(" = ").append(v).append(";\n");
-                    captured.add(slot);
+                    captured.set(index,slot);
                 }
+                need(RPAREN);need(SEMICOLON);
                 aliases.put(n,List.copyOf(captured));
                 if(out.length()>65536)throw deny("lowering budget");
             }
