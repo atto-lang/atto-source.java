@@ -3658,7 +3658,10 @@ public final class TypeChecker {
             }
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            requireRuntimeValue(typeOf(expression.expression(), env, generics, self), "expression statement");
+            return;
+        }
         if (stmt instanceof Ast.DeferStmt defer) {
             if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -4111,6 +4114,14 @@ public final class TypeChecker {
                 rejectUnimportedModuleNamespace(name.name());
                 return moduleShape(moduleNamespace);
             }
+            // A nominal declaration is available to type resolution, never to a
+            // value expression. ClassNamespace below is a compiler-only receiver
+            // for static member lookup; it must not escape as a runtime value.
+            if (findInterface(name.name()) != null || findTypeAlias(name.name()) != null) {
+                throw new IllegalArgumentException(
+                        "E_TYPE_NOT_VALUE: type declaration '" + name.name()
+                                + "' is not a runtime value");
+            }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) {
                 // Imported actors are linked only as protocol metadata so method
@@ -4350,10 +4361,12 @@ public final class TypeChecker {
 
             env.restoreInitialization(afterCondition);
             Type left = typeOf(conditional.whenTrue(), env, generics, self);
+            requireRuntimeValue(left, "conditional true arm");
             Map<Env.Binding, Set<String>> leftExit = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
+            requireRuntimeValue(right, "conditional false arm");
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
@@ -4386,6 +4399,7 @@ public final class TypeChecker {
             Type ready = env.captureTypes.get(capture);
             if (ready != null) return ready;
             Type value = typeOf(capture.value(), env, generics, self);
+            requireRuntimeValue(value, "capture value");
             if (value == Primitive.VOID) throw new IllegalArgumentException("cannot capture a void expression");
             env.define(capture.name(), value, Ast.BindingKind.LET);
             env.captureTypes.put(capture, value);
@@ -4411,6 +4425,7 @@ public final class TypeChecker {
                         "trap expression cannot contain suspension until its continuation and cleanup are verified");
             }
             Type inner = typeOf(trapped.expression(), env, generics, self);
+            requireRuntimeValue(inner, "trap operand");
             if (inner instanceof Named named && named.name().equals("Future")) {
                 throw new IllegalArgumentException(
                         "trap expression cannot wrap Future<T>; asynchronous failure capture is unsupported");
@@ -4422,6 +4437,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
+            requireRuntimeValue(operand, "unary operand");
             if (unary.operator().equals("&")) {
                 // Reborrow an existing loan; borrowing the wrapper must not
                 // create Borrow<Borrow<T>> or erase the source lifetime.
@@ -4468,6 +4484,7 @@ public final class TypeChecker {
                         + " Chains and nested uses are rejected; use '<<<', '>>>' or 'ashr' for bit shifts");
             }
             Type left = typeOf(binary.left(), env, generics, self);
+            requireRuntimeValue(left, "binary left operand");
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
@@ -4479,6 +4496,7 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            requireRuntimeValue(right, "binary right operand");
             return switch (binary.operator()) {
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -4653,6 +4671,20 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // Direct bare declaration names are not runtime call arguments, even
+            // on builtin/variadic paths that do not invoke requireAssignable.
+            // Lexical value bindings still take precedence over type names.
+            for (Ast.Expr argument : call.arguments()) {
+                if (argument instanceof Ast.NameExpr name
+                        && env.lookup(name.name()) == null
+                        && (findClass(name.name()) != null
+                            || findInterface(name.name()) != null
+                            || findTypeAlias(name.name()) != null)) {
+                    throw new IllegalArgumentException(
+                            "E_TYPE_NOT_VALUE: call argument cannot use type declaration '"
+                                    + name.name() + "' as a runtime value");
+                }
+            }
             if (call.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
                 throw new IllegalArgumentException(
                         "NAMED_CALL_BINDING_UNSUPPORTED: named arguments are parsed and preserved, "
@@ -4735,7 +4767,7 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr) {
                         throw new IllegalArgumentException("stdio console spread is unsupported; use stdio.stdout.log");
                     }
-                    typeOf(argument, env, generics, self);
+                    requireRuntimeValue(typeOf(argument, env, generics, self), "stdio console argument");
                 }
                 return Primitive.VOID;
             }
@@ -4748,7 +4780,7 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr spread) {
                         requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
                     } else {
-                        typeOf(argument, env, generics, self);
+                        requireRuntimeValue(typeOf(argument, env, generics, self), "stdio log argument");
                     }
                 }
                 return isBuiltinStdoutCall(call, "log_async", env)
@@ -7028,6 +7060,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MatchExpr valueMatch) {
             Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
+            requireRuntimeValue(subject, "value match subject");
             Type declaredResult = valueMatch.resultType() == null ? null
                     : resolve(valueMatch.resultType(), generics, self);
             if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
@@ -7124,7 +7157,9 @@ public final class TypeChecker {
             for (int i = 1; i < list.elements().size(); i++) {
                 element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
             }
-            return new ListType(element);
+            Type result = new ListType(element);
+            requireRuntimeValue(result, "list element");
+            return result;
         }
         if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
             Ast.TypeRef witness = mapLiteral.mapType();
@@ -7212,7 +7247,10 @@ public final class TypeChecker {
                             + "unresolved or unsupported witness " + witness);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            Type result = new Tuple(tuple.elements().stream()
+                    .map(item -> typeOf(item, env, generics, self)).toList());
+            requireRuntimeValue(result, "tuple element");
+            return result;
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
@@ -7325,6 +7363,7 @@ public final class TypeChecker {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
+                requireRuntimeValue(exactValueType, "aggregate field '" + field.name() + "'");
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredFieldTypes()
@@ -14905,7 +14944,60 @@ public final class TypeChecker {
         return ref.inferArguments() || ref.arguments().stream().anyMatch(this::hasInferredArgs);
     }
 
+    private void requireRuntimeValue(Type actual, String where) {
+        // Identity-based traversal protects recursive inferred shapes from
+        // unbounded validation, without conflating structurally equal types.
+        requireRuntimeValue(actual, where, new IdentityHashMap<>());
+    }
+
+    private void requireRuntimeValue(
+            Type actual, String where, IdentityHashMap<Type, Boolean> visited) {
+        if (visited.put(actual, Boolean.TRUE) != null) return;
+        if (actual instanceof ClassNamespace namespace) {
+            throw new IllegalArgumentException(
+                    "E_TYPE_NOT_VALUE: " + where + " cannot use class declaration '"
+                            + namespace.className() + "' as a runtime value; "
+                            + "construct an instance or access a static member");
+        }
+        // All compiler type wrappers must be inspected. Unknown and generic
+        // value slots do not authorize a namespace to become a runtime object.
+        if (actual instanceof Record record) {
+            record.members().forEach((name, member) ->
+                    requireRuntimeValue(member, where + "." + name, visited));
+        } else if (actual instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                requireRuntimeValue(element, where + " tuple element", visited);
+            }
+        } else if (actual instanceof ListType list) {
+            requireRuntimeValue(list.element(), where + " list element", visited);
+        } else if (actual instanceof Function function) {
+            requireRuntimeValue(function.result(), where + " callable result", visited);
+            for (Type param : function.parameters()) {
+                requireRuntimeValue(param, where + " callable parameter", visited);
+            }
+        } else if (actual instanceof Named named) {
+            for (Type argument : named.arguments()) {
+                requireRuntimeValue(argument, where + " generic value type", visited);
+            }
+        } else if (actual instanceof Union union) {
+            for (Type option : union.options()) {
+                requireRuntimeValue(option, where + " union alternative", visited);
+            }
+        } else if (actual instanceof Borrow borrow) {
+            requireRuntimeValue(borrow.target(), where + " borrowed value", visited);
+        } else if (actual instanceof SelfType receiver) {
+            requireRuntimeValue(receiver.bound(), where + " self bound", visited);
+        } else if (actual instanceof Not excluded) {
+            requireRuntimeValue(excluded.excluded(), where + " exclusion type", visited);
+        }
+    }
+
     private void requireAssignable(Type actual, Type expected, String where) {
+        // Never allow the compiler-only static-class receiver to satisfy an
+        // inferred, generic or Unknown value slot (including return/argument
+        // positions). Static member lookup uses ClassNamespace directly and
+        // does not go through runtime value assignment.
+        requireRuntimeValue(actual, where);
         if (!assignable(actual, expected)) throw new IllegalArgumentException(where + " has type " + actual + " but expected " + expected);
     }
 
