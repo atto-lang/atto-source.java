@@ -1613,6 +1613,10 @@ public final class OwnershipChecker {
             return checkExpr(unary.operand(), scope, false);
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals(Ast.VerifiedI64.CHECK_REFINEMENT)) {
+                checkExpr(runtime.arguments().getFirst(), scope, false);
+                return new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+            }
             if (runtime.operation().equals("spawn")) {
                 if (runtime.arguments().size() != 1
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
