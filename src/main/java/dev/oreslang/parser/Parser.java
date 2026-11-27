@@ -1577,10 +1577,11 @@ public final class Parser {
                 continue;
             }
 
+            rejectObsoleteMethodIntroducer();
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
             if (explicitFnc && explicitMethod) {
-                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'mtd' markers");
             }
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
@@ -1591,14 +1592,14 @@ public final class Parser {
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
                 if (explicitMethod) {
-                    throw error(previous(), "static class functions use 'static fnc', not 'static method'");
+                    throw error(previous(), "static class functions use 'static fnc', not 'static mtd'");
                 }
                 if (!explicitFnc) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
                 }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
             }
-            // Legacy 'fnc name' and explicit 'method name' both describe instance
+            // Legacy 'fnc name' and explicit 'mtd name' both describe instance
             // methods. The AST's isStatic flag, not the spelling, controls binding.
             Ast.MethodDecl member = parseMethod(annotations, mods, isAbstract);
             // Newable's explicitly declared `new` (legacy `fnc new`) is a type-level
@@ -2194,17 +2195,18 @@ public final class Parser {
                 continue;
             }
 
+            rejectObsoleteMethodIntroducer();
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
             if (explicitFnc && explicitMethod) {
-                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'mtd' markers");
             }
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
             if (mods.isStatic && explicitMethod) {
-                throw error(previous(), "static actor functions use 'static fnc', not 'static method'");
+                throw error(previous(), "static actor functions use 'static fnc', not 'static mtd'");
             }
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
@@ -2468,15 +2470,26 @@ public final class Parser {
                         receiver.name(), methodName, memberModifiers.visibility, parameters, returns));
                 continue;
             }
-            if (!moduleContract && actorMethodHead) {
-                throw error(peek(), "actor receiver requirements belong only in module contracts");
-            }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }
-            // Trait/interface signatures allow the canonical bare instance
-            // method form: get_future(): Future<T>;
-            if (match(FNC) || (check(IDENT) && checkNext(LPAREN))) {
+            // The optional contextual mtd marker belongs to nominal instance
+            // signatures. Module receiver requirements keep their distinct
+            // receiver grammar. A method named mtd() or a field typed mtd
+            // must not be consumed as a marker.
+            if (!moduleContract) rejectObsoleteMethodIntroducer();
+            boolean explicitFnc = match(FNC);
+            boolean explicitMtd = !moduleContract && isContextualIdentifier("mtd")
+                    && looksLikeInterfaceMethodHead(current + 1);
+            if (explicitMtd) {
+                if (explicitFnc) {
+                    throw error(peek(), "an instance signature cannot combine 'fnc' and 'mtd' markers");
+                }
+                advance();
+            }
+            if (explicitFnc || explicitMtd
+                    || (moduleContract ? check(IDENT) && checkNext(LPAREN)
+                                       : looksLikeInterfaceMethodHead(current))) {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
                 validateInterfaceCallableModifiers(memberModifiers);
                 CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);
@@ -2536,6 +2549,34 @@ public final class Parser {
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
         return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+    }
+
+    // A generic type-first field (e.g. Box<T> value;) is not a method.
+    // Inspect token kinds only; declaration validation is performed once by
+    // parseGenericParameters after admission, without speculative parsing.
+    // Reject only a distinguishable obsolete declaration header, not an
+    // ordinary callable named method() or a type-first field method value.
+    // Token-based lookahead naturally handles comments and newlines.
+    private void rejectObsoleteMethodIntroducer() {
+        if (isContextualIdentifier("method") && looksLikeInterfaceMethodHead(current + 1)) {
+            throw error(peek(), "OBSOLETE_METHOD_INTRODUCER: obsolete method introducer; use mtd");
+        }
+    }
+
+    private boolean looksLikeInterfaceMethodHead(int index) {
+        if (index + 1 >= tokens.size() || tokens.get(index).type() != IDENT) return false;
+        if (tokens.get(index + 1).type() == LPAREN) return true;
+        if (tokens.get(index + 1).type() != LT) return false;
+        int cursor = index + 2;
+        while (cursor < tokens.size() && tokens.get(cursor).type() == IDENT) {
+            cursor++;
+            if (cursor >= tokens.size()) return false;
+            if (tokens.get(cursor).type() == GT) {
+                return cursor + 1 < tokens.size() && tokens.get(cursor + 1).type() == LPAREN;
+            }
+            if (tokens.get(cursor++).type() != COMMA) return false;
+        }
+        return false;
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
@@ -9023,7 +9064,7 @@ public final class Parser {
         // may follow a semicolon-free field on a separate source line.
         Token.Type following = current + 1 < tokens.size()
                 ? tokens.get(current + 1).type() : EOF;
-        boolean markedMethod = (word.equals("method") || word.equals("mtd"))
+        boolean markedMethod = word.equals("mtd")
                 && (following == IDENT || following == LBRACKET
                     || isReservedCallableName(following)
                     || isContextualStatementCallableName(following)
@@ -9282,11 +9323,10 @@ public final class Parser {
         return true;
     }
 
-    // Both 'method' and 'mtd' are contextual class/actor markers, not global
-    // reserved tokens (the separate named-alias extension syntax also uses
-    // 'mtd'). Keep a member literally named method(...) or mtd(...) legal.
+    // Only 'mtd' is a contextual declaration marker. Neither 'mtd' nor
+    // 'method' is a reserved callable name; method(...) remains legal.
     private boolean matchExplicitMethodMarker() {
-        if (!isContextualIdentifier("method") && !isContextualIdentifier("mtd")) return false;
+        if (!isContextualIdentifier("mtd")) return false;
         // Permit the same callable names after a marker as bare methods, e.g.
         // mtd select(), mtd do(), mtd mtd(), and [Symbol.iterator]().
         // Otherwise adding an optional marker would change admissible names.
