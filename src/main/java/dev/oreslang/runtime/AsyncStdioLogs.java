@@ -17,6 +17,7 @@ import java.util.concurrent.Semaphore;
  */
 public final class AsyncStdioLogs implements AutoCloseable {
     private static final int MAX_RECORD_BYTES = 65_536;
+    // Includes the active sink record, even for zero-byte writes.
     private static final int QUEUE_CAPACITY = 1_024;
     private static final int MAX_PENDING_BARRIERS = 1_024;
     private static final int MAX_PENDING_ADMISSIONS = 64;
@@ -66,7 +67,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
 
     // All queue/sequence changes and cancellation arbitration occur under lock.
     private boolean canAdmitLocked(int bytes) {
-        return queue.remainingCapacity() > 0 && bytes <= MAX_ACCEPTED_BYTES - acceptedBytes;
+        return queue.size() + (inFlight == null ? 0 : 1) < QUEUE_CAPACITY
+                && bytes <= MAX_ACCEPTED_BYTES - acceptedBytes;
     }
 
     private void enqueueLocked(String text, int bytes, OresFuture<Void> delivery) {

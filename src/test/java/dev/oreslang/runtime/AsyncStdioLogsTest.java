@@ -108,7 +108,7 @@ final class AsyncStdioLogsTest {
             logs.logAsync("blocked\n");
             assertTrue(entered.await(2, TimeUnit.SECONDS));
             try {
-                for (int i = 0; i < 1024; i++) logs.logAsync("queued\n");
+                for (int i = 0; i < 1023; i++) logs.logAsync("queued\n");
                 IllegalStateException error = assertThrows(IllegalStateException.class,
                         () -> logs.logAsync("over capacity\n"));
                 assertTrue(error.getMessage().contains("queue is full"));
@@ -144,7 +144,7 @@ final class AsyncStdioLogsTest {
             logs.admitBuffered("first|").get(1, TimeUnit.SECONDS);
             assertTrue(entered.await(2, TimeUnit.SECONDS));
             try {
-                for (int i = 0; i < 1024; i++) {
+                for (int i = 0; i < 1023; i++) {
                     assertTrue(logs.admitBuffered("q").isDone());
                 }
                 var first = logs.admitBuffered("A");
@@ -159,12 +159,45 @@ final class AsyncStdioLogsTest {
                 second.get(3, TimeUnit.SECONDS);
                 assertFalse(first.cancel(false));
                 logs.flushAsync().get(3, TimeUnit.SECONDS);
-                assertEquals("first|" + "q".repeat(1024) + "AB", backing.toString());
+                assertEquals("first|" + "q".repeat(1023) + "AB", backing.toString());
             } finally {
                 release.countDown();
             }
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void zeroByteRecordsStillConsumeCountCapacityIncludingActiveSink() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            try {
+                logs.admitBuffered("first").get(1, TimeUnit.SECONDS);
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                for (int i = 0; i < 1023; i++) logs.admitBuffered("").get(1, TimeUnit.SECONDS);
+                var pending = logs.admitBuffered("");
+                assertFalse(pending.isDone());
+                assertEquals(1, logs.pendingAdmissionCount());
+                assertTrue(pending.cancel(false));
+                assertThrows(IllegalStateException.class, () -> logs.logAsync(""));
+                release.countDown();
+                logs.flushAsync().get(3, TimeUnit.SECONDS);
+            } finally { release.countDown(); }
         }
     }
 
@@ -270,7 +303,7 @@ final class AsyncStdioLogsTest {
             logs.admitBuffered("first").get(1, TimeUnit.SECONDS);
             assertTrue(entered.await(2, TimeUnit.SECONDS));
             try {
-                for (int i = 0; i < 1024; i++) logs.admitBuffered("q");
+                for (int i = 0; i < 1023; i++) assertTrue(logs.admitBuffered("q").isDone());
                 var pending = new java.util.ArrayList<OresFuture<Void>>();
                 for (int i = 0; i < 64; i++) pending.add(logs.admitBuffered("x"));
                 assertThrows(ExecutionException.class,
