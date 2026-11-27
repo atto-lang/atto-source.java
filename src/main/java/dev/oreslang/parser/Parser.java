@@ -7892,6 +7892,13 @@ public final class Parser {
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
+            // Grouped spawn options bind to spawn, not immutable with-update.
+            // Parse the closed grammar, but deny execution until lowering is safe.
+            if (isContextualIdentifier("with") && checkNext(LBRACE)) {
+                Token site = peek();
+                parseGroupedSpawnOptions();
+                throw error(site, "E_SPAWN_OPTIONS_UNSUPPORTED: grouped actor spawn requires typed initialization, resource admission and runtime lowering");
+            }
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
             // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
@@ -8451,6 +8458,49 @@ public final class Parser {
             args.add(parseExpression());
         } while (match(COMMA));
         return List.copyOf(args);
+    }
+
+    // Syntax-only representation: cannot enter executable Ast.Expr visitors.
+    // Ordered lists preserve source evaluation order for future typed lowering.
+    private record SpawnOptionEntry(String key, Ast.Expr value) { }
+    private record SpawnOptionSection(String name, List<SpawnOptionEntry> entries) {
+        private SpawnOptionSection { entries = List.copyOf(entries); }
+    }
+
+    private List<SpawnOptionSection> parseGroupedSpawnOptions() {
+        advance(); // contextual with, checked by the spawn primary
+        consume(LBRACE, "expected '{' after spawn with");
+        List<SpawnOptionSection> sections = new ArrayList<>();
+        java.util.Set<String> seenSections = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            Token section = consume(IDENT, "expected spawn option section");
+            String name = section.lexeme();
+            if (!List.of("schedule", "resources", "init").contains(name))
+                throw error(section, "E_SPAWN_OPTION_SECTION: unknown section " + name);
+            if (!seenSections.add(name))
+                throw error(section, "E_SPAWN_OPTION_DUPLICATE: duplicate section " + name);
+            consume(LBRACE, "expected '{' after spawn option section");
+            List<SpawnOptionEntry> entries = new ArrayList<>();
+            java.util.Set<String> seenKeys = new java.util.HashSet<>();
+            while (!check(RBRACE) && !check(EOF)) {
+                if (entries.size() >= 256)
+                    throw error(peek(), "E_SPAWN_OPTION_LIMIT: at most 256 entries per section in this parser profile");
+                Token key = consume(IDENT, "expected spawn option key");
+                String field = key.lexeme();
+                if (!seenKeys.add(field))
+                    throw error(key, "E_SPAWN_OPTION_DUPLICATE: duplicate key " + field);
+                if ((name.equals("schedule") && !List.of("max_parallelism", "affinity", "pool").contains(field))
+                        || (name.equals("resources") && !List.of("heap_size", "stack_size", "mailbox_capacity").contains(field)))
+                    throw error(key, "E_SPAWN_OPTION_KEY: unknown " + name + " key " + field);
+                consume(EQUAL, "expected '=' after spawn option key");
+                entries.add(new SpawnOptionEntry(field, parseExpression()));
+                consume(SEMICOLON, "expected ';' after spawn option value");
+            }
+            consume(RBRACE, "expected '}' after spawn option entries");
+            sections.add(new SpawnOptionSection(name, entries));
+        }
+        consume(RBRACE, "expected '}' after grouped spawn options");
+        return List.copyOf(sections);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
