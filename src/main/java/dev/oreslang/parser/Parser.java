@@ -795,7 +795,27 @@ public final class Parser {
                 || receiverType.isBorrow()) {
             throw error(previous(), "external receiver must be a non-generic nominal actor");
         }
-        String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
+        // The receiver is an implicit lexical capability, not a caller-visible
+        // argument. The canonical '(Worker)' form and explicit discard
+        // '(Worker _)' both bind the compiler-owned 'self'. A named alias
+        // remains valid for compatibility but never grants extra authority.
+        String receiverName = "self";
+        if (match(SELF)) {
+            // 'self' is a reserved token, not IDENT; preserve the explicit form.
+        } else if (!check(RPAREN)) {
+            String writtenName = consume(IDENT,
+                    "expected actor receiver name, '_', 'self' or ')'").lexeme();
+            if (!writtenName.equals("_")) {
+                if (java.util.Set.of("state", "handle_state", "on_start",
+                        "on_stop", "on_panic", "on_throw", "on_throws",
+                        "on_raise", "on_recover", "on_restart", "tear_down",
+                        "receive", "init").contains(writtenName)) {
+                    throw error(previous(),
+                            "actor receiver alias cannot shadow sealed state or runtime ingress");
+                }
+                receiverName = writtenName;
+            }
+        }
         consume(RPAREN, "expected ')' after external actor receiver");
         if (receiverFirst) {
             name = consumeCallableName("expected external actor method name after receiver");
@@ -807,8 +827,10 @@ public final class Parser {
         consume(LPAREN, "expected '(' before external receiver method parameters");
         List<Ast.Param> parameters = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after external receiver method parameters");
+        final String checkedReceiverName = receiverName;
         if (parameters.stream().anyMatch(p -> p.structural()
-                || p.name().equals(receiverName))) {
+                || p.name().equals(checkedReceiverName)
+                || p.name().equals("self"))) {
             throw error(previous(), "external receiver methods cannot use structural parameters "
                     + "or shadow the receiver binding");
         }

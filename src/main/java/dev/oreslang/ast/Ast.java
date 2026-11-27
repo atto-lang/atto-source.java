@@ -196,9 +196,40 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "external actor method requires nominal actor, receiver and method names");
             }
+            // Normalize manually constructed AST nodes as well as parser output:
+            // an underscore is a discard spelling, never an actor-local name.
+            String canonicalReceiver = receiverName.equals("_") ? "self" : receiverName;
+            // Programmatic ASTs have to pass the same identifier boundary as
+            // lexer-parsed source: an alias is not a qualified path, symbol,
+            // synthetic compiler binding, or multiple source tokens.
+            if (!(Character.isLetter(canonicalReceiver.charAt(0))
+                    || canonicalReceiver.charAt(0) == '_')) {
+                throw new IllegalArgumentException(
+                        "actor receiver alias must be one valid source identifier");
+            }
+            for (int index = 1; index < canonicalReceiver.length(); index++) {
+                char character = canonicalReceiver.charAt(index);
+                if (!(Character.isLetterOrDigit(character) || character == '_')) {
+                    throw new IllegalArgumentException(
+                            "actor receiver alias must be one valid source identifier");
+                }
+            }
+            receiverName = canonicalReceiver;
+            if (java.util.Set.of("state", "handle_state", "on_start", "on_stop",
+                    "on_panic", "on_throw", "on_throws", "on_raise",
+                    "on_recover", "on_restart", "tear_down", "receive",
+                    "init").contains(receiverName)) {
+                throw new IllegalArgumentException(
+                        "actor receiver alias cannot impersonate a sealed or lifecycle binding");
+            }
             java.util.Objects.requireNonNull(visibility, "external method visibility");
             java.util.Objects.requireNonNull(returnType, "external method return type");
             parameters = List.copyOf(parameters);
+            if (parameters.stream().anyMatch(p -> p.name().equals(canonicalReceiver)
+                    || p.name().equals("self"))) {
+                throw new IllegalArgumentException(
+                        "actor method formal cannot shadow its implicit receiver");
+            }
             body = List.copyOf(body);
         }
     }

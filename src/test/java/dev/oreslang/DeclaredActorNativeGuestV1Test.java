@@ -106,6 +106,35 @@ final class DeclaredActorNativeGuestV1Test {
     }
 
     @Test
+    void omittedAndDiscardReceiversExecuteTheRealDeclaredActorMailboxGuest()
+            throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        for (String file : new String[]{"method.atto", "start.atto", "receive.atto"}) {
+            Path source = root.resolve("src/counter/" + file);
+            String original = Files.readString(source);
+            assertTrue(original.contains("(Counter c)"), file);
+            String receiver = file.equals("start.atto") ? "(Counter _)" : "(Counter)";
+            Files.writeString(source, original.replace("(Counter c)", receiver));
+        }
+
+        Ast.Program verified = packageBuild.compileStatelessActorGuestV1();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        String sourceText = "manifest-pinned declared actor optional receiver guest";
+        String codeUnit = "declared-actor-optional-receiver.atto";
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnit)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            try (var lease = OresLanguage.openPrecheckedProgram(
+                    codeUnit, sourceText, verified)) {
+                context.eval(source);
+            }
+        }
+        assertEquals("1|7", out.toString(StandardCharsets.UTF_8),
+                "omitted and discard receiver spellings must preserve mailbox dispatch");
+    }
+
+    @Test
     void twoNativeActorsPreservePerMailboxOrderingAndIndependentCompletion()
             throws Exception {
         PackageNamespaceBuild packageBuild = build();
@@ -266,6 +295,32 @@ final class DeclaredActorNativeGuestV1Test {
         var error = assertThrows(IllegalArgumentException.class,
                 packageBuild::compileStatelessActorGuestV1);
         assertTrue(error.getMessage().contains("sealed state/critical loans"),
+                error.getMessage());
+    }
+
+    @Test
+    void omittedReceiverCannotTurnAttachedStateIntoUncheckedLegacyFields()
+            throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        write("src/counter/state.atto", NS
+                + "define state on actor Counter as { let int total : 0; }");
+        write("src/counter/method.atto", NS
+                + "pub mtd (Counter) echo(int n): int { return n; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                packageBuild::compileStatelessActorGuestV1);
+        assertTrue(error.getMessage().contains("sealed state/critical loans"),
+                error.getMessage());
+    }
+
+    @Test
+    void discardedReceiverDoesNotAuthorizePublicLifecycleIngress()
+            throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        write("src/counter/start.atto", NS
+                + "pub mtd (Counter _) on_start(): void { self.send(1); return; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                packageBuild::compileStatelessActorGuestV1);
+        assertTrue(error.getMessage().contains("must be private"),
                 error.getMessage());
     }
 
