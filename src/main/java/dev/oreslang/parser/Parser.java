@@ -7947,6 +7947,8 @@ public final class Parser {
             String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
             return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
         }
+        if (canonicalAttoSource && (check(IDENT) || check(STRING)) && colonEqualsAt(current + 1))
+            throw error(peek(), "E_PAIR_UNSUPPORTED: standalone Pair construction requires nominal typed lowering");
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(TEMPLATE_LITERAL)) return TemplateLiterals.lower(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
@@ -8201,6 +8203,7 @@ public final class Parser {
 
     private String readInlineRecordPairName() {
         String name = readInlinePairString();
+        if (canonicalAttoSource) return checkedQuotedRecordLabel(previous());
         // Use the same lexer as parameter declarations, and require exact
         // spelling, not merely one token after trivia/comment removal.
         List<Token> parts = new Lexer(name).scan();
@@ -8303,14 +8306,14 @@ public final class Parser {
                 } else {
                     Token fieldToken = peek();
                     name = consumeStaticObjectKeyName("expected static Record.of field name");
+                    if (canonicalAttoSource && fieldToken.type() == STRING)
+                        name = checkedQuotedRecordLabel(fieldToken);
                     if (check(FAT_ARROW)) {
                         throw error(peek(), "mixed record and map entries are forbidden: Record.of does not accept Entry arrows");
                     }
                     // Retain existing colon spelling for compatibility.
                     if (match(EQUAL)) {
-                        if (canonicalAttoSource && fieldToken.type() == STRING)
-                            name = checkedQuotedRecordLabel(fieldToken);
-                        else if (fieldToken.type() != IDENT)
+                        if (fieldToken.type() != IDENT && !(canonicalAttoSource && fieldToken.type() == STRING))
                             throw error(fieldToken, "Record.of equals field must be a parameter identifier");
                     } else consume(COLON, "Record.of requires '=' or legacy ':' after a field name");
                 }
@@ -8598,11 +8601,11 @@ public final class Parser {
             if (check(LPAREN) && !looksLikeLambda()) {
                 if (record && (kindAt(current + 1) == RPAREN || startsRecordItem(current + 1, true))) {
                     advance();
-                    return parseDelimitedRecord(RPAREN, true);
+                    return requireDirectRecordInitializer(parseDelimitedRecord(RPAREN, true));
                 }
                 if (type == null && startsRecordItem(current + 1, false)) {
                     advance();
-                    return parseDelimitedRecord(RPAREN, false);
+                    return requireDirectRecordInitializer(parseDelimitedRecord(RPAREN, false));
                 }
             }
             if (check(LBRACE)) {
@@ -8618,6 +8621,12 @@ public final class Parser {
             }
         }
         return parseExpression();
+    }
+
+    private Ast.ObjectExpr requireDirectRecordInitializer(Ast.ObjectExpr record) {
+        if (!check(SEMICOLON) && !check(RBRACE) && !check(EOF))
+            throw error(peek(), "E_RECORD_CONTEXT: parenthesized Record must be the complete declaration initializer");
+        return record;
     }
 
     private Ast.MapLiteralExpr parseTypedBraceMap(Ast.TypeRef type) {
@@ -8656,7 +8665,7 @@ public final class Parser {
     private Ast.Expr parseRecordFieldValue() {
         // An ungrouped second '=' cannot be a hidden assignment expression.
         Ast.Expr value = parsePipeline();
-        if (check(EQUAL))
+        if (check(EQUAL) || value instanceof Ast.AssignExpr)
             throw error(peek(), "E_RECORD_FIELD: assignment is not a Record field value");
         return value;
     }
