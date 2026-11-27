@@ -5389,10 +5389,22 @@ public final class Parser {
         List<Ast.DestructureBinding> bindings = new ArrayList<>();
         Ast.BindingKind currentKind = inheritedKind;
         boolean currentMutableReferent = inheritedMutableReferent;
+        java.util.Set<String> declaredNames = new java.util.HashSet<>();
         do {
+            if (canonicalAttoSource) {
+                // The outer policy is a default, not a rolling state.
+                currentKind = inheritedKind;
+                currentMutableReferent = inheritedMutableReferent;
+            }
             if (isBindingKind(peek().type())) {
                 currentKind = parseBindingKind();
                 currentMutableReferent = parseReferentMutability(currentKind);
+            } else if (canonicalAttoSource && match(MUT)) {
+                if (currentKind == null)
+                    throw error(previous(), "E_DESTRUCTURE_POLICY: mut requires inherited binding kind");
+                if (currentMutableReferent)
+                    throw error(previous(), "E_DESTRUCTURE_POLICY: duplicate mut");
+                currentMutableReferent = true;
             }
             boolean rest = match(ELLIPSIS);
 
@@ -5410,6 +5422,8 @@ public final class Parser {
                 throw error(peek(), "destructure binding kind must be declared before the first binding");
             }
             String name = consume(IDENT, "expected binding name in destructure").lexeme();
+            if (canonicalAttoSource && !declaredNames.add(name))
+                throw error(previous(), "E_DESTRUCTURE_DUPLICATE: duplicate binding " + name);
             bindings.add(new Ast.DestructureBinding(
                     currentKind, name, rest, currentMutableReferent));
             if (rest && check(COMMA)) {
@@ -5418,6 +5432,8 @@ public final class Parser {
         } while (match(COMMA));
 
         consume(close, kind == Ast.DestructureKind.SEQUENCE ? "expected ']'" : "expected '}'");
+        if (canonicalAttoSource && check(AS))
+            throw error(peek(), "E_DESTRUCTURE_CAPTURE_UNSUPPORTED: aggregate capture requires checked path ownership and lowering");
         consume(EQUAL, "expected '=' after destructure pattern");
         Ast.Expr initializer = parseExpression();
         consumeExpressionStatementTerminator(initializer, "destructure should end with ';'");
@@ -5448,7 +5464,8 @@ public final class Parser {
             else if (type == close) {
                 depth--;
                 if (depth == 0) {
-                    return i + 1 < tokens.size() && tokens.get(i + 1).type() == EQUAL;
+                    return i + 1 < tokens.size() && (tokens.get(i + 1).type() == EQUAL
+                            || canonicalAttoSource && tokens.get(i + 1).type() == AS);
                 }
             }
         }
