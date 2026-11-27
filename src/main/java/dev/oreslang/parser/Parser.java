@@ -5226,9 +5226,9 @@ public final class Parser {
         } else if (looksLikeNamedCallableBindingSignature()) {
             name = advance().lexeme();
             type = parseNamedCallableBindingSignature();
-        } else if (check(IDENT) && checkNext(COLON)) {
+        } else if (check(IDENT) && (checkNext(COLON) || checkNext(AS))) {
             name = advance().lexeme();
-            consume(COLON, "expected ':' after binding name");
+            advance(); // name-first ':' or 'as' type annotation; not an expression cast
             type = parseTypeRef();
         } else if (check(IDENT) && checkNext(EQUAL)) {
             name = advance().lexeme();
