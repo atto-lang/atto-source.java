@@ -112,4 +112,44 @@ final class ActorFlatMachineParserTest {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(src));
         }
     }
+
+    private static String sharedFixture(String name) throws java.io.IOException {
+        try (var in = ActorFlatMachineParserTest.class.getResourceAsStream(
+                "/actor-machine-inspection-v1/" + name + ".atto")) {
+            assertNotNull(in);
+            return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test void sharedInspectionVectorsHaveCanonicalGraphOrder() throws java.io.IOException {
+        String cycle = sharedFixture("flat-cycle"), order = sharedFixture("flat-order");
+        var actor = Parser.inspectActorMachines(cycle).get(0);
+        var graph = actor.machine();
+        assertEquals(0, graph.initial());
+        assertEquals("Idle", graph.nodes().get(0).name());
+        assertEquals(java.util.List.of(new Parser.FlatMachineEdge("Start", 1)), graph.nodes().get(0).transitions());
+        assertEquals("Running", graph.nodes().get(1).name());
+        assertEquals(java.util.List.of(new Parser.FlatMachineEdge("Stop", 0)), graph.nodes().get(1).transitions());
+        actor = Parser.inspectActorMachines(order).get(0);
+        graph = actor.machine();
+        assertTrue(actor.storageDeclared());
+        assertTrue(actor.storage().isEmpty());
+        assertEquals(1, graph.initial());
+        assertEquals("Alpha", graph.nodes().get(0).name());
+        assertTrue(graph.nodes().get(0).terminal());
+        assertTrue(graph.nodes().get(0).transitions().isEmpty());
+        assertEquals("Zed", graph.nodes().get(1).name());
+        assertEquals(java.util.List.of(new Parser.FlatMachineEdge("AlphaEvent", 0),
+                new Parser.FlatMachineEdge("Zulu", 1)), graph.nodes().get(1).transitions());
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(cycle));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(order));
+    }
+
+    @Test void sharedStorageVectorsRejectInvalidInitializers() throws java.io.IOException {
+        for (String name : new String[]{"wrong-scalar", "effectful-initializer"}) {
+            String src = sharedFixture(name);
+            assertThrows(IllegalArgumentException.class, () -> Parser.inspectActorMachines(src));
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(src));
+        }
+    }
 }
