@@ -66,7 +66,7 @@ pub fnc main():int { let mut p = Point(1, 2); let q = Point(4, 6); let mut Recta
     @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="ATTO_SEVEN_FIXTURES",matches=".+")
     void executeExactSharedSevenTargetSources() throws java.io.IOException {
         var root=java.nio.file.Path.of(System.getenv("ATTO_SEVEN_FIXTURES"));
-        int positive=0, negative=0;
+        int positive=0, negative=0, overflow=0;
         for(String line:java.nio.file.Files.readAllLines(root.resolve("manifest.tsv"))) {
             String[] fields=line.split("\\t",-1);
             assertEquals(2,fields.length);
@@ -78,13 +78,18 @@ pub fnc main():int { let mut p = Point(1, 2); let q = Point(4, 6); let mut Recta
             }
             String lowered=AttachedStructScalarLowering.lowerChecked(source);
             try(Context context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+                if(fields[1].equals("overflow")) {
+                    var failure=assertThrows(org.graalvm.polyglot.PolyglotException.class,()->context.eval(Source.newBuilder(OresLanguage.ID,lowered,fields[0]).mimeType(OresLanguage.MIME_TYPE).buildLiteral()),fields[0]);
+                    assertTrue(failure.getMessage().toLowerCase(java.util.Locale.ROOT).contains("overflow"),failure.getMessage());
+                    overflow++;continue;
+                }
                 var result=context.eval(Source.newBuilder(OresLanguage.ID,lowered,fields[0]).mimeType(OresLanguage.MIME_TYPE).buildLiteral());
                 assertEquals(Long.parseLong(fields[1]),result.asLong(),fields[0]);
             }
             positive++;
         }
-        assertEquals(3,positive);assertEquals(8,negative);
-        System.out.println("SEVEN_TARGET_RECEIPT target=java positive="+positive+" reject="+negative);
+        assertEquals(4,positive);assertEquals(9,negative);assertEquals(2,overflow);
+        System.out.println("SEVEN_TARGET_RECEIPT target=java positive="+positive+" reject="+negative+" overflow="+overflow);
     }
     @Test void actualCheckedJavaGuest() {
         String lowered=AttachedStructScalarLowering.lowerChecked(SOURCE);
