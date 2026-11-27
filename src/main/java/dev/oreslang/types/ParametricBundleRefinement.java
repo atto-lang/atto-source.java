@@ -33,6 +33,29 @@ final class ParametricBundleRefinement {
         return bind(schema, first, additional, false);
     }
 
+    /** Resolve explicit inherited-slot holes from already checked unique evidence.
+     * No default fallback, implicit seed replacement, or partial publication. */
+    static <V> Map<String, V> refineInferred(List<Formal<V>> schema,
+            List<Argument<V>> seed, List<Argument<V>> replacements,
+            List<String> holes, List<Argument<V>> evidence) {
+        Map<String, V> base = apply(schema, seed, List.of());
+        Map<String, V> explicit = apply(schema, replacements, List.of());
+        Map<String, V> observed = apply(schema, evidence, List.of());
+        java.util.Set<String> requested = new java.util.HashSet<>();
+        for (String hole : holes) {
+            if (!requested.add(hole) || !base.containsKey(hole)
+                    || explicit.containsKey(hole)) {
+                throw new IllegalArgumentException("invalid inherited inference hole: " + hole);
+            }
+        }
+        if (!observed.keySet().equals(requested)) {
+            throw new IllegalArgumentException("missing or unexpected inference evidence");
+        }
+        java.util.ArrayList<Argument<V>> updates = new java.util.ArrayList<>(replacements);
+        for (String hole : holes) updates.add(new Argument<>(hole, observed.get(hole)));
+        return refine(schema, seed, updates);
+    }
+
     private static <V> Map<String, V> bind(List<Formal<V>> schema,
             List<Argument<V>> seed, List<Argument<V>> replacements, boolean refine) {
         Map<String, Formal<V>> formals = new LinkedHashMap<>();
