@@ -42,7 +42,8 @@ public final class IncrementalCompiler {
     private final Map<String, List<ImportBinding>> importBindingCache = new LinkedHashMap<>();
     private final Map<String, List<ImportBinding>> strictAttoImportBindingCache = new LinkedHashMap<>();
     private record ImportBinding(Ast.ImportDecl declaration, String resolvedTarget) { }
-    private PackageLayout layout = PackageLayout.NONE;
+    private PackageLayout legacyLayout = PackageLayout.NONE;
+    private PackageLayout strictLayout = PackageLayout.NONE;
 
     // Raw AST is the input to semantic analysis (which expands annotations
     // itself). The expanded AST is used for graph linking and ABI indexing.
@@ -58,7 +59,7 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
-        return compileWithProfile(sources, importResolutions, false);
+        return compileWithProfile(sources, importResolutions, false, PackageLayout.NONE);
     }
 
     /**
@@ -70,13 +71,7 @@ public final class IncrementalCompiler {
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions,
             PackageLayout packageLayout) {
-        if (packageLayout == null) throw new IllegalArgumentException("package layout cannot be null");
-        if (!packageLayout.equals(layout)) {
-            // Namespace and package identity are part of every checked unit.
-            clear();
-            layout = packageLayout;
-        }
-        return compileWithProfile(sources, importResolutions, false);
+        return compileWithProfile(sources, importResolutions, false, packageLayout);
     }
 
     /**
@@ -91,13 +86,23 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compileStrictAtto(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
-        return compileWithProfile(sources, importResolutions, true);
+        return compileWithProfile(sources, importResolutions, true, PackageLayout.NONE);
+    }
+
+    /** Strict package-aware admission uses an explicit layout, never ambient legacy state. */
+    public synchronized BuildResult compileStrictAtto(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            PackageLayout packageLayout) {
+        return compileWithProfile(sources, importResolutions, true, packageLayout);
     }
 
     private BuildResult compileWithProfile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions,
-            boolean strictAtto) {
+            boolean strictAtto,
+            PackageLayout layout) {
+        if (layout == null) throw new IllegalArgumentException("package layout cannot be null");
         if (sources == null) throw new IllegalArgumentException("sources cannot be null");
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
         Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
@@ -105,18 +110,28 @@ public final class IncrementalCompiler {
                 strictAtto ? strictAttoParsedCache : parsedCache;
         Map<String, List<ImportBinding>> selectedBindingCache =
                 strictAtto ? strictAttoImportBindingCache : importBindingCache;
+        boolean sameLayout = layout.equals(strictAtto ? strictLayout : legacyLayout);
+        // Layout changes cannot reuse old ASTs or checked units, but retain the
+        // committed snapshot until the new layout passes all admission checks.
+        Map<String, Map<String, String>> normalizedImportResolutions =
+                normalizeImportResolutions(importResolutions);
         if (sources.isEmpty()) {
+            if (!normalizedImportResolutions.isEmpty())
+                throw new IllegalArgumentException("import resolutions require a nonempty source inventory");
             // The input map is a complete source snapshot, including removals.
             // A later re-add must not reuse a checked result for deleted files.
             selectedCache.clear();
             selectedParsedCache.clear();
             selectedBindingCache.clear();
+            if (strictAtto) strictLayout = layout; else legacyLayout = layout;
             return new BuildResult(Map.of(), Set.of(), Set.of(), List.of(), Set.of());
         }
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
             String id = normalizeUnitId(entry.getKey());
+            if (entry.getValue() == null)
+                throw new IllegalArgumentException("source unit cannot be null: '" + id + "'");
             if (normalized.putIfAbsent(id, entry.getValue()) != null) {
                 throw new IllegalArgumentException("duplicate source unit '" + id + "'");
             }
@@ -135,7 +150,7 @@ public final class IncrementalCompiler {
             String id = entry.getKey();
             String sourceDigest = digest(entry.getValue());
             hashes.put(id, sourceDigest);
-            ParsedUnit previous = selectedParsedCache.get(id);
+            ParsedUnit previous = sameLayout ? selectedParsedCache.get(id) : null;
             ParsedUnit unit;
             if (previous != null && previous.sourceDigest().equals(sourceDigest)) {
                 unit = previous;
@@ -159,8 +174,6 @@ public final class IncrementalCompiler {
             abiHashes.put(id, unit.abiDigest());
         }
 
-        Map<String, Map<String, String>> normalizedImportResolutions =
-                normalizeImportResolutions(importResolutions);
         if (strictAtto) {
             for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
                 String unitId = entry.getKey();
@@ -212,7 +225,7 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
-            CompiledUnit previous = selectedCache.get(id);
+            CompiledUnit previous = sameLayout ? selectedCache.get(id) : null;
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
             boolean bindingsChanged = previous == null
@@ -250,7 +263,7 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> reused = new LinkedHashSet<>();
 
         for (String id : normalized.keySet()) {
-            if (!dirty.contains(id) && selectedCache.containsKey(id)) {
+            if (sameLayout && !dirty.contains(id) && selectedCache.containsKey(id)) {
                 next.put(id, selectedCache.get(id));
                 reused.add(id);
                 continue;
@@ -311,6 +324,7 @@ public final class IncrementalCompiler {
         selectedParsedCache.putAll(stagedParsed);
         selectedBindingCache.clear();
         selectedBindingCache.putAll(resolvedBindings);
+        if (strictAtto) strictLayout = layout; else legacyLayout = layout;
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
@@ -547,6 +561,8 @@ public final class IncrementalCompiler {
         strictAttoParsedCache.clear();
         importBindingCache.clear();
         strictAttoImportBindingCache.clear();
+        legacyLayout = PackageLayout.NONE;
+        strictLayout = PackageLayout.NONE;
     }
 
     /**
@@ -1120,7 +1136,8 @@ public final class IncrementalCompiler {
                             "conflicting resolved import '" + resolution.getKey() + "' for '" + importerId + "'");
                 }
             }
-            normalized.put(importerId, Map.copyOf(imports));
+            if (normalized.putIfAbsent(importerId, Map.copyOf(imports)) != null)
+                throw new IllegalArgumentException("duplicate normalized importer '" + importerId + "'");
         }
         return Map.copyOf(normalized);
     }

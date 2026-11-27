@@ -700,6 +700,7 @@ public final class Parser {
         // Until the package graph linker is implemented, ImportRules rejects
         // this tag before any filesystem or host-class resolution.
         if (identity == null || identity.isBlank() || identity.length() > 4096
+                || identity.startsWith("namespace:")
                 || identity.contains("..") || identity.endsWith(".")
                 || identity.indexOf('\\') >= 0
                 || identity.chars().anyMatch(Character::isISOControl)) {
@@ -721,6 +722,29 @@ public final class Parser {
     }
 
     private Ast.ImportDecl parseImport() {
+        // Namespace selection is not a file/module wildcard. Keep the source
+        // namespace and package identity in a reserved, non-filesystem tag.
+        // ImportRules still rejects execution until a validated graph linker
+        // explicitly consumes this selector.
+        if (match(NAMESPACE)) {
+            String selected=consumeImportAlias("expected imported namespace");
+            String last=selected;
+            while(match(DOT)){
+                last=consumeImportAlias("expected namespace segment after '.'");
+                selected += "."+last;
+                if(selected.length()>512)throw error(previous(),"namespace selector too long");
+            }
+            String alias=match(AS)?consumeImportAlias("expected namespace alias"):last;
+            consume(FROM,"expected 'from' in namespace import");
+            if(check(IDENT)&&"pkg".equals(peek().lexeme()))advance();
+            String identity=consume(STRING,"expected quoted package identity").lexeme();
+            if(!identity.matches("[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")||identity.contains("..")||identity.endsWith("."))
+                throw error(previous(),"invalid namespace package alias");
+            consume(SEMICOLON,"expected ';' after namespace import");
+            return new Ast.ImportDecl(Ast.ImportKind.ALL,List.of(),true,alias,
+                dev.oreslang.imports.ImportRules.NAMESPACE_PACKAGE_PREFIX+identity+":"+selected);
+        }
+
         // Backend-qualified sugar for the existing capability-gated class import.
         // Produce the identical AST as: import class Math as M from "java:java.lang.Math".
         // No host class is resolved or initialized by this parser.
@@ -798,6 +822,9 @@ public final class Parser {
         if (isPackage) advance();
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
+        if (path.startsWith(dev.oreslang.imports.ImportRules.NAMESPACE_PACKAGE_PREFIX)
+                || (isPackage && path.startsWith("namespace:")))
+            throw error(previous(),"reserved namespace selector cannot be supplied as an import path");
         if (isPackage) path = packageImportPath(path);
         consume(SEMICOLON, "expected ';' after import");
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
