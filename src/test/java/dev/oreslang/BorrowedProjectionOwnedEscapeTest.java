@@ -37,4 +37,25 @@ final class BorrowedProjectionOwnedEscapeTest {
         assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
                 + "fnc valid(): Leaf { return new Leaf(); }")));
     }
+    @Test void nestedCopyScalarReadThroughBorrowRemainsLegal() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
+                + "fnc valid(borrow Wrapper input): int { return input.parcel.child.number; }")));
+    }
+    @Test void borrowedProjectionCannotEscapeThroughOwnedArgument() {
+        reject("fnc consume(Leaf value): int { return value.number; } "
+                + "fnc bad(borrow Wrapper input): int { return consume(input.parcel.child); }");
+    }
+    @Test void scalarSnapshotCanBeUsedToConstructFreshOwnedObject() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
+                + "define class Snapshot as pub val int number; end "
+                + "fnc valid(borrow Wrapper input): Snapshot { "
+                + "return new Snapshot(input.parcel.child.number); }")));
+    }
+    @Test void borrowedArrayElementCannotBecomeOwnedReturn() {
+        reject("fnc bad(borrow Array<Leaf> input): Leaf { return input[0]; }");
+    }
+    @Test void scalarArrayElementReadThroughBorrowRemainsLegal() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
+                + "fnc valid(borrow Array<int> input): int { return input[0]; }")));
+    }
 }
