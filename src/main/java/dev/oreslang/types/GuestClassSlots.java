@@ -94,13 +94,13 @@ public final class GuestClassSlots {
             throw new IllegalArgumentException("E_COPY_BUDGET: invalid graph limits");
         }
         synchronized (domain) {
-            GraphLease lease = prepareDescendants(maxNodes, maxEdges);
+            GraphLease lease = prepareDescendants(maxNodes, maxEdges, false);
             activate(lease);
             return lease;
         }
     }
 
-    private GraphLease prepareDescendants(int maxNodes, int maxEdges) {
+    private GraphLease prepareDescendants(int maxNodes, int maxEdges, boolean rejectRootBackEdge) {
             if (initializing) throw new IllegalStateException("E_COPY_LAYOUT: unpublished root");
             var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
             var pending = new ArrayDeque<GuestClassSlots>();
@@ -108,6 +108,11 @@ public final class GuestClassSlots {
             int edges = enqueueChildren(this, pending, 0, maxEdges);
             while (!pending.isEmpty()) {
                 GuestClassSlots store = pending.removeFirst();
+                // Diagnose a forbidden source back-edge before charging it as
+                // a descendant or scanning its already-visited root slots.
+                if (rejectRootBackEdge && store == this) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: source root reachable from shared descendant");
+                }
                 if (seen.put(store, Boolean.TRUE) != null) continue;
                 if (ordered.size() >= maxNodes) throw new IllegalArgumentException("E_COPY_BUDGET: graph node limit");
                 if (store.domain != domain) throw new IllegalArgumentException("E_COPY_DOMAIN: foreign class slot store");
@@ -229,14 +234,7 @@ public final class GuestClassSlots {
             throw new IllegalArgumentException("E_COPY_BUDGET: invalid graph limits");
         }
         synchronized (domain) {
-            GraphLease lease = prepareDescendants(maxNodes, maxEdges);
-            // A back-edge to the source would freeze its own root slots and
-            // violate independent source/copy replacement. Reject before any
-            // lease activation or publication; retainDescendants itself still
-            // supports cycles for callers that need an ordinary read loan.
-            if (lease.protectedStores.contains(this)) {
-                throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: source root reachable from shared descendant");
-            }
+            GraphLease lease = prepareDescendants(maxNodes, maxEdges, true);
             GuestClassSlots copy = new GuestClassSlots(domain, slots);
             copy.finishInitialization();
             ShallowSnapshot result = new ShallowSnapshot(this, copy, lease, maxNodes, maxEdges);
