@@ -6586,7 +6586,7 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
-        Ast.Expr expr = parsePipeline();
+        Ast.Expr expr = parseAssociation();
         rejectUnsupportedActorPipeline();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
@@ -6595,6 +6595,36 @@ public final class Parser {
             return new Ast.AssignExpr(expr, parseAssignment());
         }
         return expr;
+    }
+
+    /** Nonassociative product operators are outside the ordinary pipeline
+     *  precedence. Pair keys are lexical; Entry keys are expressions.
+     *  Nested products need their own grouping. Do not consume the map
+     *  entry delimiter in parseMapOperand (it deliberately calls parsePipeline).
+     */
+    private Ast.Expr parseAssociation() {
+        if (!canonicalAttoSource) return parsePipeline();
+        if ((check(IDENT) || check(STRING)) && colonEqualsAt(current + 1)) {
+            String key = advance().lexeme();
+            advance(); advance(); // adjacent colon and equals
+            Ast.Expr value = parsePipeline();
+            rejectAssociationTail();
+            return new Ast.PairExpr(key, value);
+        }
+        Ast.Expr key = parsePipeline();
+        if (match(FAT_ARROW)) {
+            Ast.Expr value = parsePipeline();
+            rejectAssociationTail();
+            return new Ast.EntryExpr(key, value);
+        }
+        if (colonEqualsAt(current))
+            throw error(peek(), "E_PRODUCT_KEY: Pair key must be a bare identifier or string literal");
+        return key;
+    }
+
+    private void rejectAssociationTail() {
+        if (check(FAT_ARROW) || colonEqualsAt(current))
+            throw error(peek(), "E_PRODUCT_CHAIN: group nested Pair/Entry associations explicitly");
     }
 
     /**
@@ -7947,8 +7977,6 @@ public final class Parser {
             String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
             return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
         }
-        if (canonicalAttoSource && (check(IDENT) || check(STRING)) && colonEqualsAt(current + 1))
-            throw error(peek(), "E_PAIR_UNSUPPORTED: standalone Pair construction requires nominal typed lowering");
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(TEMPLATE_LITERAL)) return TemplateLiterals.lower(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
@@ -8135,7 +8163,7 @@ public final class Parser {
         if (canonicalAttoSource && match(LBRACE)) {
             if (check(RBRACE)) throw error(peek(), "E_EMPTY_AGGREGATE: empty braces require an explicit aggregate declaration");
             if (startsRecordItem(current, true)) return parseDelimitedRecord(RBRACE, true);
-            throw error(peek(), "E_MAP_LITERAL_UNSUPPORTED: brace Map needs a direct typed Map<K,V> declaration in this parser slice");
+            return parseTypedBraceMap(null);
         }
         if (match(LBRACKET)) {
             List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
@@ -8261,9 +8289,9 @@ public final class Parser {
                 value = parseExpression();
                 consume(RPAREN, "product factory requires exactly two arguments");
             } else {
-                key = parseExpression();
+                key = canonicalAttoSource ? parseMapOperand() : parseExpression();
                 consume(FAT_ARROW, "map literals require '=>' between key and value");
-                value = parseExpression();
+                value = canonicalAttoSource ? parseMapValue() : parseExpression();
             }
             // Reject mixed-kind constant duplicates in the new factory syntax.
             // Preserve legacy homogeneous arrow duplicate detection at runtime.
@@ -8637,16 +8665,63 @@ public final class Parser {
         do {
             if (startsRecordItem(current, true))
                 throw error(peek(), "E_LITERAL_KIND: mixed Map and Record items");
-            Ast.Expr key = parseRecordFieldValue();
+            Ast.Expr key = parseMapOperand();
             consume(FAT_ARROW, "expected '=>' after Map key");
-            Ast.Expr value = parseRecordFieldValue();
+            Ast.Expr value = parseMapValue();
             entries.add(new Ast.MapLiteralEntry(key, value));
             if (entries.size() > 4096)
                 throw error(peek(), "E_SOURCE_LIMIT: Map exceeds 4096 entries");
             if (!match(COMMA)) break;
         } while (!check(RBRACE));
         consume(RBRACE, "expected '}' after Map literal");
+        // Initial inferred domain: nonempty homogeneous literal scalar entries
+        // only. Reuse the existing checked Map witness; never infer from an
+        // expected call type or silently fall back to Any/Any.
+        if (type == null) type = inferLiteralMapWitness(entries);
         return new Ast.MapLiteralExpr(type, entries);
+    }
+
+    private Ast.Expr parseMapOperand() {
+        Ast.Expr expr = parsePipeline();
+        if (check(EQUAL) || expr instanceof Ast.AssignExpr || colonEqualsAt(current))
+            throw error(peek(), "E_MAP_OPERAND: assignment or ungrouped Pair is not a Map operand");
+        return expr;
+    }
+
+    private Ast.Expr parseMapValue() {
+        Ast.Expr expr = parseMapOperand();
+        rejectAssociationTail();
+        return expr;
+    }
+
+    private Ast.TypeRef inferLiteralMapWitness(List<Ast.MapLiteralEntry> entries) {
+        if (shadowedOfTypes.contains("Map"))
+            throw error(previous(), "E_MAP_INFERENCE: canonical Map is shadowed");
+        String key = null;
+        String value = null;
+        for (Ast.MapLiteralEntry entry : entries) {
+            String k = literalMapScalarType(entry.key());
+            String v = literalMapScalarType(entry.value());
+            if (!"string".equals(k) && !"Symbol".equals(k)
+                    || v == null || key != null && !key.equals(k)
+                    || value != null && !value.equals(v))
+                throw error(previous(), "E_MAP_INFERENCE: homogeneous String/Symbol keys and literal scalar values required; use an explicit supported Map<K,V> witness");
+            key = k;
+            value = v;
+        }
+        if (key == null || value == null)
+            throw error(previous(), "E_EMPTY_AGGREGATE: empty Map requires an explicit declaration");
+        return new Ast.TypeRef("Map", List.of(Ast.TypeRef.simple(key), Ast.TypeRef.simple(value)), false);
+    }
+
+    private static String literalMapScalarType(Ast.Expr expression) {
+        if (!(expression instanceof Ast.LiteralExpr literal)) return null;
+        Object value = literal.value();
+        if (value instanceof String) return "string";
+        if (value instanceof Long || value instanceof Integer) return "int";
+        if (value instanceof Boolean) return "bool";
+        if (value instanceof dev.oreslang.runtime.OresSymbol) return "Symbol";
+        return null;
     }
 
     private String checkedQuotedRecordLabel(Token label) {
@@ -8671,7 +8746,7 @@ public final class Parser {
 
     private Ast.Expr parseRecordFieldValue() {
         // An ungrouped second '=' cannot be a hidden assignment expression.
-        Ast.Expr value = parsePipeline();
+        Ast.Expr value = parseAssociation();
         if (check(EQUAL) || value instanceof Ast.AssignExpr)
             throw error(peek(), "E_RECORD_FIELD: assignment is not a Record field value");
         return value;
