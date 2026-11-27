@@ -184,6 +184,18 @@ final class PipelineMatchExpressionTest {
     }
 
     @Test
+    void delimitedSubjectAndNamedPatternHaveIdenticalAst() {
+        var plain = Parser.parseStrictAtto(
+                "const Pattern p = on 5; fnc f(int n): int { return match n over on p -> 42, on _ -> 0 end; }");
+        var delimited = Parser.parseStrictAtto(
+                "const Pattern p = on 5; fnc f(int n): int { return match |n| over on p -> 42, on _ -> 0 end; }");
+        var direct = Parser.parseStrictAtto(
+                "fnc f(int n): int { return match n over on 5 -> 42, on _ -> 0 end; }");
+        assertEquals(plain, delimited);
+        assertEquals(direct, plain);
+    }
+
+    @Test
     void braceDelimitedResultMatchContinuesPipeline() {
         String source = """
                 fnc increment(int n): int { return n + 1; }
