@@ -49,3 +49,37 @@ test("borrow fixtures are explicitly unexecuted semantic candidates",()=>{
     }
   }
 });
+
+test("decimal formatter uses scalar powers and bounded signed arithmetic (host model only)",()=>{
+  const code=stripComments(source("stdlib/alloc/text_fmt.atto"));
+  const decimal=code.slice(code.indexOf("pub fnc format_int("),code.indexOf("pub fnc format_hex_byte("));
+  assert.doesNotMatch(decimal,/\b(?:val|let)\s+powers\s*=\s*arr/);
+  assert.match(decimal,/while power < 0/);
+  assert.match(decimal,/remaining \/ power/);
+  assert.match(decimal,/remaining = remaining - power \* digit/);
+  assert.match(decimal,/power = power \/ 10/);
+  const min=-(1n<<63n),max=(1n<<63n)-1n;
+  const model=value=>{
+    if(value===0n)return "0";
+    let remaining=value>0n?-value:value,power=-1000000000000000000n,result="";
+    while(power<0n){
+      const digit=remaining/power,product=power*digit;
+      assert.ok(digit>=0n&&digit<=9n);
+      assert.ok(product>=min&&product<=max);
+      remaining-=product;
+      assert.ok(remaining>=min&&remaining<=max);
+      if(digit>0n||result!=="")result+=String(digit);
+      power/=10n;
+    }
+    return value<0n?"-"+result:result;
+  };
+  const values=[min,max,0n,1n,-1n];
+  for(let p=1n;p<=1000000000000000000n;p*=10n)
+    for(const d of [-1n,0n,1n])values.push(p+d,-(p+d));
+  let state=1234567n;
+  for(let i=0;i<10000;i++){
+    state=BigInt.asUintN(64,state*6364136223846793005n+1442695040888963407n);
+    values.push(BigInt.asIntN(64,state));
+  }
+  for(const value of values)assert.equal(model(value),String(value));
+});
