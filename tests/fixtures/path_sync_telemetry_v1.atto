@@ -71,11 +71,11 @@ pub routine main(): void {
   stdio.println(item.parent_component_count());
   stdio.println(item.is_canonical());
   stdio.println(item.is_portable());
-  stdio.println(item.can_join("deep/file.txt"));
+  stdio.println(path.can_join(rt borrow item, "deep/file.txt"));
   val clean = path.relative_path("archive.tar.gz", true);
   stdio.println(clean.extension_offset());
   stdio.println(clean.stem_length());
   stdio.println(clean.is_canonical());
-  stdio.println(clean.can_join("parts"));
+  stdio.println(path.can_join(rt borrow clean, "parts"));
   return;
 }

@@ -264,69 +264,98 @@ define module path as
   // Immutable lexical Path value. The object is NOT a filesystem handle,
   // cannot authorize I/O, and never resolves symlinks/mounts.
   // The original spelling is retained for bounded scalar component views.
+  // relative_path() computes every lexical view once; the class only stores
+  // them (Java runtime: class code must not call loop-bearing module helpers).
   pub define class Path as
     let String spelling;
     let bool windows;
+    let int depth;
+    let Array<int> starts;
+    let Array<int> lengths;
+    let int name_start;
+    let int name_length;
+    let int ext_start;
+    let int stem_size;
+    let int parent;
+    let bool canonical;
+    let bool portable;
 
-    pub constructor(String spelling, bool windows) {
-      if normalized_depth(spelling, windows) < 0; do
+    // Module-private: only relative_path() constructs a validated Path.
+    constructor(String spelling, bool windows, int depth,
+                Array<int> starts, Array<int> lengths,
+                int name_start, int name_length, int ext_start, int stem_size,
+                int parent, bool canonical, bool portable) {
+      if depth < 0; do
         rt fail("std/path: invalid relative path");
       fi
       self.spelling = spelling;
       self.windows = windows;
+      self.depth = depth;
+      self.starts = starts;
+      self.lengths = lengths;
+      self.name_start = name_start;
+      self.name_length = name_length;
+      self.ext_start = ext_start;
+      self.stem_size = stem_size;
+      self.parent = parent;
+      self.canonical = canonical;
+      self.portable = portable;
     }
 
-    pub fnc component_count(): int {
-      return normalized_depth(self.spelling, self.windows);
-    }
+    pub fnc text(): String { return self.spelling; }
+    pub fnc uses_windows_rules(): bool { return self.windows; }
+    pub fnc component_count(): int { return self.depth; }
 
     pub fnc component_start(int index): int {
-      return normalized_component_start(self.spelling, self.windows, index);
+      if index < 0 || index >= self.depth then return -1; fi
+      return self.starts.get(index);
     }
 
     pub fnc component_length(int index): int {
-      return normalized_component_length(self.spelling, self.windows, index);
+      if index < 0 || index >= self.depth then return -1; fi
+      return self.lengths.get(index);
     }
 
     pub fnc component_scalar(int index, int offset): int {
-      return normalized_component_scalar(self.spelling, self.windows, index, offset);
+      if index < 0 || index >= self.depth then return -1; fi
+      val int start = self.starts.get(index);
+      val int length = self.lengths.get(index);
+      if start < 0 || offset < 0 || offset >= length then return -1; fi
+      val points = self.spelling.codepoints();
+      return points.get(start + offset);
     }
 
-    pub fnc file_name_offset(): int {
-      return file_name_start(self.spelling, self.windows);
-    }
-
-    pub fnc file_name_size(): int {
-      return file_name_length(self.spelling, self.windows);
-    }
-
-    pub fnc extension_offset(): int {
-      return extension_start(self.spelling, self.windows);
-    }
-
-    pub fnc stem_length(): int {
-      return file_stem_length(self.spelling, self.windows);
-    }
-
-    pub fnc parent_component_count(): int {
-      return parent_depth(self.spelling, self.windows);
-    }
-
-    pub fnc is_canonical(): bool {
-      return is_canonical_relative(self.spelling, self.windows);
-    }
-
-    pub fnc is_portable(): bool {
-      return is_portable_relative(self.spelling);
-    }
-
-    pub fnc can_join(String child): bool {
-      return join_admissible(self.spelling, child, self.windows);
-    }
+    pub fnc file_name_offset(): int { return self.name_start; }
+    pub fnc file_name_size(): int { return self.name_length; }
+    pub fnc extension_offset(): int { return self.ext_start; }
+    pub fnc stem_length(): int { return self.stem_size; }
+    pub fnc parent_component_count(): int { return self.parent; }
+    pub fnc is_canonical(): bool { return self.canonical; }
+    pub fnc is_portable(): bool { return self.portable; }
   end
 
   pub fnc relative_path(String spelling, bool windows): Path {
-    return new Path(spelling, windows);
+    let int depth = normalized_depth(spelling, windows);
+    if depth < 0; do
+      rt fail("std/path: invalid relative path");
+    fi
+    let mut Array<int> starts = new Array<int>();
+    let mut Array<int> lengths = new Array<int>();
+    for (let int i = 0; i < depth; i = i + 1) {
+      starts.add(normalized_component_start(spelling, windows, i));
+      lengths.add(normalized_component_length(spelling, windows, i));
+    }
+    return new Path(spelling, windows, depth, rt take starts, rt take lengths,
+        file_name_start(spelling, windows), file_name_length(spelling, windows),
+        extension_start(spelling, windows), file_stem_length(spelling, windows),
+        parent_depth(spelling, windows), is_canonical_relative(spelling, windows),
+        is_portable_relative(spelling));
+  }
+
+  // Whether child may be appended to base (bounded depth and size).
+  pub fnc can_join(borrow Path base, String child): bool {
+    let bool admissible = join_admissible(base.text(), child, base.uses_windows_rules());
+    return admissible;
   }
 
   // Conformance-v1 lexical scalar ABI. This is NOT an OS path authority.
