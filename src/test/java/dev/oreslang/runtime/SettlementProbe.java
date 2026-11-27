@@ -34,6 +34,16 @@ final class SettlementProbe {
         }
     }
     public static void main(String[] args) throws Exception {
+        var empty = new ActorContinuationLedger(1);
+        check(!empty.retirementReady());
+        empty.sealOrdinary();
+        check(!empty.retirementReady());
+        var cleanup = empty.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {});
+        empty.sealAll();
+        check(!empty.retirementReady());
+        cleanup.close();
+        check(empty.retirementReady());
+        rejected(() -> empty.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}));
         for (int round = 0; round < 10; round++) {
             Owner[] owners = new Owner[64];
             try {
@@ -44,6 +54,7 @@ final class SettlementProbe {
                     rejected(() -> o.ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}));
                     o.ledger.sealOrdinary();
                     o.pending.run(); o.receipt.close();
+                    check(!o.ledger.retirementReady());
                     check(o.calls.get() == 0 && o.releases.get() == 1);
                     rejected(o.receipt::run);
                     check(o.ledger.snapshot().running() == 1);
@@ -60,7 +71,11 @@ final class SettlementProbe {
                         rejected(() -> o.ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}));
                     } else { o.ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}).close(); }
                     o.receipt.close(); check(o.releases.get() == 1);
-                    if (i > 0) check(owners[i-1].ledger.snapshot().running() == 1 && !owners[i-1].ledger.hasReleaseFailure());
+                    check(!o.ledger.retirementReady());
+                    o.ledger.sealAll();
+                    check(o.ledger.retirementReady() == !o.quarantine);
+                    rejected(() -> o.ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}));
+                    if (i > 0) check(owners[i-1].ledger.snapshot().running() == 1 && !owners[i-1].ledger.hasReleaseFailure() && !owners[i-1].ledger.retirementReady());
                 }
             } finally {
                 for (Owner o : owners) if (o != null) o.settle.countDown();
