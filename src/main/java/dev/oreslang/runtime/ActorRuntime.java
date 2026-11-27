@@ -293,6 +293,12 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorGroupId create() { return new ActorGroupId(UUID.randomUUID()); }
     }
 
+    /** Runtime supervision identity, never a guest authority token. */
+    public record SupervisorId(UUID value) {
+        public SupervisorId { Objects.requireNonNull(value); }
+        public static SupervisorId create() { return new SupervisorId(UUID.randomUUID()); }
+    }
+
     public static final class ActorTerminatedException extends IllegalStateException {
         private final ActorId actorId;
         private final ActorKind actorKind;
@@ -373,6 +379,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    /** Scoped to one synchronous spawnWorker call, never inherited by a continuation. */
+    private final ThreadLocal<ActorGroup> explicitSpawnGroup = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -1820,6 +1828,14 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
+        /** Read-only identity of this actor's current managed supervisor. */
+        public Optional<SupervisorId> supervisorId() {
+            ActorCell<?> cell = actors.get(id);
+            if (cell == null) return Optional.empty();
+            SupervisorFailureControl lane = cell.supervision.get();
+            return lane == null ? Optional.empty() : Optional.of(lane.supervisorId());
+        }
+
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
          * actor on its own dispatcher, even if no first message was sent.
@@ -2146,6 +2162,8 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
+        private final SupervisorId supervisorId = SupervisorId.create();
+        private final SupervisorFailureControl supervisorControl;
         private final ActorId creator;
         private final int memberLimit;
         private final int eventTopicLimit;
@@ -2184,10 +2202,82 @@ public final class ActorRuntime implements AutoCloseable {
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
+            this.supervisorControl = new SupervisorFailureControl(
+                    supervisorId, id, privateDispatcher,
+                    Math.max(8, Math.min(256, memberLimit)));
             if (creator != null) members.add(creator);
         }
 
         public ActorGroupId id() { return id; }
+
+        public SupervisorId supervisorId() {
+            requireObserver("inspect ActorGroup supervisor");
+            return supervisorId;
+        }
+
+        /** Host-only callback: delivered on shared CONTROL carriers, never inline. */
+        public void installSupervisorFailureHandler(
+                Consumer<SupervisorFailureControl.Notice> handler) {
+            requireSupervisorContext("install supervisor failure CONTROL callback");
+            requireOpen();
+            supervisorControl.install(handler);
+        }
+
+        /**
+         * Start a runtime-owned supervisor PROCESS, not a callback on a
+         * failing child carrier. The supervisor logical turn remains
+         * exclusive across an unfinished CompletionStage/await, while the
+         * shared CONTROL carrier can run other supervisors.
+         *
+         * Directive callbacks request lifecycle decisions; they do not
+         * automatically restart an already-finalized actor or forge a
+         * parent/grandparent supervisor.
+         */
+        public SupervisorProcess installSupervisorProcess(
+                int mailboxCapacity,
+                java.util.function.Function<SupervisorFailureControl.Notice,
+                        java.util.concurrent.CompletionStage<SupervisorProcess.Directive>> onFailure,
+                Consumer<SupervisorProcess.Resolution> onDecision) {
+            requireSupervisorContext("install supervisor process");
+            requireOpen();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisorId, id, privateDispatcher, mailboxCapacity,
+                    onFailure, onDecision);
+            try {
+                supervisorControl.install(process::accept);
+            } catch (RuntimeException | Error admissionFailure) {
+                process.close();
+                throw admissionFailure;
+            }
+            return process;
+        }
+
+        /** Nonzero means this host CONTROL lane has failed closed. */
+        public long undeliveredSupervisorFailures() {
+            requireObserver("inspect undelivered supervisor notices");
+            return supervisorControl.undelivered();
+        }
+
+        public Optional<String> supervisorHandlerFailure() {
+            requireObserver("inspect supervisor handler failure");
+            return supervisorControl.failure();
+        }
+
+        public int queuedSupervisorFailures() {
+            requireObserver("inspect pending supervisor failures");
+            return supervisorControl.queued();
+        }
+
+        /** Actor-only, non-reentrant delivery of authenticated child terminal CONTROL. */
+        public Optional<SupervisorFailureControl.Notice> pollSupervisorNotice() {
+            requireCallerRuntimeAffinity("poll actor-owned supervisor CONTROL");
+            ActorId caller = currentActorId().orElseThrow(() ->
+                    new SecurityException("supervisor CONTROL polling requires an actor turn"));
+            if (!Objects.equals(creator, caller) || closed()) {
+                throw new SecurityException("only the live creator actor may poll supervisor CONTROL");
+            }
+            return supervisorControl.poll();
+        }
 
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
@@ -2221,10 +2311,17 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
             }
             requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
+            ActorCell<?> admissionCell = actors.get(worker.id());
+            if (admissionCell == null) {
+                throw new IllegalStateException("unknown worker");
+            }
+            // Child spawn and teardown use the same lifecycleLock first.
+            synchronized (admissionCell.lifecycleLock) {
             synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = actors.get(worker.id());
-                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
+                if (cell != admissionCell || cell.stopped.get() || cell.finalized
+                        || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
                 if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
@@ -2236,6 +2333,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // but no second manager may acquire independent stop rights.
                 ActorGroupId owningGroup = cell.managedByGroup.get();
                 if (owningGroup == null) {
+                    if (!cell.children.isEmpty()) {
+                        throw new IllegalStateException(
+                                "cannot adopt unmanaged worker with live descendants");
+                    }
                     if (cell.managedByGroup.compareAndSet(null, id)) {
                         owningGroup = id;
                     } else {
@@ -2247,10 +2348,8 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor is already managed by a different ActorGroup");
                 }
                 managedWorkers.putIfAbsent(worker.id(), worker);
-                if (cell.stopped.get()) {
-                    managedWorkers.remove(worker.id(), worker);
-                    throw new IllegalStateException("worker stopped during group admission");
-                }
+                cell.supervision.set(supervisorControl);
+            }
             }
             return worker;
         }
@@ -2265,7 +2364,16 @@ public final class ActorRuntime implements AutoCloseable {
                 BehaviorFactory<M> behaviorFactory) {
             requireManager("spawn an ActorGroup worker");
             requireOpen();
-            ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
+            if (explicitSpawnGroup.get() != null) {
+                throw new IllegalStateException("nested explicit supervisor group spawn");
+            }
+            ActorRef<M> worker;
+            explicitSpawnGroup.set(this);
+            try {
+                worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
+            } finally {
+                explicitSpawnGroup.remove();
+            }
             try {
                 return manageWorker(worker);
             } catch (RuntimeException | Error failure) {
@@ -2298,6 +2406,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (!worker.ownedBy(ActorRuntime.this)) {
                 throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
             }
+            ActorCell<?> transferCell = actors.get(worker.id());
+            if (transferCell == null) {
+                throw new IllegalStateException("cannot transfer an unknown worker");
+            }
+            // Serialize with child spawns and finalization. Lock ordering is
+            // lifecycleLock -> authorityLock throughout the runtime.
+            synchronized (transferCell.lifecycleLock) {
             synchronized (authorityLock) {
                 requireOpen();
                 if (stoppingWorkers.contains(worker.id())) {
@@ -2309,11 +2424,17 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cell == null || cell.stopped.get()) {
                     throw new IllegalStateException("cannot transfer a stopped worker");
                 }
+                if (!cell.children.isEmpty()) {
+                    throw new IllegalStateException(
+                            "cannot transfer worker with live structured descendants");
+                }
                 if (!cell.managedByGroup.compareAndSet(id, null)) {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
                 }
+                cell.supervision.compareAndSet(supervisorControl, null);
                 managedWorkers.remove(worker.id(), worker);
                 return true;
+            }
             }
         }
 
@@ -3296,8 +3417,19 @@ public final class ActorRuntime implements AutoCloseable {
         ActorId creator = currentActorId().orElse(null);
         IsolatePolicy creatorPolicy =
                 currentActorPolicy() == null ? policyCeiling : currentActorPolicy();
-        if (creator != null && !actors.containsKey(creator)) {
-            throw new IllegalStateException("current actor is no longer registered");
+        if (creator != null) {
+            // A supervisor group is lifecycle authority, not an ordinary
+            // mutable collection. In particular UNTRUSTED actors with no
+            // ACTOR_SPAWN capability may not mint supervisor identities or
+            // reserve CONTROL queues without admitting any workers.
+            creatorPolicy.require(
+                    IsolatePolicy.Capability.ACTOR_SPAWN, "create an actor-owned supervisor group");
+            ActorCell<?> creatorCell = actors.get(creator);
+            if (creatorCell == null || creatorCell.stopped.get()
+                    || creatorCell.forceKillFenced) {
+                throw new IllegalStateException(
+                        "cannot create supervisor group from a stopping or unknown actor");
+            }
         }
 
         synchronized (runtimeLifecycleLock) {
@@ -3996,16 +4128,72 @@ public final class ActorRuntime implements AutoCloseable {
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
                         }
-                        parent.children.add(cell);
-                        linkedToParent = true;
-                        actors.put(id, cell);
+                        // A nested spawn inherits its parent's structured
+                        // lifecycle group. The spawn lineage is not a new
+                        // supervisor or a new group. Event-bus membership
+                        // remains opt-in and is never inherited here.
+                        ActorGroupId inheritedId = parent.managedByGroup.get();
+                        ActorGroup explicitGroup = explicitSpawnGroup.get();
+                        if (explicitGroup != null
+                                && !parent.ref.id().equals(explicitGroup.creator)) {
+                            throw new SecurityException(
+                                    "an actor cannot spawn into another actor's supervisor group");
+                        }
+                        ActorGroup targetGroup = explicitGroup != null
+                                ? explicitGroup
+                                : inheritedId == null ? null : actorGroups.get(inheritedId);
+                        ActorGroupId targetId = explicitGroup != null
+                                ? explicitGroup.id : inheritedId;
+                        if (inheritedId != null && actorGroups.get(inheritedId) == null) {
+                            throw new IllegalStateException(
+                                    "parent's lifecycle ActorGroup no longer exists");
+                        }
+                        if (targetGroup != null) {
+                            // Publish ownership, lineage and actor identity
+                            // atomically against group close/worker transfer.
+                            synchronized (targetGroup.authorityLock) {
+                                targetGroup.requireOpen();
+                                if (!Objects.equals(inheritedId, parent.managedByGroup.get())) {
+                                    throw new IllegalStateException(
+                                            "parent's lifecycle ActorGroup changed during spawn");
+                                }
+                                if (targetGroup.managedWorkers.size() >= targetGroup.memberLimit) {
+                                    throw new IllegalStateException(
+                                            "ActorGroup managed worker limit exceeded: maximum "
+                                                    + targetGroup.memberLimit);
+                                }
+                                cell.managedByGroup.set(targetId);
+                                cell.supervision.set(targetGroup.supervisorControl);
+                                targetGroup.managedWorkers.put(id, ref);
+                                parent.children.add(cell);
+                                linkedToParent = true;
+                                actors.put(id, cell);
+                            }
+                        } else {
+                            parent.children.add(cell);
+                            linkedToParent = true;
+                            actors.put(id, cell);
+                        }
                     }
                 } else {
                     actors.put(id, cell);
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
+                // Roll back every registry when spawn admission fails. In
+                // particular, never strand an inherited group ownership ref.
+                if (cell != null) actors.remove(id, cell);
                 if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (cell != null) {
+                    ActorGroupId inheritedId = cell.managedByGroup.get();
+                    ActorGroup inherited = inheritedId == null
+                            ? null : actorGroups.get(inheritedId);
+                    if (inherited != null) {
+                        synchronized (inherited.authorityLock) {
+                            inherited.managedWorkers.remove(id, ref);
+                        }
+                    }
+                }
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -4284,6 +4472,27 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void unregisterActor(ActorCell<?> cell) {
+        // Enqueue immutable CONTROL after actor-owned final cleanup, never
+        // invoke the supervisor on this child actor's physical carrier.
+        // The control lane survives removal of a closed ActorGroup registry.
+        SupervisorFailureControl lane = cell.supervision.get();
+        Throwable failure = cell.ref.terminationCause.get();
+        if (lane != null && failure != null) {
+            SupervisorFailureControl.Kind failureKind =
+                    failure instanceof CancellationException
+                            ? SupervisorFailureControl.Kind.CANCELLED
+                            : SupervisorFailureControl.Kind.TERMINAL_FAILURE;
+            ActorGroupId ownerGroup = cell.managedByGroup.get();
+            if (ownerGroup != null) {
+                lane.publish(new SupervisorFailureControl.Notice(
+                        lane.supervisorId(), ownerGroup, cell.ref.id(),
+                        cell.parent == null
+                                ? Optional.empty() : Optional.of(cell.parent.ref.id()),
+                        failureKind,
+                        failure.getClass().getName(),
+                        failure.getMessage() == null ? "" : failure.getMessage()));
+            }
+        }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
         // treats absence from this map as terminal, so removing the actor first
@@ -6294,6 +6503,9 @@ public final class ActorRuntime implements AutoCloseable {
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
+        /** Trusted, process-local supervisor lane. Not a guest capability. */
+        private final AtomicReference<SupervisorFailureControl> supervision =
+                new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();

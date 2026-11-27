@@ -4517,6 +4517,14 @@ public final class TypeChecker {
         }
     }
 
+    // Portable resource screening is based on final resolved type segments;
+    // source modules and C++/linker namespaces cannot launder DATA authority.
+    static String actorCapabilitySimpleName(String resolvedName) {
+        int dot = resolvedName.lastIndexOf('.');
+        int scope = resolvedName.lastIndexOf("::");
+        return resolvedName.substring(Math.max(dot, scope < 0 ? -1 : scope + 1) + 1);
+    }
+
     private void validateActorCallableBoundaryType(
             Type type,
             Ast.ActorKind actorKind,
@@ -4531,7 +4539,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
         }
-        if (type instanceof Primitive || type instanceof StringLiteral) return;
+        // Boolean singleton types are immutable scalar refinements, just like
+        // literal strings. Their runtime representation is a plain boolean,
+        // so reject unsafe complement/borrow types without rejecting these.
+        if (type instanceof Primitive || type instanceof StringLiteral
+                || type instanceof Types.BoolLiteral) return;
         if (type instanceof ListType list) {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
             return;
@@ -4558,45 +4570,108 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
-                || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+        // The resolved nominal may be module-qualified. A prefix cannot
+        // turn built-in runtime/codec authority into ordinary DATA.
+        String capabilityName = actorCapabilitySimpleName(named.name());
+
+        if (capabilityName.equals("TcpConnection") || capabilityName.equals("HttpExchange") || capabilityName.equals("HttpServer") || capabilityName.equals("HttpHandler")
+                || capabilityName.equals("Mutex") || capabilityName.equals("MutexGuard") || capabilityName.equals("Future")
+                || capabilityName.equals("Channel") || capabilityName.equals("SelectCase")
+                || capabilityName.equals("SelectSet") || capabilityName.equals("SelectResult")
+                || capabilityName.equals("Iterator") || capabilityName.equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
-        if (named.name().equals("SharedMutex")) {
-            if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
-                throw new IllegalArgumentException(
-                        where + " cannot use SharedMutex<T> with isoactor/private actors");
-            }
-            if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
-                throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
+        // A shared actor has read-only shared authority, not shared-memory
+        // mutation authority. No actor kind may receive a live SharedMutex:
+        // otherwise a generic nested payload launders host lock authority.
+        if (capabilityName.equals("SharedMutex")) {
+            throw new IllegalArgumentException(
+                    where + " cannot send SharedMutex<T> across an actor boundary");
+        }
+        // Codec objects and supervisor/control handles are capabilities, not
+        // serializable data. The rule applies recursively via the parent
+        // tuple/list/record/sum traversal above.
+        if (java.util.Set.of("NetworkCodec", "ActorMessageCodec", "MessagePackCodec",
+                    "JsonCodec", "ProtobufCodec", "Pointer", "Stream", "Observable",
+                    "SupervisorControlCodec", "ControlCodec", "Serializable", "Sendable",
+                    "ActorHandle", "ActorGroupJoinCapability", "ProxyActor", "Mailman",
+                    "EventBus", "ContinuationTarget", "Region", "RegionTransfer",
+                    "OwnedRegion", "SyncCell",
+                    "SupervisorId", "SupervisorProcess", "SupervisorFailureControl",
+                    "SupervisorNotice", "ActorGroup", "ActorGroupId",
+                    "ActorGroupContext", "ActorMailman", "ChannelReader",
+                    "ChannelWriter", "ActorControlHandle").contains(capabilityName)) {
+            throw new IllegalArgumentException(
+                    where + " cannot send runtime/codec/supervisor capability "
+                            + named.name() + " as actor mailbox data");
+        }
+
+        // An ActorRef<T> is scoped runtime authority, not wire data. Its
+        // nominal target is checked for a useful diagnostic, but source actor
+        // data mailboxes still use MessagePack until a separately audited
+        // local Sendable capability path is implemented. Do not accidentally
+        // turn a compile-time validation fix into an authority export.
+        if (capabilityName.equals("ActorRef")) {
+            actorClassForRef(named);
+            throw new IllegalArgumentException(
+                    where + " cannot send ActorRef as a data payload; "
+                            + "a proven local Sendable capability transport is not implemented");
+        }
+        if (capabilityName.equals("ActorId")) {
+            if (!named.arguments().isEmpty()) {
+                throw new IllegalArgumentException(where + " ActorId is not generic");
             }
             return;
         }
+        if (capabilityName.equals("ActorMail") || capabilityName.equals("ActorOutput")) {
+            throw new IllegalArgumentException(
+                    where + " cannot send an ActorMail/ActorOutput envelope as data; "
+                            + "mailbox/supervisor metadata is created by the runtime");
+        }
+        if (capabilityName.equals("ActorOutputStream")) {
+            throw new IllegalArgumentException(
+                    where + " cannot send an ActorOutputStream runtime capability as data");
+        }
 
+        // Validate every transitive constituent. Builtin sum types must have
+        // their exact parameter count; malformed arities are not Sendable even
+        // when their surviving type arguments are safe.
         for (Type argument : named.arguments()) {
             validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
         }
 
-        // Built-in sum/container values are data-only when their arguments pass.
-        if (named.name().equals("Option") || named.name().equals("Result")
-                || named.name().equals("OptionUnwrapError")) {
+        if (named.name().equals("Option")) {
+            if (named.arguments().size() != 1) {
+                throw new IllegalArgumentException(where + " requires Option<T>");
+            }
+            return;
+        }
+        if (named.name().equals("Result")) {
+            if (named.arguments().size() != 2) {
+                throw new IllegalArgumentException(where + " requires Result<T, E>");
+            }
+            return;
+        }
+        if (named.name().equals("OptionUnwrapError")) {
+            if (!named.arguments().isEmpty()) {
+                throw new IllegalArgumentException(where + " OptionUnwrapError is not generic");
+            }
             return;
         }
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            // Only explicitly recognized immutable builtins are source
+            // sendable here. Unknown nominal classes, imported aliases that
+            // failed to resolve, and host/runtime capability types cannot
+            // acquire Sendable simply by lacking a declaration.
+            if ((named.name().equals("ActorKind") || named.name().equals("$builtin$Symbol"))
+                    && named.arguments().isEmpty()) return;
+            throw new IllegalArgumentException(
+                    where + " has no proven Sendable contract for nominal type '"
+                            + named.name() + "'; unknown types and opaque capabilities fail closed");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
