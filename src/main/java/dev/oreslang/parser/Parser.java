@@ -5526,9 +5526,12 @@ public final class Parser {
         Ast.Expr condition = introducer == IF
                 ? head.predicate() : new Ast.UnaryExpr("!", head.predicate());
 
-        // '{' is the braced spelling of 'then'. Intermediate branches close
-        // with '} elif/else'; fi closes the final branch and the whole chain.
+        // Canonical braces are self-delimiting. Prefix do-if owns a
+        // keyword-delimited statement chain, never a braced spelling.
         if (check(LBRACE)) {
+            if (canonicalAttoSource && explicitImperative) {
+                throw error(peek(), "prefix 'do if' requires 'then', not a brace");
+            }
             branches.add(new Ast.IfBranch(condition, parseConditionalBraceBody()));
             while (matchConditionalBranch()) {
                 head = parseConditionHead(false);
@@ -5571,7 +5574,7 @@ public final class Parser {
         // - 'elseif' aliases canonical 'elif'.
         // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
-        consumeConditionalThen(introducer == IF ? "if" : introducer == IFNOT ? "ifnot" : "unless");
+        consumeConditionalThen(introducer == IF ? "if" : introducer == IFNOT ? "ifnot" : "unless", explicitImperative);
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
@@ -5580,7 +5583,7 @@ public final class Parser {
             bindings.add(head.binding());
             condition = head.predicate();
             match(SEMICOLON);
-            consumeConditionalThen("elif");
+            consumeConditionalThen("elif", explicitImperative);
             body = parseUntil(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
         }
@@ -5632,11 +5635,15 @@ public final class Parser {
         return body;
     }
 
-    private void consumeConditionalThen(String branch) {
-        // Suffix do is canonical for statements; then remains a migration
-        // delimiter on paths already classified as imperative.
+    private void consumeConditionalThen(String branch, boolean prefixDo) {
+        if (canonicalAttoSource) {
+            consume(prefixDo ? THEN : DO, "expected '" + (prefixDo ? "then" : "do")
+                    + "' after " + branch + " condition");
+            return;
+        }
+        // Retain historical migration admission outside canonical source.
         if (match(DO, THEN)) return;
-        throw error(peek(), "expected 'do' after " + branch + " condition");
+        throw error(peek(), "expected 'do' or 'then' after " + branch + " condition");
     }
 
     private boolean matchConditionalBranch() {
@@ -6752,10 +6759,25 @@ public final class Parser {
     }
 
     private Ast.Expr parseValueIfElse(Ast.Expr condition, Ast.Expr whenTrue) {
+        List<Ast.Expr> predicates = new ArrayList<>();
+        List<Ast.Expr> values = new ArrayList<>();
+        predicates.add(condition);
+        values.add(whenTrue);
+        while (match(ELSEIF)) {
+            if (predicates.size() >= 127) {
+                throw error(previous(), "E_VALUE_ARM: value if exceeds 128 total arms");
+            }
+            predicates.add(parseCondition());
+            consume(THEN, "value-producing 'elif' requires 'then'");
+            values.add(parseConditionalValueArm());
+        }
         consume(ELSE, "value-producing 'if' requires an 'else' value; use 'do if' for statements");
-        Ast.Expr whenFalse = parseConditionalValueArm();
+        Ast.Expr result = parseConditionalValueArm();
         consume(FI, "expected 'fi' to close value-producing 'if'");
-        return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+        for (int i = predicates.size() - 1; i >= 0; i--) {
+            result = new Ast.ConditionalExpr(predicates.get(i), values.get(i), result);
+        }
+        return result;
     }
 
     private Ast.Expr parseConditionalValueArm() {
