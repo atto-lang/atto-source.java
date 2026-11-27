@@ -1,0 +1,38 @@
+name: Grouped actor spawn parser admission (not runtime parity)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/test/java/dev/oreslang/GroupedActorSpawnParserAdmissionTest.java'
+      - '.github/workflows/grouped-spawn-parser-admission.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  parser-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify immutable head and source tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          bash scripts/verify-source-tree.sh "$EXPECTED_HEAD"
+          printf 'head=%s tree=%s\n' "$EXPECTED_HEAD" "$(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Run production parser admission and general parser regression tests
+        run: mvn -B -ntp -Dtest=GroupedActorSpawnParserAdmissionTest,ParserTest test
+      - name: Evidence boundary
+        run: echo 'PARSER_ADMISSION_ONLY; grouped actor spawn runtime NOT_EXECUTED'
