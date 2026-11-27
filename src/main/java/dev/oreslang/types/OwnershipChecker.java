@@ -667,11 +667,19 @@ public final class OwnershipChecker {
         // Java val is const mut. A proven primitive COPY result has no
         // referent to alias, so its syntactic referent flag is irrelevant.
         // Keep the fixed-slot, provenance and primitive checks below.
-        if (read.declaredType() != null
-                || read.inferredTypeName() != null
-                || !(read.initializer() instanceof Ast.MemberExpr field)
-                || !(field.receiver() instanceof Ast.NameExpr name)
-                || !name.name().equals(prior.name())) return false;
+        if (read.declaredType() != null || read.inferredTypeName() != null) return false;
+        Ast.Expr receiver;
+        boolean snapshot = false;
+        if (read.initializer() instanceof Ast.MemberExpr field) {
+            receiver = field.receiver();
+        } else if (read.initializer() instanceof Ast.RuntimeCallExpr rt
+                && rt.operation().equals("copy") && rt.arguments().size() == 1) {
+            // A checked copy of a primitive loan produces detached data.
+            // Do not infer through arbitrary calls or class copies.
+            receiver = rt.arguments().getFirst();
+            snapshot = true;
+        } else return false;
+        if (!(receiver instanceof Ast.NameExpr name) || !name.name().equals(prior.name())) return false;
         VarState result = scope.locals.get(read.name());
         VarState loan = scope.locals.get(prior.name());
         if (result == null || loan == null || result == loan
@@ -680,6 +688,8 @@ public final class OwnershipChecker {
                 || result.borrowLease || result.aliasSource != null
                 || loan.moved || !loan.borrowLease
                 || !isPrimitiveCopyType(result.type)) return false;
+        if (snapshot && (!loan.type.isBorrow()
+                || !result.type.equals(loan.type.borrowedTarget()))) return false;
         // Narrow to built-in integer and bool value reads; other primitive
         // or nominal kinds may require a distinct representation proof.
         return (result.type.name().equals("int") || result.type.name().equals("bool"))
