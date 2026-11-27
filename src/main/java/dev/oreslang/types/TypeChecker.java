@@ -151,6 +151,8 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    private boolean canonicalStdoutCheckOnly;
+    private boolean canonicalStdoutWildcardImport;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -425,6 +427,24 @@ public final class TypeChecker {
     public static TypeCheckResult checkTypesWithDiagnostics(
             Ast.Program program, boolean strictAttoEquality,
             AutomaticPrelude.Profile preludeProfile, boolean checkedI64Arithmetic) {
+        return checkTypesWithDiagnostics(program, strictAttoEquality, preludeProfile,
+                checkedI64Arithmetic, false);
+    }
+
+    /** Check-only staging lane. Never returns an executable program capability.
+     * Production type admission continues to reject new canonical writes until
+     * full continuation, ownership and capability lowering is verified.
+     */
+    public static void checkCanonicalStdoutTypesAndOwnershipOnly(Ast.Program program) {
+        TypeCheckResult checked = checkTypesWithDiagnostics(program, false,
+                AutomaticPrelude.Profile.HOSTED, false, true);
+        OwnershipChecker.checkCanonicalStdoutOnly(checked.program(), checked.shortInferredAliases());
+    }
+
+    private static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, boolean strictAttoEquality,
+            AutomaticPrelude.Profile preludeProfile, boolean checkedI64Arithmetic,
+            boolean canonicalStdoutCheckOnly) {
         if (preludeProfile == null) {
             throw new IllegalArgumentException("prelude profile cannot be null");
         }
@@ -437,13 +457,14 @@ public final class TypeChecker {
         if (strictAttoEquality) rejectUnprovedStrictNamedReturns(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
+        checker.canonicalStdoutCheckOnly = canonicalStdoutCheckOnly;
         checker.strictAttoEquality = strictAttoEquality;
         checker.checkedI64Arithmetic = checkedI64Arithmetic || strictAttoEquality;
         checker.preludeProfile = preludeProfile;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
+        if (!canonicalStdoutCheckOnly) CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -918,6 +939,7 @@ public final class TypeChecker {
     private final Set<String> opaqueJsonBindings = new HashSet<>();
 
     private void validateImports(Ast.Program program) {
+        canonicalStdoutWildcardImport = program.imports().stream().anyMatch(Ast.ImportDecl::wildcard);
         Set<String> exposed = new HashSet<>();
         Set<String> rootFunctions = new HashSet<>();
         Set<String> nonFunctionDeclarations = new HashSet<>();
@@ -4669,6 +4691,21 @@ public final class TypeChecker {
                             env, generics, self);
                 }
             }
+            if (canonicalStdoutCall(call, env)) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr
+                        || call.arguments().getFirst() instanceof Ast.NamedArgExpr) {
+                    throw new IllegalArgumentException("canonical stdout.write requires one positional string");
+                }
+                Type actual = typeOf(call.arguments().getFirst(), env, generics, self);
+                if (actual != Primitive.STRING) {
+                    throw new IllegalArgumentException("canonical stdout.write requires owned string");
+                }
+                if (!canonicalStdoutCheckOnly) {
+                    throw new IllegalArgumentException("STDOUT_RUNTIME_PARK_LOWERING_UNVERIFIED: canonical stdout.write is check-only");
+                }
+                return Primitive.VOID;
+            }
             if (call.callee() instanceof Ast.MemberExpr console
                     && console.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("stdio") && env.lookup("stdio") == null
@@ -7550,6 +7587,21 @@ public final class TypeChecker {
         } finally {
             seen.remove(klass);
         }
+    }
+
+    private boolean canonicalStdoutCall(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr write) || !write.member().equals("write")
+                || !(write.receiver() instanceof Ast.MemberExpr endpoint)
+                || !(endpoint.receiver() instanceof Ast.NameExpr root)
+                || env.lookup(root.name()) != null) return false;
+        String name = root.name();
+        if (canonicalStdoutWildcardImport || importedNames.contains(name)
+                || modules.containsKey(name) || classes.containsKey(name)
+                || ambiguousClasses.contains(name) || functions.containsKey(name)
+                || ambiguousFunctions.contains(name) || interfaces.containsKey(name)
+                || typeAliases.containsKey(name)) return false;
+        return name.equals("stdio") && endpoint.member().equals("out")
+                || name.equals("process") && endpoint.member().equals("stdout");
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Env env) {

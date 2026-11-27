@@ -161,6 +161,12 @@ public final class OwnershipChecker {
         return check(program, Map.of());
     }
 
+    /** Check-only lane: no Task capability admission is published. */
+    static void checkCanonicalStdoutOnly(Ast.Program program, Map<Ast.BindingStmt, String> aliases) {
+        OwnershipChecker checker = new OwnershipChecker(program, aliases);
+        checker.validate(program);
+    }
+
     /** Called only after TypeChecker has proved which short forms create aliases. */
     public static Ast.Program check(
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
@@ -3454,7 +3460,9 @@ public final class OwnershipChecker {
                 || !(endpoint.receiver() instanceof Ast.NameExpr root)
                 || scope.lookup(root.name()) != null
                 || modules.contains(root.name()) || importedFncs.contains(root.name())
-                || classes.containsKey(root.name())) return false;
+                || classes.containsKey(root.name()) || ambiguousClasses.contains(root.name())
+                || functions.containsKey(root.name()) || ambiguousFunctions.contains(root.name())
+                || interfaces.containsKey(root.name()) || ambiguousInterfaces.contains(root.name())) return false;
         if (checkedProgram.imports().stream().anyMatch(i -> i.wildcard()
                 || i.names().stream().anyMatch(n -> ImportRules.localName(i, n).equals(root.name()))))
             return false;
