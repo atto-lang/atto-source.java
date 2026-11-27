@@ -33,6 +33,12 @@ public final class Parser {
     }
     public record FlatActorMachine(int initial, List<FlatMachineNode> nodes) {
         public FlatActorMachine { nodes = List.copyOf(nodes); }
+        public FlatMachineTable transitionTable() {
+            return FlatMachineTable.verify(initial, nodes.stream()
+                    .map(n -> new FlatMachineTable.Node(n.name(), n.terminal(),
+                            n.transitions().stream().map(e -> new FlatMachineTable.Edge(e.event(), e.target())).toList()))
+                    .toList());
+        }
     }
     public record ActorMachineInspection(String actor, boolean storageDeclared,
                                          List<Ast.ProtectedStateField> storage, FlatActorMachine machine) {
