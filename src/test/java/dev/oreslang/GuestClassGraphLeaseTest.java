@@ -293,6 +293,58 @@ final class GuestClassGraphLeaseTest {
         }
     }
 
+    @Test void rootBackEdgesRejectAtomicallyWhileDescendantCyclesRemainAdmissible() {
+        var d = new GuestClassSlots.Domain();
+        var original = store(d, Map.of("data", 0, "count", 1));
+        original.replace("data", original);
+        deny("E_COPY_SHALLOW_ALIAS", () -> original.shallowSnapshot(1, 4));
+        assertFalse(original.isReadOnly());
+        original.replace("count", 2);
+
+        var child = store(d, Map.of("next", original));
+        original.replace("data", child);
+        deny("E_COPY_SHALLOW_ALIAS", () -> original.shallowSnapshot(2, 5));
+        assertFalse(original.isReadOnly());
+        assertFalse(child.isReadOnly());
+        assertSame(original, child.get("next"));
+
+        // A cycle wholly inside the retained subgraph is safe: the root
+        // is not reachable from any retained edge and remains writable.
+        child.replace("next", child);
+        try (var snapshot = original.shallowSnapshot(1, 3)) {
+            assertSame(child, snapshot.get("data"));
+            assertTrue(child.isReadOnly());
+            assertFalse(original.isReadOnly());
+            original.replace("count", 3);
+            snapshot.replace("count", 4);
+            assertEquals(3, original.get("count"));
+            assertEquals(4, snapshot.get("count"));
+            deny("E_COPY_READONLY", () -> child.replace("next", 0));
+        }
+        assertFalse(child.isReadOnly());
+        child.replace("next", 0);
+    }
+
+    @Test void exceptionalScopeExitReleasesOnlyItsOwnSnapshotLoan() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("n", 20));
+        var original = store(d, Map.of("data", child));
+        try (var survivor = original.shallowSnapshot(1, 2)) {
+            var marker = new IllegalStateException("test unwind");
+            var thrown = assertThrows(IllegalStateException.class, () -> {
+                try (var temporary = original.shallowSnapshot(1, 2)) {
+                    assertSame(child, temporary.get("data"));
+                    throw marker;
+                }
+            });
+            assertSame(marker, thrown);
+            assertSame(child, survivor.get("data"));
+            deny("E_COPY_READONLY", () -> child.replace("n", 22));
+        }
+        child.replace("n", 22);
+        assertEquals(22, child.get("n"));
+    }
+
     @Test void flatSnapshotQuotaIsReleasedExactlyOnce() {
         var d = new GuestClassSlots.Domain();
         var original = store(d, Map.of("count", 1));
