@@ -141,14 +141,14 @@ public final class ProtectedScalarMirV1 {
             throw invalid("exactly one state field and one method required");
         var field = fields.getFirst();
         var method = methods.getFirst();
-        if (!isInt(field.type()) || field.name().length() > 128)
+        if (!isInt(field.type()) || !validStateName(field.name()))
             throw invalid("state field must be a single owned int");
         long initial = initializer(field.initializer());
-        if (reservedStateName(method.name()) || method.name().length() > 128 || method.parameters().size() != 1
+        if (!validStateName(method.name()) || method.parameters().size() != 1
                 || !isInt(method.parameters().getFirst().type()))
             throw invalid("method must have exactly one int parameter");
         Ast.Param arg = method.parameters().getFirst();
-        if (arg.structural() || arg.mutable() || reservedStateName(arg.name()) || arg.name().length() > 128)
+        if (arg.structural() || arg.mutable() || !validStateName(arg.name()))
             throw invalid("structural or mutable parameters not yet supported");
         if (!(kind == Kind.STATE_CONTAINER ? isInt(method.returnType())
                                           : isVoid(method.returnType())))
@@ -190,6 +190,7 @@ public final class ProtectedScalarMirV1 {
         private static String expectedKind(String word) {
             return switch (word) {
                 case "return" -> "RETURN";
+                case "self" -> "SELF";
                 case "(" -> "LPAREN";
                 case ")" -> "RPAREN";
                 case "{" -> "LBRACE";
@@ -238,12 +239,19 @@ public final class ProtectedScalarMirV1 {
         return java.util.Set.of("handle_state", "handle_state_ro", "handle_state_w", "state_ro", "state_w").contains(name);
     }
 
+    private static boolean validStateName(String name) {
+        return name != null && name.length() <= 128 && name.matches("[A-Za-z_][A-Za-z_0-9]*")
+                && !name.equals("self") && !name.equals("_") && !reservedStateName(name);
+    }
+
     private static void matchBody(List<String> tokens, List<String> kinds,
                                   Kind kind, String field, String parameter) {
         if (tokens.size() > 96 || tokens.size() != kinds.size())
             throw invalid("protected-method token provenance or budget exceeded");
         Cursor c = new Cursor(tokens, kinds);
         if (kind == Kind.STATE_CONTAINER) c.need("return");
+        // Exact self qualification carries the same authority as the bare intrinsic.
+        if (c.at("self")) { c.need("self"); c.need("."); }
         // Only typed exclusive aliases may enter this existing write MIR.
         // Do not reinterpret read authority or accept a second mode marker.
         if (c.at("state_w")) {
