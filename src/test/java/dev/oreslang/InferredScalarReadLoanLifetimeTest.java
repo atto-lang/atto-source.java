@@ -40,4 +40,20 @@ final class InferredScalarReadLoanLifetimeTest {
     @Test void unknownInterveningStatementRetainsLease() {
         reject("val original = new Parcel(); val loan = borrow! original; val n = 1; val read = loan.number; val owned = take! original; return read;");
     }
+
+    @Test void consecutiveSharedReadsThenTake() throws Exception {
+        execute42("val original = new Parcel(); val loan = borrow! original; val first = loan.number; val second = loan.number; val owned = take! original; return first + second + owned.number - 84;");
+    }
+    @Test void consecutiveExclusiveReadsThenOwnerRead() throws Exception {
+        execute42("let mut original = new Parcel(); val loan = borrow! mut original; val first = loan.number; val second = loan.number; return original.number + first + second - 84;");
+    }
+    @Test void consecutiveReadsWithLaterUseStillReject() {
+        reject("val original = new Parcel(); val loan = borrow! original; val first = loan.number; val second = loan.number; val owned = take! original; return first + second + loan.number;");
+    }
+    @Test void interveningUnknownBindingStillRetainsLease() {
+        reject("val original = new Parcel(); val loan = borrow! original; val first = loan.number; val unrelated = 1; val second = loan.number; val owned = take! original; return first + second + unrelated;");
+    }
+    @Test void anotherLoanStillPreventsOwnerMove() {
+        reject("val original = new Parcel(); val live = borrow! original; val loan = borrow! original; val first = loan.number; val second = loan.number; val owned = take! original; return first + second + live.number;");
+    }
 }

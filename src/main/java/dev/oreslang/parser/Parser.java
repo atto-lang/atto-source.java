@@ -557,6 +557,13 @@ public final class Parser {
                     rootDeclarations.add(recordVisibility(parseTypeAlias(modifiers.visibility), modifiers));
                     continue;
                 }
+                if (hasDirectStructAttachment()) {
+                    validateOnlyVisibilityModifiers(modifiers, "attached struct declarations");
+                    rejectCallableStructuralAnnotation(annotations, "attached struct declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "attached struct declarations");
+                    rootDeclarations.add(parseDirectStructAttachment(modifiers.visibility));
+                    continue;
+                }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
                 // denote the same file-root callable, with identical modifiers.
                 if (check(FNC) || check(ROUTINE) || looksLikeReturnFirstCallableHead()) {
@@ -1011,6 +1018,12 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "type aliases");
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return recordVisibility(parseTypeAlias(modifiers.visibility), modifiers);
+            }
+            if (hasDirectStructAttachment()) {
+                validateOnlyVisibilityModifiers(modifiers, "attached struct declarations");
+                rejectCallableStructuralAnnotation(annotations, "attached struct declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "attached struct declarations");
+                return parseDirectStructAttachment(modifiers.visibility);
             }
             // Legacy nested `define` is accepted, but never creates a new
             // scope or changes the callable's public symbol identity.
@@ -2863,7 +2876,13 @@ public final class Parser {
         } else {
             consume(EQUAL, "expected '=' in type alias");
         }
+        boolean directStruct = check(STRUCT) && checkNext(LBRACE);
         Ast.TypeRef target = parseTypeRef();
+        if (directStruct && isContextualIdentifier("with") &&
+                (checkNext(LBRACE) || (current + 1 < tokens.size()
+                    && List.of("constructor", "mtd", "pub", "private").contains(tokens.get(current + 1).lexeme())))) {
+            parseStructAttachmentTarget(name, visibility);
+        }
         // A refinement is not an ordinary transparent alias: never erase
         // its predicate at this parser boundary. Enable this syntax only
         // together with typed proof-preserving rules + Zorde lowering.
@@ -2874,6 +2893,79 @@ public final class Parser {
         }
         consumeStatementTerminator("type alias should end with ';'");
         return new Ast.TypeAliasDecl(name, visibility, generics, target);
+    }
+
+    private boolean hasDirectStructAttachment() {
+        if (!check(STRUCT) || !checkNext(IDENT) || current + 2 >= tokens.size()
+                || tokens.get(current + 2).type() != LBRACE) return false;
+        int depth = 0;
+        for (int i = current + 2; i < tokens.size(); i++) {
+            Token.Type kind = tokens.get(i).type();
+            if (kind == LBRACE) depth++;
+            else if (kind == RBRACE && --depth == 0)
+                return i + 1 < tokens.size() && tokens.get(i + 1).lexeme().equals("with");
+        }
+        return false;
+    }
+
+    private Ast.Decl parseDirectStructAttachment(Ast.Visibility visibility) {
+        consume(STRUCT, "expected struct after define");
+        String name = consumeTypeDeclarationName("expected struct name");
+        parseClosedAggregateType(true);
+        parseStructAttachmentTarget(name, visibility);
+        throw error(peek(), "attached struct value ABI required before execution");
+    }
+
+    /** Validate grouped/chained struct member headers through the ordinary
+     * callable parser; never return a transparent alias after discarding them.
+     * A real nominal struct member AST and value ABI are still required. */
+    private void parseStructAttachmentTarget(String name, Ast.Visibility visibility) {
+        Token attachment = peek();
+        List<Ast.ConstructorDecl> constructors = new ArrayList<>();
+        List<Ast.MethodDecl> methods = new ArrayList<>();
+        do {
+            advance(); // contextual 'with'
+            boolean grouped = match(LBRACE);
+            if (grouped && check(RBRACE)) {
+                throw error(peek(), "struct with block requires a constructor or mtd");
+            }
+            do {
+                if (constructors.size() + methods.size() >= 256) {
+                    throw error(peek(), "too many attached struct members");
+                }
+                Modifiers mods = parseModifiers();
+                validateOnlyVisibilityModifiers(mods, "attached struct target members");
+                if (isContextualIdentifier("constructor")) {
+                    Token member = peek();
+                    Ast.ConstructorDecl ctor = parseConstructor(List.of(), mods, name, visibility, false);
+                    if (constructors.stream().anyMatch(prior ->
+                            sameAttachedParameterTypes(prior.parameters(), ctor.parameters()))) {
+                        throw error(member, "duplicate attached struct constructor signature");
+                    }
+                    constructors.add(ctor);
+                } else if (isContextualIdentifier("mtd")) {
+                    Token member = advance();
+                    Ast.MethodDecl method = parseMethod(List.of(), mods);
+                    if (methods.stream().anyMatch(prior -> prior.name().equals(method.name())
+                            && sameAttachedParameterTypes(prior.parameters(), method.parameters()))) {
+                        throw error(member, "duplicate attached struct method signature");
+                    }
+                    methods.add(method);
+                } else {
+                    throw error(peek(), "expected attached struct constructor or mtd");
+                }
+            } while (grouped && !check(RBRACE) && !check(EOF));
+            if (grouped) consume(RBRACE, "expected '}' after struct with members");
+        } while (isContextualIdentifier("with"));
+        throw error(attachment, "attached struct members parsed; nominal value ABI and checked initialization required before execution");
+    }
+
+    private boolean sameAttachedParameterTypes(List<Ast.Param> left, List<Ast.Param> right) {
+        if (left.size() != right.size()) return false;
+        for (int i = 0; i < left.size(); i++) {
+            if (!sameType(left.get(i).type(), right.get(i).type())) return false;
+        }
+        return true;
     }
 
     private List<Ast.Annotation> parseAnnotations() {
@@ -7741,6 +7833,27 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // Closed single-break value expression, not a general loop CFG.
+        // Preserve contextual loop(...) callable references and ordinary
+        // statement loops; only expression-position loop followed by {
+        // select this narrow scalar profile.
+        if (check(LOOP) && checkNext(LBRACE)) {
+            Token site = advance();
+            consume(LBRACE, "expected '{' after value loop");
+            consume(BREAK, "value loop requires exactly one valued break");
+            if (check(SEMICOLON) || check(RBRACE)) {
+                throw error(peek(), "E_BREAK_VALUE: value loop requires a break operand");
+            }
+            Ast.Expr value = parseExpression();
+            if (!(value instanceof Ast.LiteralExpr || value instanceof Ast.UnaryExpr
+                    || value instanceof Ast.BinaryExpr || value instanceof Ast.ConditionalExpr)) {
+                throw error(site, "value-loop operand requires typed CFG lowering");
+            }
+            consume(SEMICOLON, "expected ';' after value break");
+            consume(RBRACE, "expected '}' after single value break");
+            if (check(LPAREN)) throw error(peek(), "calling a computed value loop");
+            return value;
+        }
         if (match(MATCH)) return parseValueMatch();
         if (canonicalAttoSource && match(IF, IFNOT, UNLESS)) return parseValueIf(previous().type());
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
@@ -7800,6 +7913,17 @@ public final class Parser {
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
+            // Grouped spawn options bind to spawn, not immutable with-update.
+            // The empty profile has no requests or expressions to evaluate.
+            // Preserve ordinary spawn defaults and all ordinary type/runtime checks.
+            // Never discard a nonempty group: those require typed lowering.
+            if (isContextualIdentifier("with") && checkNext(LBRACE)) {
+                Token site = peek();
+                var options = parseGroupedSpawnOptions();
+                if (options.groups().stream().anyMatch(group -> !group.entries().isEmpty())) {
+                    throw error(site, "E_SPAWN_OPTIONS_UNSUPPORTED: grouped actor spawn requires typed initialization, resource admission and runtime lowering");
+                }
+            }
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
             // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
@@ -8359,6 +8483,65 @@ public final class Parser {
             args.add(parseExpression());
         } while (match(COMMA));
         return List.copyOf(args);
+    }
+
+    // Closed syntax-only shape: cannot enter executable Ast.Expr visitors.
+    private GroupedSpawnOptions<Ast.Expr> parseGroupedSpawnOptions() {
+        advance();
+        consume(LBRACE, "expected '{' after spawn with");
+        List<GroupedSpawnOptions.Group<Ast.Expr>> sections = new ArrayList<>();
+        var seenSections = java.util.EnumSet.noneOf(GroupedSpawnOptions.Section.class);
+        while (!check(RBRACE) && !check(EOF)) {
+            Token section = consume(IDENT, "expected spawn option section");
+            var kind = switch (section.lexeme()) {
+                case "schedule" -> GroupedSpawnOptions.Section.SCHEDULE;
+                case "resources" -> GroupedSpawnOptions.Section.RESOURCES;
+                case "init" -> GroupedSpawnOptions.Section.INIT;
+                default -> throw error(section, "E_SPAWN_OPTION_SECTION: unknown section " + section.lexeme());
+            };
+            if (!seenSections.add(kind))
+                throw error(section, "E_SPAWN_OPTION_DUPLICATE: duplicate section " + section.lexeme());
+            consume(LBRACE, "expected '{' after spawn option section");
+            List<GroupedSpawnOptions.Entry<Ast.Expr>> entries = new ArrayList<>();
+            java.util.Set<String> seenKeys = new java.util.HashSet<>();
+            while (!check(RBRACE) && !check(EOF)) {
+                if (entries.size() >= 256)
+                    throw error(peek(), "E_SPAWN_OPTION_LIMIT: at most 256 entries per section in this parser profile");
+                Token key = consume(IDENT, "expected spawn option key");
+                String field = key.lexeme();
+                if (!seenKeys.add(field))
+                    throw error(key, "E_SPAWN_OPTION_DUPLICATE: duplicate key " + field);
+                GroupedSpawnOptions.ScheduleKey scheduleKey = null;
+                GroupedSpawnOptions.ResourceKey resourceKey = null;
+                switch (kind) {
+                    case SCHEDULE -> scheduleKey = switch (field) {
+                        case "max_parallelism" -> GroupedSpawnOptions.ScheduleKey.MAX_PARALLELISM;
+                        case "affinity" -> GroupedSpawnOptions.ScheduleKey.AFFINITY;
+                        case "pool" -> GroupedSpawnOptions.ScheduleKey.POOL;
+                        default -> throw error(key, "E_SPAWN_OPTION_KEY: unknown schedule key " + field);
+                    };
+                    case RESOURCES -> resourceKey = switch (field) {
+                        case "heap_size" -> GroupedSpawnOptions.ResourceKey.HEAP_SIZE;
+                        case "stack_size" -> GroupedSpawnOptions.ResourceKey.STACK_SIZE;
+                        case "mailbox_capacity" -> GroupedSpawnOptions.ResourceKey.MAILBOX_CAPACITY;
+                        default -> throw error(key, "E_SPAWN_OPTION_KEY: unknown resources key " + field);
+                    };
+                    case INIT -> { }
+                }
+                consume(EQUAL, "expected '=' after spawn option key");
+                Ast.Expr value = parseExpression();
+                entries.add(switch (kind) {
+                    case SCHEDULE -> new GroupedSpawnOptions.ScheduleEntry<>(scheduleKey, value);
+                    case RESOURCES -> new GroupedSpawnOptions.ResourceEntry<>(resourceKey, value);
+                    case INIT -> new GroupedSpawnOptions.InitEntry<>(field, value);
+                });
+                consume(SEMICOLON, "expected ';' after spawn option value");
+            }
+            consume(RBRACE, "expected '}' after spawn option entries");
+            sections.add(new GroupedSpawnOptions.Group<>(kind, entries));
+        }
+        consume(RBRACE, "expected '}' after grouped spawn options");
+        return new GroupedSpawnOptions<>(sections);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {

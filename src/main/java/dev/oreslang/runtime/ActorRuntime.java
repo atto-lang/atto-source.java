@@ -1123,6 +1123,8 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Linked process exit seals new actor admission without revoking dispatch.
+    private boolean linkedExitSealed; // guarded by runtimeLifecycleLock
     /** Distinct from admission sealing: dispatcher stop must still occur later. */
     private final AtomicBoolean dispatchersShutdown = new AtomicBoolean();
     /**
@@ -4748,7 +4750,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireCallerRuntimeAffinity("create a child ActorSupervisor");
         Objects.requireNonNull(parent, "parent");
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (supervisors.get(parent.id()) != parent)
                 throw new IllegalArgumentException(
                         "parent ActorSupervisor belongs to another ActorRuntime");
@@ -6480,7 +6482,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (actorGroups.size() >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
                         "ActorGroup runtime limit exceeded: maximum "
@@ -7216,7 +7218,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -10045,6 +10047,57 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Finite linked-process mailbox drain, not the embedder's general close.
+     * All callbacks/waits run outside admission locks. One deadline bounds
+     * the cohort. A failed drain must not become a successful process exit.
+     */
+    void drainLinkedExit() throws InterruptedException {
+        requireSupervisorContext("drain linked process actors");
+        requireBlockingHostContext("drain linked process actors");
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        final List<ActorCell<?>> snapshot;
+        final List<OresFuture<Void>> drains = new ArrayList<>();
+        final List<Runnable> rejected = new ArrayList<>();
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get() || linkedExitSealed)
+                throw new IllegalStateException("linked exit already sealed");
+            if (!actorGroups.isEmpty() || supervisors.size() != 1)
+                throw new IllegalStateException(
+                        "linked actor drain requires explicit group/supervisor retirement");
+            linkedExitSealed = true;
+            snapshot = List.copyOf(actors.values());
+            for (ActorCell<?> cell : snapshot) {
+                synchronized (cell.lifecycleLock) {
+                    if (cell.finalized || cell.stopped.get()) continue;
+                    cell.sealing = true;
+                    rejected.add(cell.sealAsyncSendAdmission(
+                            new ActorSealedException(cell.ref.id())));
+                    drains.add(cell.drainAcceptedMessages(true));
+                }
+            }
+        }
+        for (Runnable reject : rejected) reject.run();
+        for (ActorCell<?> cell : snapshot) cell.schedule();
+        try {
+            for (OresFuture<Void> drain : drains) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) throw new TimeoutException("linked mailbox drain deadline");
+                drain.get(remaining, TimeUnit.NANOSECONDS);
+            }
+        } catch (ExecutionException | TimeoutException failure) {
+            throw new IllegalStateException("linked mailbox drain incomplete", failure);
+        }
+        // Stop only after EVERY watermark has processed, so structured
+        // parent retirement cannot discard an accepted child message.
+        for (ActorCell<?> cell : snapshot) cell.stop();
+        for (ActorCell<?> cell : snapshot) {
+            cell.awaitFinalized(Math.max(0L, deadline - System.nanoTime()));
+            if (!cell.finalized())
+                throw new IllegalStateException("linked actor carrier retirement incomplete: " + cell.ref.id());
+        }
+    }
+
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
@@ -11964,11 +12017,14 @@ public final class ActorRuntime implements AutoCloseable {
                         // A serial source declaration must be preserved at
                         // runtime; numeric 1/1 admission settings alone are
                         // not a substitute for its receive-only semantics.
-                        if (created.serialReceive()) {
-                            receiveAdmission.close();
-                            receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                        synchronized (lifecycleLock) {
+                            if (created.serialReceive()) {
+                                receiveAdmission.close();
+                                receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                                if (stopped.get()) receiveAdmission.fence();
+                            }
+                            codeActorState = created;
                         }
-                        codeActorState = created;
                     } else {
                         Behavior<M> created = Objects.requireNonNull(
                                 behaviorFactory.create(context),
@@ -12440,6 +12496,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // STOP is single-shot. Reentrant supervisor/host requests must
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
+                receiveAdmission.fence();
                 // Capture only the sealed compiler-owned region. This is a
                 // non-guest STOP fence; do not hold lifecycleLock while
                 // closing the region's loan arbiter.

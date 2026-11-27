@@ -14,11 +14,21 @@ final class ReusableScalarSlotV1Test {
         }
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(rebind));
     }
+    @Test void asciiSeparatorsAfterBangAreAccepted() {
+        String source = PREFIX + "ref!\t p to a; val x = deref!\r\n p; unref!\n p; return x; }";
+        assertEquals("pub fnc main(): int { return 42; }", ReusableScalarSlotV1.lower(source));
+        assertNotNull(OresCompiler.compileReusableScalarSlotV1(source));
+    }
     @Test void invalidSlotsAreRejectedBeforePromotion() {
         for (String body : new String[] {"val x = deref! p; return x;", "p = null; return 42;",
             "ref! p to a; ref! p to a; unref! p; return 42;",
             "ref! p to a; unref! p; unref! p; return 42;", "ref! p to a; return 42;",
             "return p;", "ref ! p to a; unref! p; return 42;",
+            "ref!p to a; unref! p; return 42;",
+            "ref! p to a; val x = deref!p; unref! p; return x;",
+            "ref! p to a; unref!p; return 42;",
+            "ref!/* comment */p to a; unref! p; return 42;",
+            "ref!\u00a0p to a; unref! p; return 42;",
             "return 9223372036854775807 + 1;"}) {
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.compileReusableScalarSlotV1(PREFIX + body + " }"), body);

@@ -14,9 +14,23 @@ final class ReusableScalarSlotV1 {
             "ref", "deref", "unref", "to", "empty", "borrow", "take", "copy", "share",
             "drop", "move", "pin", "freeze", "weak", "task", "sync", "susp");
     private final List<Token> tokens;
+    private final String source;
+    private final int[] lineStarts;
     private int pos;
     private ReusableScalarSlotV1(String source) {
         if (source == null || source.length() > 16384) throw invalid();
+        this.source = source;
+        // Match the canonical lexer's UTF-16 positions and CRLF handling.
+        int[] starts = new int[source.length() + 1];
+        int lines = 1;
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (c == '\r') {
+                if (i + 1 < source.length() && source.charAt(i + 1) == '\n') i++;
+                starts[lines++] = i + 1;
+            } else if (c == '\n') starts[lines++] = i + 1;
+        }
+        lineStarts = java.util.Arrays.copyOf(starts, lines);
         tokens = new Lexer(source).scan();
         if (tokens.size() > 2048) throw invalid();
     }
@@ -47,7 +61,12 @@ final class ReusableScalarSlotV1 {
         need(IDENT, name);
         if (token().line() != start.line() || token().column() != start.column() + name.length())
             throw invalid();
+        Token bang = token();
         need(BANG, "!");
+        if (bang.line() < 1 || bang.line() > lineStarts.length) throw invalid();
+        int after = lineStarts[bang.line() - 1] + bang.column();
+        if (after >= source.length() || " \t\r\n\u000b\f".indexOf(source.charAt(after)) < 0)
+            throw invalid();
     }
     private long term(Map<String,Long> values) {
         if (token().type() == INT) return number();

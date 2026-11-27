@@ -45,7 +45,7 @@ try {
   });
   await test('reject unsupported or invalid source before code emission',()=>{
     const g=x=>'pub fnc main():u64{return '+x+';}';
-    for(const source of [g('18446744073709551616'),g('-1'),g('1/2'),g('x'),g('main()'),g('f(1)')+'fnc f():u64{return 1;}',g('1')+'fnc f(int n):u64{return 1;}',g('1')+'fnc f(u64 n,u64 n):u64{return n;}',g('1')+g('2'),g('1')+'fnc f():u64{return g();} fnc g():u64{return f();}',g('1'+'+1'.repeat(100)),g('('.repeat(40)+'1'+')'.repeat(40)),g('01'),g('1')+'\u202e',g('1')+' // comment',g('1')+' '.repeat(17000)]){
+    for(const source of [g('18446744073709551616'),g('-1'),g('1%2'),g('x'),g('main()'),g('f(1)')+'fnc f():u64{return 1;}',g('1')+'fnc f(int n):u64{return 1;}',g('1')+'fnc f(u64 n,u64 n):u64{return n;}',g('1')+g('2'),g('1')+'fnc f():u64{return g();} fnc g():u64{return f();}',g('1'+'+1'.repeat(100)),g('('.repeat(40)+'1'+')'.repeat(40)),g('01'),g('1')+'\u202e',g('1')+' // comment',g('1')+' '.repeat(17000)]){
       const r=lower(source);assert.ifError(r.error);assert.equal(r.status,2);assert.equal(r.stdout,'');assert.match(r.stderr,/E_U64_PROFILE/);
     }
     let s=g('f15()')+'fnc f0():u64{return 1;}';for(let i=1;i<=15;i++)s+=`fnc f${i}():u64{return f${i-1}()+f${i-1}();}`;
