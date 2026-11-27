@@ -1944,6 +1944,74 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
+    /**
+     * Parse only the bounded payload-free flat machine profile; even a valid
+     * graph must fail closed until typed state/ownership lowering exists.
+     */
+    private IllegalArgumentException parseFlatActorMachine() {
+        Token start = peek();
+        consumeContextualIdentifier("state", "expected state");
+        consumeContextualIdentifier("machine", "expected machine");
+        consume(AS, "expected as after state machine");
+        String initial = null;
+        var nodes = new java.util.LinkedHashMap<String, java.util.Map<String, String>>();
+        int edgeCount = 0;
+        while (!match(END)) {
+            if (matchContextualIdentifier("initial")) {
+                consumeContextualIdentifier("state", "expected state after initial");
+                Token name = consume(IDENT, "expected initial state name");
+                consume(SEMICOLON, "initial state requires ';'");
+                if (initial != null)
+                    throw error(name, "E_MACHINE_GRAPH: duplicate initial state");
+                initial = name.lexeme();
+                continue;
+            }
+            if (nodes.size() >= 256)
+                throw error(peek(), "E_SOURCE_LIMIT: too many machine nodes");
+            boolean terminal = matchContextualIdentifier("final");
+            consumeContextualIdentifier("state", "expected behavioral state");
+            Token name = consume(IDENT, "expected behavioral state name");
+            if (nodes.containsKey(name.lexeme()))
+                throw error(name, "E_MACHINE_GRAPH: duplicate behavioral state");
+            var edges = new java.util.LinkedHashMap<String, String>();
+            if (terminal) {
+                consume(SEMICOLON, "final state requires ';'");
+            } else {
+                consume(AS, "expected as after behavioral state");
+                while (!match(END)) {
+                    consumeContextualIdentifier("on", "expected on");
+                    Token event = consume(IDENT, "expected event name");
+                    consume(LPAREN, "expected '('");
+                    consume(RPAREN, "expected ')' (payload-free profile only)");
+                    consume(ARROW, "expected '->'");
+                    Token target = consume(IDENT, "expected successor state");
+                    consume(SEMICOLON, "transition requires ';'");
+                    if (++edgeCount > 256)
+                        throw error(event, "E_SOURCE_LIMIT: too many machine transitions");
+                    if (edges.putIfAbsent(event.lexeme(), target.lexeme()) != null)
+                        throw error(event, "E_MACHINE_GRAPH: duplicate event in state");
+                }
+            }
+            nodes.put(name.lexeme(), edges);
+        }
+        if (initial == null)
+            throw error(start, "E_MACHINE_GRAPH: missing initial state");
+        if (!nodes.containsKey(initial)
+                || nodes.values().stream().flatMap(edges -> edges.values().stream())
+                        .anyMatch(target -> !nodes.containsKey(target)))
+            throw error(start, "E_MACHINE_GRAPH: unknown initial or successor state");
+        var seen = new java.util.HashSet<String>();
+        var pending = new java.util.ArrayDeque<String>();
+        pending.push(initial);
+        while (!pending.isEmpty()) {
+            String node = pending.pop();
+            if (seen.add(node)) pending.addAll(nodes.get(node).values());
+        }
+        if (seen.size() != nodes.size())
+            throw error(start, "E_MACHINE_GRAPH: unreachable behavioral state");
+        return error(start, "E_MACHINE_LOWERING_UNSUPPORTED: flat actor state machine parsed; typed ownership/effect lowering is not implemented");
+    }
+
     private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
     }
@@ -2033,6 +2101,17 @@ public final class Parser {
             Modifiers mods = parseModifiers();
             if (match(DEFINE)) {
                 mods = mergeModifiers(mods, parseModifiers());
+            }
+            if (isContextualIdentifier("state") && current + 2 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 1).lexeme().equals("machine")
+                    && tokens.get(current + 2).type() == AS) {
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.suspends || mods.generator || mods.isStatic || mods.isAbstract
+                        || mods.shared || mods.untrusted || mods.structural
+                        || mods.nonLexical || mods.trapped)
+                    throw error(peek(), "state machine cannot have modifiers or annotations");
+                throw parseFlatActorMachine();
             }
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
                 if (declaredSealedState)
