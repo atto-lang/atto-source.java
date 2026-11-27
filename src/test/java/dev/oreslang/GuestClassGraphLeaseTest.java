@@ -230,6 +230,69 @@ final class GuestClassGraphLeaseTest {
         assertFalse(old.isReadOnly());
     }
 
+    @Test void replacementChecksTransitiveDomainLayoutAndOpaquePayloadBeforePublication() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("n", 10));
+        var original = store(d, Map.of("data", child));
+        var foreign = store(new GuestClassSlots.Domain(), Map.of("n", 20));
+        var unpublished = new GuestClassSlots(d, Map.of("n", 30));
+        try (var snapshot = original.shallowSnapshot(1, 2)) {
+            deny("E_COPY_DOMAIN", () -> snapshot.replace("data", store(d, Map.of("nested", foreign))));
+            assertThrows(IllegalStateException.class,
+                    () -> snapshot.replace("data", store(d, Map.of("nested", unpublished))));
+            deny("E_COPY_UNPROVEN", () -> snapshot.replace("data", store(d, Map.of("nested", new Object()))));
+            assertSame(child, snapshot.get("data"));
+            assertSame(child, original.get("data"));
+            assertTrue(child.isReadOnly());
+            assertFalse(foreign.isReadOnly());
+        }
+        assertFalse(child.isReadOnly());
+    }
+
+    @Test void replacementMustNotDependOnAnotherSnapshotsLease() {
+        var d = new GuestClassSlots.Domain();
+        var own = store(d, Map.of("n", 10));
+        var other = store(d, Map.of("n", 20));
+        var a = store(d, Map.of("data", own));
+        var b = store(d, Map.of("data", other));
+        try (var first = a.shallowSnapshot(1, 2)) {
+            try (var unrelated = b.shallowSnapshot(1, 2)) {
+                deny("E_COPY_SHALLOW_ALIAS", () -> first.replace("data", other));
+                deny("E_COPY_SHALLOW_ALIAS", () -> first.replace("data", store(d, Map.of("nested", other))));
+                assertSame(own, first.get("data"));
+                assertSame(other, unrelated.get("data"));
+                var wrapper = store(d, Map.of("nested", own));
+                first.replace("data", wrapper);
+                deny("E_COPY_READONLY", () -> own.replace("n", 99));
+                assertSame(wrapper, first.get("data"));
+            }
+            assertFalse(other.isReadOnly());
+            other.replace("n", 21);
+            assertTrue(own.isReadOnly());
+        }
+        assertFalse(own.isReadOnly());
+    }
+
+    @Test void replacementTraversalTerminatesForCyclesAndDoesNotFreezeFreshNodes() {
+        var d = new GuestClassSlots.Domain();
+        var original = store(d, Map.of("data", 0));
+        var fresh = store(d, Map.of("next", 0, "n", 20));
+        fresh.replace("next", fresh);
+        try (var first = original.shallowSnapshot(0, 1)) {
+            first.replace("data", fresh);
+            assertSame(fresh, first.get("data"));
+            assertFalse(fresh.isReadOnly());
+            fresh.replace("n", 22);
+            try (var second = first.shallowSnapshot(1, 3)) {
+                assertSame(fresh, second.get("data"));
+                deny("E_COPY_READONLY", () -> fresh.replace("n", 99));
+            }
+            fresh.replace("n", 23);
+            assertEquals(23, fresh.get("n"));
+            assertEquals(0, original.get("data"));
+        }
+    }
+
     @Test void snapshotRootAndLeaseObserveSameConcurrentReplacement() throws Exception {
         var d = new GuestClassSlots.Domain();
         try(var pool=Executors.newFixedThreadPool(2)){
