@@ -25,6 +25,15 @@ final class ParametricBundleRefinementTest {
         assertEquals(5, refine(schema, seed, List.of()).get("size"));
     }
 
+    @Test void ordinaryApplicationRejectsEvenEqualOverlappingBindings() {
+        assertEquals(Map.of("type", "int", "size", 6),
+                apply(schema, List.of(a("type", "int")), List.of(a("size", 6))));
+        assertThrows(IllegalArgumentException.class, () -> apply(schema, seed, List.of(a("size", 5))));
+        assertThrows(IllegalArgumentException.class, () -> apply(schema, seed, List.of(a("size", 6))));
+        assertThrows(IllegalArgumentException.class, () -> apply(schema, seed, List.of(a("unknown", 1))));
+        assertEquals(5, apply(schema, seed, List.of()).get("size"));
+    }
+
     @Test void rejectsDuplicatesUnknownKeysAndInvalidKinds() {
         assertThrows(IllegalArgumentException.class, () -> refine(schema, seed, List.of(a("size", 6), a("size", 6))));
         assertThrows(IllegalArgumentException.class, () -> refine(schema, List.of(a("size", 5), a("size", 5)), List.of()));
