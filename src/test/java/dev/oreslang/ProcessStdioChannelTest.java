@@ -52,8 +52,8 @@ final class ProcessStdioChannelTest {
                 val reader = source.get_reader();
                 val second = await reader.read_async();
                 reader.release_lock();
-                stdio.stdout.write(first);
-                stdio.stdout.write(second);
+                stdio.out.write(first);
+                stdio.out.write(second);
                 return;
             }
             """, "alpha\nbeta\n", output, error);
