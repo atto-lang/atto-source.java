@@ -64,6 +64,22 @@ final class RecursiveRecordParserTest {
         reject("(1, x : 2)", "E_LITERAL_KIND");
         reject("(x : 1, 2)", "E_LITERAL_KIND");
     }
+    @Test void inlinePairEntriesProduceTheSameRecordAst() {
+        assertEquals(parse("{foo := 40\nbar := 2}"), parse("{foo : 40, bar : 2}"));
+        assertEquals(parse("(foo := 40, bar = 2)"), parse("(foo : 40, bar = 2)"));
+        assertEquals(parse("(foo : 40, bar := 2)"), parse("{foo = 40, bar : 2}"));
+        assertEquals(parse("foo({x := 42})"), parse("foo({x : 42})"));
+        assertEquals(parse("{foo := 40\nbar = 2,}"), parse("{foo = 40, bar : 2}"));
+    }
+    @Test void inlinePairEntriesDoNotAdmitAmbiguousOrDuplicateFields() {
+        reject("{foo := 1, foo : 2}", "E_DUPLICATE");
+        reject("(foo := 1, foo = 2)", "E_DUPLICATE");
+        reject("{foo := 1 bar := 2}", "fields require commas");
+        reject("{foo = 1\nbar := 2}", "fields require commas");
+        reject("{foo : 1\nbar := 2}", "fields require commas");
+        for (String s : new String[] {"(foo := 1)", "(foo := 1, bar := 2)", "(foo := (bar = 1), baz := 2)", "{foo : = 1}", "(foo := 1\nbar = 2)"})
+            assertThrows(IllegalArgumentException.class, () -> parse(s), s);
+    }
     @Test void groupingAndTupleArityAreDistinct() {
         assertEquals(parse("(1)"), parse("1"));
         assertNotEquals(parse("(1,)"), parse("(1)"));
