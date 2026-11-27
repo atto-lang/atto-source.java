@@ -55,6 +55,18 @@ final class RecursiveRecordParserTest {
         assertEquals(parse("{...r, bar : true}"), parse("record{...r, bar: true}"));
         assertNotEquals(parse("(1, {x: 2})"), parse("{x: 2}"));
     }
+    // Portable call forms only. Existing grouped-Record tests above describe
+    // this parser's historical profile; grouped equals/colon call arguments
+    // are not ratified as a portable contract by spec #299/#306/#307.
+    @Test void explicitBraceRecordCallIsNotNamedArgumentExpansion() {
+        assertEquals(parse("foo({x = 4, y = 8})"), parse("foo({x : 4, y : 8})"));
+        assertNotEquals(parse("foo(x = 4, y = 8)"), parse("foo({x = 4, y = 8})"));
+        assertNotEquals(parse("foo(data = {x = 4, y = 8})"), parse("foo({x = 4, y = 8})"));
+        assertEquals(parse("foo(data = {x = 4, y = 8})"), parse("foo(data: {x: 4, y: 8})"));
+        reject("foo({x = 4, x = 8})", "E_DUPLICATE");
+        reject("foo({x = y = 4})", "E_RECORD_FIELD");
+    }
+
     @Test void anonymousRecordSeparatorsAndDuplicateFieldsFailClosed() {
         reject("{x : 1\ny : 2}", "fields require commas");
         reject("{x = 1\ny = 2}", "fields require commas");
