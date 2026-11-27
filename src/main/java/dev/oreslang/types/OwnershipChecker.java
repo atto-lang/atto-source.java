@@ -109,6 +109,8 @@ public final class OwnershipChecker {
     private final List<String> copyWarnings = new ArrayList<>();
     /** Opt-in in-pass trace; never permits guest code emission. */
     private BorrowMirAuditV1.Collector borrowMirAudit;
+    private final RuntimeParkingLoanGraph runtimeParking = new RuntimeParkingLoanGraph();
+    private Object currentParkingCallable;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -359,6 +361,8 @@ public final class OwnershipChecker {
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
             }
         }
+        String violation = runtimeParking.firstViolation();
+        if (violation != null) throw error(E_LOAN_SUSPEND, violation);
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
@@ -381,10 +385,13 @@ public final class OwnershipChecker {
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
         currentAsyncGenerator = fn.generator() && (fn.async() || fn.suspends());
+        Object previousParkingCallable = currentParkingCallable;
+        currentParkingCallable = fn;
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
+            currentParkingCallable = previousParkingCallable;
             scope.close();
             if (borrowMirAudit != null) {
                 borrowMirAudit.finishFunction();
@@ -521,10 +528,13 @@ public final class OwnershipChecker {
             defineImplicitArguments(scope, method.parameters());
             Ast.ClassDecl previousInstanceOwner = currentInstanceMethodOwner;
             currentInstanceMethodOwner = method.isStatic() ? null : klass;
+            Object previousParkingCallable = currentParkingCallable;
+            currentParkingCallable = method;
             try {
                 checkBlock(method.body(), scope, method.returnType());
             } finally {
                 currentInstanceMethodOwner = previousInstanceOwner;
+                currentParkingCallable = previousParkingCallable;
                 scope.close();
             }
         }
@@ -1280,9 +1290,9 @@ public final class OwnershipChecker {
         }
     }
 
-    private void checkSuspensionBorrows(Scope scope, String operation) {
+    private String suspensionLoanViolation(Scope scope, String operation) {
         if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
-            throw error(E_LOAN_SUSPEND, "cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
+            return "cannot " + operation + " while holding a MutexGuard; release the guard before suspension";
         }
         // Actor self is retained by the mailbox continuation under the same
         // execution lease. Ordinary user borrows (including aliases of self)
@@ -1292,9 +1302,19 @@ public final class OwnershipChecker {
                 && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
                     || state.immutableBorrows > 0 || state.mutableBorrowed
                     || containsBorrowType(state.type)))) {
-            throw error(E_LOAN_SUSPEND, "cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
+            return "cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension";
         }
+        return null;
+    }
+    private void checkSuspensionBorrows(Scope scope, String operation) {
+        String violation = suspensionLoanViolation(scope, operation);
+        if (violation != null) throw error(E_LOAN_SUSPEND, violation);
         shadowEvent("SUSPEND_SAFE", null);
+    }
+
+    private void recordRuntimeParkingCall(Object target, Scope scope, String label) {
+        runtimeParking.edge(currentParkingCallable, target,
+                suspensionLoanViolation(scope, "call potentially runtime-parking " + label));
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
@@ -2541,6 +2561,7 @@ public final class OwnershipChecker {
             CallSignature signature = specializeCall(
                     fn.genericParameters(), fn.genericParameters(),
                     fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+            if (!fn.async() && !fn.generator()) recordRuntimeParkingCall(fn, scope, fn.name());
             if (fn.suspends() && !fn.generator()) {
                 checkSuspensionBorrows(scope, "suspends call pkg::" + qualified.member());
             }
@@ -2728,6 +2749,19 @@ public final class OwnershipChecker {
                 return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
             }
         }
+        if (isCanonicalParkingStdoutCall(call, scope)) {
+            if (call.arguments().size() != 1 || call.typeArgumentsPresent()
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                throw error(E_ARITY, "canonical stdout.write requires one positional string");
+            }
+            ValueInfo text = checkExpr(call.arguments().getFirst(), scope, false);
+            if (isBorrowValue(text) || containsBorrowType(text.type)) {
+                throw error(E_LOAN_SUSPEND, "canonical stdout.write requires owned text");
+            }
+            checkSuspensionBorrows(scope, "runtime-park for stdout.write");
+            runtimeParking.markParking(currentParkingCallable);
+            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
             boolean async = isBuiltinStdoutCall(call, "log_async", scope)
@@ -2819,6 +2853,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+                if (!fn.async() && !fn.generator()) recordRuntimeParkingCall(fn, scope, fn.name());
                 if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name(), fn.suspends() && !fn.generator());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
@@ -2835,6 +2870,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+                if (!fn.async() && !fn.generator()) recordRuntimeParkingCall(fn, scope, fn.name());
                 if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
@@ -2955,6 +2991,7 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
+                    if (!staticFunction.async()) recordRuntimeParkingCall(staticFunction, scope, staticFunction.name());
                     if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
                     checkArguments(
                             call.arguments(),
@@ -3275,6 +3312,8 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
+                // Known declaration edge; virtual override closure remains a separate gate.
+                if (!method.async()) recordRuntimeParkingCall(method, scope, method.name());
                 if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 if (method.explicitReceiverType() != null
                         && method.explicitReceiverType().isBorrow()
@@ -3405,6 +3444,22 @@ public final class OwnershipChecker {
 
     private static boolean isBooleanIntrinsicName(String name) {
         return name.equals("And") || name.equals("Or") || name.equals("Xor");
+    }
+
+    // Staged ownership check for the two new canonical paths only.
+    // Existing stdio.stdout compatibility calls are not activated here.
+    private boolean isCanonicalParkingStdoutCall(Ast.CallExpr call, Scope scope) {
+        if (!(call.callee() instanceof Ast.MemberExpr write) || !write.member().equals("write")
+                || !(write.receiver() instanceof Ast.MemberExpr endpoint)
+                || !(endpoint.receiver() instanceof Ast.NameExpr root)
+                || scope.lookup(root.name()) != null
+                || modules.contains(root.name()) || importedFncs.contains(root.name())
+                || classes.containsKey(root.name())) return false;
+        if (checkedProgram.imports().stream().anyMatch(i -> i.wildcard()
+                || i.names().stream().anyMatch(n -> ImportRules.localName(i, n).equals(root.name()))))
+            return false;
+        return root.name().equals("stdio") && endpoint.member().equals("out")
+                || root.name().equals("process") && endpoint.member().equals("stdout");
     }
 
     private static boolean isBuiltinFormattingCall(Ast.CallExpr call, Scope scope) {
