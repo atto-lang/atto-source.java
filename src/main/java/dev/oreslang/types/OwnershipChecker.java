@@ -2026,6 +2026,13 @@ public final class OwnershipChecker {
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
                     rejectBorrowedProjectionConsumption(member.receiver(), receiverValue, fieldKind, consuming, scope);
+                    // A nominal field read does not invalidate its slot. Until
+                    // partial moves are proven, do not manufacture a second
+                    // owner from a consuming read of a move-only field.
+                    if (consuming && fieldKind == ValueKind.MOVE_ONLY) {
+                        throw error(E_MOVE_UNPROVEN, "cannot consume move-only class field '"
+                                + member.member() + "' without path-aware partial-move tracking; borrow or replace it");
+                    }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
                 if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
