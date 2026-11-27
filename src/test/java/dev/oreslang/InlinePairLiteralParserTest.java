@@ -34,7 +34,7 @@ final class InlinePairLiteralParserTest {
         rejects("val r = Record.of(x := 1, x := 2);", "duplicate");
         rejects("val r = Record.of(\"not an identifier\" := 5);", "valid static parameter identifier");
         rejects("val Map<string, int> m = Map.of(x := 1, \"x\" := 2);", "duplicate");
-        assertThrows(IllegalArgumentException.class, () -> parse("val r = {x := 5};"));
+        assertEquals(parse("val r = {x := 5};"), parse("val r = {x : 5};"));
         assertThrows(IllegalArgumentException.class, () -> parse("val Map<string, int> m = Map.of_entries(x := 5);"));
     }
 }
