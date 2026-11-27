@@ -53,7 +53,35 @@ final class GuardTrapSyncTaskExactTest {
         execute(code, PROCESS_NAME);
     }
 
+    // Exact new corpus from conformance #703; historical fixture pins remain unchanged.
+    @Test
+    void canonicalStdoutDirectStdio() throws Exception {
+        runCanonical("stdio-direct.atto", "fcb8c1b56322b1b068007513cd60791504de5918", "AB");
+    }
+    @Test
+    void canonicalStdoutDirectProcess() throws Exception {
+        runCanonical("process-direct.atto", "0d4a07d1c1ccf6c9f1083816a3740091a8467641", "AB");
+    }
+    @Test
+    void canonicalStdoutMixedDefer() throws Exception {
+        runCanonical("mixed-defer.atto", "7d1868164d3263bb8158c590a7ad0c36e069bb56", "CBA");
+    }
+    @Test
+    void canonicalStdoutTrappedTask() throws Exception {
+        runCanonical("mixed-trapped-task.atto", "5b122c0396240cee7d0be125f952655560b1e78d", "ED");
+    }
+    private static void runCanonical(String file, String blob, String expected) throws Exception {
+        String name = "canonical-stdout-v1-" + file;
+        String code = fixture(name, blob);
+        OresCompiler.parseAndTypeCheckStrictAtto(code);
+        execute(code, name, expected);
+    }
+
     private static void execute(String code, String name) throws Exception {
+        execute(code, name, "D");
+    }
+
+    private static void execute(String code, String name, String expected) throws Exception {
         var stdout = new ByteArrayOutputStream();
         var source = Source.newBuilder(OresLanguage.ID, code, name)
                 .mimeType(OresLanguage.MIME_TYPE).build();
@@ -61,7 +89,7 @@ final class GuardTrapSyncTaskExactTest {
             var result = context.eval(source);
             assertTrue(result.fitsInLong());
             assertEquals(42L, result.asLong());
-            assertEquals("D", stdout.toString(StandardCharsets.UTF_8));
+            assertArrayEquals(expected.getBytes(StandardCharsets.UTF_8), stdout.toByteArray());
         }
     }
 }
