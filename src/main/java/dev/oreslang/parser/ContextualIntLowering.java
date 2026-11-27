@@ -8,7 +8,7 @@ import static dev.oreslang.parser.Token.Type.*;
 final class ContextualIntLowering {
     private static final String PREFIX = "atto_context_v1_";
     private static final Set<Token.Type> ADMITTED = Set.of(DEFINE,CLASS,AS,PUB,STATIC,FNC,END,
-        CONST,RETURN,IDENT,INT,LPAREN,RPAREN,LBRACE,RBRACE,COMMA,DOT,SEMICOLON,
+        CONST,LET,RETURN,IDENT,INT,LPAREN,RPAREN,LBRACE,RBRACE,COMMA,DOT,SEMICOLON,
         DOUBLE_COLON,COLON,ARROW,EQUAL,PLUS,MINUS,STAR,SLASH,EOF);
     private static final Set<String> RESERVED = Set.of("main","int","bool","void","new","make",
         "self","constructor","mtd","with","set","copy","move","take","borrow","share","rt",
@@ -25,7 +25,7 @@ final class ContextualIntLowering {
         final List<Token> input;
         final StringBuilder out=new StringBuilder();
         final Map<String,List<String>> aliases=new LinkedHashMap<>();
-        final Set<String> locals=new HashSet<>();
+        final Map<String,String> locals=new LinkedHashMap<>();
         int at,slots,depth;
         String owner,member;
         int contextCount,ordinaryCount;
@@ -92,8 +92,8 @@ final class ContextualIntLowering {
                     args.addAll(args(ordinaryCount));
                     return PREFIX+"member("+String.join(", ",args)+")";
                 }
-                if(!locals.contains(n))throw deny("unresolved scalar operand");
-                return n;
+                if(!locals.containsKey(n))throw deny("unresolved scalar operand");
+                return locals.get(n);
             }finally{depth--;}
         }
         List<String> args(int count){
@@ -113,7 +113,7 @@ final class ContextualIntLowering {
             List<String> all=new ArrayList<>(captures);all.addAll(ordinary);
             if(contextCount<1||contextCount>8||all.size()>16||new HashSet<>(all).size()!=all.size()||all.contains(owner))
                 throw deny("invalid context schema");
-            locals.addAll(all);
+            for(String parameter:all)locals.put(parameter,parameter);
             if(!eat(ARROW))need(COLON);word("int");need(LBRACE);need(RETURN);
             String body=plain(false);need(SEMICOLON);need(RBRACE);need(END);
             out.append("fnc ").append(PREFIX).append("member(");
@@ -122,9 +122,25 @@ final class ContextualIntLowering {
             locals.clear();
             need(FNC);word("main");need(LPAREN);need(RPAREN);need(ARROW);word("int");need(LBRACE);
             out.append("pub fnc main():int {\n");
-            while(eat(CONST)){
+            while(token().type()==CONST||token().type()==LET||
+                  (token().type()==IDENT&&token().lexeme().equals("set"))){
+                if(token().type()!=CONST){
+                    boolean declaration=eat(LET);
+                    if(!declaration)word("set");
+                    String n=name();
+                    if(n.equals(owner)||aliases.containsKey(n)||(!declaration&&!locals.containsKey(n)))
+                        throw deny("set requires existing scalar let; contextual aliases immutable");
+                    need(EQUAL);
+                    String value=plain(false);need(SEMICOLON);
+                    String slot=PREFIX+"slot_"+slots++;
+                    out.append("val int ").append(slot).append(" = ").append(value).append(";\n");
+                    locals.put(n,slot);
+                    if(out.length()>65536)throw deny("lowering budget");
+                    continue;
+                }
+                need(CONST);
                 String n=name();
-                if(n.equals(owner)||aliases.containsKey(n)||aliases.size()>=64)throw deny("duplicate or excessive alias");
+                if(n.equals(owner)||aliases.containsKey(n)||locals.containsKey(n)||aliases.size()>=64)throw deny("duplicate or excessive alias");
                 need(EQUAL);
                 if(token().type()==IDENT&&aliases.containsKey(token().lexeme())){
                     aliases.put(n,aliases.get(token().lexeme()));at++;need(SEMICOLON);continue;
