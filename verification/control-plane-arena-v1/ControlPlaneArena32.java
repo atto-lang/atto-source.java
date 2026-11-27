@@ -20,7 +20,7 @@ final class ControlPlaneArena32 implements AutoCloseable {
     private final long issuer;
     private final Arena nativeArena;
     private final MemorySegment records, slots;
-    private int nextSlot, freeHead;
+    private int freeHead, freeTail;
     private boolean closed;
 
     ControlPlaneArena32(int capacity) {
@@ -31,7 +31,8 @@ final class ControlPlaneArena32 implements AutoCloseable {
         try {
             records = nativeArena.allocate((long)capacity * RECORD_BYTES, 8);
             slots = nativeArena.allocate(((long)capacity * META_BYTES + 7) & ~7L, 8);
-            for(int i=0;i<capacity;i++) set(i,0,1);
+            for(int i=0;i<capacity;i++){set(i,0,1);set(i,8,i+1<capacity?i+2:0);}
+            freeHead=1;freeTail=capacity;
         } catch (RuntimeException | Error failure) {
             nativeArena.close();
             throw failure;
@@ -58,8 +59,9 @@ final class ControlPlaneArena32 implements AutoCloseable {
     synchronized long tryAllocate() {
         if(closed)return 0;
         int slot;
-        if(freeHead!=0){slot=freeHead-1;freeHead=get(slot,8);}
-        else {if(nextSlot>=capacity)return 0;slot=nextSlot++;}
+        if(freeHead==0)return 0;
+        slot=freeHead-1;freeHead=get(slot,8);
+        if(freeHead==0)freeTail=0;
         int generation=get(slot,0);
         if(generation==0||get(slot,4)!=0)throw new IllegalStateException("invalid free slot");
         set(slot,4,1);set(slot,8,0);
@@ -71,7 +73,11 @@ final class ControlPlaneArena32 implements AutoCloseable {
         for(int i=0;i<RECORD_BYTES;i+=8)records.set(I64,base+i,0);
         set(slot,4,0);int generation=get(slot,0);
         if(generation==MAX_GENERATION)set(slot,0,0);
-        else {set(slot,0,generation+1);set(slot,8,freeHead);freeHead=slot+1;}
+        else {
+            set(slot,0,generation+1);set(slot,8,0);
+            if(freeTail==0)freeHead=slot+1;else set(freeTail-1,8,slot+1);
+            freeTail=slot+1;
+        }
     }
     private long scalarOffset(long handle,int field) {
         int slot=validate(handle);
