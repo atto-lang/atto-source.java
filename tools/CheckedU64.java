@@ -5,7 +5,7 @@ import java.util.regex.Pattern;
 
 /** Explicit closed unsigned scalar source-to-Java candidate; no signed fallback. */
 public final class CheckedU64 {
-    private static final Pattern TOKEN = Pattern.compile("[ \\t\\r\\n]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[(){}:,;+*\\-]");
+    private static final Pattern TOKEN = Pattern.compile("[ \\t\\r\\n]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[(){}:,;+*/\\-]");
     private static final Set<String> RESERVED = Set.of("pub", "fnc", "return", "uint", "u64");
     private record Expr(String kind, String value, List<Expr> args) {}
     private record Fn(String name, boolean pub, List<String> params, Expr body, int index) {}
@@ -14,6 +14,7 @@ public final class CheckedU64 {
     private final Map<String,Integer> costs = new HashMap<>();
     private final Set<String> active = new HashSet<>();
     private int pos, nodes;
+    private boolean usesDivision;
     private static IllegalArgumentException bad(String why) { return new IllegalArgumentException(why); }
     private String peek() { return pos < tokens.size() ? tokens.get(pos) : ""; }
     private boolean eat(String s) { if (!peek().equals(s)) return false; pos++; return true; }
@@ -49,8 +50,9 @@ public final class CheckedU64 {
             } else lhs = node("param",id,List.of());
         }
         while (true) {
-            String op = peek(); int prec = op.equals("*") ? 2 : op.equals("+") || op.equals("-") ? 1 : 0;
+            String op = peek(); int prec = op.equals("*") || op.equals("/") ? 2 : op.equals("+") || op.equals("-") ? 1 : 0;
             if (prec < min) return lhs;
+            if (op.equals("/")) usesDivision = true;
             pos++; lhs = node("binary",op,List.of(lhs,expr(depth+1,prec+1)));
         }
     }
@@ -99,7 +101,7 @@ public final class CheckedU64 {
     private String emit(Expr n,Fn f) {
         if(n.kind().equals("literal")) return n.value();
         if(n.kind().equals("param")) return "p"+f.params().indexOf(n.value());
-        String target=n.kind().equals("call")?"f"+funcs.get(n.value()).index():switch(n.value()) {case "+" -> "add";case "-" -> "sub";default -> "mul";};
+        String target=n.kind().equals("call")?"f"+funcs.get(n.value()).index():switch(n.value()) {case "+" -> "add";case "-" -> "sub";case "*" -> "mul";case "/" -> "div";default -> throw bad("invalid operator");};
         var args=new StringJoiner(","); for(Expr x:n.args()) args.add(emit(x,f));
         return target+"("+args+")";
     }
@@ -110,12 +112,15 @@ public final class CheckedU64 {
                 private static long sub(long a,long b) { if(Long.compareUnsigned(b,a)>0) throw new ArithmeticException("E_U64_OVERFLOW"); return a-b; }
                 private static long mul(long a,long b) { if(b!=0 && Long.compareUnsigned(a,Long.divideUnsigned(-1L,b))>0) throw new ArithmeticException("E_U64_OVERFLOW"); return a*b; }
             """);
+        if (usesDivision) out.append("private static long div(long a,long b){if(b==0)throw new ArithmeticException(\"E_U64_DIVISION_BY_ZERO\");return Long.divideUnsigned(a,b); }\n");
         for(Fn f:funcs.values()) {
             var params=new StringJoiner(","); for(int i=0;i<f.params().size();i++) params.add("long p"+i);
             out.append("private static long f").append(f.index()).append('(').append(params).append("){return ").append(emit(f.body(),f)).append(";}\n");
         }
         out.append("public static long guest(){return f").append(funcs.get("main").index()).append("();}\n");
-        out.append("public static void main(String[] args){try{System.out.println(Long.toUnsignedString(guest()));}catch(ArithmeticException e){System.err.println(e.getMessage());System.exit(70);}}\n}\n");
+        out.append("public static void main(String[] args){try{System.out.println(Long.toUnsignedString(guest()));}catch(ArithmeticException e){System.err.println(e.getMessage());System.exit(");
+        out.append(usesDivision ? "\"E_U64_DIVISION_BY_ZERO\".equals(e.getMessage())?71:70" : "70");
+        out.append(");}}\n}\n");
         if(out.length()>131072) throw bad("output budget"); return out.toString();
     }
     public static void main(String[] args) throws IOException {
