@@ -8103,11 +8103,26 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            if (canonicalAttoSource) {
+                if (match(RPAREN)) return new Ast.TupleExpr(List.of());
+                if (startsParenthesizedRecordItem()) return parseParenthesizedRecord();
+            }
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
                 items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
+                if (canonicalAttoSource) {
+                    while (!check(RPAREN)) {
+                        if (startsParenthesizedRecordItem())
+                            throw error(peek(), "E_LITERAL_KIND: mixed Record and Tuple items");
+                        items.add(parseExpression());
+                        if (items.size() > 4096)
+                            throw error(peek(), "E_SOURCE_LIMIT: tuple exceeds 4096 items");
+                        if (!match(COMMA)) break;
+                    }
+                } else {
+                    do items.add(parseExpression()); while (match(COMMA));
+                }
                 consume(RPAREN, "expected ')' after tuple");
                 return new Ast.TupleExpr(items);
             }
@@ -8537,6 +8552,67 @@ public final class Parser {
         return false;
     }
 
+    // Candidate recursive-product-v1: token-local Record dispatch. Do not use
+    // expression assignment or expected types to classify a field.
+    private boolean startsParenthesizedRecordItem() {
+        return ((check(IDENT) || check(STRING)) && checkNext(EQUAL))
+                || (check(COLON) && checkNext(IDENT));
+    }
+
+    private String checkedQuotedRecordLabel(Token label) {
+        if (label.stringQuote() != '"')
+            throw error(label, "E_RECORD_LABEL: expected ordinary double-quoted identifier label");
+        List<Token> decoded;
+        try {
+            decoded = new Lexer(label.lexeme()).scan();
+        } catch (IllegalArgumentException invalid) {
+            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
+        }
+        if (decoded.size() != 2 || decoded.getFirst().type() != IDENT
+                || !decoded.getFirst().lexeme().equals(label.lexeme())
+                || label.lexeme().codePoints().anyMatch(Character::isISOControl))
+            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
+        return label.lexeme();
+    }
+
+    private Ast.Expr parseRecordFieldValue() {
+        // An ungrouped second '=' cannot be a hidden assignment expression.
+        Ast.Expr value = parsePipeline();
+        if (check(EQUAL))
+            throw error(peek(), "E_RECORD_FIELD: assignment is not a Record field value");
+        return value;
+    }
+
+    private Ast.ObjectExpr parseParenthesizedRecord() {
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        while (!check(RPAREN)) {
+            if (!startsParenthesizedRecordItem())
+                throw error(peek(), "E_LITERAL_KIND: mixed Record and Tuple items");
+            Token label = peek();
+            String name;
+            Ast.Expr value;
+            if (match(COLON)) {
+                label = consume(IDENT, "expected identifier after Record capture ':'");
+                name = label.lexeme();
+                value = new Ast.NameExpr(name);
+            } else {
+                advance();
+                name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
+                consume(EQUAL, "expected '=' after Record field name");
+                value = parseRecordFieldValue();
+            }
+            if (!names.add(name))
+                throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+            fields.add(Ast.ObjectField.named(name, value));
+            if (fields.size() > 4096)
+                throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
+            if (!match(COMMA)) break;
+        }
+        consume(RPAREN, "expected ')' after Record literal");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
@@ -8552,10 +8628,10 @@ public final class Parser {
                 args.add(new Ast.SpreadExpr(parseExpression()));
                 continue;
             }
-            if (check(IDENT) && checkNext(COLON)) {
+            if (check(IDENT) && (checkNext(COLON) || (canonicalAttoSource && checkNext(EQUAL)))) {
                 namedStarted = true;
                 String name = advance().lexeme();
-                consume(COLON, "expected ':' after named argument");
+                advance(); // ':' or '=' in canonical Atto
                 if (!seenLabels.add(name)) {
                     throw error(previous(), "duplicate named argument '" + name + "'");
                 }
@@ -8565,7 +8641,16 @@ public final class Parser {
             if (namedStarted) {
                 throw error(peek(), "positional arguments cannot follow named arguments");
             }
-            args.add(parseExpression());
+            if (canonicalAttoSource && check(STRING) && checkNext(EQUAL)) {
+                Token label = advance();
+                String name = checkedQuotedRecordLabel(label);
+                consume(EQUAL, "expected '=' after quoted Record field");
+                Ast.Expr value = parseRecordFieldValue();
+                args.add(new Ast.ObjectExpr(List.of(Ast.ObjectField.named(name, value)),
+                        Ast.ObjectKind.RECORD, List.of()));
+            } else {
+                args.add(parseExpression());
+            }
         } while (match(COMMA));
         return List.copyOf(args);
     }
