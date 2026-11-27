@@ -92,6 +92,31 @@ final class GuestClassGraphLeaseTest {
         assertFalse(b.isReadOnly());
     }
 
+    @Test void shallowSnapshotRejectsRootBackEdgesWithoutFreezingAnySlots() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("next", 0));
+        var root = store(d, Map.of("child", child, "count", 1));
+        child.replace("next", root);
+        deny("E_COPY_SHALLOW_ALIAS", () -> root.shallowSnapshot(2, 3));
+        assertFalse(root.isReadOnly());
+        assertFalse(child.isReadOnly());
+        root.replace("count", 2);
+        child.replace("next", 0);
+        try (var snapshot = root.shallowSnapshot(1, 3)) {
+            snapshot.replace("count", 3);
+            root.replace("count", 4);
+            assertEquals(3, snapshot.get("count"));
+            assertEquals(4, root.get("count"));
+            deny("E_COPY_READONLY", () -> child.replace("next", 1));
+        }
+        // Direct self-edge is subject to the same fail-atomic policy.
+        root.replace("child", root);
+        deny("E_COPY_SHALLOW_ALIAS", () -> root.shallowSnapshot(1, 4));
+        assertFalse(root.isReadOnly());
+        root.replace("child", child);
+        assertFalse(child.isReadOnly());
+    }
+
     @Test void snapshotRootReplacementAndLexicalRelease() {
         var d = new GuestClassSlots.Domain();
         var child = store(d, Map.of("n", 10));
@@ -165,6 +190,89 @@ final class GuestClassGraphLeaseTest {
         assertEquals(12, child.get("n"));
     }
 
+    @Test void replacementGraphValidationIsTransitiveAndFailAtomic() {
+        var d = new GuestClassSlots.Domain();
+        var shared = store(d, Map.of("n", 10));
+        var original = store(d, Map.of("data", shared, "count", 1));
+        var donor = store(d, Map.of("edge", 0));
+        var foreign = store(new GuestClassSlots.Domain(), Map.of("n", 2));
+        var unpublished = new GuestClassSlots(d, Map.of("n", 3));
+        var outside = store(d, Map.of("n", 4));
+        try (var snapshot = original.shallowSnapshot(4, 8);
+             var external = outside.retainReadOnly()) {
+            donor.replace("edge", foreign);
+            deny("E_COPY_DOMAIN", () -> snapshot.replace("data", donor));
+            donor.replace("edge", unpublished);
+            assertThrows(IllegalStateException.class, () -> snapshot.replace("data", donor));
+            donor.replace("edge", new Object());
+            deny("E_COPY_UNPROVEN", () -> snapshot.replace("data", donor));
+            donor.replace("edge", original);
+            deny("E_COPY_SHALLOW_ALIAS", () -> snapshot.replace("data", donor));
+            deny("E_COPY_SHALLOW_ALIAS", () -> snapshot.replace("data", original));
+            donor.replace("edge", outside);
+            deny("E_COPY_SHALLOW_ALIAS", () -> snapshot.replace("data", donor));
+            assertSame(shared, original.get("data"));
+            assertSame(shared, snapshot.get("data"));
+            assertTrue(shared.isReadOnly());
+            assertFalse(donor.isReadOnly());
+            assertFalse(foreign.isReadOnly());
+            assertTrue(outside.isReadOnly());
+            // Already retained shared descendants remain protected even when
+            // reached through a newly introduced, independently owned parent.
+            donor.replace("edge", shared);
+            snapshot.replace("data", donor);
+            assertSame(donor, snapshot.get("data"));
+            deny("E_COPY_READONLY", () -> shared.replace("n", 99));
+            donor.replace("edge", 7);
+            assertSame(shared, original.get("data"));
+        }
+        assertFalse(shared.isReadOnly());
+        assertFalse(outside.isReadOnly());
+        shared.replace("n", 11);
+        outside.replace("n", 12);
+    }
+
+    @Test void replacementBudgetAndDescendantCycleHaveAtomicOutcomes() {
+        var d = new GuestClassSlots.Domain();
+        var leaf = store(d, Map.of("n", 1));
+        var original = store(d, Map.of("data", leaf));
+        var a = store(d, Map.of("edge", 0));
+        var b = store(d, Map.of("edge", 0));
+        a.replace("edge", b);
+        b.replace("edge", a);
+        try (var small = original.shallowSnapshot(1, 2)) {
+            deny("E_COPY_BUDGET", () -> small.replace("data", a));
+            assertSame(leaf, small.get("data"));
+            assertFalse(a.isReadOnly());
+            assertFalse(b.isReadOnly());
+        }
+        try (var enough = original.shallowSnapshot(2, 2)) {
+            enough.replace("data", a);
+            assertSame(a, enough.get("data"));
+            assertSame(b, a.get("edge"));
+            assertSame(a, b.get("edge"));
+            assertTrue(leaf.isReadOnly());
+        }
+        assertFalse(leaf.isReadOnly());
+    }
+
+    @Test void distinctSnapshotCannotBorrowAnotherSnapshotLease() {
+        var d = new GuestClassSlots.Domain();
+        var child = store(d, Map.of("n", 1));
+        var left = store(d, Map.of("data", child));
+        var right = store(d, Map.of("data", 2));
+        var donor = store(d, Map.of("nested", child));
+        try (var first = left.shallowSnapshot(3, 4);
+             var second = right.shallowSnapshot(3, 4)) {
+            deny("E_COPY_SHALLOW_ALIAS", () -> second.replace("data", child));
+            deny("E_COPY_SHALLOW_ALIAS", () -> second.replace("data", donor));
+            assertEquals(2, second.get("data"));
+            assertTrue(child.isReadOnly());
+            assertEquals(1, first.protectedCount());
+        }
+        child.replace("n", 3);
+    }
+
     @Test void successiveSnapshotsProtectTransitiveReferentsAfterParentClose() {
         var d = new GuestClassSlots.Domain();
         var leaf = store(d, Map.of("n", 10));
@@ -236,7 +344,7 @@ final class GuestClassGraphLeaseTest {
         var original = store(d, Map.of("data", child));
         var foreign = store(new GuestClassSlots.Domain(), Map.of("n", 20));
         var unpublished = new GuestClassSlots(d, Map.of("n", 30));
-        try (var snapshot = original.shallowSnapshot(1, 2)) {
+        try (var snapshot = original.shallowSnapshot(3, 4)) {
             deny("E_COPY_DOMAIN", () -> snapshot.replace("data", store(d, Map.of("nested", foreign))));
             assertThrows(IllegalStateException.class,
                     () -> snapshot.replace("data", store(d, Map.of("nested", unpublished))));
@@ -255,7 +363,7 @@ final class GuestClassGraphLeaseTest {
         var other = store(d, Map.of("n", 20));
         var a = store(d, Map.of("data", own));
         var b = store(d, Map.of("data", other));
-        try (var first = a.shallowSnapshot(1, 2)) {
+        try (var first = a.shallowSnapshot(2, 3)) {
             try (var unrelated = b.shallowSnapshot(1, 2)) {
                 deny("E_COPY_SHALLOW_ALIAS", () -> first.replace("data", other));
                 deny("E_COPY_SHALLOW_ALIAS", () -> first.replace("data", store(d, Map.of("nested", other))));
@@ -278,7 +386,7 @@ final class GuestClassGraphLeaseTest {
         var original = store(d, Map.of("data", 0));
         var fresh = store(d, Map.of("next", 0, "n", 20));
         fresh.replace("next", fresh);
-        try (var first = original.shallowSnapshot(0, 1)) {
+        try (var first = original.shallowSnapshot(1, 3)) {
             first.replace("data", fresh);
             assertSame(fresh, first.get("data"));
             assertFalse(fresh.isReadOnly());
@@ -407,6 +515,24 @@ final class GuestClassGraphLeaseTest {
                 leaf.replace("n", 22);
                 assertEquals(22, leaf.get("n"));
             }
+        }
+    }
+
+    @Test void unrelatedLiveSourceCannotBecomeProtectedDescendant() {
+        var d = new GuestClassSlots.Domain();
+        var original = store(d, Map.of("count", 1));
+        var wrapper = store(d, Map.of("nested", original));
+        var unrelated = store(d, Map.of("data", 0));
+        try (var first = original.shallowSnapshot(0, 1);
+             var second = unrelated.shallowSnapshot(3, 4)) {
+            deny("E_COPY_SHALLOW_ALIAS", () -> wrapper.shallowSnapshot(3, 4));
+            deny("E_COPY_SHALLOW_ALIAS", () -> second.replace("data", wrapper));
+            assertEquals(0, second.get("data"));
+            assertFalse(original.isReadOnly());
+            original.replace("count", 2);
+            first.replace("count", 3);
+            assertEquals(2, original.get("count"));
+            assertEquals(3, first.get("count"));
         }
     }
 
