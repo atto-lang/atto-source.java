@@ -62,6 +62,30 @@ pub fnc main():int { let mut p = Point(1, 2); let q = Point(4, 6); let mut Recta
             assertEquals(1336L,result.asLong());
         }
     }
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="ATTO_SEVEN_FIXTURES",matches=".+")
+    void executeExactSharedSevenTargetSources() throws java.io.IOException {
+        var root=java.nio.file.Path.of(System.getenv("ATTO_SEVEN_FIXTURES"));
+        int positive=0, negative=0;
+        for(String line:java.nio.file.Files.readAllLines(root.resolve("manifest.tsv"))) {
+            String[] fields=line.split("\\t",-1);
+            assertEquals(2,fields.length);
+            assertTrue(fields[0].matches("[a-z-]+\\.atto"));
+            String source=java.nio.file.Files.readString(root.resolve(fields[0]));
+            if(fields[1].equals("reject")) {
+                assertThrows(IllegalArgumentException.class,()->AttachedStructScalarLowering.lowerChecked(source),fields[0]);
+                negative++;continue;
+            }
+            String lowered=AttachedStructScalarLowering.lowerChecked(source);
+            try(Context context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+                var result=context.eval(Source.newBuilder(OresLanguage.ID,lowered,fields[0]).mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+                assertEquals(Long.parseLong(fields[1]),result.asLong(),fields[0]);
+            }
+            positive++;
+        }
+        assertEquals(3,positive);assertEquals(8,negative);
+        System.out.println("SEVEN_TARGET_RECEIPT target=java positive="+positive+" reject="+negative);
+    }
     @Test void actualCheckedJavaGuest() {
         String lowered=AttachedStructScalarLowering.lowerChecked(SOURCE);
         assertEquals(lowered,AttachedStructScalarLowering.lowerChecked(SOURCE));
