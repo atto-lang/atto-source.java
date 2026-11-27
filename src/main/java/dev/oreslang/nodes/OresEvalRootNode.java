@@ -62,6 +62,7 @@ public final class OresEvalRootNode extends RootNode {
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
+    public static final String LINKED_EXIT_COMMAND = "__atto_internal_linked_exit__";
     public static final String INVOKE_ROOT_PUBLIC_COMMAND = "__atto_internal_invoke_root_public__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
@@ -127,6 +128,10 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        if (isControl(arguments, LINKED_EXIT_COMMAND)) {
+            context.drainLinkedExit(this);
+            return null;
+        }
         Evaluator current = evaluator(context);
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();

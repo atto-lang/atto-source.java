@@ -4,6 +4,7 @@ on:
     paths:
       - 'tools/CheckedU64.java'
       - 'tests/checked-u64-java.test.mjs'
+      - 'tests/checked-u64-division.test.mjs'
       - 'contracts/atto-xo-checked-u64-debit-v1/**'
       - '.github/workflows/checked-u64-jvm.yml'
 permissions:
@@ -22,3 +23,4 @@ jobs:
           javac -version
           node --version
           node --test tests/checked-u64-java.test.mjs
+          ATTO_U64_JAVA_DIV_REQUIRED=1 ATTO_U64_JAVA_SOURCE="$PWD/tools/CheckedU64.java" node --test tests/checked-u64-division.test.mjs
