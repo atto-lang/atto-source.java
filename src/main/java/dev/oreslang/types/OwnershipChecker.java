@@ -759,7 +759,14 @@ public final class OwnershipChecker {
                 unpacked.forEach(scope::define);
                 return;
             }
-            ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            boolean scalarSnapshot = scalarArraySnapshotDestructure(destructure, scope);
+            ValueInfo source = checkExpr(destructure.initializer(), scope, !scalarSnapshot);
+            if (scalarSnapshot && (source.type == null || source.type.isBorrow()
+                    || !source.type.name().equals("Array") || source.type.arguments().size() != 1
+                    || !isPrimitiveCopyType(source.type.arguments().getFirst())
+                    || !isCopyType(source.type.arguments().getFirst()))) {
+                throw error(E_BORROW, "scalar array destructure requires a proven Copy element type");
+            }
             // Generic destructuring creates independent bindings without a
             // provenance-carrying scoped loan. The immediate tuple fast path
             // above individually checks lexical borrow bindings, but a
@@ -6767,6 +6774,33 @@ public final class OwnershipChecker {
             return result;
         }
         return Ast.TypeRef.inferred();
+    }
+
+    // The synchronous sequence binder copies scalar elements and constructs a
+    // fresh ArrayList for the rest. Admit only a direct known builtin Array
+    // field of an explicit incoming shared borrow; never reinterpret an
+    // arbitrary iterator, owned result, mutable loan or non-Copy element.
+    private boolean scalarArraySnapshotDestructure(Ast.DestructureStmt stmt, Scope scope) {
+        if (stmt.kind() != Ast.DestructureKind.SEQUENCE
+                || !(stmt.initializer() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr name)) return false;
+        VarState root = scope.lookup(name.name());
+        if (!isIncomingBorrow(root) || !root.type.isBorrow() || root.type.mutableBorrow()
+                || isActorConfinedBorrow(root) || isScopedMutexReceiver(root)) return false;
+        Ast.TypeRef owner = root.type.borrowedTarget();
+        Ast.ClassDecl klass = findClass(owner.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || !klass.genericParameters().isEmpty() || !owner.arguments().isEmpty()
+                || hasLocalTypeAliasNamed(owner.name())) return false;
+        ResolvedField field = findFieldTarget(klass, owner, member.member(), new LinkedHashSet<>());
+        if (field == null || field.owner() != klass
+                || field.field().visibility() != Ast.Visibility.PUBLIC) return false;
+        Ast.TypeRef array = ownershipFieldType(field.field());
+        return !array.isBorrow() && !array.inferArguments()
+                && array.name().equals("Array") && array.arguments().size() == 1
+                && findClass("Array") == null && !hasLocalTypeAliasNamed("Array")
+                && isPrimitiveCopyType(array.arguments().getFirst())
+                && isCopyType(array.arguments().getFirst());
     }
 
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
