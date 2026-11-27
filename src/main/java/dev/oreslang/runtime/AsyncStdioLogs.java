@@ -21,10 +21,12 @@ public final class AsyncStdioLogs implements AutoCloseable {
     private static final int QUEUE_CAPACITY = 1_024;
     private static final int MAX_PENDING_BARRIERS = 1_024;
     private static final int MAX_PENDING_ADMISSIONS = 64;
+    // Includes the currently executing sink record, not just queued records.
+    private static final int MAX_ACCEPTED_BYTES = 4 * 1_048_576;
     private static final int MAX_PENDING_BYTES = 1_048_576;
     private static final long CLOSE_TIMEOUT_MILLIS = 5_000;
 
-    private record Record(long sequence, String text, OresFuture<Void> completion) { }
+    private record Record(long sequence, String text, int bytes, OresFuture<Void> completion) { }
     private record Barrier(long sequence, OresFuture<Void> completion) { }
 
     private final Object lock = new Object();
@@ -32,6 +34,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
     private final List<Barrier> barriers = new ArrayList<>();
     private final ArrayDeque<PendingAdmission> waiting = new ArrayDeque<>();
     private int waitingBytes;
+    private int acceptedBytes;
 
     private final class PendingAdmission {
         final String text;
@@ -53,11 +56,17 @@ public final class AsyncStdioLogs implements AutoCloseable {
     }
 
     // All queue/sequence changes and cancellation arbitration occur under lock.
-    private void enqueueLocked(String text, OresFuture<Void> delivery) {
+    private boolean canAdmitLocked(int bytes) {
+        return queue.remainingCapacity() > 0 && bytes <= MAX_ACCEPTED_BYTES - acceptedBytes;
+    }
+
+    private void enqueueLocked(String text, int bytes, OresFuture<Void> delivery) {
+        if (!canAdmitLocked(bytes)) throw new IllegalStateException("async stdio queue is full (record or byte budget)");
         long next = submitted + 1;
-        if (!queue.offer(new Record(next, text, delivery))) {
+        if (!queue.offer(new Record(next, text, bytes, delivery))) {
             throw new IllegalStateException("async stdio queue is full (1024 records)");
         }
+        acceptedBytes += bytes;
         submitted = next;
         startDrainLocked();
         wake.release();
@@ -93,8 +102,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
             if (failure != null) return OresFuture.failed(failure);
             if (!accepting) return OresFuture.failed(
                     new IllegalStateException("async stdio writer is closed"));
-            if (waiting.isEmpty() && queue.remainingCapacity() > 0) {
-                enqueueLocked(text, deliveryFuture());
+            if (waiting.isEmpty() && canAdmitLocked(bytes)) {
+                enqueueLocked(text, bytes, deliveryFuture());
                 return OresFuture.completed(null);
             }
             if (waiting.size() >= MAX_PENDING_ADMISSIONS
@@ -142,7 +151,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
      * dropped silently. No sink I/O, future joining, or queue wait on caller.
      */
     public OresFuture<Void> logAsync(String text) {
-        checkedBytes(text);
+        int bytes = checkedBytes(text);
         synchronized (lock) {
             if (failure != null) throw new IllegalStateException("async stdio writer failed", failure);
             if (!accepting) throw new IllegalStateException("async stdio writer is closed");
@@ -150,7 +159,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 throw new IllegalStateException("async stdio queue is full (waiting producers)");
             }
             OresFuture<Void> completion = deliveryFuture();
-            enqueueLocked(text, completion);
+            enqueueLocked(text, bytes, completion);
             return completion;
         }
     }
@@ -214,14 +223,15 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 synchronized (lock) {
                     if (error != null && failure == null) failure = error;
                     error = failure;
+                    acceptedBytes -= record.bytes();
                     completed = record.sequence();
                     deliveringCompletions = true;
                     if (error != null) {
                         rejected = detachWaitingLocked();
-                    } else if (accepting && !waiting.isEmpty() && queue.remainingCapacity() > 0) {
+                    } else if (accepting && !waiting.isEmpty() && canAdmitLocked(waiting.peekFirst().bytes)) {
                         promoted = waiting.removeFirst();
                         waitingBytes -= promoted.bytes;
-                        enqueueLocked(promoted.text, deliveryFuture());
+                        enqueueLocked(promoted.text, promoted.bytes, deliveryFuture());
                     }
                     // Barrier sequence numbers are nondecreasing by admission.
                     // Complete the ready prefix in FIFO registration order so a
