@@ -26,6 +26,29 @@ public final class Parser {
         }
     }
 
+    /** Non-executable, graph-resolved declaration inspection; indices are not persistent IDs. */
+    public record FlatMachineEdge(String event, int target) { }
+    public record FlatMachineNode(String name, boolean terminal, List<FlatMachineEdge> transitions) {
+        public FlatMachineNode { transitions = List.copyOf(transitions); }
+    }
+    public record FlatActorMachine(int initial, List<FlatMachineNode> nodes) {
+        public FlatActorMachine { nodes = List.copyOf(nodes); }
+    }
+    public record ActorMachineInspection(String actor, boolean storageDeclared,
+                                         List<Ast.ProtectedStateField> storage, FlatActorMachine machine) {
+        public ActorMachineInspection { storage = List.copyOf(storage); }
+    }
+    private boolean inspectMachines;
+    private final List<ActorMachineInspection> machineInspections = new ArrayList<>();
+
+    /** Returns metadata only, never the temporary Program or executable authority. */
+    public static List<ActorMachineInspection> inspectActorMachines(String source) {
+        var parser = new Parser(new Lexer(source).scan());
+        parser.inspectMachines = true;
+        parser.parseProgram();
+        return List.copyOf(parser.machineInspections);
+    }
+
     private final List<Token> tokens;
     private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
@@ -1948,7 +1971,7 @@ public final class Parser {
      * Parse only the bounded payload-free flat machine profile; even a valid
      * graph must fail closed until typed state/ownership lowering exists.
      */
-    private void parseFlatActorMachine() {
+    private FlatActorMachine parseFlatActorMachine() {
         Token start = peek();
         consumeContextualIdentifier("state", "expected state");
         consumeContextualIdentifier("machine", "expected machine");
@@ -1956,6 +1979,7 @@ public final class Parser {
         String initial = null;
         var nodes = new java.util.LinkedHashMap<String, java.util.Map<String, String>>();
         int edgeCount = 0;
+        var terminals = new java.util.HashSet<String>();
         while (!match(END)) {
             if (matchContextualIdentifier("initial")) {
                 consumeContextualIdentifier("state", "expected state after initial");
@@ -1975,6 +1999,7 @@ public final class Parser {
                 throw error(name, "E_MACHINE_GRAPH: duplicate behavioral state");
             var edges = new java.util.LinkedHashMap<String, String>();
             if (terminal) {
+                terminals.add(name.lexeme());
                 consume(SEMICOLON, "final state requires ';'");
             } else {
                 consume(AS, "expected as after behavioral state");
@@ -2009,7 +2034,24 @@ public final class Parser {
         }
         if (seen.size() != nodes.size())
             throw error(start, "E_MACHINE_GRAPH: unreachable behavioral state");
-
+        // These are local indices only. No durable identity or runtime authority.
+        java.util.Comparator<String> utf8Order = (a, b) -> java.util.Arrays.compareUnsigned(
+                a.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                b.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var names = new ArrayList<>(nodes.keySet());
+        names.sort(utf8Order);
+        var ids = new java.util.HashMap<String, Integer>();
+        for (int i = 0; i < names.size(); i++) ids.put(names.get(i), i);
+        var resolved = new ArrayList<FlatMachineNode>();
+        for (String name : names) {
+            var edges = new ArrayList<FlatMachineEdge>();
+            var events = new ArrayList<>(nodes.get(name).keySet());
+            events.sort(utf8Order);
+            for (String event : events)
+                edges.add(new FlatMachineEdge(event, ids.get(nodes.get(name).get(event))));
+            resolved.add(new FlatMachineNode(name, terminals.contains(name), edges));
+        }
+        return new FlatActorMachine(ids.get(initial), resolved);
     }
 
     private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
@@ -2092,6 +2134,7 @@ public final class Parser {
         List<Ast.ProtectedStateField> sealedStateFields = new ArrayList<>();
         boolean declaredSealedState = false;
         Token machineStart = null;
+        FlatActorMachine machine = null;
         int requestConcurrency = 1;
         int messageConcurrency = 1;
         boolean declaredRequestConcurrency = false;
@@ -2115,7 +2158,7 @@ public final class Parser {
                 if (machineStart != null)
                     throw error(peek(), "E_MACHINE_GRAPH: duplicate state machine");
                 machineStart = peek();
-                parseFlatActorMachine();
+                machine = parseFlatActorMachine();
                 continue;
             }
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
@@ -2158,7 +2201,7 @@ public final class Parser {
                     sealedStateFields.add(new Ast.ProtectedStateField(fieldName, type, initializer));
                 }
                 consume(RBRACE, "unterminated sealed actor state container");
-                if (sealedStateFields.isEmpty())
+                if (sealedStateFields.isEmpty() && !inspectMachines)
                     throw error(previous(), "sealed actor state must contain at least one field");
                 continue;
             }
@@ -2363,8 +2406,12 @@ public final class Parser {
         }
         if (declaredSealedState && !fields.isEmpty())
             throw error(previous(), "sealed actor state cannot mix ordinary actor fields");
-        if (machineStart != null)
+        if (inspectMachines) {
+            if (machine != null || declaredSealedState)
+                machineInspections.add(new ActorMachineInspection(name, declaredSealedState, sealedStateFields, machine));
+        } else if (machineStart != null) {
             throw error(machineStart, "E_MACHINE_LOWERING_UNSUPPORTED: flat actor state machine parsed; typed ownership/effect lowering is not implemented");
+        }
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
