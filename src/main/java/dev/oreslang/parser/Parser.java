@@ -7918,6 +7918,9 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // Canonical expression-position braces are a Record constructor,
+        // never a statement block or a dynamic Map fallback.
+        if (canonicalAttoSource && check(LBRACE)) return parseAnonymousRecord();
         // Closed single-break value expression, not a general loop CFG.
         // Preserve contextual loop(...) callable references and ordinary
         // statement loops; only expression-position loop followed by {
@@ -8556,6 +8559,7 @@ public final class Parser {
     // expression assignment or expected types to classify a field.
     private boolean startsParenthesizedRecordItem() {
         return ((check(IDENT) || check(STRING)) && checkNext(EQUAL))
+                || (check(IDENT) && checkNext(COLON))
                 || (check(COLON) && checkNext(IDENT));
     }
 
@@ -8599,7 +8603,8 @@ public final class Parser {
             } else {
                 advance();
                 name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
-                consume(EQUAL, "expected '=' after Record field name");
+                if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
+                else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=' or ':' after Record field name");
                 value = parseRecordFieldValue();
             }
             if (!names.add(name))
@@ -8610,6 +8615,44 @@ public final class Parser {
             if (!match(COMMA)) break;
         }
         consume(RPAREN, "expected ')' after Record literal");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
+    // Bounded canonical Record slice. Pair := is intentionally not accepted
+    // until the first-class Pair lexer/parser/type contract is implemented.
+    // Braced quoted-colon Map syntax and empty literal classification remain
+    // separate, unsupported in this slice, rather than silently misclassified.
+    private Ast.ObjectExpr parseAnonymousRecord() {
+        consume(LBRACE, "expected '{' before Record");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        if (check(RBRACE)) throw error(peek(), "E_LITERAL_KIND: empty anonymous braces require explicit Record syntax");
+        do {
+            Token label = peek();
+            if (match(ELLIPSIS)) {
+                fields.add(Ast.ObjectField.spreading(parseRecordFieldValue()));
+            } else {
+                String name;
+                if (match(COLON)) {
+                    label = consume(IDENT, "expected identifier after Record capture ':'");
+                    name = label.lexeme();
+                    if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+                    fields.add(Ast.ObjectField.named(name, new Ast.NameExpr(name)));
+                } else {
+                    if (!check(IDENT) && !check(STRING))
+                        throw error(label, "E_LITERAL_KIND: expected named Record field or spread");
+                    advance();
+                    name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
+                    if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
+                    else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=' or ':' after Record field name");
+                    if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+                    fields.add(Ast.ObjectField.named(name, parseRecordFieldValue()));
+                }
+            }
+            if (fields.size() > 4096) throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
+            if (!match(COMMA)) break;
+        } while (!check(RBRACE));
+        consume(RBRACE, "expected '}' after Record literal (fields require commas)");
         return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
     }
 

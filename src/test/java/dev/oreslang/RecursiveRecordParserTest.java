@@ -44,6 +44,26 @@ final class RecursiveRecordParserTest {
         reject("(\"x\" = 1, :x)", "E_DUPLICATE");
         reject("(\"x\" = 1, \"\\u{78}\" = 2)", "E_DUPLICATE");
     }
+    @Test void anonymousColonAndEqualsRecordsPreserveAstAndCallArity() {
+        assertEquals(parse("{x : 5, y : 6}"), parse("{x = 5, y = 6}"));
+        assertEquals(parse("{x : 5, y = 6,}"), parse("(x : 5, y : 6)"));
+        assertEquals(parse("record{x: 5, y: 6}"), parse("{x : 5, y = 6}"));
+        assertEquals(parse("foo({x : 5, y : 6})"), parse("foo((x : 5, y = 6))"));
+        assertNotEquals(parse("foo(x: 5, y: 6)"), parse("foo({x : 5, y : 6})"));
+        assertEquals(parse("{outer : {inner = 42}}"), parse("(outer = (inner : 42))"));
+        assertEquals(parse("{...r, bar : true}"), parse("record{...r, bar: true}"));
+        assertNotEquals(parse("(1, {x: 2})"), parse("{x: 2}"));
+    }
+    @Test void anonymousRecordSeparatorsAndDuplicateFieldsFailClosed() {
+        reject("{x : 1\ny : 2}", "fields require commas");
+        reject("{x = 1\ny = 2}", "fields require commas");
+        reject("{x : 1, x = 2}", "E_DUPLICATE");
+        reject("{x = 1, 2}", "E_LITERAL_KIND");
+        reject("{x = y = 1}", "E_RECORD_FIELD");
+        reject("{x : 1; y : 2}", "fields require commas");
+        reject("(1, x : 2)", "E_LITERAL_KIND");
+        reject("(x : 1, 2)", "E_LITERAL_KIND");
+    }
     @Test void groupingAndTupleArityAreDistinct() {
         assertEquals(parse("(1)"), parse("1"));
         assertNotEquals(parse("(1,)"), parse("(1)"));
