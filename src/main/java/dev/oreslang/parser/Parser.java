@@ -4108,7 +4108,9 @@ public final class Parser {
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
-        if (strictConditionalSyntax && !explicitImperative) {
+        // Suffix if/do is canonical alongside prefix do/if/then.
+        boolean suffixImperative = strictConditionalSyntax && !explicitImperative && check(DO);
+        if (strictConditionalSyntax && !explicitImperative && !suffixImperative) {
             consume(THEN, "bare keyword if requires 'then'");
             if (check(RETURN) || check(CARET)) {
                 Ast.Expr value = parseConditionalValueArm();
@@ -4125,18 +4127,17 @@ public final class Parser {
             return parseActionIf(condition, head.binding());
         }
 
-        // Legacy keyword-delimited form, or explicit imperative 'do if':
-        //   do if condition; then
-        //   elif condition; then
-        //   else
-        //   fi
-        //
-        // Compatibility forms remain accepted while source migrates:
-        // - 'if ... do' / 'elseif ... do' are deprecated spellings.
-        // - 'elseif' aliases canonical 'elif'.
-        // - 'else if ... then' is accepted as a single-fi branch alias.
+        // Canonical strict imperative heads: prefix do-if/then or suffix if/do.
+        // Each elif uses the same delimiter as its owning keyword chain.
+        // Historical non-strict parsing retains compatibility.
         match(SEMICOLON);
-        consumeConditionalThen("if");
+        if (strictConditionalSyntax) {
+            consume(suffixImperative ? DO : THEN,
+                    suffixImperative ? "expected 'do' after if condition"
+                            : "expected 'then' after do-if condition");
+        } else {
+            consumeConditionalThen("if");
+        }
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
@@ -4145,7 +4146,13 @@ public final class Parser {
             bindings.add(head.binding());
             condition = head.predicate();
             match(SEMICOLON);
-            consumeConditionalThen("elif");
+            if (strictConditionalSyntax) {
+                consume(suffixImperative ? DO : THEN,
+                        suffixImperative ? "expected 'do' after elif condition"
+                                : "expected 'then' after elif condition");
+            } else {
+                consumeConditionalThen("elif");
+            }
             body = parseUntil(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
         }
