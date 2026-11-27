@@ -8885,6 +8885,20 @@ public final class TypeChecker {
                 default -> throw new IllegalArgumentException("unknown Bytes member " + name);
             };
         }
+        // UDP packet reads are immediate immutable snapshots. Socket guest
+        // methods return Future<T>; full compiler-proven affine ownership
+        // still needs a separate move/alias audit (the runtime denies
+        // cross-task detachment of the host socket).
+        if (named.name().equals("UdpPacket")) {
+            return switch (name) {
+                case "bytes" -> new Function(List.of(), new ListType(Primitive.INT));
+                case "source_port" -> new Function(List.of(), Primitive.INT);
+                default -> throw new IllegalArgumentException("unknown UdpPacket member " + name);
+            };
+        }
+        if (named.name().equals("UdpSocket") && name.equals("local_port")) {
+            return new Function(List.of(), Primitive.INT);
+        }
         // Async TCP v1.1: split is synchronous and consumes the connection.
         if (named.name().equals("NioConnection") && name.equals("split")) {
             return new Function(List.of(), new Tuple(
@@ -8941,6 +8955,10 @@ public final class TypeChecker {
             }
             case "network", "net" -> {
                 switch (name) {
+                    case "bind_udp" -> {
+                        result = new Named("UdpSocket", List.of());
+                        parameters = List.of(Primitive.STRING, Primitive.INT);
+                    }
                     case "listen_async" -> {
                         result = new Named("NioListener", List.of());
                         parameters = List.of(Primitive.STRING, Primitive.INT);
@@ -8971,6 +8989,23 @@ public final class TypeChecker {
                         result = Primitive.VOID; parameters = List.of();
                     }
                     default -> throw new IllegalArgumentException("unknown BinaryFile member " + name);
+                }
+            }
+            case "UdpSocket" -> {
+                switch (name) {
+                    case "send_to" -> {
+                        result = Primitive.INT;
+                        parameters = List.of(Primitive.INT, new ListType(Primitive.INT));
+                    }
+                    case "recv_from" -> {
+                        result = new Named("UdpPacket", List.of());
+                        parameters = List.of(Primitive.INT);
+                    }
+                    case "close" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown UdpSocket member " + name);
                 }
             }
             case "NioListener" -> {
@@ -9327,7 +9362,8 @@ public final class TypeChecker {
                     where + " cannot transfer affine Map<K,V> through actor mail in V1");
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+        if (named.name().equals("UdpSocket") || named.name().equals("UdpPacket")
+                || named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("HttpClientResponse") || named.name().equals("HttpClientBody")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")
@@ -9575,6 +9611,15 @@ public final class TypeChecker {
             return inferBoundaryAutoTraits(bound, seen, genericBindings);
         }
 
+        // Privileged native UDP handles are never task/actor Send just
+        // because a guest declares an unrelated nominal class with the same
+        // spelling. Packet snapshots stay non-transferable until their ABI
+        // and ownership semantics have a separate compiler-backed proof.
+        if (type instanceof Named nativeUdp
+                && (nativeUdp.name().equals("UdpSocket")
+                    || nativeUdp.name().equals("UdpPacket"))) {
+            return new AutoTraitRules.Capabilities(false, false, false);
+        }
         java.util.Optional<AutoTraitRules.Capabilities> builtin =
                 TypeAutoTraits.inferBuiltin(
                         type,
