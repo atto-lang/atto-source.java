@@ -1,20 +1,8 @@
 # `trap`: Result-valued non-throwing callables
 
-> **Normative update (2026-11-17, owner decision): `trap` yields `Result`, not `Option`.**
-> - `trap e` with `e: T` has type `Result<T, Error>`. Success is `Ok(v)`. A caught ordinary
->   failure is `Err(Error)`, a sanitized value: a bounded type name and message, with no host
->   exception, cause chain or stack.
-> - A `Result` is never wrapped again. With `e: Result<T, E>`, `trap e` has type
->   `Result<T, E | Error>`, or just `Result<T, E>` when `E` already accepts `Error`. The
->   value's own `Err(E)` passes through, and a caught failure becomes `Err(Error)`.
-> - Calls to `trap fnc f(): T` have the same type. Async and suspending trap boundaries
->   settle their Future with it: `Future<Result<T, Error>>`.
-> - `trap await f` spans the suspension. A completed or suspended Future that fails yields
->   `Err(Error)` (the #2690 decision).
-> - `panic`, `raise`, cancellation, forced termination and VM-fatal failures still bypass
->   `trap`. `unwrap()` on an `Err` is still a panic.
+> **Normative contract:** [atto-spec trap-result-v1](https://github.com/atto-lang/atto-spec/blob/main/language/trap-result-v1.md) and [cross-backend reconciliation](https://github.com/atto-lang/atto-spec/blob/main/language/cross-backend-semantics-reconciliation-v1.md). `trap` and `trap!` yield `Result`, not `Option`. Ordinary throws preserve guest error identity; stronger control effects bypass the boundary.
 >
-> Sections below that mention `Option`, `Some` or `None` describe the previous contract.
+> **Implementation status:** synchronous Java Result trapping is implemented in the admitted profile. Async trap callables and trapping an awaited Future remain fail-closed until the complete suspension/cleanup boundary is implemented and verified. The async sections below specify the target, not an enabled compiler feature.
 
 ## Current-main async reconciliation candidate (2026-11-25)
 
@@ -41,7 +29,7 @@ The central rule is intentionally small:
 > Success is `Ok(value)`; an uncaught ordinary throw is `Err(Error)`.
 
 `raise`, `panic`, runtime cancellation, forced termination, and fatal host
-failures are not ordinary throws and are not converted to `None`.
+failures are not ordinary throws and are not converted to `Err`.
 
 ## Surface syntax
 
@@ -71,65 +59,21 @@ tree shaking, JIT/AOT lowering, and interop metadata.
 
 ## Call result type
 
-The declared return type remains the success type.
-
-For a synchronous trap callable:
-
-```text
-trap fnc(): T
-```
-
-the call expression type is:
-
-```text
-Option<T>
-```
-
-Example:
+The declared return type remains the success type. A synchronous `trap fnc(): T` exposes `Result<T, Error>` to its caller. An ordinary return yields `Ok(value)`; an ordinary escaping throw yields `Err(error)`.
 
 ```ores
-const user: Option<User> = load_user(id);
+const user: Result<User, Error> = load_user(id);
 ```
 
-There is no two-slot trap tuple and no compiler-owned `TrapResult<T>` wrapper.
+If the successful value is already `Result<T,E>`, pass it through without nesting; widen the error type to admit the trapped error where necessary. Returning an existing Err is ordinary data, not an additional throw.
 
-### Nested Option is deliberate
+### Optional success and void
 
-If the successful value is already optional, the trap layer does not flatten it:
+A callable returning `Option<User>` exposes `Result<Option<User>, Error>`. `Ok(None)` represents successful absence, `Ok(Some(user))` represents successful presence, and `Err(error)` represents an escaping ordinary throw. Do not flatten these states.
 
-```ores
-trap fnc lookup(UserId id): Option<User> {
-  ...
-}
+A trapped void callable exposes `Result<void, Error>`. A successful unit result is distinct from an error even when the internal successful payload is null/unit.
 
-const result: Option<Option<User>> = lookup(id);
-```
-
-The meanings are distinct:
-
-```text
-None             => the trapped computation threw
-Some(None)       => the computation succeeded and returned no user
-Some(Some(user)) => the computation succeeded and returned a user
-```
-
-Automatic flattening would destroy that information and is forbidden.
-
-### Void
-
-A `trap fnc ...: void` has call type `Option<void>`.
-
-The compiler/runtime may represent successful void internally as a unit/null
-payload, but the language-level states are still:
-
-```text
-Some(void) => completed successfully
-None       => ordinary throw escaped the function body
-```
-
-`Option<void>` is therefore a valid compiler-produced type. The type system
-must support observing it with `is_some()` / `is_none()`; no useful value is
-produced by unwrapping it.
+There is no two-slot trap tuple or compiler-owned TrapResult wrapper.
 
 ## Control-flow channels
 
@@ -144,8 +88,8 @@ panic  -> invariant/runtime non-trappable escape
 The trap rule is:
 
 ```text
-ordinary return -> Some(value)
-uncaught throw  -> None
+ordinary return -> Ok(value)
+uncaught throw  -> Err(error)
 raise           -> bypass trap
 panic           -> bypass trap
 cancellation    -> bypass trap
@@ -155,32 +99,13 @@ termination     -> bypass trap
 A local explicit `try/catch` may consume a throw before it reaches the trap
 boundary.
 
-Returning an `Error`, `Result.Err`, or any other error-looking value is still
-ordinary data. Only the control-flow `throw` effect becomes `None`.
+Returning an `Error` or another error-looking value is ordinary data. A returned Result passes through; only an escaping ordinary throw is newly converted into Err.
 
-## Error detail is intentionally not carried by trap
+## Error identity
 
-`trap` is the concise, lossy "did this complete normally?" boundary.
+A trapped ordinary guest throw preserves the original nominal guest error identity and payload. A conforming non-Error thrown value may require a guest error envelope preserving its nominal identity and payload. Do not expose arbitrary host exception objects, cause chains or stacks. Unknown native failures and host-fatal control are not silently converted into guest errors.
 
-Code that needs error details should use an explicit typed `Result<T, E>`,
-an explicit `try/catch`, or another API whose return type carries structured
-error data.
-
-This avoids the old awkward shape:
-
-```ores
-[const [result], const err] = foo();
-```
-
-and replaces it with ordinary Option handling:
-
-```ores
-const result: Option<User> = foo();
-```
-
-## Async trap
-
-For:
+## Async trap (target; not yet enabled)
 
 ```ores
 pub async trap fnc fetch(): Payload {
@@ -188,28 +113,11 @@ pub async trap fnc fetch(): Payload {
 }
 ```
 
-the call expression type is:
+The target call expression type is `Future<Result<Payload, Error>>`. A declared `Option<T>` success type yields `Future<Result<Option<T>, Error>>`; an existing Result is not wrapped again.
 
-```text
-Future<Option<Payload>>
-```
+The boundary must span the entire computation, including execution resumed after every await. Success settles the Future with Ok; an escaping ordinary throw before or after suspension settles it with Err preserving guest identity. Raise, panic, cancellation and forced termination remain distinct control outcomes. `trap await f` requires the same suspension-spanning semantics.
 
-The trap boundary spans the complete asynchronous computation, including code
-resumed after every `await`.
-
-- success settles the Future with `Some(payload)`;
-- an ordinary uncaught throw before or after suspension settles the Future
-  successfully with `None`;
-- `raise` and `panic` bypass trap and retain their distinct control identity;
-- runtime cancellation stays cancellation rather than becoming `None`;
-- forced actor/isolate/sandbox termination stays a supervision/termination
-  outcome rather than becoming `None`.
-
-Awaiting an async trap Future re-emits any non-trappable raise/panic/cancellation
-according to the normal runtime rules.
-
-A trap callable whose declared success type is already `Option<T>` therefore
-returns `Future<Option<Option<T>>>` when async.
+Current Java main deliberately rejects async trap callables and trapping a Future where asynchronous failure capture is unsupported. Keep these gates until the current-main implementation and tests cover all completion paths. See [Java #579](https://github.com/atto-lang/atto-source.java/pull/579) for the historical implementation requiring migration, not authority for Option-based trapping.
 
 ## Future composition
 
@@ -263,7 +171,7 @@ Its selected arm is required to be non-throwing at the arm boundary.
 
 - a throw handled by a local `try/catch` is allowed;
 - a call to a `trap` function is allowed because the throw is converted to
-  Option data before returning to the arm;
+  Result data before returning to the arm;
 - an ordinary throw that can escape the selected arm is a compile-time error;
 - `raise` bypasses select and continues to the nearest matching recover boundary;
 - `panic` bypasses select and follows panic/recover/supervision policy;
@@ -275,7 +183,7 @@ preserving explicit nonlocal control effects.
 ## Cleanup
 
 `defer` / `finally` run during unwinding before a trap boundary produces
-`None`.
+`Err(error)`.
 
 Cleanup must not downgrade stronger control signals. The runtime preserves the
 ordering:
@@ -285,8 +193,8 @@ fatal/termination > panic > raise > throw > return
 ```
 
 A cleanup throw may replace a normal return, and the nearest trap may then turn
-that throw into `None`. A cleanup throw must not convert an in-flight
-raise/panic/cancellation into `None`.
+that throw into `Err(error)`. A cleanup throw must not convert an in-flight
+raise/panic/cancellation into `Err(error)`.
 
 ## Callable compatibility
 
@@ -299,7 +207,7 @@ fnc(): T
 trap fnc(): T
 ```
 
-At the call site they expose `T` and `Option<T>` respectively.
+At the call site they expose `T` and the corresponding `Result` respectively.
 
 V1 should require exact trap compatibility for overrides/interface slots and
 function-value assignments unless an explicit safe adapter is defined.
@@ -316,7 +224,7 @@ Untrusted actor resource cancellation/termination cannot be swallowed by
 ## Host/native failures
 
 Only failures explicitly classified as ordinary Ores `throw` may become
-`None`.
+`Err(error)`.
 
 VM-fatal errors, OOM/stack corruption, process termination, scheduler
 interruption/cancellation, and unknown native failures must not be blanket
@@ -324,49 +232,32 @@ converted by a broad `catch (Throwable)`.
 
 ## Required implementation work
 
-1. reserve and parse `trap` on supported callables;
-2. store trap metadata in AST/symbol/callable types;
-3. type synchronous trap calls as `Option<T>`;
-4. preserve nested Option without flattening;
-5. support compiler-produced `Option<void>`;
-6. lower ordinary uncaught throw at the boundary to `None`;
-7. lower successful return to `Some(value)`;
-8. type async trap calls as `Future<Option<T>>`;
-9. preserve raise/panic/cancellation/termination as distinct bypass channels;
-10. enforce trap compatibility across function values/interfaces/overrides/imports;
-11. reject escaping ordinary throw from static select arms;
-12. preserve the contract through optimization, actors, JIT/AOT, and interop.
+1. Preserve trap metadata in AST, symbol and callable types, including both spellings.
+2. Type synchronous trap calls as Result, without nesting an existing Result or flattening optional success.
+3. Preserve ordinary guest error identity and successful void.
+4. Keep async admission closed until the complete continuation, cleanup and Future settlement boundary is proven.
+5. Type admitted async trap calls as Future of the corresponding Result, preserving error identity before and after await.
+6. Preserve raise, panic, cancellation, termination and host-fatal bypass channels.
+7. Enforce trap compatibility through function values, overrides, interfaces, imports and optimization.
+8. Require actual compiled guest and AOT execution evidence for each admitted lane.
 
 ## Required tests
 
-Compile/runtime coverage must include:
-
-- trap success -> `Some(value)`;
-- trapped ordinary throw -> `None`;
-- `trap fnc(): Option<T>` -> `Option<Option<T>>`;
-- trapped void -> `Option<void>`;
-- async trap success -> `Future<Option<T>>`;
-- throw after await -> Future settles with `None`;
-- raise/panic bypass sync and async trap;
-- cancellation bypasses trap;
-- local try/catch inside trap handles throw before the boundary;
-- returned Error/Result values remain data;
-- interface/override/function-value trap compatibility;
-- static select arm rejects an escaping ordinary throw;
-- static select arm permits locally caught throw and handled trap Option;
-- raise/panic in a select arm bypass select;
-- dynamic select returns `Option<SelectResult>`;
-- `nb select` returns `Future<Option<SelectResult>>`;
-- callbacks used by Future.map/compose/onSuccess execute only on an Ores scheduler
-  or actor turn.
+- ordinary success, trapped throw, returned Err pass-through, optional success (including None), and void;
+- async success and throws both before and after suspension; pending and already-complete Future paths;
+- distinct cancellation, raise and panic outcomes; cleanup exactly once;
+- original error type/payload survives trapping; local catch runs before the outer trap;
+- interface/override/function-value compatibility; select arm effect checking;
+- Future callbacks execute on the correct logical scheduler/actor turn;
+- unsupported async paths reject until real execution support exists.
 
 ## Core invariant
 
 ```text
-throw  -> nearest catch, otherwise nearest trap -> None
+throw  -> nearest catch, otherwise nearest trap -> Err(original error)
 raise  -> bypass catch/trap/select -> nearest recover/supervision
 panic  -> bypass catch/trap/select -> nearest recover/supervision
-cancel -> runtime cancellation channel, never None
+cancel -> runtime cancellation channel, never Err
 ```
 
 That distinction is semantic and must not be erased by parsing, optimization,
