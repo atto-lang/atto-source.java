@@ -6604,6 +6604,37 @@ public final class OwnershipChecker {
             return value;
         }
 
+        // A direct structural parameter is an immutable view of its declared
+        // interface. Recover only the closed, non-generic scalar field domain;
+        // never infer an owned result from an unknown or move-only field.
+        if (indexed.receiver() instanceof Ast.NameExpr name) {
+            VarState view = scope.lookup(name.name());
+            Ast.InterfaceDecl contract = findInterface(concrete.name());
+            if (view != null && view.origin == Origin.PARAM
+                    && view.kind == ValueKind.IMM_BORROW && !view.type.isBorrow()
+                    && view.type.equals(concrete) && contract != null
+                    && contract.declarationKind() == Ast.InterfaceKind.INTERFACE
+                    && contract.parents().isEmpty() && contract.genericParameters().isEmpty()
+                    && concrete.arguments().isEmpty() && !concrete.inferArguments()
+                    && findClass(concrete.name()) == null && !hasLocalTypeAliasNamed(concrete.name())) {
+                Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+                for (Ast.InterfaceMember member : contract.members()) {
+                    if (!(member instanceof Ast.InterfaceFieldDecl field)) continue;
+                    if (fields.putIfAbsent(field.name(), field.type()) != null)
+                        return Ast.TypeRef.inferred();
+                }
+                if (constantIndex instanceof String key) {
+                    Ast.TypeRef selected = fields.get(key);
+                    return isPrimitiveCopyType(selected) && isCopyType(selected)
+                            ? selected : Ast.TypeRef.inferred();
+                }
+                if (fields.isEmpty() || !fields.values().stream()
+                        .allMatch(t -> isPrimitiveCopyType(t) && isCopyType(t)))
+                    return Ast.TypeRef.inferred();
+                return Ast.TypeRef.union(new ArrayList<>(fields.values()));
+            }
+        }
+
         if (concrete.isClosedAggregateType()) {
             Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
             if (constantIndex instanceof String key) {
