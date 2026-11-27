@@ -1065,9 +1065,11 @@ public final class Parser {
         while (!check(RBRACE) && !check(EOF)) {
             consume(LET, "attached actor state fields must begin with 'let'");
             Ast.TypeRef type = parseTypeRef();
-            if (!type.name().equals("int") || !type.arguments().isEmpty()
+            boolean signedInt = type.name().equals("int");
+            boolean booleanField = type.name().equals("bool");
+            if ((!signedInt && !booleanField) || !type.arguments().isEmpty()
                     || type.isBorrow() || type.inferArguments()) {
-                throw error(previous(), "attached actor state v1 admits only checked signed int fields");
+                throw error(previous(), "attached actor state admits only checked int/bool fields");
             }
             String name = consume(IDENT, "expected attached actor state field name").lexeme();
             if (name.equals("state") || name.equals("handle_state")) {
@@ -1077,17 +1079,26 @@ public final class Parser {
                 throw error(previous(), "duplicate attached actor state field '" + name + "'");
             }
             consume(COLON, "attached actor state requires ':' followed by a constant initializer");
-            boolean minus = match(MINUS);
-            Token literal = consume(INT, "attached actor state initializer must be a signed integer literal");
-            long checked;
-            try {
-                checked = Long.parseLong((minus ? "-" : "") + literal.lexeme().replace("_", ""));
-            } catch (NumberFormatException invalid) {
-                throw error(literal, "attached actor state int initializer exceeds signed 64-bit range");
+            Ast.LiteralExpr initializer;
+            if (signedInt) {
+                boolean minus = match(MINUS);
+                Token literal = consume(INT, "attached actor int state initializer must be a signed integer literal");
+                long checked;
+                try {
+                    checked = Long.parseLong((minus ? "-" : "") + literal.lexeme().replace("_", ""));
+                } catch (NumberFormatException invalid) {
+                    throw error(literal, "attached actor state int initializer exceeds signed 64-bit range");
+                }
+                initializer = new Ast.LiteralExpr(checked);
+            } else if (match(TRUE)) {
+                initializer = new Ast.LiteralExpr(true);
+            } else if (match(FALSE)) {
+                initializer = new Ast.LiteralExpr(false);
+            } else {
+                throw error(peek(), "attached actor bool state initializer must be true or false");
             }
             consume(SEMICOLON, "attached actor state field requires ';'");
-            fields.add(new Ast.ProtectedStateField(
-                    name, type, new Ast.LiteralExpr(checked)));
+            fields.add(new Ast.ProtectedStateField(name, type, initializer));
             if (fields.size() > 128) {
                 throw error(previous(), "attached actor state exceeds 128 fields");
             }

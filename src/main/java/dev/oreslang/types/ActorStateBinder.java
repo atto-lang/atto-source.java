@@ -165,15 +165,18 @@ public final class ActorStateBinder {
                     }
                     Set<String> members = existingMembers.getOrDefault(slot, Set.of());
                     for (Ast.ProtectedStateField field : state.fields()) {
-                        if (!field.type().name().equals("int")
+                        if (!(field.type().name().equals("int")
+                                    || field.type().name().equals("bool"))
                                 || !field.type().arguments().isEmpty()
                                 || field.type().isBorrow() || field.type().inferArguments()
                                 || !(field.initializer() instanceof Ast.LiteralExpr literal)
-                                || !(literal.value() instanceof Long)
+                                || !((field.type().name().equals("int") && literal.value() instanceof Long)
+                                    || (field.type().name().equals("bool")
+                                        && literal.value() instanceof Boolean))
                                 || field.name().equals("state")
                                 || field.name().equals("handle_state")) {
                             throw new IllegalArgumentException(
-                                    "attached actor state field requires signed int literal and sealed name");
+                                    "attached actor state field requires typed int/bool literal and sealed name");
                         }
                         if (members.contains(field.name())) {
                             throw new IllegalArgumentException(
