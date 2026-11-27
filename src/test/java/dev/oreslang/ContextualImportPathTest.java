@@ -11,6 +11,10 @@ final class ContextualImportPathTest {
             {"network.http", "self.utils", "network.http.utils"},
             {"network.http", "super.config", "network.config"},
             {"network.http", "super.super.common", "common"},
+            {"network.http", "parent.config", "network.config"},
+            {"network.http", "parent.parent.common", "common"},
+            {"network.http", "parent.super.common", "common"},
+            {"network.http", "super.parent.common", "common"},
             {null, "pkg.a.b.c.d.e.f.g", "a.b.c.d.e.f.g"},
             {"network.http", "pkg.config", "config"}
         };
@@ -20,6 +24,11 @@ final class ContextualImportPathTest {
     @Test void rejectsMalformedMetadataBeforeTraversalAndBoundsInputs() {
         String[][] cases = {
             {"network.", "super.config"},
+            {"network.parent", "parent.config"},
+            {null, "parent.config"},
+            {"network.http", "parent.parent.parent.config"},
+            {"network.http", "self.parent.config"},
+            {"network.http", "parent.super"},
             {"network.__atto_hidden", "super.config"},
             {"network.super", "super.config"},
             {"network.bad-name", "super.config"},
@@ -50,6 +59,8 @@ final class ContextualImportPathTest {
     @Test void productionParserRejectsContextualPathsBeforeFileResolution() {
         for (String source : new String[]{
                 "import self.utils;",
+                "import parent.utils;",
+                "use namespace network.http; import parent.parent.parent.config;",
                 "use namespace network.http; import super.super.super.shared;",
                 "use namespace network.__atto_hidden; import super.config;",
                 "import pkg;",
@@ -61,7 +72,9 @@ final class ContextualImportPathTest {
         for (String source : new String[]{
                 "import pkg.config;",
                 "use namespace network.http; import self.utils;",
-                "use namespace network.http; import super.config;"}) {
+                "use namespace network.http; import super.config;",
+                "use namespace network.http; import parent.config;",
+                "use namespace network.http; import parent.super.common;"}) {
             var error = assertThrows(RuntimeException.class,
                     () -> dev.oreslang.parser.Parser.parse(source + " pub fnc main(): int { return 42; }"));
             assertTrue(error.getMessage().contains("authenticated package-export graph"), error.getMessage());
