@@ -152,4 +152,27 @@ final class ActorFlatMachineParserTest {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(src));
         }
     }
+
+    @Test void graphTableVerifiesSlotsAndRejectsForgedMetadata() throws java.io.IOException {
+        var graph = Parser.inspectActorMachines(sharedFixture("flat-order")).get(0).machine();
+        var table = graph.transitionTable();
+        assertEquals(1, table.initial());
+        assertEquals(java.util.List.of("Alpha", "Zed"), table.names());
+        assertEquals(java.util.List.of("AlphaEvent", "Zulu"), table.events());
+        assertEquals(0, table.successor(1, 0).orElseThrow());
+        assertEquals(1, table.successor(1, 1).orElseThrow());
+        assertTrue(table.successor(0, 0).isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> table.successor(2, 0));
+        assertThrows(IllegalArgumentException.class, () -> table.successor(1, 2));
+        var terminal = graph.nodes().get(0);
+        var bad = new Parser.FlatActorMachine(1, java.util.List.of(terminal,
+                new Parser.FlatMachineNode("Zed", false,
+                        java.util.List.of(new Parser.FlatMachineEdge("AlphaEvent", 9)))));
+        assertThrows(IllegalArgumentException.class, bad::transitionTable);
+        var reversed = new Parser.FlatActorMachine(1, java.util.List.of(terminal,
+                new Parser.FlatMachineNode("Zed", false,
+                        java.util.List.of(new Parser.FlatMachineEdge("Zulu", 1),
+                                new Parser.FlatMachineEdge("AlphaEvent", 0)))));
+        assertThrows(IllegalArgumentException.class, reversed::transitionTable);
+    }
 }
