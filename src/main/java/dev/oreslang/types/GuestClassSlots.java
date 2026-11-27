@@ -20,6 +20,8 @@ public final class GuestClassSlots {
     private boolean initializing = true;
     private static final int MAX_READ_ONLY_LOANS = 65536;
     private int readOnlyLoans;
+    // Bound live outer copies even when there are no reference-bearing children.
+    private int activeSnapshots;
 
     /** Monitor shared by an explicitly admitted group of slot stores.
      * No evaluator-global monitor: unrelated default stores remain independent.
@@ -132,10 +134,11 @@ public final class GuestClassSlots {
      * yet detach individual graph edges or admit guest escapes.
      */
     public static final class ShallowSnapshot implements AutoCloseable {
-        private final GuestClassSlots copy;
+        private final GuestClassSlots original, copy;
         private final GraphLease lease;
         private boolean closed;
-        private ShallowSnapshot(GuestClassSlots copy, GraphLease lease) {
+        private ShallowSnapshot(GuestClassSlots original, GuestClassSlots copy, GraphLease lease) {
+            this.original = original;
             this.copy = copy;
             this.lease = lease;
         }
@@ -210,7 +213,9 @@ public final class GuestClassSlots {
         @Override public void close() {
             synchronized (copy.domain) {
                 requireOpen();
+                if (original.activeSnapshots <= 0) throw stale();
                 lease.close();
+                original.activeSnapshots--;
                 closed = true;
             }
         }
@@ -225,11 +230,15 @@ public final class GuestClassSlots {
             throw new IllegalArgumentException("E_COPY_BUDGET: invalid graph limits");
         }
         synchronized (domain) {
+            if (activeSnapshots >= MAX_READ_ONLY_LOANS) {
+                throw new IllegalArgumentException("E_COPY_BUDGET: active snapshot limit");
+            }
             GraphLease lease = prepareDescendants(maxNodes, maxEdges);
             GuestClassSlots copy = new GuestClassSlots(domain, slots);
             copy.finishInitialization();
-            ShallowSnapshot result = new ShallowSnapshot(copy, lease);
+            ShallowSnapshot result = new ShallowSnapshot(this, copy, lease);
             activate(lease);
+            activeSnapshots++;
             return result;
         }
     }
