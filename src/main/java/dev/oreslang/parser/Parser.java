@@ -288,7 +288,7 @@ public final class Parser {
                         + ": template interpolation requires profile-preserving typed lowering");
             }
         }
-        return new Parser(scanned, null, true, false).parseProgram();
+        return new Parser(LocalConstantPair.lower(scanned), null, true, false).parseProgram();
     }
 
 
