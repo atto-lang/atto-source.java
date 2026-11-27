@@ -9364,6 +9364,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.ClosedRecurExpr loop) return loop.plan().execute();
             if (expr instanceof Ast.NamedArgExpr) {
                 throw new IllegalStateException(
                         "NAMED_CALL_BINDING_UNSUPPORTED: named argument reached runtime without a checked call plan");

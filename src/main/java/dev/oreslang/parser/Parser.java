@@ -8074,7 +8074,55 @@ public final class Parser {
         }
     }
 
+    private Ast.Expr parseClosedRecur() {
+        Token site = consume(LOOP, "expected loop");
+        consume(LPAREN, "expected state bindings");
+        List<String> names = new ArrayList<>();
+        List<Ast.Expr> initial = new ArrayList<>(), guards = new ArrayList<>(),
+                results = new ArrayList<>(), updates = new ArrayList<>();
+        do {
+            if (names.size() >= 8) throw error(site, "E_RECUR_LIMIT: state count");
+            consume(VAL, "state binding requires val");
+            String name = consume(IDENT, "state name").lexeme();
+            if (names.contains(name) || name.equals("recur") || name.equals("loop"))
+                throw error(site, "E_RECUR_BINDING: duplicate or reserved state");
+            if (match(COLON)) {
+                if (!consume(IDENT, "expected int").lexeme().equals("int"))
+                    throw error(site, "E_VALUE_LOOP_PROFILE: int state required");
+            }
+            consume(EQUAL, "state initializer required");
+            names.add(name); initial.add(parseExpression());
+        } while (match(COMMA));
+        consume(RPAREN, "expected ')' after state");
+        consume(LBRACE, "expected loop body");
+        boolean terminalElse = false;
+        while (match(IF)) {
+            if (guards.size() >= 32) throw error(site, "E_RECUR_LIMIT: guard count");
+            guards.add(parseExpression());
+            consume(LBRACE, "expected guard body");
+            consume(BREAK, "expected valued break");
+            results.add(parseExpression());
+            consume(SEMICOLON, "expected ';' after break");
+            consume(RBRACE, "expected '}' after break");
+            if (match(ELSE)) { consume(LBRACE, "expected else body"); terminalElse = true; break; }
+        }
+        if (!matchContextualIdentifier("recur")) throw error(peek(), "E_RECUR_TAIL: expected recur");
+        consume(LPAREN, "expected recur operands");
+        do {
+            if (updates.size() >= 8) throw error(site, "E_RECUR_LIMIT: operand count");
+            updates.add(parseExpression());
+        } while (match(COMMA));
+        consume(RPAREN, "expected ')' after recur");
+        consume(SEMICOLON, "expected ';' after recur");
+        if (terminalElse) { consume(RBRACE, "expected '}' after else"); match(FI); }
+        consume(RBRACE, "expected '}' after loop");
+        if (check(LPAREN)) throw error(peek(), "calling a computed value loop");
+        return new Ast.ClosedRecurExpr(dev.oreslang.ast.ClosedRecurPlan.create(names, initial, guards, results, updates));
+    }
+
     private Ast.Expr parsePrimary() {
+        if (check(LOOP) && checkNext(LPAREN) && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == VAL) return parseClosedRecur();
         // Canonical expression-position braces are a Record constructor,
         // never a statement block or a dynamic Map fallback.
         if (canonicalAttoSource && check(LBRACE)) return parseAnonymousRecord();

@@ -3965,6 +3965,13 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.ClosedRecurExpr) {
+            if (currentFunction == null || !currentFunction.name().equals("main")
+                    || currentClassOwner != null || currentActorKind != Ast.ActorKind.NONE
+                    || currentGenerator || currentAsyncCallable || currentMaySuspend)
+                throw new IllegalArgumentException("E_VALUE_LOOP_PROFILE: closed recur requires synchronous free main");
+            return Primitive.INT;
+        }
         if (expr instanceof Ast.NamedArgExpr) {
             throw new IllegalArgumentException(
                     "NAMED_ARGUMENT_OUTSIDE_CALL: a named argument must remain attached to its call site");
@@ -11889,6 +11896,7 @@ public final class TypeChecker {
     }
 
     private String strictNumericSource(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.ClosedRecurExpr) return "int";
         if (expr instanceof Ast.LiteralExpr lit) {
             if (lit.value() instanceof Long) return "int";
             if (lit.value() instanceof Double) return "float";
