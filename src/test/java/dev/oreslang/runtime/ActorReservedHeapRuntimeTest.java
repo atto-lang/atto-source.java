@@ -39,7 +39,7 @@ final class ActorReservedHeapRuntimeTest {
     }
     @Test void realArenaAllocationsUseReservedCapacityExactlyOnce() throws Exception {
         try (var store = new SharedCodeImageStore(); var runtime = new ActorRuntime(policy(32*MIB))) {
-            var code = store.publish("reserved-native-arena", Parser.parse("define actor Worker as end"));
+            var code = store.publish("reserved-native-arena", Parser.parse("define actor Worker as state { let int count = 0; } end"));
             var e = executor(code, false, null, null);
             var a = runtime.spawnCodeActorWithReservedHeap(ActorRuntime.ActorKind.SHARED, policy(16*MIB), e, "Worker");
             var b = runtime.spawnCodeActorWithReservedHeap(ActorRuntime.ActorKind.SHARED, policy(16*MIB), e, "Worker");
@@ -61,7 +61,7 @@ final class ActorReservedHeapRuntimeTest {
     }
     @Test void failedInitializationRefundsOnlyAfterPhysicalRetirement() throws Exception {
         try (var store = new SharedCodeImageStore(); var runtime = new ActorRuntime(policy(16*MIB))) {
-            var code = store.publish("reserved-native-arena-failure", Parser.parse("define actor Worker as end"));
+            var code = store.publish("reserved-native-arena-failure", Parser.parse("define actor Worker as state { let int count = 0; } end"));
             var actor = runtime.spawnCodeActorWithReservedHeap(ActorRuntime.ActorKind.SHARED,
                 policy(16*MIB), executor(code, true, null, null), "Worker");
             assertEquals(16*MIB, runtime.sharedMemoryBytes());
@@ -73,7 +73,7 @@ final class ActorReservedHeapRuntimeTest {
     @Test void stopDuringInitRetainsCapacityUntilTheTurnExits() throws Exception {
         var entered = new CountDownLatch(1); var proceed = new CountDownLatch(1);
         try (var store = new SharedCodeImageStore(); var runtime = new ActorRuntime(policy(16*MIB))) {
-            var code = store.publish("reserved-native-arena-cancel", Parser.parse("define actor Worker as end"));
+            var code = store.publish("reserved-native-arena-cancel", Parser.parse("define actor Worker as state { let int count = 0; } end"));
             var e = executor(code, false, entered, proceed);
             var actor = runtime.spawnCodeActorWithReservedHeap(ActorRuntime.ActorKind.SHARED, policy(16*MIB), e, "Worker");
             var ready = actor.ready();
