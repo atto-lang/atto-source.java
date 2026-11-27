@@ -70,11 +70,60 @@ public final class ImportRules {
         };
     }
 
+    /** Native unsafe libraries are not part of the guest source catalog. */
+    public static boolean isReservedUnsafeNativePath(String path) {
+        if (path == null) return false;
+        String unix = path.replace('\\', '/');
+        if (hasUnsafeSegments(unix)) return true;
+        // Track canonical prefixes before later traversal can erase them.
+        java.util.ArrayList<String> prefix = new java.util.ArrayList<>(3);
+        java.util.ArrayList<Integer> stack = new java.util.ArrayList<>();
+        int rootDepth = 0;
+        for (String component : unix.split("/")) {
+            if (component.isEmpty() || component.equals(".")) continue;
+            if (component.equals("..")) {
+                if (rootDepth != 0 && stack.size() <= rootDepth) return true;
+                if (!stack.isEmpty()) {
+                    int previous = stack.removeLast();
+                    prefix.subList(previous, prefix.size()).clear();
+                }
+                continue;
+            }
+            stack.add(prefix.size());
+            for (String segment : component.split("[.:]+")) {
+                if (prefix.size() == 3) break;
+                if (!segment.isEmpty()) prefix.add(segment);
+            }
+            int offset = !prefix.isEmpty() && (prefix.getFirst().equals("atto") ||
+                    prefix.getFirst().equals("ores")) ? 1 : 0;
+            if (prefix.size() > offset && prefix.get(offset).equals("std")) {
+                if (rootDepth == 0) rootDepth = stack.size();
+                if (prefix.size() > offset + 1 && prefix.get(offset + 1).equals("unsafe")) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasUnsafeSegments(String value) {
+        String[] segments = java.util.Arrays.stream(value.split("[/.:]+"))
+                .filter(part -> !part.isEmpty()).toArray(String[]::new);
+        int offset = segments.length > 0 && (segments[0].equals("atto") ||
+                segments[0].equals("ores")) ? 1 : 0;
+        return segments.length > offset + 1 && segments[offset].equals("std") &&
+                segments[offset + 1].equals("unsafe");
+    }
+
+    public static void requireGuestSafePath(String path) {
+        if (isReservedUnsafeNativePath(path))
+            throw new IllegalArgumentException("E_UNSAFE_DOMAIN: native unsafe standard-library import unavailable in guest domains");
+    }
+
     public static void validate(Ast.ImportDecl imported) {
         if (imported == null) throw new IllegalArgumentException("import declaration cannot be null");
         if (imported.path() == null || imported.path().isBlank()) {
             throw new IllegalArgumentException("import path cannot be empty");
         }
+        requireGuestSafePath(imported.path());
         // Import grammar admission does not authorize linking. A synthetic
         // package identity must never fall through to a relative-file
         // resolver or host interop lookup.
