@@ -159,6 +159,18 @@ final class ActorHotUpgradeTest {
             await(() -> seen.size() == 2, "v2 turn");
             Thread.sleep(100);
             assertFalse(staleRan.get(), "generation-N code never runs against generation N+1 state");
+
+            // A stale target must not claim ownership of a new producer.
+            // In particular STOP of generation N+1 cannot cancel it.
+            var independent = new OresFuture<String>();
+            runtime.enqueueOnCompletion(independent, stale.get(),
+                    (value, failure) -> staleRan.set(true));
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+            assertFalse(independent.isDone(),
+                    "stale continuation registration transferred a producer to successor generation");
+            assertTrue(independent.completeFromRuntime("independent"));
+            assertFalse(staleRan.get(), "late independent completion cannot execute stale code");
         }
     }
 
