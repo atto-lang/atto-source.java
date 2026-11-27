@@ -7142,6 +7142,22 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnCodeActorWithReservedHeap(kind, narrowed, executor, actorTypeName);
     }
 
+    /** Trusted host preview, shared source actors only. Reserve mailbox bytes
+     * independently of native heap, and retain both until physical retirement.
+     * Mailbox charges are existing transport estimates, not JVM object sizes. */
+    ActorRef<Object> spawnCodeActorWithReservedMailbox(
+            IsolatePolicy policy, ActorCodeExecutor executor, String actorTypeName,
+            long mailboxBytes) {
+        Objects.requireNonNull(executor, "executor");
+        if (mailboxBytes <= 0 || mailboxBytes > policy.maxHeapBytes())
+            throw new IllegalArgumentException("E_SPAWN_MAILBOX_BYTES");
+        if (currentActor.get() != null)
+            throw new SecurityException("reserved mailbox preview requires host admission");
+        return spawnInternal(ActorKind.SHARED, policy, null, false,
+                Objects.requireNonNull(executor.codeImage()), executor, actorTypeName,
+                true, null, mailboxBytes);
+    }
+
     /** Host test bridge only. The schema is not yet minted by typed HIR. */
     ActorRef<Object> spawnCodeActorWithStartup(
             ActorKind kind, IsolatePolicy policy, ActorCodeExecutor executor,
@@ -7230,6 +7246,17 @@ public final class ActorRuntime implements AutoCloseable {
             boolean trustedFactory, SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor, String codeActorType, boolean reserveNativeHeap,
             ActorStartupPayload startupPayload) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, codeImage,
+                codeExecutor, codeActorType, reserveNativeHeap, startupPayload, 0);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind, IsolatePolicy policy, BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory, SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor, String codeActorType, boolean reserveNativeHeap,
+            ActorStartupPayload startupPayload, long mailboxCredit) {
+        if (mailboxCredit < 0 || (mailboxCredit > 0 && (!reserveNativeHeap || kind != ActorKind.SHARED)))
+            throw new IllegalArgumentException("E_SPAWN_MAILBOX_BYTES");
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -7305,6 +7332,7 @@ public final class ActorRuntime implements AutoCloseable {
 
             ActorCell<M> cell = null;
             ActorReservedArenaBudget heapCredit = null;
+            boolean mailboxCharged = false;
             boolean linkedToParent = false;
             boolean rootControlReserved = false;
             boolean parentControlReserved = false;
@@ -7323,8 +7351,10 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new IllegalArgumentException("E_SPAWN_INIT_BYTES");
                     ActorReservedArenaBudget candidate = new ActorReservedArenaBudget(
                             heapLimit, () -> releaseSharedRuntimeBytes(heapLimit));
-                    reserveSharedRuntimeBytes(heapLimit, "reserved actor native heap");
+                    long combined = Math.addExact(heapLimit, mailboxCredit);
+                    reserveSharedRuntimeBytes(combined, "reserved actor heap and mailbox");
                     heapCredit = candidate;
+                    mailboxCharged = mailboxCredit > 0;
                 }
                 id = ActorId.create();
                 generation = nextActorGeneration.getAndIncrement();
@@ -7343,7 +7373,7 @@ public final class ActorRuntime implements AutoCloseable {
                         codeImage,
                         codeExecutor,
                         codeActorType,
-                        parent, heapCredit, startupPayload);
+                        parent, heapCredit, startupPayload, mailboxCredit);
                 actorOutputStreams.add(cell.outputStream);
                 // Lazy pools: the first actor of a kind creates its carrier here.
                 startCarrierForAdmission(kind, cell.dispatchLane);
@@ -7440,6 +7470,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (cell.memorySlice != null) cell.memorySlice.close();
                     }
                     if (heapCredit != null) heapCredit.releaseAfterArenaClose();
+                    if (mailboxCharged) releaseSharedRuntimeBytes(mailboxCredit);
                 } catch (RuntimeException | Error cleanupFailure) {
                     if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
                 }
@@ -8232,6 +8263,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.reserveMailboxSlot()) {
                 throw new ActorMailboxFullException(ref.id());
             }
+            if (cell.reservedMailboxBytes > 0) ++cell.activeReservedSyncSends;
         }
         boolean mailboxSlotTransferred = false;
         try {
@@ -8244,8 +8276,8 @@ public final class ActorRuntime implements AutoCloseable {
         long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
         if (cell.kind == ActorKind.SHARED) {
             requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
-            long actorRemaining = Math.max(0L, cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
-            long allowed = Math.min(actorRemaining, runtimeRemaining);
+            long actorRemaining = Math.max(0L, cell.sharedMailboxLimit() - cell.sharedMailboxBytes.get());
+            long allowed = cell.reservedMailboxBytes > 0 ? actorRemaining : Math.min(actorRemaining, runtimeRemaining);
             try {
                 estimateSharedTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
             } catch (IllegalStateException tooLarge) {
@@ -8363,7 +8395,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
         cell.schedule();
         } finally {
-            if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
+            try {
+                if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
+            } finally {
+                if (cell.reservedMailboxBytes > 0) {
+                    synchronized (cell.lifecycleLock) {
+                        --cell.activeReservedSyncSends;
+                        if (cell.stopped.get()) cell.finalizeStopLocked();
+                        cell.lifecycleLock.notifyAll();
+                    }
+                }
+            }
         }
     }
 
@@ -8448,8 +8490,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.kind == ActorKind.SHARED) {
                 requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
                 long actorRemaining = Math.max(
-                        0L, cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
-                long allowed = Math.min(actorRemaining, runtimeRemaining);
+                        0L, cell.sharedMailboxLimit() - cell.sharedMailboxBytes.get());
+                long allowed = cell.reservedMailboxBytes > 0 ? actorRemaining : Math.min(actorRemaining, runtimeRemaining);
                 try {
                     estimateSharedTransportBytes(
                             message, new IdentityHashMap<>(), 0, allowed);
@@ -10567,6 +10609,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
+        private final long reservedMailboxBytes;
         private final AtomicLong outputBytes = new AtomicLong();
         private long nextOutputSequence;
         private final Object mailboxAccountingLock = new Object();
@@ -10607,6 +10650,9 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeTurns;
         /** Payload/credit state retained by sendAsync before mailbox publication. Guarded by lifecycleLock. */
         private int activeAsyncSendAdmissions;
+        // Reserved mailbox promises must outlive synchronous prepublication
+        // snapshot/admission too, not only the queued envelope.
+        private int activeReservedSyncSends;
         private boolean carrierActive;
         /** Physical worker currently owning this actor lane, guarded by lifecycleLock.
          * Not an affinity requirement: a later turn may use a different worker. */
@@ -10669,8 +10715,9 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
                 ActorCell<?> parent, ActorReservedArenaBudget reservedHeapCredit,
-                ActorStartupPayload startupPayload) {
+                ActorStartupPayload startupPayload, long reservedMailboxBytes) {
             this.reservedHeapCredit = reservedHeapCredit;
+            this.reservedMailboxBytes = reservedMailboxBytes;
             this.startupPayload = startupPayload;
             this.storageActorOrdinal = nextStorageActorOrdinal.getAndIncrement();
             if (storageActorOrdinal <= 0) {
@@ -11414,6 +11461,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || activeAsyncSendAdmissions != 0
+                    || activeReservedSyncSends != 0
                     || gracefulTeardownPending
                     || !children.isEmpty()) return;
             OresScheduler scheduler = sourceScheduler;
@@ -11581,6 +11629,19 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
+            }
+            if (reservedMailboxBytes > 0 && virtualPhysicalCleanupComplete
+                    && actorAndGroupDeregistered && parentReleased) {
+                try {
+                    if (sharedMailboxBytes.get() != 0)
+                        throw new IllegalStateException("reserved mailbox still has live payloads");
+                    releaseSharedRuntimeBytes(reservedMailboxBytes);
+                }
+                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+                catch (Throwable failure) {
+                    virtualPhysicalCleanupComplete = false;
+                    recordFinalizationFailure(failure);
+                }
             }
             if (reservedHeapCredit != null && virtualPhysicalCleanupComplete
                     && actorAndGroupDeregistered && parentReleased) {
@@ -11777,6 +11838,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private long sharedMailboxLimit() {
+            return reservedMailboxBytes > 0 ? reservedMailboxBytes : policy.maxHeapBytes();
+        }
+
         private void reserveSharedMailbox(long bytes) {
             if (bytes < 0) throw new IllegalArgumentException("shared mailbox reservation cannot be negative");
             synchronized (lifecycleLock) {
@@ -11789,11 +11854,11 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (ArithmeticException overflow) {
                     throw new IllegalStateException("shared actor mailbox memory accounting overflow");
                 }
-                if (next > policy.maxHeapBytes()) {
+                if (next > sharedMailboxLimit()) {
                     throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
-                            + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
+                            + ": requested=" + bytes + " used=" + current + " limit=" + sharedMailboxLimit());
                 }
-                reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
+                if (reservedMailboxBytes == 0) reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
                 sharedMailboxBytes.set(next);
             }
         }
@@ -11809,7 +11874,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     + ": release=" + bytes + " used=" + current);
                 }
                 sharedMailboxBytes.set(current - bytes);
-                releaseSharedRuntimeBytes(bytes);
+                if (reservedMailboxBytes == 0) releaseSharedRuntimeBytes(bytes);
             }
         }
 
