@@ -33,7 +33,7 @@ final class ContextualIntGuestTest {
             "const x = Scale::(2); return x;",
             "const x = Scale::(2); const x = x; return x.apply(7);",
             "const x = Scale::(2); const y = x; y = 3; return x.apply(7);",
-            "return Scale::(factor=2).apply(7);",
+            "return Scale::(unknown=2).apply(7);",
             "return Scale::(2).apply([7);",
             "return atto_context_v1_member(2,7);",
             "const x = Scale::(6); return x.apply(7); const y = x;",
