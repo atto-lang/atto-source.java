@@ -71,7 +71,8 @@ final class StrictAsyncStdlibIoCurrentMainTest {
                   val Future<String> get = http.get_text("http://127.0.0.1:9/");
                   val Future<String> post = http.post_text("http://127.0.0.1:9/", "x");
                   val Future<HttpServer> listener = http.listen("127.0.0.1", 0, 1, 1024, 1000);
-                  val Future<void> out = stdio.stdout.write("x");
+                  val Future<void> out = stdio.out.write("x");
+                  val Future<void> alias = process.stdout.write("x");
                   val Future<Option<String>> input = stdio.stdin.read_line();
                   val String processId = process.unique_id();
                   return;
@@ -145,7 +146,13 @@ final class StrictAsyncStdlibIoCurrentMainTest {
                 """);
         assertFailsBeforeHostIo("""
                 pub async routine main(): void {
-                  await stdio.stdout.write("must-not-be-written");
+                  await stdio.out.write("must-not-be-written");
+                  return;
+                }
+                """);
+        assertFailsBeforeHostIo("""
+                pub async routine main(): void {
+                  await process.stdout.write("must-not-be-written");
                   return;
                 }
                 """);
