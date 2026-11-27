@@ -13,6 +13,38 @@ final class LocalNameFirstAsBindingTest {
         return assertInstanceOf(Ast.BindingStmt.class, fn.body().getFirst());
     }
 
+    private static Ast.Stmt firstStatement(String source) {
+        var program = Parser.parse("define fnc int • main() { " + source + " return 42; }");
+        return program.modules().stream().flatMap(m -> m.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance).map(Ast.FunctionDecl.class::cast)
+                .findFirst().orElseThrow().body().getFirst();
+    }
+
+    @Test void explicitUpdatesReuseAssignmentAstWithoutChangingCallSyntax() {
+        assertEquals(firstStatement("x = x + 1;"), firstStatement("set x++;"));
+        assertEquals(firstStatement("x = x + 1;"), firstStatement("set ++x;"));
+        assertEquals(firstStatement("x = x - 1;"), firstStatement("set --x;"));
+        assertEquals(firstStatement("x = x + 2;"), firstStatement("set x += 2;"));
+        assertEquals(firstStatement("x = x * 2;"), firstStatement("set x *= 2;"));
+        assertEquals(firstStatement("x = x - 2;"), firstStatement("set x -= 2;"));
+        assertEquals(firstStatement("x = 42;"), firstStatement("set! (x = 42);"));
+        assertInstanceOf(Ast.CallExpr.class,
+                assertInstanceOf(Ast.ExprStmt.class, firstStatement("set(42);")).expression());
+    }
+
+    @Test void explicitCounterLoopHeadersMatchExistingAssignmentAst() {
+        assertEquals(firstStatement("for let i = 0; i < 10; i++ {}"),
+                firstStatement("for let i = 0; i < 10; set i++ {}"));
+        assertEquals(firstStatement("for (let i = 10; i > 0; i--) {}"),
+                firstStatement("for (let i = 10; i > 0; set --i) {}"));
+        assertEquals(firstStatement("for (let i = 0; i < 10; i = i + 2) {}"),
+                firstStatement("for (let i = 0; i < 10; set i += 2) {}"));
+        for (String malformed : new String[]{"set x - = 2;", "set x * /* gap */ = 2;",
+                "set ++x++;", "for let i = 0; i < 10; let i++ {}"}) {
+            assertThrows(IllegalArgumentException.class, () -> firstStatement(malformed), malformed);
+        }
+    }
+
     @Test void nameFirstAsMatchesColonAndPrefixForEveryExplicitQualifier() {
         for (String qualifier : new String[]{"const", "const mut", "val", "let", "let mut"}) {
             var prefix = binding(qualifier + " int x = 42;");
