@@ -7427,6 +7427,20 @@ public final class Parser {
         }
     }
 
+    private boolean looksLikeTypedTaskBlock() {
+        if (!checkNext(LT)) return false;
+        int depth = 0;
+        for (int i = current + 1; i < tokens.size() && i - current <= 256; i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LT) depth++;
+            else if (type == GT && --depth == 0)
+                return i + 1 < tokens.size() && tokens.get(i + 1).type() == LBRACE;
+            else if (type == SEMICOLON || type == LBRACE || type == RBRACE || type == EOF)
+                return false;
+        }
+        return false;
+    }
+
     private Ast.Expr parseUnaryBody() {
         if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
         // Signed i64's negative endpoint requires magnitude 2^63, which
@@ -7523,10 +7537,21 @@ public final class Parser {
             return new Ast.AwaitExpr(operand);
         }
 
-        // task is contextual: task(...) and identifiers named task remain legal.
-        if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
+        // Forward-port the typed task expression from #1781. Contextual
+        // names and generic calls remain distinct from task<T> { ... }.
+        if (check(IDENT) && peek().lexeme().equals("task") && (checkNext(LBRACE) || looksLikeTypedTaskBlock())) {
             advance();
-            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), false);
+            Ast.TypeRef payload = null;
+            if (match(LT)) {
+                payload = parseTypeRef();
+                consume(GT, "expected '>' after task payload");
+                // This incremental slice is deliberately primitive-only.
+                if (!payload.arguments().isEmpty() || payload.inferArguments()
+                        || !java.util.Set.of("int", "bool", "string", "String", "void").contains(payload.name()))
+                    throw error(previous(), "E_UNSUPPORTED: explicit task payload requires checked primitive lowering");
+            }
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), false,
+                    false, false, null, null, List.of(), payload);
         }
         if (match(CPU, GPU)) {
             Token domainToken = previous();

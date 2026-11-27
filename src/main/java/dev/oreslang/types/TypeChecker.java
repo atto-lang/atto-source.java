@@ -7002,6 +7002,8 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.TaskExpr task) {
+            if (task.payloadType() != null)
+                return checkTaskExpression(task, resolve(task.payloadType(), generics, self), env, generics, self);
             if (task.typedCountedSelectI64())
                 return checkTaskExpression(task, new ListType(Primitive.INT), env, generics, self);
             if (task.typedDefaultSelectI64())
@@ -8084,6 +8086,11 @@ public final class TypeChecker {
                 && future.name().equals("Future")
                 && future.arguments().size() == 1) {
             Type result = future.arguments().getFirst();
+            if (task.payloadType() != null) {
+                Type actual = typeOf(task, env, generics, self);
+                requireAssignable(actual, future, "declared task payload");
+                return actual;
+            }
             if (task.typedDefaultSelectI64() && result != Primitive.INT)
                 throw new IllegalArgumentException("select<int> has result Future<int>; contextual result cannot change it");
             if (task.typedCountedSelectI64() && !new ListType(Primitive.INT).equals(result))

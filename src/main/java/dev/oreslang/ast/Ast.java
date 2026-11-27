@@ -2267,10 +2267,12 @@ public final class Ast {
     public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
                            boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
                            String zeroCountSourceName, String dynamicCountName,
-                           List<CountedZeroWitness> zeroCountWitnesses) implements Expr {
+                           List<CountedZeroWitness> zeroCountWitnesses, TypeRef payloadType) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
+            if (payloadType != null && (typedDefaultSelectI64 || typedCountedSelectI64 || legacyNb || domain != ExecutionDomain.CPU))
+                throw new IllegalArgumentException("explicit task payload cannot be combined with synthetic select or legacy task");
             if ((typedDefaultSelectI64 || typedCountedSelectI64) && domain != ExecutionDomain.CPU)
                 throw new IllegalArgumentException("typed select requires CPU task authority");
             if (typedDefaultSelectI64 && typedCountedSelectI64)
@@ -2285,6 +2287,13 @@ public final class Ast {
             if (dynamicCountName != null && (!typedCountedSelectI64
                     || !zeroCountWitnesses.isEmpty() || dynamicCountName.isBlank()))
                 throw new IllegalArgumentException("invalid dynamic counted select witness");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName, String dynamicCountName,
+                        List<CountedZeroWitness> zeroCountWitnesses) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, dynamicCountName, zeroCountWitnesses, null);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
                         boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
