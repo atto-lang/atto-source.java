@@ -35,6 +35,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
     private final ArrayDeque<PendingAdmission> waiting = new ArrayDeque<>();
     private int waitingBytes;
     private int acceptedBytes;
+    // Protected by lock; failure can revoke delivery while the sink is blocked.
+    private Record inFlight;
 
     private final class PendingAdmission {
         final String text;
@@ -200,10 +202,14 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     if (!accepting && queue.isEmpty()) break;
                 }
                 wake.acquire();
-                Record record = queue.poll();
-                if (record == null) continue;
+                Record record;
                 Throwable error;
-                synchronized (lock) { error = failure; }
+                synchronized (lock) {
+                    record = queue.poll();
+                    if (record == null) continue;
+                    inFlight = record;
+                    error = failure;
+                }
                 if (error == null) {
                     try {
                         // PrintWriter is shared with legacy synchronous stdio;
@@ -223,6 +229,10 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 synchronized (lock) {
                     if (error != null && failure == null) failure = error;
                     error = failure;
+                    // Terminal shutdown may already have detached this record.
+                    // Never decrement twice or publish success after revocation.
+                    if (inFlight != record) return;
+                    inFlight = null;
                     acceptedBytes -= record.bytes();
                     completed = record.sequence();
                     deliveringCompletions = true;
@@ -301,17 +311,26 @@ public final class AsyncStdioLogs implements AutoCloseable {
     private void failPending(Throwable error) {
         List<Barrier> pending;
         List<PendingAdmission> rejected;
+        List<Record> revoked = new ArrayList<>();
+        Throwable terminal;
         synchronized (lock) {
             if (failure == null) failure = error;
+            terminal = failure;
             accepting = false;
             pending = List.copyOf(barriers);
             barriers.clear();
             rejected = detachWaitingLocked();
+            if (inFlight != null) {
+                revoked.add(inFlight);
+                inFlight = null;
+            }
+            queue.drainTo(revoked);
+            acceptedBytes = 0;
+            wake.release();
         }
-        rejectWaiting(rejected, error);
-        for (Barrier barrier : pending) barrier.completion().failFromRuntime(error);
-        Record remaining;
-        while ((remaining = queue.poll()) != null) remaining.completion().failFromRuntime(error);
+        rejectWaiting(rejected, terminal);
+        for (Record record : revoked) record.completion().failFromRuntime(terminal);
+        for (Barrier barrier : pending) barrier.completion().failFromRuntime(terminal);
     }
 
     /** Seal after actor/native-I/O and auxiliary producer shutdown.
@@ -351,6 +370,9 @@ public final class AsyncStdioLogs implements AutoCloseable {
             }
             return;
         }
+        if (worker == Thread.currentThread()) {
+            throw new IllegalStateException("async stdio drain cannot join itself");
+        }
         try {
             worker.join(CLOSE_TIMEOUT_MILLIS);
         } catch (InterruptedException interrupted) {
@@ -358,7 +380,12 @@ public final class AsyncStdioLogs implements AutoCloseable {
             throw new IllegalStateException("interrupted while flushing async stdio", interrupted);
         }
         if (worker.isAlive()) {
-            throw new IllegalStateException("async stdio drain exceeded 5000ms shutdown deadline; logs may be incomplete");
+            IllegalStateException timeout = new IllegalStateException(
+                    "async stdio drain exceeded 5000ms shutdown deadline; logs may be incomplete");
+            // No successful delivery receipt may escape after the terminal
+            // failure wins. Physical bytes already written cannot be retracted.
+            failPending(timeout);
+            throw timeout;
         }
         synchronized (lock) {
             if (failure != null) throw new IllegalStateException("async stdio drain failed", failure);
