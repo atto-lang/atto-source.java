@@ -379,7 +379,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 terminals.put(identity, new TerminalRecord(expected.actor().id(),
                         expected.actor().generation(), expected.actor().kind(),
                         failureClass, cancelled, Instant.now()));
-            } catch (RuntimeException | Error failure) {
+            } catch (RuntimeException | Error accountingFailure) {
                 // Retain the binding as a quarantined record for explicit
                 // reconciliation; never report passivation if accounting failed.
             }

@@ -4839,7 +4839,7 @@ public final class Parser {
             // Explicit procedural conditional: keep the same checked IfStmt
             // lowering as its undelimited statement form. Only the first
             // condition of ifnot/unless is negated; elif stays unchanged.
-            if (match(IF, IFNOT, UNLESS)) return parseIf(previous().type());
+            if (match(IF, IFNOT, UNLESS)) return parseIf(previous().type(), true);
             if (match(MATCH)) return parseMatch(true);
             if (match(SWITCH)) return parseSwitch();
             // Explicitly discard a channel read result (or write's unit result)
