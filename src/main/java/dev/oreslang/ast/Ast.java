@@ -1104,6 +1104,26 @@ public final class Ast {
         }
     }
 
+    // Syntax-only tree for the recursive capture profile. Not an executable
+    // Stmt: checked path plans must exist before this can be lowered.
+    public enum LocalPatternKind { TUPLE, RECORD, ARRAY }
+    public record LocalBindingPolicy(BindingKind kind, boolean mutableReferent) {
+        public LocalBindingPolicy {
+            java.util.Objects.requireNonNull(kind);
+            if (kind == BindingKind.VAL && !mutableReferent)
+                throw new IllegalArgumentException("val requires mutable referent");
+        }
+    }
+    public sealed interface LocalPattern permits LocalPatternLeaf, LocalPatternGroup {}
+    public record LocalPatternLeaf(String name, LocalBindingPolicy policy, boolean discard)
+            implements LocalPattern {}
+    public record LocalPatternCapture(String name, LocalPatternKind target,
+                                      LocalBindingPolicy policy) {}
+    public record LocalPatternGroup(LocalPatternKind kind, List<LocalPattern> items,
+                                    LocalPatternCapture capture) implements LocalPattern {
+        public LocalPatternGroup { items = List.copyOf(items); }
+    }
+
     public enum DestructureKind { SEQUENCE, OBJECT }
 
     public record DestructureStmt(DestructureKind kind, List<DestructureBinding> bindings, Expr initializer) implements Stmt {
