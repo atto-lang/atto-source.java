@@ -3667,6 +3667,48 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
+            Ast.CallExpr factory = defer.boundFactory();
+            if (factory != null) {
+                Ast.LambdaExpr outer = (Ast.LambdaExpr) factory.callee();
+                Ast.LambdaExpr inner = (Ast.LambdaExpr) outer.expressionBody();
+                if (self != null || currentClassOwner != null || env.descendantsNonLexical()
+                        || outer.nonLexical() || inner.nonLexical()
+                        || inner.blockBody() == null || !inner.parameters().isEmpty()
+                        || factory.arguments().size() != outer.parameters().size()) {
+                    throw new IllegalArgumentException(
+                            "defer factory requires a top-level callable, scalar bindings and a nullary braced cleanup");
+                }
+                List<Type> params = new ArrayList<>();
+                for (Ast.Param param : outer.parameters()) {
+                    Type type = resolveParam(param, generics, self);
+                    if (param.mutable() || param.structural() || param.type().isBorrow()
+                            || !(type == Primitive.INT || type == Primitive.BOOL
+                                || type == Primitive.STRING || type == Primitive.FLOAT)) {
+                        throw new IllegalArgumentException(
+                                "defer factory parameters must be immutable scalar values");
+                    }
+                    params.add(type);
+                }
+                // Contextually validate both lambda bodies: the outer
+                // expression must produce an actual synchronous () => void.
+                validateLambdaAgainstExpected(outer,
+                        new Function(params, new Function(List.of(), Primitive.VOID)),
+                        env, generics, self);
+                // These expressions run now, not during cleanup; their
+                // ordinary initialization/effect rules apply at registration.
+                for (int i = 0; i < params.size(); i++) {
+                    Ast.Expr arg = factory.arguments().get(i);
+                    if (arg instanceof Ast.NamedArgExpr || arg instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException("defer factory requires fixed positional arguments");
+                    }
+                    Type actual = typeOfAgainstExpected(arg, params.get(i), env, generics, self);
+                    if (containsUnknown(actual) || actual instanceof Borrow) {
+                        throw new IllegalArgumentException("defer factory requires proven owned scalar arguments");
+                    }
+                    requireAssignable(actual, params.get(i), "defer factory argument " + (i + 1));
+                }
+                return;
+            }
             if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
                 throw new IllegalArgumentException(
                         "defer cleanup lambda must accept zero parameters");
@@ -3681,7 +3723,18 @@ public final class TypeChecker {
                     validateLambdaAgainstExpected(lambda,
                             new Function(List.of(), Primitive.VOID), env, generics, self);
                 } else {
-                    typeOf(defer.expression(), env, generics, self);
+                    Type result = typeOf(defer.expression(), env, generics, self);
+                    // The current evaluator delays ordinary expressions. It
+                    // cannot bind a callable result at registration or invoke
+                    // that result on exit. Never silently drop such a callback.
+                    if (result instanceof Function) {
+                        throw new IllegalArgumentException(
+                                "defer callable values and factories require checked registration-time lowering");
+                    }
+                    if (result instanceof Named named && named.name().equals("Result")) {
+                        throw new IllegalArgumentException(
+                                "defer must handle a fallible Result explicitly");
+                    }
                 }
             } finally {
                 // Defer executes later; checking its expression now must not

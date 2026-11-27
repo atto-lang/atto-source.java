@@ -3068,7 +3068,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env parent,
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
+            ArrayDeque<RegisteredDefer> defers = new ArrayDeque<>();
             SourceCleanupFrame cleanup = task.registerSourceCleanup(
                     (owner, finished) -> runOneDefer(
                             owner, env, defers,
@@ -3124,7 +3124,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 List<Ast.Stmt> statements,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 int index,
                 SourceFlowCont continuation) {
             if (index >= statements.size()) {
@@ -3217,47 +3217,23 @@ public final class OresEvalRootNode extends RootNode {
          * An earlier exit owns its status; an earlier unhandled failure must
          * never be downgraded by a later deferred exit(0).
          */
-        private static final int MAX_CLEANUP_SUPPRESSED = 64;
-
         private static void suppressCleanupFailure(Throwable primary, Throwable secondary) {
-            if (primary == secondary) return;
-            synchronized (primary) {
-                if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
-                    primary.addSuppressed(secondary);
-                }
-            }
+            CleanupFailureOrder.suppress(primary, secondary);
+        }
+
+        private Throwable selectCleanupFailure(Throwable earlier, Throwable cleanupFailure) {
+            return CleanupFailureOrder.merge(earlier, cleanupFailure,
+                    cleanupFailure instanceof ProcessExitSignal,
+                    isUnmaskableFailure(cleanupFailure),
+                    earlier != null && isUnmaskableFailure(earlier),
+                    earlier instanceof java.util.concurrent.CancellationException,
+                    cleanupFailure instanceof dev.oreslang.runtime.UntrappableTaskFailure);
         }
 
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
-            if (earlier == cleanupFailure) return currentFlow; // no self-suppression
-            // The first genuine failure is the PRIMARY cause of the Task.
-            // Defer/finally/guard failures are secondary diagnostics and must
-            // never erase the original THROW, RAISE, PANIC or cancellation.
-            // In particular ProcessExitSignal from a defer cannot replace a
-            // pending error. Preserve original identity for source and actor
-            // supervisor attribution.
-            if (earlier != null) {
-                // An untrappable panic/authority failure in cleanup must
-                // still escape an earlier ordinary THROW. Otherwise catch or
-                // trap could swallow a fatal cleanup panic. A deferred
-                // process-exit never replaces an already pending failure.
-                if (!(cleanupFailure instanceof ProcessExitSignal)
-                        && isUnmaskableFailure(cleanupFailure)
-                        && (!isUnmaskableFailure(earlier)
-                            || (earlier instanceof java.util.concurrent.CancellationException
-                                && cleanupFailure instanceof
-                                    dev.oreslang.runtime.UntrappableTaskFailure))) {
-                    suppressCleanupFailure(cleanupFailure, earlier);
-                    return SourceFlow.throwing(cleanupFailure);
-                }
-                // Two ordinary failures: the original Task error wins.
-                // Any already-fatal primary also remains authoritative.
-                suppressCleanupFailure(earlier, cleanupFailure);
-                return currentFlow;
-            }
-            // A cleanup failure after a normal return still fails the Task.
-            return SourceFlow.throwing(cleanupFailure);
+            Throwable selected = selectCleanupFailure(earlier, cleanupFailure);
+            return selected == earlier ? currentFlow : SourceFlow.throwing(selected);
         }
 
         /**
@@ -3286,7 +3262,7 @@ public final class OresEvalRootNode extends RootNode {
         private void finishBlock(
                 SourceTask task,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlow initialFlow,
                 SourceFlowCont continuation) {
             if (defers.isEmpty()) {
@@ -3310,14 +3286,46 @@ public final class OresEvalRootNode extends RootNode {
                     continuation);
         }
 
+        // Runtime-owned registration, not a guest-visible callable token.
+        // A delayed expression retains its lexical environment via the block;
+        // a bound factory has already produced its owned callback value.
+        private record RegisteredDefer(Ast.Expr delayed, Invokable bound) {
+            private RegisteredDefer {
+                if ((delayed == null) == (bound == null)) {
+                    throw new IllegalArgumentException("exactly one defer registration form required");
+                }
+            }
+        }
+
+        private RegisteredDefer bindDeferredFactory(
+                Ast.CallExpr factory, List<Object> values, Env env) {
+            // Ownership admission proves the outer lambda has no external
+            // lexical captures. Do not snapshot unrelated caller slots,
+            // guards, actor receiver authority, or structured Task scope.
+            if (env.descendantsNonLexical() || env.instanceMethodOwner() != null
+                    || env.lexicalContainerClass() != null) {
+                throw new IllegalStateException("defer factory requires the checked lexical profile");
+            }
+            Env isolated = new Env(null, false, null, null, env.lexicalModule());
+            Object outer = eval(factory.callee(), isolated);
+            if (!(outer instanceof Invokable creator)) {
+                throw new IllegalStateException("checked defer factory is not callable");
+            }
+            Object value = invoke(invokableInvocation(creator, values));
+            if (!(value instanceof Invokable callable)) {
+                throw new IllegalStateException("checked defer factory did not produce a callable");
+            }
+            return new RegisteredDefer(null, callable);
+        }
+
         private void runOneDefer(
                 SourceTask task,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlow currentFlow,
                 SourceFlowCont continuation) {
-            Ast.Expr defer = defers.pollFirst();
-            if (defer == null) {
+            RegisteredDefer registration = defers.pollFirst();
+            if (registration == null) {
                 SourceFlow completed = currentFlow;
                 try {
                     env.releaseMutexGuards(
@@ -3329,6 +3337,19 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            if (registration.bound() != null) {
+                SourceFlow flow = currentFlow;
+                try {
+                    invoke(invokableInvocation(registration.bound(), List.of()));
+                } catch (RuntimeException | Error failure) {
+                    flow = mergeCleanupFailure(currentFlow, failure);
+                }
+                SourceFlow next = flow;
+                task.dispatchImmediateSourceCallback(
+                        () -> runOneDefer(task, env, defers, next, continuation));
+                return;
+            }
+            Ast.Expr defer = registration.delayed();
             evalSuspendableExpr(
                     task,
                     defer instanceof Ast.LambdaExpr
@@ -3358,7 +3379,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Stmt stmt,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlowCont continuation) {
             try {
                 if (stmt instanceof Ast.UsingBorrowStmt) {
@@ -3528,8 +3549,27 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.DeferStmt defer) {
-                    defers.push(defer.expression());
-                    continuation.accept(task, SourceFlow.normal());
+                    if (defer.boundFactory() != null) {
+                        evalSuspendableArguments(task, defer.boundFactory().arguments(), env,
+                                (owner, values, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(owner, SourceFlow.throwing(failure));
+                                        return;
+                                    }
+                                    RegisteredDefer registration;
+                                    try {
+                                        registration = bindDeferredFactory(defer.boundFactory(), values, env);
+                                    } catch (RuntimeException | Error invalid) {
+                                        continuation.accept(owner, SourceFlow.throwing(invalid));
+                                        return;
+                                    }
+                                    defers.push(registration);
+                                    continuation.accept(owner, SourceFlow.normal());
+                                });
+                    } else {
+                        defers.push(new RegisteredDefer(defer.expression(), null));
+                        continuation.accept(task, SourceFlow.normal());
+                    }
                     return;
                 }
 
@@ -7730,7 +7770,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+            ArrayDeque<RegisteredDefer> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             Throwable pendingFailure = null;
             try {
@@ -7748,49 +7788,28 @@ public final class OresEvalRootNode extends RootNode {
                 // Always run the entire LIFO cleanup stack. In particular,
                 // a failed defer must not prevent remaining resource cleanup.
                 while (!deferred.isEmpty()) {
-                    Ast.Expr cleanup = deferred.pop();
+                    RegisteredDefer registration = deferred.pop();
                     try {
-                        eval(cleanup instanceof Ast.LambdaExpr
-                                ? new Ast.CallExpr(cleanup, List.of())
-                                : cleanup, env);
-                    } catch (RuntimeException | Error failure) {
-                        if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                            // Never let a deferred ordinary failure replace a panic,
-                            // denial, cancellation, host Error, or earlier process exit.
-                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                        } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
-                            // A deferred exit(0) must not convert an earlier
-                            // unhandled failure into a successful process exit.
-                            // Keep the original failure authoritative; the exit
-                            // attempt is diagnostic only.
-                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
+                        if (registration.bound() != null) {
+                            invoke(invokableInvocation(registration.bound(), List.of()));
                         } else {
-                            if (pendingFailure != null && pendingFailure != failure) {
-                                suppressCleanupFailure(failure, pendingFailure);
-                            }
-                            pendingFailure = failure;
+                            Ast.Expr cleanup = registration.delayed();
+                            eval(cleanup instanceof Ast.LambdaExpr
+                                    ? new Ast.CallExpr(cleanup, List.of())
+                                    : cleanup, env);
                         }
+                    } catch (RuntimeException | Error failure) {
+                        pendingFailure = selectCleanupFailure(pendingFailure, failure);
                     }
                 }
                 try {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                    } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
-                        // Mutex cleanup cannot downgrade an already failing
-                        // root task into successful exit(0).
-                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                    } else {
-                        if (pendingFailure != null && pendingFailure != failure) {
-                            suppressCleanupFailure(failure, pendingFailure);
-                        }
-                        pendingFailure = failure;
-                    }
+                    pendingFailure = selectCleanupFailure(pendingFailure, failure);
                 }
                 // If only the body failed, Java will rethrow it naturally.
-                // If cleanup failed, the most recent failure takes precedence
-                // and retains earlier failures as suppressed exceptions.
+                // If cleanup selected a stronger failure, rethrow it with the
+                // earlier failure retained as a bounded suppressed diagnostic.
                 if (pendingFailure != null && pendingFailure != originalFailure) {
                     if (pendingFailure instanceof RuntimeException runtimeFailure) {
                         throw runtimeFailure;
@@ -7803,7 +7822,7 @@ public final class OresEvalRootNode extends RootNode {
         private void executeStatement(
                 Ast.Stmt stmt,
                 Env env,
-                ArrayDeque<Ast.Expr> deferred,
+                ArrayDeque<RegisteredDefer> deferred,
                 boolean inheritedTailBarrier) {
             // Defense in depth: source can reach this evaluator through host
             // adapters that do not run the normal TypeChecker on every call.
@@ -7905,7 +7924,14 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
-            if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.DeferStmt defer) {
+                RegisteredDefer registration = defer.boundFactory() == null
+                        ? new RegisteredDefer(defer.expression(), null)
+                        : bindDeferredFactory(defer.boundFactory(),
+                                evaluateArguments(defer.boundFactory().arguments(), env), env);
+                deferred.push(registration);
+                return;
+            }
             if (stmt instanceof Ast.BlockStmt block) {
                 executeBlock(
                         block.body(),

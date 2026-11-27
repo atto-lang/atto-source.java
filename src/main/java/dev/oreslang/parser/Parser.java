@@ -4410,6 +4410,27 @@ public final class Parser {
         if (match(DEFER)) {
             Ast.Expr expression = parseExpression();
             consumeExpressionStatementTerminator(expression, "defer statement should end with ';'");
+            // A pipeline ending in a literal callback factory is registration,
+            // not the ordinary delayed-expression form of defer. Normalize
+            // ONCE here so the type checker, ownership checker and both
+            // runtime paths see the SAME bound-factory AST identity.
+            // Earlier pipeline stages retain their original provenance.
+            if (expression instanceof Ast.CallExpr call
+                    && call.origin() != Ast.CallOrigin.DIRECT) {
+                if (call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                        || call.typeArgumentsPresent()
+                        || call.arguments().size() != 1
+                        || !(call.callee() instanceof Ast.LambdaExpr outer)
+                        || !(outer.expressionBody() instanceof Ast.LambdaExpr)) {
+                    throw error(previous(), "defer pipeline requires a checked inline callback factory; "
+                            + "named and general callback-producing stages are not enabled");
+                }
+                Ast.Expr input = call.arguments().getFirst();
+                List<Ast.Expr> captures = input instanceof Ast.TupleExpr tuple
+                        ? tuple.elements() : List.of(input);
+                expression = new Ast.CallExpr(outer, List.of(), false,
+                        captures, Ast.CallOrigin.DIRECT);
+            }
             return new Ast.DeferStmt(expression);
         }
         if (check(BLOCK) && checkNext(LBRACE)) {
