@@ -4278,6 +4278,12 @@ public final class Parser {
             }
             return parseBindingStatement(annotations);
         }
+        if (canonicalAttoSource && looksLikeLocalCaptureHeader()) {
+            // Validate the real pattern syntax first. Never let an unsupported
+            // capture become an old flat destructure or ordinary assignment.
+            parseLocalCaptureHeader();
+            throw error(peek(), "E_DESTRUCTURE_CAPTURE_UNSUPPORTED: aggregate capture requires checked path ownership and lowering");
+        }
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             boolean inheritedMutableReferent = parseReferentMutability(inherited);
@@ -5368,6 +5374,140 @@ public final class Parser {
         }
     }
 
+    /**
+     * Syntax inspection only, with an EOF check. Deliberately does not produce
+     * a Program or grant type, ownership, or guest execution admission.
+     */
+    public static Ast.LocalPatternGroup parseStrictLocalCaptureHeader(String header) {
+        Parser parser = new Parser(new Lexer(header).scan(), AttoCallableVersion.V2);
+        Ast.LocalPatternGroup group = parser.parseLocalCaptureHeader();
+        parser.consume(EOF, "expected end of capture header");
+        return group;
+    }
+
+    private static Token.Type localPatternClose(Token.Type open) {
+        return switch (open) {
+            case LPAREN -> RPAREN;
+            case LBRACE -> RBRACE;
+            case LBRACKET -> RBRACKET;
+            default -> null;
+        };
+    }
+
+    private boolean looksLikeLocalCaptureHeader() {
+        int start = current;
+        boolean prefixed = isBindingKind(tokens.get(start).type());
+        if (prefixed) {
+            start++;
+            if (start < tokens.size() && tokens.get(start).type() == MUT) start++;
+        }
+        if (start >= tokens.size() || localPatternClose(tokens.get(start).type()) == null) return false;
+        // Bare patterns require an explicit first binding kind. This prevents
+        // ordinary cast/as expressions and blocks from being reclassified.
+        if (!prefixed && (start + 1 >= tokens.size()
+                || !isBindingKind(tokens.get(start + 1).type()))) return false;
+        java.util.ArrayDeque<Token.Type> closes = new java.util.ArrayDeque<>();
+        for (int i = start; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            Token.Type close = localPatternClose(type);
+            if (close != null) closes.push(close);
+            else if (type == RPAREN || type == RBRACE || type == RBRACKET) {
+                if (closes.isEmpty() || closes.pop() != type) return false;
+                if (closes.isEmpty()) return i + 1 < tokens.size() && tokens.get(i + 1).type() == AS;
+            } else if (type == SEMICOLON || type == EOF) return false;
+        }
+        return false;
+    }
+
+    private Ast.LocalBindingPolicy localPatternPolicy(Ast.LocalBindingPolicy inherited) {
+        if (isBindingKind(peek().type())) {
+            Ast.BindingKind kind = parseBindingKind();
+            return new Ast.LocalBindingPolicy(kind, parseReferentMutability(kind));
+        }
+        if (match(MUT)) {
+            if (inherited == null || inherited.mutableReferent())
+                throw error(previous(), "E_DESTRUCTURE_POLICY: missing inherited kind or duplicate mut");
+            return new Ast.LocalBindingPolicy(inherited.kind(), true);
+        }
+        return inherited;
+    }
+
+    private Ast.LocalPatternGroup parseLocalCaptureHeader() {
+        Ast.LocalBindingPolicy inherited = localPatternPolicy(null);
+        Ast.LocalPatternGroup group = parseLocalPatternGroup(inherited,
+                new java.util.HashSet<>(), new int[]{0}, 0);
+        if (group.capture() == null)
+            throw error(peek(), "E_DESTRUCTURE_CAPTURE: root capture required in this profile slice");
+        return group;
+    }
+
+    private void reserveLocalPatternName(String name, java.util.Set<String> names) {
+        if (name.equals("_") || !names.add(name))
+            throw error(previous(), "E_DESTRUCTURE_DUPLICATE: invalid or duplicate binding " + name);
+    }
+
+    private Ast.LocalPatternGroup parseLocalPatternGroup(Ast.LocalBindingPolicy inherited,
+            java.util.Set<String> names, int[] budget, int depth) {
+        if (depth >= 64 || ++budget[0] > 4096)
+            throw error(peek(), "E_DESTRUCTURE_LIMIT: pattern exceeds depth or node budget");
+        Token open = advance();
+        Token.Type close = localPatternClose(open.type());
+        if (close == null) throw error(open, "expected aggregate pattern delimiter");
+        Ast.LocalPatternKind kind = switch (open.type()) {
+            case LPAREN -> Ast.LocalPatternKind.TUPLE;
+            case LBRACE -> Ast.LocalPatternKind.RECORD;
+            case LBRACKET -> Ast.LocalPatternKind.ARRAY;
+            default -> throw error(open, "expected aggregate pattern");
+        };
+        List<Ast.LocalPattern> items = new ArrayList<>();
+        while (!check(close)) {
+            Ast.LocalBindingPolicy policy = localPatternPolicy(inherited);
+            if (localPatternClose(peek().type()) != null) {
+                if (kind == Ast.LocalPatternKind.RECORD)
+                    throw error(peek(), "E_DESTRUCTURE_FIELD: nested Record member requires explicit field selector");
+                items.add(parseLocalPatternGroup(policy, names, budget, depth + 1));
+            } else {
+                if (++budget[0] > 4096)
+                    throw error(peek(), "E_DESTRUCTURE_LIMIT: pattern exceeds node budget");
+                if (check(ELLIPSIS) || check(RT) || (check(IDENT) && checkNext(BANG)))
+                    throw error(peek(), "E_DESTRUCTURE_POLICY_UNSUPPORTED: rest and ownership-token placement require checked profile");
+                String name = consume(IDENT, "expected local pattern leaf").lexeme();
+                boolean discard = name.equals("_");
+                if (discard && kind == Ast.LocalPatternKind.RECORD)
+                    throw error(previous(), "E_DESTRUCTURE_FIELD: Record discard requires explicit selector");
+                if (!discard) {
+                    if (policy == null)
+                        throw error(previous(), "E_DESTRUCTURE_POLICY: leaf needs explicit or inherited binding kind");
+                    reserveLocalPatternName(name, names);
+                }
+                items.add(new Ast.LocalPatternLeaf(name, policy, discard));
+            }
+            if (!match(COMMA)) break;
+        }
+        consume(close, "expected matching aggregate pattern delimiter");
+        Ast.LocalPatternCapture capture = null;
+        if (match(AS)) {
+            Ast.LocalBindingPolicy policy = localPatternPolicy(inherited);
+            if (policy == null) policy = new Ast.LocalBindingPolicy(Ast.BindingKind.CONST, false);
+            Ast.LocalPatternKind target = kind;
+            if (check(IDENT) && checkNext(IDENT)) {
+                target = switch (peek().lexeme()) {
+                    case "Tuple" -> Ast.LocalPatternKind.TUPLE;
+                    case "Record" -> Ast.LocalPatternKind.RECORD;
+                    case "Array" -> Ast.LocalPatternKind.ARRAY;
+                    default -> throw error(peek(), "E_DESTRUCTURE_CAPTURE: expected canonical aggregate type");
+                };
+                advance();
+            }
+            String name = consume(IDENT, "expected capture binding name").lexeme();
+            reserveLocalPatternName(name, names);
+            capture = new Ast.LocalPatternCapture(name, target, policy);
+        }
+        if (items.isEmpty() && capture == null)
+            throw error(peek(), "E_DESTRUCTURE_CAPTURE: empty pattern requires capture");
+        return new Ast.LocalPatternGroup(kind, items, capture);
+    }
+
     private Ast.DestructureStmt parseDestructure(
             Ast.DestructureKind kind,
             Ast.BindingKind inheritedKind,
@@ -5389,10 +5529,22 @@ public final class Parser {
         List<Ast.DestructureBinding> bindings = new ArrayList<>();
         Ast.BindingKind currentKind = inheritedKind;
         boolean currentMutableReferent = inheritedMutableReferent;
+        java.util.Set<String> declaredNames = new java.util.HashSet<>();
         do {
+            if (canonicalAttoSource) {
+                // The outer policy is a default, not a rolling state.
+                currentKind = inheritedKind;
+                currentMutableReferent = inheritedMutableReferent;
+            }
             if (isBindingKind(peek().type())) {
                 currentKind = parseBindingKind();
                 currentMutableReferent = parseReferentMutability(currentKind);
+            } else if (canonicalAttoSource && match(MUT)) {
+                if (currentKind == null)
+                    throw error(previous(), "E_DESTRUCTURE_POLICY: mut requires inherited binding kind");
+                if (currentMutableReferent)
+                    throw error(previous(), "E_DESTRUCTURE_POLICY: duplicate mut");
+                currentMutableReferent = true;
             }
             boolean rest = match(ELLIPSIS);
 
@@ -5410,6 +5562,8 @@ public final class Parser {
                 throw error(peek(), "destructure binding kind must be declared before the first binding");
             }
             String name = consume(IDENT, "expected binding name in destructure").lexeme();
+            if (canonicalAttoSource && !declaredNames.add(name))
+                throw error(previous(), "E_DESTRUCTURE_DUPLICATE: duplicate binding " + name);
             bindings.add(new Ast.DestructureBinding(
                     currentKind, name, rest, currentMutableReferent));
             if (rest && check(COMMA)) {
@@ -5418,6 +5572,8 @@ public final class Parser {
         } while (match(COMMA));
 
         consume(close, kind == Ast.DestructureKind.SEQUENCE ? "expected ']'" : "expected '}'");
+        if (canonicalAttoSource && check(AS))
+            throw error(peek(), "E_DESTRUCTURE_CAPTURE_UNSUPPORTED: aggregate capture requires checked path ownership and lowering");
         consume(EQUAL, "expected '=' after destructure pattern");
         Ast.Expr initializer = parseExpression();
         consumeExpressionStatementTerminator(initializer, "destructure should end with ';'");
@@ -5448,7 +5604,8 @@ public final class Parser {
             else if (type == close) {
                 depth--;
                 if (depth == 0) {
-                    return i + 1 < tokens.size() && tokens.get(i + 1).type() == EQUAL;
+                    return i + 1 < tokens.size() && (tokens.get(i + 1).type() == EQUAL
+                            || canonicalAttoSource && tokens.get(i + 1).type() == AS);
                 }
             }
         }
@@ -7918,6 +8075,9 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // Canonical expression-position braces are a Record constructor,
+        // never a statement block or a dynamic Map fallback.
+        if (canonicalAttoSource && check(LBRACE)) return parseAnonymousRecord();
         // Closed single-break value expression, not a general loop CFG.
         // Preserve contextual loop(...) callable references and ordinary
         // statement loops; only expression-position loop followed by {
@@ -8103,11 +8263,26 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            if (canonicalAttoSource) {
+                if (match(RPAREN)) return new Ast.TupleExpr(List.of());
+                if (startsParenthesizedRecordItem() || (startsInlinePairRecordItem() && pairPrefixHasNamedRecordItem())) return parseParenthesizedRecord();
+            }
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
                 items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
+                if (canonicalAttoSource) {
+                    while (!check(RPAREN)) {
+                        if (startsParenthesizedRecordItem())
+                            throw error(peek(), "E_LITERAL_KIND: mixed Record and Tuple items");
+                        items.add(parseExpression());
+                        if (items.size() > 4096)
+                            throw error(peek(), "E_SOURCE_LIMIT: tuple exceeds 4096 items");
+                        if (!match(COMMA)) break;
+                    }
+                } else {
+                    do items.add(parseExpression()); while (match(COMMA));
+                }
                 consume(RPAREN, "expected ')' after tuple");
                 return new Ast.TupleExpr(items);
             }
@@ -8537,6 +8712,144 @@ public final class Parser {
         return false;
     }
 
+    // Candidate recursive-product-v1: token-local Record dispatch. Do not use
+    // expression assignment or expected types to classify a field.
+    private boolean startsParenthesizedRecordItem() {
+        return ((check(IDENT) || check(STRING)) && checkNext(EQUAL))
+                || (check(IDENT) && checkNext(COLON))
+                || (check(COLON) && checkNext(IDENT));
+    }
+
+    private boolean startsInlinePairRecordItem() {
+        return check(IDENT) && checkNext(COLON_ASSIGN);
+    }
+
+    private boolean pairPrefixHasNamedRecordItem() {
+        int depth = 0;
+        boolean start = true;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type t = tokens.get(i).type();
+            if (depth == 0 && start) {
+                Token.Type next = i + 1 < tokens.size() ? tokens.get(i + 1).type() : EOF;
+                if ((t == IDENT && (next == EQUAL || next == COLON))
+                        || (t == STRING && next == EQUAL) || (t == COLON && next == IDENT))
+                    return true;
+                start = false;
+            }
+            if (t == LPAREN || t == LBRACE || t == LBRACKET) depth++;
+            else if (t == RPAREN || t == RBRACE || t == RBRACKET) {
+                if (depth == 0) return false;
+                depth--;
+            } else if (t == EOF) return false;
+            else if (t == COMMA && depth == 0) start = true;
+        }
+        return false;
+    }
+
+    private String checkedQuotedRecordLabel(Token label) {
+        if (label.stringQuote() != '"')
+            throw error(label, "E_RECORD_LABEL: expected ordinary double-quoted identifier label");
+        List<Token> decoded;
+        try {
+            decoded = new Lexer(label.lexeme()).scan();
+        } catch (IllegalArgumentException invalid) {
+            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
+        }
+        if (decoded.size() != 2 || decoded.getFirst().type() != IDENT
+                || !decoded.getFirst().lexeme().equals(label.lexeme())
+                || label.lexeme().codePoints().anyMatch(Character::isISOControl))
+            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
+        return label.lexeme();
+    }
+
+    private Ast.Expr parseRecordFieldValue() {
+        // An ungrouped second '=' cannot be a hidden assignment expression.
+        Ast.Expr value = parsePipeline();
+        if (check(EQUAL))
+            throw error(peek(), "E_RECORD_FIELD: assignment is not a Record field value");
+        return value;
+    }
+
+    private Ast.ObjectExpr parseParenthesizedRecord() {
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        while (!check(RPAREN)) {
+            if (!startsParenthesizedRecordItem() && !startsInlinePairRecordItem())
+                throw error(peek(), "E_LITERAL_KIND: mixed Record and Tuple items");
+            Token label = peek();
+            String name;
+            Ast.Expr value;
+            if (match(COLON)) {
+                label = consume(IDENT, "expected identifier after Record capture ':'");
+                name = label.lexeme();
+                value = new Ast.NameExpr(name);
+            } else {
+                advance();
+                name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
+                if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
+                else if (!match(EQUAL, COLON, COLON_ASSIGN)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
+                value = parseRecordFieldValue();
+            }
+            if (!names.add(name))
+                throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+            fields.add(Ast.ObjectField.named(name, value));
+            if (fields.size() > 4096)
+                throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
+            if (!match(COMMA)) break;
+        }
+        consume(RPAREN, "expected ')' after Record literal");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
+    // Bounded canonical Record slice. Inline identifier-key := entries are
+    // consumed as named fields; standalone Pair expression ABI is separate.
+    // Braced quoted-colon Map syntax and empty literal classification remain
+    // separate, unsupported in this slice, rather than silently misclassified.
+    private Ast.ObjectExpr parseAnonymousRecord() {
+        consume(LBRACE, "expected '{' before Record");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        if (check(RBRACE)) throw error(peek(), "E_LITERAL_KIND: empty anonymous braces require explicit Record syntax");
+        do {
+            Token label = peek();
+            boolean pairEntry = false;
+            if (match(ELLIPSIS)) {
+                fields.add(Ast.ObjectField.spreading(parseRecordFieldValue()));
+            } else {
+                String name;
+                if (match(COLON)) {
+                    label = consume(IDENT, "expected identifier after Record capture ':'");
+                    name = label.lexeme();
+                    if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+                    fields.add(Ast.ObjectField.named(name, new Ast.NameExpr(name)));
+                } else {
+                    if (!check(IDENT) && !check(STRING))
+                        throw error(label, "E_LITERAL_KIND: expected named Record field or spread");
+                    advance();
+                    name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
+                    if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
+                    else if (match(COLON_ASSIGN)) pairEntry = true;
+                    else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
+                    if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+                    fields.add(Ast.ObjectField.named(name, parseRecordFieldValue()));
+                }
+            }
+            if (fields.size() > 4096) throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
+            if (!match(COMMA)) {
+                // Lexer string/template tokens retain their start line. Refuse
+                // inferred separation after decoded multiline tokens unless a
+                // comma is explicit, rather than guessing an end line.
+                Token last = previous();
+                boolean multiline = (last.type() == STRING || last.type() == TEMPLATE_LITERAL)
+                        && (last.lexeme().contains("\n") || last.lexeme().contains("\r"));
+                if (pairEntry && !multiline && check(IDENT) && peek().line() > last.line()) continue;
+                break;
+            }
+        } while (!check(RBRACE));
+        consume(RBRACE, "expected '}' after Record literal (fields require commas)");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
@@ -8552,20 +8865,29 @@ public final class Parser {
                 args.add(new Ast.SpreadExpr(parseExpression()));
                 continue;
             }
-            if (check(IDENT) && checkNext(COLON)) {
+            if (check(IDENT) && (checkNext(COLON) || (canonicalAttoSource && checkNext(EQUAL)))) {
                 namedStarted = true;
                 String name = advance().lexeme();
-                consume(COLON, "expected ':' after named argument");
+                advance(); // ':' or '=' in canonical Atto
                 if (!seenLabels.add(name)) {
                     throw error(previous(), "duplicate named argument '" + name + "'");
                 }
-                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                args.add(new Ast.NamedArgExpr(name, canonicalAttoSource ? parseRecordFieldValue() : parseExpression()));
                 continue;
             }
             if (namedStarted) {
                 throw error(peek(), "positional arguments cannot follow named arguments");
             }
-            args.add(parseExpression());
+            if (canonicalAttoSource && check(STRING) && checkNext(EQUAL)) {
+                Token label = advance();
+                String name = checkedQuotedRecordLabel(label);
+                consume(EQUAL, "expected '=' after quoted Record field");
+                Ast.Expr value = parseRecordFieldValue();
+                args.add(new Ast.ObjectExpr(List.of(Ast.ObjectField.named(name, value)),
+                        Ast.ObjectKind.RECORD, List.of()));
+            } else {
+                args.add(parseExpression());
+            }
         } while (match(COMMA));
         return List.copyOf(args);
     }
