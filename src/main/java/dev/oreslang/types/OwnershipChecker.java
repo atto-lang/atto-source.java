@@ -584,17 +584,31 @@ public final class OwnershipChecker {
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
         Scope scope = new Scope(parent);
         int[] livenessFuel = {32_768};
+        Ast.BindingStmt loanCandidate = null;
+        VarState candidateState = null;
         for (int i = 0; i < body.size(); i++) {
             Ast.Stmt stmt = body.get(i);
             checkStatement(stmt, scope, returnType);
             if (stmt instanceof Ast.BindingStmt binding) {
                 releaseUnusedDirectLoan(binding, body, i + 1, scope, livenessFuel);
-                // Only the immediately following scalar read is modeled here.
-                // No arbitrary intervening call, capture or alias is assumed safe.
-                if (i > 0 && body.get(i - 1) instanceof Ast.BindingStmt prior
-                        && isNonescapingScalarRead(binding, prior, scope)) {
-                    releaseUnusedDirectLoan(prior, body, i + 1, scope, livenessFuel);
+                // A contiguous sequence of checked, detached primitive reads
+                // cannot retain a loan. Keep the exact binder identity across
+                // the sequence; any unknown statement or binding ends it.
+                if (loanCandidate != null && candidateState != null
+                        && scope.locals.get(loanCandidate.name()) == candidateState
+                        && isNonescapingScalarRead(binding, loanCandidate, scope)) {
+                    releaseUnusedDirectLoan(loanCandidate, body, i + 1, scope, livenessFuel);
+                    if (!candidateState.borrowLease || candidateState.moved) {
+                        loanCandidate = null;
+                        candidateState = null;
+                    }
+                } else {
+                    loanCandidate = binding;
+                    candidateState = scope.locals.get(binding.name());
                 }
+            } else {
+                loanCandidate = null;
+                candidateState = null;
             }
         }
         scope.close();
@@ -648,7 +662,7 @@ public final class OwnershipChecker {
     // The admitted read has already been checked by checkBinding. Require
     // an inferred, non-rebindable primitive value (no annotated owner,
     // alias, lease, callable or aggregate). The receiver must be exactly the
-    // preceding direct loan's binder. The original release helper checks
+    // contiguous direct loan's binder. The original release helper checks
     // provenance and the entire remaining suffix before releasing.
     private boolean isNonescapingScalarRead(Ast.BindingStmt read,
                                             Ast.BindingStmt prior, Scope scope) {
