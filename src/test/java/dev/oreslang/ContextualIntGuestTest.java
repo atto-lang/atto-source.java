@@ -92,4 +92,14 @@ final class ContextualIntGuestTest {
         })assertThrows(IllegalArgumentException.class,()->OresCompiler.parseAndTypeCheckNumericProfile(
             source("int factor, int offset","factor * value + offset",body),true),body);
     }
+    @Test void explicitSetPreservesNamedSnapshot(){
+        guest(source("int factor, int offset","factor * value + offset",
+            "let n = 3; const x = Scale::(offset=n+1,factor=n); set n = 9; return x.apply(5) + Scale::(2,1).apply(7);"),34);
+        for(String body:new String[]{
+            "set n = 9; return Scale::(2,1).apply(3);",
+            "const x = Scale::(2,1); set x = 9; return x.apply(3);",
+            "let n = 3; n = 9; return Scale::(2,1).apply(n);"
+        })assertThrows(IllegalArgumentException.class,()->OresCompiler.parseAndTypeCheckNumericProfile(
+            source("int factor, int offset","factor * value + offset",body),true),body);
+    }
 }
