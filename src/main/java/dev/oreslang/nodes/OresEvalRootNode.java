@@ -2428,6 +2428,20 @@ public final class OresEvalRootNode extends RootNode {
                         "checked Task capture admission execution domain does not match TaskExpr");
             }
 
+            // A checked default-only select returning an i64 literal has no
+            // registration, captures, effects, cleanup or continuation work.
+            // Settle it at construction, as in the other ready-only profiles.
+            // Never inline an arbitrary default body (including arithmetic,
+            // captured scalars, calls, cancellation points or defers).
+            if (taskExpr.typedDefaultSelectI64()
+                    && admitted.isEmpty() && syntactic.isEmpty()
+                    && taskExpr.body().size() == 1
+                    && taskExpr.body().getFirst() instanceof Ast.ReturnStmt returned
+                    && returned.value() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Long scalar) {
+                return SourceTaskHandles.completedWithoutWork(scalar);
+            }
+
             Long dynamicCount = null;
             List<Ast.Stmt> taskBody = taskExpr.body();
             if (taskExpr.dynamicCountName() != null) {

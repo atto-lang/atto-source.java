@@ -5395,6 +5395,18 @@ public final class Parser {
         if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
             throw error(previous(), "'const fnc' requires a lambda initializer");
         }
+        // Local raw Future spelling is a type-inference witness only for
+        // compiler-proven select profiles. Normalize before the independent
+        // type and ownership passes; never introduce an erased Future type.
+        if (Ast.TypeRef.simple("Future").equals(type)
+                && initializer instanceof Ast.TaskExpr task) {
+            if (task.typedDefaultSelectI64()) {
+                type = new Ast.TypeRef("Future", List.of(Ast.TypeRef.simple("int")), false);
+            } else if (task.typedCountedSelectI64()) {
+                type = new Ast.TypeRef("Future", List.of(
+                        new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false)), false);
+            }
+        }
         initializer = resolveDirectContextualEmptyMap(type, initializer);
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
@@ -7876,10 +7888,26 @@ public final class Parser {
             return new Ast.TaskExpr(Ast.ExecutionDomain.CPU,
                     selected.arms().getFirst().body(), false, true);
         }
+        // Admit an untyped default-only expression only when its int result
+        // can be established by a bounded, closed scalar projection. Reuse
+        // the existing checked typed-default lowering; do not admit event
+        // cases, arbitrary inferred effects, or immediate probes here.
+        int policyStart = current;
         Ast.SelectPolicy policy = parseSelectPolicy();
         if (check(LBRACE) || check(OVER)
                 || (check(IDENT) && peek().lexeme().equals("over"))) {
-            throw error(peek(), "static select expression requires tracked Future result lowering");
+            if (mode == Ast.WaitMode.IMMEDIATE)
+                throw error(peek(), "static select expression requires tracked Future result lowering");
+            current = policyStart;
+            Ast.SelectStmt selected = parseStaticSelectBody(Ast.WaitMode.NONBLOCKING, false);
+            if (selected.arms().size() != 1
+                    || selected.arms().getFirst().operation() != Ast.ChannelOperation.DEFAULT)
+                throw error(previous(), "event select requires tracked Future result lowering");
+            List<Ast.Stmt> body = selected.arms().getFirst().body();
+            if (body.size() != 1 || !(body.getFirst() instanceof Ast.ReturnStmt returned)
+                    || !isCountedScalarProjection(returned.value(), ""))
+                throw error(previous(), "inferred static select requires a closed int projection");
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, body, false, true);
         }
         consume(FROM, "dynamic select requires 'select from cases'");
         Ast.Expr cases = parseUnary();
