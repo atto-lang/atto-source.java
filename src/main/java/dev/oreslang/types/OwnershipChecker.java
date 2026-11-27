@@ -3449,13 +3449,34 @@ public final class OwnershipChecker {
                 && !callableType.arguments().isEmpty()) {
             int parameterCount = callableType.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
-                for (int i = 0; i < call.arguments().size(); i++) {
-                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
-                    if (containsMutexGuardType(argument.type)) {
-                        throw error(E_GUARD, "guard-bearing values cannot cross a first-class Fnc call boundary");
+                List<VarState> callLoans = new ArrayList<>();
+                try {
+                    for (int i = 0; i < call.arguments().size(); i++) {
+                        Ast.Expr expression = call.arguments().get(i);
+                        boolean byReadLoan = !isCopyType(callableType.arguments().get(i));
+                        if (byReadLoan) rejectReadonlyInvocationTransfer(expression, "first-class Fnc");
+                        ValueInfo argument = checkExpr(expression, scope, false);
+                        if (containsMutexGuardType(argument.type)) {
+                            throw error(E_GUARD, "guard-bearing values cannot cross a first-class Fnc call boundary");
+                        }
+                        if (argument.kind == ValueKind.MUT_BORROW) {
+                            throw error(E_MUTABILITY, "ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                        }
+                        if (byReadLoan) {
+                            VarState root = readonlyInvocationRoot(expression, scope);
+                            if (root != null) {
+                                beginPersistentBorrow(root, false);
+                                callLoans.add(root);
+                            } else if (isBorrowValue(argument)) {
+                                throw error(E_BORROW, "first-class Fnc argument borrow requires known root provenance");
+                            }
+                        }
                     }
-                    if (argument.kind == ValueKind.MUT_BORROW) {
-                        throw error(E_MUTABILITY, "ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                } finally {
+                    for (int i = callLoans.size() - 1; i >= 0; i--) {
+                        VarState root = callLoans.get(i);
+                        if (root.immutableBorrows <= 0) throw new IllegalStateException("missing Fnc argument loan");
+                        root.immutableBorrows--;
                     }
                 }
                 Ast.TypeRef result = callableType.arguments().getLast();
@@ -4060,8 +4081,9 @@ public final class OwnershipChecker {
 
                 if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
                 Ast.Param param = params.get(parameterIndex);
-                VarState loanOwner = param.type().isBorrow()
-                        ? invocationLoanRoot(argument, scope) : null;
+                boolean structuralRead = param.structural() && !param.type().isBorrow();
+                VarState loanOwner = structuralRead ? readonlyInvocationRoot(argument, scope)
+                        : param.type().isBorrow() ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
                 if (loanOwner != null) {
                     Boolean previous = invocationLoans.get(loanOwner);
@@ -4085,7 +4107,7 @@ public final class OwnershipChecker {
                             && runtime.arguments().size() == 1;
                     boolean forwarded = argument instanceof Ast.NameExpr name
                             && isIncomingBorrow(scope.lookup(name.name()));
-                    if (explicit || forwarded) {
+                    if (structuralRead || explicit || forwarded) {
                         beginPersistentBorrow(loanOwner, mutable);
                         activeLoans.add(new CallArgumentLoan(ownershipRoot(loanOwner), mutable));
                     }
@@ -4098,7 +4120,7 @@ public final class OwnershipChecker {
             // callable, including local retained and forwarded loans. Leave
             // the separate implicit receiver/actor continuation policy intact.
             if (suspends && (!invocationLoans.isEmpty()
-                    || params.stream().anyMatch(p -> p.type().isBorrow()))) {
+                    || params.stream().anyMatch(p -> p.type().isBorrow() || p.structural()))) {
                 throw error(E_LOAN_SUSPEND, callable
                         + " cannot suspend while an invocation argument borrow is live");
             }
@@ -4117,6 +4139,34 @@ public final class OwnershipChecker {
                     loan.root().immutableBorrows--;
                 }
             }
+        }
+    }
+
+    // A structural/first-class read view freezes the named root for the
+    // entire invocation, not merely for evaluating one argument expression.
+    private VarState readonlyInvocationRoot(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("borrow") && runtime.arguments().size() == 1) {
+            expression = runtime.arguments().getFirst();
+        } else if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("&")) {
+            expression = unary.operand();
+        } else if (expression instanceof Ast.CaptureExpr capture) {
+            expression = new Ast.NameExpr(capture.name());
+        }
+        Ast.Expr base = projectionBase(expression);
+        if (base instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? null : ownershipRoot(state);
+        }
+        return null;
+    }
+
+    private void rejectReadonlyInvocationTransfer(Ast.Expr expression, String label) {
+        if (expression instanceof Ast.RuntimeCallExpr runtime
+                && (runtime.operation().equals("take") || runtime.operation().equals("move"))
+                || expression instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
+            throw error(E_BORROW, label + " cannot take ownership or mutably borrow a read-only structural view");
         }
     }
 
@@ -4170,7 +4220,11 @@ public final class OwnershipChecker {
             arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
         }
         if (param.structural() && !param.type().isBorrow()) {
+            rejectReadonlyInvocationTransfer(arg, callable);
             ValueInfo argument = checkExpr(arg, scope, false);
+            if (argument.kind == ValueKind.MUT_BORROW || isBorrowValue(argument) && argument.borrowSource == null) {
+                throw error(E_BORROW, callable + " requires a read-only structural view with known provenance");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(E_UNSUPPORTED, callable + " argument " + position

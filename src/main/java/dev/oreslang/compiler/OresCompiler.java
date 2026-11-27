@@ -32,6 +32,14 @@ public final class OresCompiler {
         return dev.oreslang.runtime.SealedActorScalarMirV1.lower(source);
     }
 
+    /** Explicit experimental compiler profile, separate from general pointerless grammar.
+     * The promoted scalar program still enters the normal checked-i64 type/ownership pipeline.
+     * This API returns checked AST only, not a native executable or AOT receipt.
+     */
+    public static Ast.Program compileReusableScalarSlotV1(String source) {
+        return parseAndTypeCheckNumericProfile(ReusableScalarSlotV1.lower(source), true);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return parseAndTypeCheckNumericProfile(source,
                 dev.oreslang.runtime.AttoCheckedI64Profile.select(source));

@@ -13584,7 +13584,18 @@ public final class TypeChecker {
                     ? inferredArgumentTypes.get(i)
                     : expandedCallArgumentType(
                             argument, expected, env, callerGenerics, callerSelf);
-            if (!params.get(i).structural()) {
+            if (params.get(i).structural()) {
+                if (argument.expression() instanceof Ast.RuntimeCallExpr runtime
+                        && (runtime.operation().equals("take") || runtime.operation().equals("move"))) {
+                    throw new IllegalArgumentException("argument " + (i + 1) + " cannot transfer ownership into a structural view");
+                }
+                if (actual instanceof Borrow loan) {
+                    if (loan.mutable()) throw new IllegalArgumentException("argument " + (i + 1) + " cannot pass a mutable borrow into a structural view");
+                    // Only this explicit nonescaping structural parameter
+                    // permits inspecting the borrowed target's read-only shape.
+                    actual = loan.target();
+                }
+            } else {
                 requireReadonlyCapabilityPreserved(
                         actual,
                         expected,
