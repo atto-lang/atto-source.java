@@ -417,6 +417,15 @@ public final class ReturnCleanupChecker {
             statements(channel.callbackBody(), scope, false, inDefer, false, state);
         } else if (expr instanceof Ast.DynamicSelectExpr select) {
             expression(select.cases(), scope, inDefer, state);
+        } else if (expr instanceof Ast.SelectExpr select) {
+            for (int i = 0; i < select.select().arms().size(); i++) {
+                Ast.SelectArm arm = select.select().arms().get(i);
+                expression(arm.channel(), scope, inDefer, state);
+                expression(arm.value(), scope, inDefer, state);
+                Scope armScope = new Scope(scope);
+                if (arm.bindingName() != null) armScope.define(arm.bindingName());
+                expression(select.armValues().get(i), armScope, inDefer, state);
+            }
         } else if (expr instanceof Ast.ListExpr list) {
             list.elements().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.TupleExpr tuple) {

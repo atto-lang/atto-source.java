@@ -2625,6 +2625,93 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
 
+        /** The winning arm's value, evaluated in that arm's binding scope. */
+        private Object selectedArmValue(
+                Ast.SelectExpr valueSelect,
+                ChannelRuntime.SelectResult result,
+                Env parent) {
+            Ast.SelectStmt selected = valueSelect.select();
+            if (result.index() < 0 || result.index() >= selected.arms().size()) {
+                throw new IllegalStateException(
+                        "select result index is outside its source arm set: " + result.index());
+            }
+            Ast.SelectArm arm = selected.arms().get(result.index());
+            Env armEnv = new Env(parent);
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
+                    && arm.bindingName() != null) {
+                armEnv.define(arm.bindingName(), result.value(), arm.bindingKind());
+            }
+            return eval(valueSelect.armValues().get(result.index()), armEnv);
+        }
+
+        /**
+         * select / nb select / try select in expression position (atto-spec
+         * ch. 6): T after one arm commits, Future<T> immediately, or Option<T>
+         * from a single probe. Registration is atomic; losing arms consume and
+         * publish nothing (ChannelRuntime.SelectSet).
+         */
+        private Object evalSelectValue(Ast.SelectExpr valueSelect, Env env) {
+            Ast.SelectStmt selected = valueSelect.select();
+            if (selected.mode() != Ast.WaitMode.IMMEDIATE && env.hasLiveMutexGuards()) {
+                throw new IllegalStateException("cannot arm select while holding a live MutexGuard");
+            }
+            java.util.function.Function<ChannelRuntime.SelectResult, Object> mapping = null;
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                // The Future's arm value is computed after the winner commits,
+                // off this turn. Validate before registering: a late rejection
+                // could already have consumed a message.
+                for (Ast.Expr value : valueSelect.armValues()) {
+                    if (expressionContainsPotentialSuspension(value,
+                            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()))) {
+                        throw new IllegalStateException(
+                                "a select Future's arm values cannot suspend; use 'await select' "
+                                        + "to suspend inside the winning arm");
+                    }
+                }
+                Env captured = env.snapshot();
+                mapping = result -> selectedArmValue(valueSelect, result, captured);
+            }
+            ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
+            ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
+            if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
+                java.util.Optional<ChannelRuntime.SelectResult> result = set.trySelect(policy);
+                return result.isPresent()
+                        ? new OptionValue(true, selectedArmValue(valueSelect, result.get(), env))
+                        : new OptionValue(false, null);
+            }
+            OresFuture<ChannelRuntime.SelectResult> future = set.selectAsync(policy);
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                ChannelRuntime.SelectResult result = (ChannelRuntime.SelectResult)
+                        awaitBlockingChannelFuture(future, "select");
+                return selectedArmValue(valueSelect, result, env);
+            }
+            return mapSelectFuture(future, mapping);
+        }
+
+        /** Future<T> of an nb select: await the registration, then map the winner. */
+        private OresFuture<Object> mapSelectFuture(
+                OresFuture<ChannelRuntime.SelectResult> source,
+                java.util.function.Function<ChannelRuntime.SelectResult, Object> mapping) {
+            return startFutureChainTask(new OresScheduler.Task<>() {
+                private boolean waiting;
+
+                @Override
+                public OresScheduler.Step<Object> resume(OresScheduler.Resume resume) {
+                    if (!waiting) {
+                        if (!resume.initial()) {
+                            throw new IllegalStateException(
+                                    "nb select Future started with a non-initial resume");
+                        }
+                        waiting = true;
+                        return OresScheduler.await(source);
+                    }
+                    if (resume.failure() != null) throw sourceFailure(resume.failure());
+                    return OresScheduler.done(mapping.apply((ChannelRuntime.SelectResult) resume.value()));
+                }
+            });
+        }
+
         private OresFuture<Object> wrapFutureSome(OresFuture<?> source) {
             Objects.requireNonNull(source, "source");
             return startFutureChainTask(new OresScheduler.Task<>() {
@@ -2864,8 +2951,17 @@ public final class OresEvalRootNode extends RootNode {
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
                     || expr instanceof Ast.DynamicSelectExpr selected
-                        && selected.mode() == Ast.WaitMode.BLOCKING) {
+                        && selected.mode() == Ast.WaitMode.BLOCKING
+                    || expr instanceof Ast.SelectExpr valueSelect
+                        && valueSelect.select().mode() == Ast.WaitMode.BLOCKING) {
                 return true;
+            }
+            if (expr instanceof Ast.SelectExpr valueSelect) {
+                for (Ast.SelectArm arm : valueSelect.select().arms()) {
+                    if (expressionContainsPotentialSuspension(arm.channel(), seen)
+                            || expressionContainsPotentialSuspension(arm.value(), seen)) return true;
+                }
+                return false;
             }
             if (expr instanceof Ast.MatchExpr matched) {
                 // Value matches are expressions, but canonical arms may own
@@ -4943,6 +5039,54 @@ public final class OresEvalRootNode extends RootNode {
                             operation,
                             env,
                             continuation);
+                    return;
+                }
+
+                if (expr instanceof Ast.SelectExpr valueSelect
+                        && valueSelect.select().mode() == Ast.WaitMode.BLOCKING) {
+                    // await select: suspend the task (never the carrier) until
+                    // one arm commits, then evaluate that arm's value, which may
+                    // itself suspend.
+                    OresFuture<ChannelRuntime.SelectResult> future;
+                    try {
+                        if (env.hasLiveMutexGuards()) {
+                            throw new IllegalStateException(
+                                    "cannot arm select while holding a live MutexGuard");
+                        }
+                        future = buildStaticSelectSet(valueSelect.select(), env)
+                                .selectAsync(runtimeSelectPolicy(valueSelect.select().policy()));
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                        return;
+                    }
+                    SourceValueCont winner = (t, value, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(t, null, failure);
+                            return;
+                        }
+                        ChannelRuntime.SelectResult result = (ChannelRuntime.SelectResult) value;
+                        Ast.SelectArm arm = valueSelect.select().arms().get(result.index());
+                        Env armEnv = new Env(env);
+                        if ((arm.operation() == Ast.ChannelOperation.READ
+                                || arm.operation() == Ast.ChannelOperation.AWAIT)
+                                && arm.bindingName() != null) {
+                            armEnv.define(arm.bindingName(), result.value(), arm.bindingKind());
+                        }
+                        evalSuspendableExpr(t, valueSelect.armValues().get(result.index()),
+                                armEnv, continuation);
+                    };
+                    if (future.isDone()) {
+                        Object chosen;
+                        try {
+                            chosen = future.join();
+                        } catch (RuntimeException | Error failure) {
+                            continuation.accept(task, null, failure);
+                            return;
+                        }
+                        task.dispatchImmediateSourceCallback(() -> winner.accept(task, chosen, null));
+                        return;
+                    }
+                    task.suspend(future, winner);
                     return;
                 }
 
@@ -9853,6 +9997,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.ChannelOpExpr channelOp) {
                 return evalChannelOperation(channelOp, env);
+            }
+            if (expr instanceof Ast.SelectExpr valueSelect) {
+                return evalSelectValue(valueSelect, env);
             }
             if (expr instanceof Ast.DynamicSelectExpr selected) {
                 ChannelRuntime.SelectSet set = asSelectSet(eval(selected.cases(), env));

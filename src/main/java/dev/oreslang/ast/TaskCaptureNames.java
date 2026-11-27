@@ -253,6 +253,15 @@ public final class TaskCaptureNames {
             visitBody(s.callbackBody(), locals, names);
         } else if (expr instanceof Ast.DynamicSelectExpr s) {
             visitExpr(s.cases(), locals, names);
+        } else if (expr instanceof Ast.SelectExpr s) {
+            for (int i = 0; i < s.select().arms().size(); i++) {
+                Ast.SelectArm arm = s.select().arms().get(i);
+                visitExpr(arm.channel(), locals, names);
+                visitExpr(arm.value(), locals, names);
+                Set<String> armLocals = new HashSet<>(locals);
+                if (arm.bindingName() != null) armLocals.add(arm.bindingName());
+                visitExpr(s.armValues().get(i), armLocals, names);
+            }
         } else if (expr instanceof Ast.ListExpr s) {
             for (Ast.Expr item : s.elements()) visitExpr(item, locals, names);
         } else if (expr instanceof Ast.TupleExpr s) {

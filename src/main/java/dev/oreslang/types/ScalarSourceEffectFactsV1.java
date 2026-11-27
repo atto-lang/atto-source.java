@@ -256,7 +256,8 @@ public final class ScalarSourceEffectFactsV1 {
                 direct.add(EffectContracts.Effect.ALLOC);
                 direct.add(EffectContracts.Effect.UNKNOWN_CALL);
             } else if (expr instanceof Ast.ChannelOpExpr
-                    || expr instanceof Ast.DynamicSelectExpr) {
+                    || expr instanceof Ast.DynamicSelectExpr
+                    || expr instanceof Ast.SelectExpr) {
                 direct.add(EffectContracts.Effect.SUSPEND);
                 direct.add(EffectContracts.Effect.IO);
                 direct.add(EffectContracts.Effect.UNKNOWN_CALL);

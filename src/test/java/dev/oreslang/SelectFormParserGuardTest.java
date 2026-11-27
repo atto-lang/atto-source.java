@@ -111,7 +111,13 @@ final class SelectFormParserGuardTest {
                     String source = "pub fnc main(): int { return " + prefix + generic + body + "; }";
                     IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                             () -> OresCompiler.parseAndTypeCheck(source), source);
-                    assertTrue(error.getMessage().contains("tracked Future result lowering"),
+                    // Block-arm value selects stay closed. Expression-arm
+                    // `select`/`await select` are admitted (SelectValueFormsTest);
+                    // `nb select` has no value form.
+                    String message = String.valueOf(error.getMessage());
+                    assertTrue(message.contains("tracked Future result lowering")
+                                    || message.contains("value select arms are expressions")
+                                    || message.contains("is not a value form"),
                             error::getMessage);
                 }
             }

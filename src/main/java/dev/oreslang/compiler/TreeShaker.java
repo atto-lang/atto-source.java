@@ -1064,6 +1064,23 @@ public final class TreeShaker {
                         selected.policy(),
                         rewriteExpression(selected.cases(), module, locals));
             }
+            if (expression instanceof Ast.SelectExpr selected) {
+                List<Ast.SelectArm> arms = new ArrayList<>();
+                List<Ast.Expr> values = new ArrayList<>();
+                for (int i = 0; i < selected.select().arms().size(); i++) {
+                    Ast.SelectArm arm = selected.select().arms().get(i);
+                    arms.add(new Ast.SelectArm(arm.operation(),
+                            rewriteExpression(arm.channel(), module, locals),
+                            rewriteExpression(arm.value(), module, locals),
+                            arm.bindingKind(), arm.bindingName(), List.of(),
+                            arm.mutableReferent(), arm.bindingType()));
+                    Map<String, Object> armLocals = new java.util.HashMap<>(locals);
+                    if (arm.bindingName() != null) armLocals.put(arm.bindingName(), UNKNOWN);
+                    values.add(rewriteExpression(selected.armValues().get(i), module, armLocals));
+                }
+                return new Ast.SelectExpr(new Ast.SelectStmt(selected.select().mode(),
+                        selected.select().policy(), arms, false), values);
+            }
             if (expression instanceof Ast.ListExpr list) {
                 List<Ast.Expr> elements = new ArrayList<>();
                 for (Ast.Expr element : list.elements()) {
@@ -1495,6 +1512,17 @@ public final class TreeShaker {
                 scanExpression(module, operation.value(), locals);
             } else if (expression instanceof Ast.DynamicSelectExpr selected) {
                 scanExpression(module, selected.cases(), locals);
+            } else if (expression instanceof Ast.SelectExpr selected) {
+                for (Ast.SelectArm arm : selected.select().arms()) {
+                    scanExpression(module, arm.channel(), locals);
+                    scanExpression(module, arm.value(), locals);
+                }
+                for (int i = 0; i < selected.armValues().size(); i++) {
+                    Set<String> armLocals = new java.util.HashSet<>(locals);
+                    String bound = selected.select().arms().get(i).bindingName();
+                    if (bound != null) armLocals.add(bound);
+                    scanExpression(module, selected.armValues().get(i), armLocals);
+                }
             } else if (expression instanceof Ast.ListExpr list) {
                 for (Ast.Expr element : list.elements()) scanExpression(module, element, locals);
             } else if (expression instanceof Ast.TupleExpr tuple) {

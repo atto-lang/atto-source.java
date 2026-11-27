@@ -72,6 +72,13 @@ public final class ConditionCaptures {
         else if (expression instanceof Ast.ChannelOpExpr e) {
             children.add(e.channel()); if (e.value() != null) children.add(e.value());
         } else if (expression instanceof Ast.DynamicSelectExpr e) children.add(e.cases());
+        else if (expression instanceof Ast.SelectExpr e) {
+            for (Ast.SelectArm arm : e.select().arms()) {
+                if (arm.channel() != null) children.add(arm.channel());
+                if (arm.value() != null) children.add(arm.value());
+            }
+            children.addAll(e.armValues());
+        }
         else if (expression instanceof Ast.ListExpr e) children.addAll(e.elements());
         else if (expression instanceof Ast.TupleExpr e) children.addAll(e.elements());
         else if (expression instanceof Ast.ObjectExpr e) {

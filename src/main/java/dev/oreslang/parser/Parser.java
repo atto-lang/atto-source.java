@@ -4567,6 +4567,17 @@ public final class Parser {
         return next == READCH || next == WRITECH || next == SELECT;
     }
 
+    /** At index i (just after `select`): an optional policy, then `{` or `over`. */
+    private boolean looksLikeStaticSelectValue(int i) {
+        if (i < tokens.size() && (tokens.get(i).type() == FIRST
+                || (tokens.get(i).type() == IDENT && (tokens.get(i).lexeme().equals("first")
+                        || tokens.get(i).lexeme().equals("fair")
+                        || tokens.get(i).lexeme().equals("random"))))) i++;
+        return i < tokens.size() && (tokens.get(i).type() == LBRACE
+                || tokens.get(i).type() == OVER
+                || (tokens.get(i).type() == IDENT && tokens.get(i).lexeme().equals("over")));
+    }
+
     private boolean looksLikeStaticSelectStatement() {
         int i = current;
         if (i >= tokens.size()) return false;
@@ -4706,7 +4717,9 @@ public final class Parser {
                     throw error(peek(), "select arm permits exactly one slim arrow '->'");
                 }
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'");
+                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'; "
+                            + "a select with expression arms is a Future<T>: bind it, 'await select' it, "
+                            + "or use 'do select' with block arms");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
@@ -7237,7 +7250,15 @@ public final class Parser {
             throw error(previous(),
                     "Oreslang does not use '&' for borrowing (unary pointer syntax is not supported); use 'rt borrow value'");
         }
-        if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(AWAIT)) {
+            // `await select { ... }` waits for the winning arm and evaluates it
+            // in place, so that arm's value may itself suspend.
+            if (check(SELECT) && looksLikeStaticSelectValue(current + 1)) {
+                advance();
+                return parseSelectValue(Ast.WaitMode.BLOCKING, parseSelectPolicy());
+            }
+            return new Ast.AwaitExpr(parseUnary());
+        }
 
         // task is contextual: task(...) and identifiers named task remain legal.
         if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
@@ -7619,9 +7640,14 @@ public final class Parser {
                     selected.arms().getFirst().body(), false, true);
         }
         Ast.SelectPolicy policy = parseSelectPolicy();
-        if (check(LBRACE) || check(OVER)
-                || (check(IDENT) && peek().lexeme().equals("over"))) {
-            throw error(peek(), "static select expression requires tracked Future result lowering");
+        if (check(LBRACE) || check(OVER) || isContextualIdentifier("over")) {
+            // A value select is a Future<T> (`select { ... }`), awaited with
+            // `await select { ... }`; `try select { ... }` probes once.
+            if (mode == Ast.WaitMode.NONBLOCKING) {
+                throw error(previous(), "'nb select { ... }' is not a value form: 'select { ... }' "
+                        + "already returns a Future<T>; use 'await select { ... }' to wait for the result");
+            }
+            return parseSelectValue(mode == Ast.WaitMode.BLOCKING ? Ast.WaitMode.NONBLOCKING : mode, policy);
         }
         consume(FROM, "dynamic select requires 'select from cases'");
         Ast.Expr cases = parseUnary();
@@ -7686,6 +7712,75 @@ public final class Parser {
             throw error(previous(), "Array.of() needs a checked element type; an empty untyped array cannot infer T");
         }
         return kind.equals("Tuple") ? new Ast.TupleExpr(elements) : new Ast.ListExpr(elements, true);
+    }
+
+    /**
+     * Value select (atto-spec ch. 6): {@code select}, {@code nb select} or
+     * {@code try select} in expression position with expression arms:
+     * {@code when readch ch: val x -> expr}, {@code when await f: v -> expr},
+     * {@code when writech ch, v: -> expr} and {@code default: -> expr},
+     * optionally separated by ',' or ';'. The statement form with block arms
+     * is {@code do select} and produces no value.
+     */
+    private Ast.SelectExpr parseSelectValue(Ast.WaitMode mode, Ast.SelectPolicy policy) {
+        boolean endDelimited = match(OVER) || matchContextualIdentifier("over");
+        if (!endDelimited) consume(LBRACE, "value select requires '{ ... }' or 'over ... end'");
+        List<Ast.SelectArm> arms = new ArrayList<>();
+        List<Ast.Expr> values = new ArrayList<>();
+        boolean seenDefault = false;
+        while (!(endDelimited ? check(END) : check(RBRACE)) && !check(EOF)) {
+            Ast.ChannelOperation operation;
+            Ast.Expr channel = null;
+            Ast.Expr written = null;
+            SelectReadBinding binding = null;
+            if (matchContextualKeyword("when", "case")) {
+                if (seenDefault) throw error(previous(), "select default arm must be last");
+                rejectPerArmChannelWaitModifier();
+                if (match(READCH) || match(AWAIT)) {
+                    Token.Type op = previous().type();
+                    operation = op == READCH ? Ast.ChannelOperation.READ : Ast.ChannelOperation.AWAIT;
+                    channel = parseExpression();
+                    consume(COLON, (op == READCH ? "readch" : "await") + " select arm requires ':'");
+                    binding = parseSelectReadBinding();
+                } else if (match(WRITECH)) {
+                    operation = Ast.ChannelOperation.WRITE;
+                    channel = parseExpression();
+                    consume(COMMA, "writech select arm requires 'channel, value'");
+                    written = parseExpression();
+                    consume(COLON, "writech select arm requires ':'");
+                } else {
+                    throw error(peek(), "value select arm requires 'when readch', 'when await' or 'when writech'");
+                }
+            } else if (match(DEFAULT)) {
+                if (seenDefault) throw error(previous(), "select permits at most one default arm");
+                seenDefault = true;
+                consume(COLON, "select default arm requires ':'");
+                operation = Ast.ChannelOperation.DEFAULT;
+            } else {
+                throw error(peek(), "expected when/case/default inside select");
+            }
+            if (check(FAT_ARROW)) {
+                throw error(peek(), "select arms use the slim arrow '->'; '=>' is not an arm delimiter");
+            }
+            consume(ARROW, "value select arm requires '-> expression'");
+            if (check(LBRACE)) {
+                throw error(peek(), "value select arms are expressions; use 'do select { ... }' for block arms");
+            }
+            values.add(parseExpression());
+            if (!match(COMMA)) match(SEMICOLON);
+            arms.add(operation == Ast.ChannelOperation.DEFAULT
+                    ? new Ast.SelectArm(operation, null, null, null, null, List.of())
+                    : new Ast.SelectArm(operation, channel, written,
+                            binding == null ? null : binding.kind(),
+                            binding == null ? null : binding.name(),
+                            List.of(),
+                            binding != null && binding.mutableReferent(),
+                            binding == null ? null : binding.type()));
+        }
+        if (endDelimited) consume(END, "expected 'end' after select over");
+        else consume(RBRACE, "expected '}' after select");
+        if (arms.isEmpty()) throw error(previous(), "select requires at least one arm");
+        return new Ast.SelectExpr(new Ast.SelectStmt(mode, policy, arms, false), values);
     }
 
     private Ast.Expr parsePostfix() {
