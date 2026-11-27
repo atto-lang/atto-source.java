@@ -547,6 +547,13 @@ public final class OresContext implements AutoCloseable {
         }
     }
 
+    /** Linked CLI only: drain finite accepted actor mail while Truffle can
+     * still dispatch guest turns. General Context.close remains cancelling. */
+    public void drainLinkedExit(Node location) {
+        com.oracle.truffle.api.TruffleSafepoint.setBlockedThreadInterruptible(
+                location, ignored -> actors.drainLinkedExit(), this);
+    }
+
     private void executeRootTurn(Runnable turn) {
         executeGuestTurn(turn, isolatePolicy.adversarial());
     }
