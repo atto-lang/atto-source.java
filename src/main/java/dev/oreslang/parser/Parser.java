@@ -7835,9 +7835,9 @@ public final class Parser {
     private Ast.Expr parsePrimary() {
         // Closed single-break value expression, not a general loop CFG.
         // Preserve contextual loop(...) callable references and ordinary
-        // statement loops; only canonical source and loop followed by {
+        // statement loops; only expression-position loop followed by {
         // select this narrow scalar profile.
-        if (canonicalAttoSource && check(LOOP) && checkNext(LBRACE)) {
+        if (check(LOOP) && checkNext(LBRACE)) {
             Token site = advance();
             consume(LBRACE, "expected '{' after value loop");
             consume(BREAK, "value loop requires exactly one valued break");
