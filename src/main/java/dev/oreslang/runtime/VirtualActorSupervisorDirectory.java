@@ -613,14 +613,6 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             }
         });
         return result.minimalCompletionStage();
-        }
-        dispatch.whenCompleteRuntime((ignored, failure) -> {
-            if (failure != null) {
-                result.completeExceptionally(new IllegalStateException("CONTROL_DISPATCH_FAILED"));
-                if (phase.compareAndSet(0, 2)) release.run();
-            }
-        });
-        return result.minimalCompletionStage();
     }
 
     public int pendingInspectionCount() {
