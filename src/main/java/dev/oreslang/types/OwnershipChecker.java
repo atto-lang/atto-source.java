@@ -1738,21 +1738,26 @@ public final class OwnershipChecker {
                 }
                 case "copy", "copy!!" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
-                    // Main permits an explicit copy from an implicit immutable self receiver
-                    // (certified immutable fields); a nested borrow inside the copied type
-                    // is still never duplicated.
-                    if (containsBorrowType(source.type)) {
-                        throw error(E_LIFETIME, "rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
-                    }
                     CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
                     if (projected != null && projected.noCopy()) {
                         throw error(E_COPY_FORBIDDEN, "rt copy of @NoCopy field '" + projected.origin() + "'");
                     }
-                    if (source.type != null && source.type.isBorrow()
-                            && isPrimitiveCopyType(source.type.borrowedTarget())) {
-                        // Read the loan but return independent immutable data.
-                        // The source binding keeps its existing loan/lifetime.
-                        yield new ValueInfo(source.type.borrowedTarget(), ValueKind.COPY, null);
+                    // A direct, proven primitive snapshot does not duplicate a
+                    // capability. Keep the loan itself alive until the separate
+                    // last-use proof releases it. Never admit a nominal alias
+                    // merely because it has a primitive-looking name.
+                    if (runtime.operation().equals("copy")
+                            && source.type != null && source.type.isBorrow()) {
+                        Ast.TypeRef target = source.type.borrowedTarget();
+                        if (isPrimitiveCopyType(target)
+                                && !hasLocalTypeAliasNamed(target.name())
+                                && findClass(target.name()) == null
+                                && !containsBorrowType(target)) {
+                            yield new ValueInfo(target, ValueKind.COPY, null);
+                        }
+                    }
+                    if (containsBorrowType(source.type)) {
+                        throw error(E_LIFETIME, "rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
                     }
                     Ast.ClassDecl sourceClass = source.type == null ? null : findClass(source.type.name());
                     if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
