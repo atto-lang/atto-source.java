@@ -5213,6 +5213,11 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
+        // Ordinary local const mut is exactly val; normalize before any
+        // initializer admission, so the checker cannot apply const-only rules.
+        if (kind == Ast.BindingKind.CONST && mutableReferent) {
+            kind = Ast.BindingKind.VAL;
+        }
         Ast.TypeRef type = null;
         String name;
         boolean functionShorthand = match(FNC);
