@@ -2863,7 +2863,13 @@ public final class Parser {
         } else {
             consume(EQUAL, "expected '=' in type alias");
         }
+        boolean directStruct = check(STRUCT) && checkNext(LBRACE);
         Ast.TypeRef target = parseTypeRef();
+        if (directStruct && isContextualIdentifier("with") &&
+                (checkNext(LBRACE) || (current + 1 < tokens.size()
+                    && List.of("constructor", "mtd", "pub", "private").contains(tokens.get(current + 1).lexeme())))) {
+            parseStructAttachmentTarget(name, visibility);
+        }
         // A refinement is not an ordinary transparent alias: never erase
         // its predicate at this parser boundary. Enable this syntax only
         // together with typed proof-preserving rules + Zorde lowering.
@@ -2874,6 +2880,58 @@ public final class Parser {
         }
         consumeStatementTerminator("type alias should end with ';'");
         return new Ast.TypeAliasDecl(name, visibility, generics, target);
+    }
+
+    /** Validate grouped/chained struct member headers through the ordinary
+     * callable parser; never return a transparent alias after discarding them.
+     * A real nominal struct member AST and value ABI are still required. */
+    private void parseStructAttachmentTarget(String name, Ast.Visibility visibility) {
+        Token attachment = peek();
+        List<Ast.ConstructorDecl> constructors = new ArrayList<>();
+        List<Ast.MethodDecl> methods = new ArrayList<>();
+        do {
+            advance(); // contextual 'with'
+            boolean grouped = match(LBRACE);
+            if (grouped && check(RBRACE)) {
+                throw error(peek(), "struct with block requires a constructor or mtd");
+            }
+            do {
+                if (constructors.size() + methods.size() >= 256) {
+                    throw error(peek(), "too many attached struct members");
+                }
+                Modifiers mods = parseModifiers();
+                validateOnlyVisibilityModifiers(mods, "attached struct target members");
+                if (isContextualIdentifier("constructor")) {
+                    Token member = peek();
+                    Ast.ConstructorDecl ctor = parseConstructor(List.of(), mods, name, visibility, false);
+                    if (constructors.stream().anyMatch(prior ->
+                            sameAttachedParameterTypes(prior.parameters(), ctor.parameters()))) {
+                        throw error(member, "duplicate attached struct constructor signature");
+                    }
+                    constructors.add(ctor);
+                } else if (isContextualIdentifier("mtd")) {
+                    Token member = advance();
+                    Ast.MethodDecl method = parseMethod(List.of(), mods);
+                    if (methods.stream().anyMatch(prior -> prior.name().equals(method.name())
+                            && sameAttachedParameterTypes(prior.parameters(), method.parameters()))) {
+                        throw error(member, "duplicate attached struct method signature");
+                    }
+                    methods.add(method);
+                } else {
+                    throw error(peek(), "expected attached struct constructor or mtd");
+                }
+            } while (grouped && !check(RBRACE) && !check(EOF));
+            if (grouped) consume(RBRACE, "expected '}' after struct with members");
+        } while (isContextualIdentifier("with"));
+        throw error(attachment, "attached struct members parsed; nominal value ABI and checked initialization required before execution");
+    }
+
+    private boolean sameAttachedParameterTypes(List<Ast.Param> left, List<Ast.Param> right) {
+        if (left.size() != right.size()) return false;
+        for (int i = 0; i < left.size(); i++) {
+            if (!sameType(left.get(i).type(), right.get(i).type())) return false;
+        }
+        return true;
     }
 
     private List<Ast.Annotation> parseAnnotations() {
