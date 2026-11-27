@@ -362,6 +362,26 @@ final class AttoConditionalStatementExpressionTest {
         }
     }
 
+    @Test
+    void finalizedSixCanonicalFormsHaveDistinctReturnScopes() {
+        for (String predicate : new String[] { "true", "false" }) {
+            String[] alternatives = {
+                "return if " + predicate + " then 5 else 6 fi;",
+                "return " + predicate + " ? 5 : 6;",
+                "return " + predicate + " ? { return 5; } : { return 6; };",
+                "do if " + predicate + " then return 5; else return 6; fi",
+                "if " + predicate + " do return 5; else return 6; fi",
+                "if " + predicate + " { return 5; } else { return 6; }"
+            };
+            for (String body : alternatives) {
+                String source = "pub fnc main(): int { " + body + " }";
+                assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto(source)), source);
+            }
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto(
+                "pub fnc main(): int { const int v = true ? { return 5; } : { return 6; }; return v * 2; }")));
+    }
+
     private static String runNamed(String filename, String source) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
