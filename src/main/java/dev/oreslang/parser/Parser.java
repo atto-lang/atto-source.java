@@ -6243,6 +6243,30 @@ public final class Parser {
                 bytes ? Ast.SequenceUnit.BYTE : Ast.SequenceUnit.BIT, elements, tail);
     }
 
+    // First type-list slice uses the same checked union pattern as 'is T | U'.
+    // Do not silently accept unknown descriptors, structural shapes or
+    // generic erasure; those require canonical identity validation separately.
+    private Ast.TypeRef parseScalarMatchTypeList() {
+        consume(LBRACKET, "expected '[' after 'is in'");
+        if (check(RBRACKET)) throw error(peek(), "type list must not be empty");
+        List<Ast.TypeRef> types = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        do {
+            Token name = consume(IDENT, "expected scalar type in type list");
+            String canonical = switch (name.lexeme()) {
+                case "int" -> "int";
+                case "bool", "boolean" -> "bool";
+                case "float", "f64" -> "float";
+                case "string", "String" -> "string";
+                default -> throw error(name, "type-list member requires a supported scalar type");
+            };
+            if (!seen.add(canonical)) throw error(name, "duplicate canonical type in type list");
+            types.add(new Ast.TypeRef(canonical, List.of(), false));
+        } while (match(COMMA));
+        consume(RBRACKET, "expected ']' after type list");
+        return Ast.TypeRef.union(types);
+    }
+
     private Ast.Pattern parsePattern() {
         if (match(BANG)) {
             // A negative type pattern is a complement of the runtime-reifiable
@@ -6297,10 +6321,11 @@ public final class Parser {
             // and not the value-equality/destructuring "on ~Point" form).
             // Keep the existing structural checker and runtime semantics:
             // do not erase the sigil into a nominal TypePattern.
-            boolean structuralTest = match(TILDE)
+            boolean typeList = matchContextualIdentifier("in");
+            boolean structuralTest = !typeList && (match(TILDE)
                     || match(STRUCTURAL)
-                    || matchContextualIdentifier("structural");
-            Ast.TypeRef target = parseTypeRef();
+                    || matchContextualIdentifier("structural"));
+            Ast.TypeRef target = typeList ? parseScalarMatchTypeList() : parseTypeRef();
             String binding = null;
             if (match(AS)) {
                 // Pattern bindings are currently readonly VAL in both

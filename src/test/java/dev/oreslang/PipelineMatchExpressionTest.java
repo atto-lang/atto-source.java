@@ -94,6 +94,52 @@ final class PipelineMatchExpressionTest {
     }
 
     @Test
+    void scalarTypeListUsesExistingUnionTypePatternAndExecutes() throws Exception {
+        var expected = returned("match flag over { is bool | int -> 42; }");
+        assertEquals(expected, returned("match flag over { is in [bool, int] -> 42; }"));
+        assertEquals(expected, returned("flag |> match over { on is in [int, bool] -> 42; }"));
+        String source = """
+                fnc choose(int | string value): int {
+                    return match value over {
+                        on 42 -> 100;
+                        is in [int, String] -> 42;
+                    };
+                }
+                fnc piped(int | string value): int {
+                    return value |> match over {
+                        is in [int, string] -> 42;
+                    };
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(choose(42));
+                    stdio.stdout.write(choose(7));
+                    stdio.stdout.write(choose("text"));
+                    stdio.stdout.write(piped(7));
+                    stdio.stdout.write(piped("text"));
+                }
+                """;
+        var program = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        var output = new ByteArrayOutputStream();
+        String name = "scalar-type-list-match.ores";
+        try (var lease = OresLanguage.openPrecheckedProgram(name, source, program);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
+        }
+        assertEquals("10042424242", output.toString(StandardCharsets.UTF_8));
+        for (String bad : new String[] {
+                "is in []", "is in [int,int]", "is in [String,string]",
+                "is in [bool,42]", "is in [bool,Widget]", "is in [bool int]"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> returned("match flag over { " + bad + " -> 42; on _ -> 0; }"), bad);
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheckStrictAtto(
+                        "fnc f(bool flag): int { return match flag over { is in [bool,int] -> 42; on _ -> 0; }; }"));
+    }
+
+    @Test
     void braceDelimitedResultMatchContinuesPipeline() {
         String source = """
                 fnc increment(int n): int { return n + 1; }
