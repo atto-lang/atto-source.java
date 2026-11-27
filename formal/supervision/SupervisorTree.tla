@@ -85,6 +85,9 @@ ReturnLoan(n, e) ==
     /\ n \in Nodes
     /\ e = epoch[n]
     /\ workerDone[n]
+    \* A regular shutdown cannot certify physical release until its
+    \* onStopped hook has settled. Restart has no shutdown hook.
+    /\ phase[n] \in {"Restarting", "Stopped"}
     /\ loans[n] > 0
     /\ loans' = [loans EXCEPT ![n] = 0]
     /\ UNCHANGED <<phase, epoch, fenced, workerDone, preDone, postDone,
@@ -192,8 +195,13 @@ NoRestartAfterFence ==
     \A n \in Nodes :
         fenced[n] => phase[n] \notin {"Running", "Restarting"}
 
+NoEarlyPhysicalRelease ==
+    \A n \in Nodes :
+        loans[n] = 0 => phase[n] \in {"Restarting", "Stopped", "Reclaimed"}
+
 Safety ==
     TypeOK /\ FenceSafety /\ ShutdownSafety /\
-    NoPrematureReclaim /\ NoPostBeforeChildren /\ NoRestartAfterFence
+    NoPrematureReclaim /\ NoPostBeforeChildren /\ NoRestartAfterFence /\
+    NoEarlyPhysicalRelease
 
 =============================================================================

@@ -124,6 +124,11 @@ public final class SupervisorLifecycleFsm {
             if (physicalReleased && !actorsDone) {
                 throw new IllegalArgumentException("physical release before actor retirement");
             }
+            if (physicalReleased && phase != Phase.RESTARTING
+                    && phase != Phase.STOPPED && phase != Phase.RECLAIMED) {
+                throw new IllegalArgumentException(
+                        "physical release cannot precede a settled shutdown post-hook");
+            }
             if (phase == Phase.RECLAIMED
                     && (!physicalReleased || !reclaimedChildren.equals(expectedChildren))) {
                 throw new IllegalArgumentException("reclaimed without release receipt");
@@ -340,6 +345,15 @@ public final class SupervisorLifecycleFsm {
         } else if (e instanceof PhysicalRelease) {
             if (released) return s;
             require(actors, "cannot reclaim memory before actors retire");
+            // A completed ActorGroup Future is logical retirement, not
+            // physical closure. Guest onStopped hooks may still own or
+            // create native/FFI/arena loans. A physical receipt emitted
+            // before the hook finishes cannot cover those resources.
+            //
+            // RESTARTING does not run shutdown hooks, and requires its own
+            // post-restart-fence retirement evidence before commit.
+            require(p == Phase.RESTARTING || p == Phase.STOPPED,
+                    "physical release requires a settled post-hook or restart barrier");
             released = true;
             if (p == Phase.STOPPED && reclaimed.equals(expected)) next = Phase.RECLAIMED;
         } else if (e instanceof AfterHookFinished result) {

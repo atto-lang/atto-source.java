@@ -303,6 +303,42 @@ final class SupervisorLifecycleFsmIntegrationTest {
     }
 
     @Test
+    void pendingOnStoppedNeverImpliesPhysicalQuiescence() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var hookEntered = new CountDownLatch(1);
+            var pendingPostHook = new OresFuture<Void>();
+            var tree = new SupervisorShutdownTree(runtime, control, true);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {
+                        @Override public OresFuture<Void> onStopped(
+                                SupervisorShutdownTree.Reason reason) {
+                            hookEntered.countDown();
+                            return pendingPostHook;
+                        }
+                    });
+            var finished = tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED);
+            assertTrue(hookEntered.await(5, TimeUnit.SECONDS),
+                    "runtime never entered the pending onStopped hook");
+            var waiting = root.lifecycle();
+            assertEquals(SupervisorLifecycleFsm.Phase.AFTER_HOOK, waiting.phase());
+            assertTrue(waiting.actorsDone(), "actor DONE must precede onStopped");
+            assertFalse(waiting.postHookDone(), "onStopped is still pending");
+            assertFalse(waiting.physicalReleased(),
+                    "actor DONE is not a physical loan receipt");
+            assertFalse(finished.isDone(), "pending post-hook cannot claim shutdown");
+            assertFalse(tree.status().allPhysicallyReclaimed());
+            pendingPostHook.completeFromRuntime(null);
+            finished.get(5, TimeUnit.SECONDS);
+            assertEquals(SupervisorLifecycleFsm.Phase.STOPPED, root.lifecycle().phase());
+            assertFalse(root.lifecycle().physicalReleased(),
+                    "post-hook completion is not a native/arena release receipt");
+            assertFalse(tree.status().allPhysicallyReclaimed());
+            SupervisorLifecycleTrace.verifyComplete(tree.trace());
+        }
+    }
+
+    @Test
     void independentPureReducersRejectStaleGenerationCompletionAndNoEarlyReclaim() {
         var s = SupervisorLifecycleFsm.State.initial();
         s = SupervisorLifecycleFsm.reduce(s,
