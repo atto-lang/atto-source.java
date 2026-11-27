@@ -47,7 +47,8 @@ public final class CoreLibrarySources {
             "error.atto",
             "ptr.atto",
             "atomic.atto",
-            "iter.atto");
+            "iter.atto",
+            "borrow_admission.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
@@ -75,7 +76,8 @@ public final class CoreLibrarySources {
             "cooperation_policy.atto",
             "http_response_phase_policy.atto",
             "admission_deadline_policy.atto",
-            "env.atto");
+            "env.atto",
+            "metrics.atto", "json.atto", "zorde.atto");
 
     private CoreLibrarySources() { }
 
