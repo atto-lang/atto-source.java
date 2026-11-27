@@ -7767,7 +7767,7 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "print", "println" -> (Invokable) args ->
                             strictNonblockingIoFuture("stdio." + name);
-                    case "stdout" -> new StdoutFacade(stdio.context());
+                    case "out", "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin" -> new StdinFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
                 };
@@ -7775,7 +7775,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof StdoutFacade stdout) {
                 return switch (name) {
                     case "write", "println", "log", "logList" -> (Invokable) args ->
-                            strictNonblockingIoFuture("stdio.stdout." + name);
+                            strictNonblockingIoFuture("stdio.out." + name);
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
             }
@@ -7934,6 +7934,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
+                    case "stdout" -> new StdoutFacade(process.context());
                     case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
                     case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
                     case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
