@@ -208,7 +208,15 @@ public final class AttachedStructScalarLowering {
         }
         private Expr atom(Map<String,Expr> self){
             if(eat("(")){Expr a=expr(self,1);expect(")");return a;}
-            if(eat("-")){Expr a=expr(self,7);require(a.type.equals("int"),"E_TYPE","integer negation");return new Expr("(-"+a.code+")","int");}
+            if(eat("-")){
+                // The signed minimum has no representable positive i64 magnitude.
+                // Emit an ordinary checked scalar expression, never an unchecked literal.
+                if(tok().type()==INT&&word().equals("9223372036854775808")){
+                    at++;return new Expr("(-9223372036854775807 - 1)","int");
+                }
+                Expr a=expr(self,7);require(a.type.equals("int"),"E_TYPE","integer negation");
+                return new Expr("(-"+a.code+")","int");
+            }
             if(eat("true"))return new Expr("true","bool");if(eat("false"))return new Expr("false","bool");
             if(tok().type()==INT){
                 String raw=word();require(raw.matches("[0-9]{1,19}"),"E_STRUCT_SYNTAX","decimal i64 literal required");
