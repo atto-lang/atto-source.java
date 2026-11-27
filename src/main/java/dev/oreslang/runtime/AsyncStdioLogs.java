@@ -1,8 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.io.PrintWriter;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Semaphore;
@@ -17,16 +17,157 @@ import java.util.concurrent.Semaphore;
  */
 public final class AsyncStdioLogs implements AutoCloseable {
     private static final int MAX_RECORD_BYTES = 65_536;
+    // Includes the active sink record, even for zero-byte writes.
     private static final int QUEUE_CAPACITY = 1_024;
     private static final int MAX_PENDING_BARRIERS = 1_024;
+    private static final int MAX_PENDING_ADMISSIONS = 64;
+    // Includes the currently executing sink record, not just queued records.
+    private static final int MAX_ACCEPTED_BYTES = 4 * 1_048_576;
+    private static final int MAX_PENDING_BYTES = 1_048_576;
     private static final long CLOSE_TIMEOUT_MILLIS = 5_000;
 
-    private record Record(long sequence, String text, OresFuture<Void> completion) { }
+    private record Record(long sequence, String text, int bytes, OresFuture<Void> completion) { }
     private record Barrier(long sequence, OresFuture<Void> completion) { }
 
     private final Object lock = new Object();
     private final ArrayBlockingQueue<Record> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
     private final List<Barrier> barriers = new ArrayList<>();
+    private final ArrayDeque<PendingAdmission> waiting = new ArrayDeque<>();
+    private int waitingBytes;
+    private int acceptedBytes;
+    // Protected by lock; failure can revoke delivery while the sink is blocked.
+    private Record inFlight;
+
+    private final class PendingAdmission {
+        final String text;
+        final int bytes;
+        final OresFuture<Void> admitted;
+        PendingAdmission(String text, int bytes) {
+            this.text = text;
+            this.bytes = bytes;
+            this.admitted = new OresFuture<>(() -> cancelWaiting(this), () -> { });
+        }
+    }
+
+    private boolean cancelWaiting(PendingAdmission pending) {
+        List<PendingAdmission> promoted = new ArrayList<>();
+        synchronized (lock) {
+            if (!waiting.remove(pending)) return false;
+            waitingBytes -= pending.bytes;
+            promoteWaitingLocked(promoted);
+        }
+        completeAdmissions(promoted);
+        return true;
+    }
+
+    // Trusted runtime diagnostic, not a guest endpoint.
+    int pendingAdmissionCount() {
+        synchronized (lock) { return waiting.size(); }
+    }
+
+    // All queue/sequence changes and cancellation arbitration occur under lock.
+    private boolean canAdmitLocked(int bytes) {
+        return queue.size() + (inFlight == null ? 0 : 1) < QUEUE_CAPACITY
+                && bytes <= MAX_ACCEPTED_BYTES - acceptedBytes;
+    }
+
+    private void enqueueLocked(String text, int bytes, OresFuture<Void> delivery) {
+        if (!canAdmitLocked(bytes)) throw new IllegalStateException("async stdio queue is full (record or byte budget)");
+        long next = submitted + 1;
+        if (!queue.offer(new Record(next, text, bytes, delivery))) {
+            throw new IllegalStateException("async stdio queue is full (1024 records)");
+        }
+        acceptedBytes += bytes;
+        submitted = next;
+        startDrainLocked();
+        wake.release();
+    }
+
+    private void promoteWaitingLocked(List<PendingAdmission> promoted) {
+        while (accepting && failure == null && !waiting.isEmpty()
+                && canAdmitLocked(waiting.peekFirst().bytes)) {
+            PendingAdmission next = waiting.removeFirst();
+            waitingBytes -= next.bytes;
+            enqueueLocked(next.text, next.bytes, deliveryFuture());
+            promoted.add(next);
+        }
+    }
+
+    private static void completeAdmissions(List<PendingAdmission> promoted) {
+        for (PendingAdmission admission : promoted) admission.admitted.completeFromRuntime(null);
+    }
+
+    private static OresFuture<Void> deliveryFuture() {
+        return new OresFuture<>(() -> false, () -> { });
+    }
+
+    // Exact UTF-8 byte length without allocating an encoded temporary buffer.
+    static int checkedBytes(String text) {
+        java.util.Objects.requireNonNull(text, "text");
+        if (text.length() > MAX_RECORD_BYTES) {
+            throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
+        }
+        int bytes = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= text.length() || !Character.isLowSurrogate(text.charAt(i))) {
+                    throw new IllegalArgumentException("async stdio malformed UTF-16");
+                }
+                bytes += 4;
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("async stdio malformed UTF-16");
+            } else {
+                bytes += c <= 0x7f ? 1 : c <= 0x7ff ? 2 : 3;
+            }
+            if (bytes > MAX_RECORD_BYTES) {
+                throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
+            }
+        }
+        return bytes;
+    }
+
+    /**
+     * Runtime-internal admission primitive, NOT yet wired to guest .write().
+     * A pending future represents a full channel; the scheduler must park
+     * the logical producer, not join/get on a carrier. Success means the
+     * record was enqueued, not physically delivered. Cancellation may win
+     * only before admission. The pending-record quota is a separate
+     * resource limit; callers must charge their retained actor state as well.
+     */
+    OresFuture<Void> admitBuffered(String text) {
+        int bytes = checkedBytes(text);
+        synchronized (lock) {
+            if (failure != null) return OresFuture.failed(failure);
+            if (!accepting) return OresFuture.failed(
+                    new IllegalStateException("async stdio writer is closed"));
+            if (waiting.isEmpty() && canAdmitLocked(bytes)) {
+                enqueueLocked(text, bytes, deliveryFuture());
+                return OresFuture.completed(null);
+            }
+            if (waiting.size() >= MAX_PENDING_ADMISSIONS
+                    || bytes > MAX_PENDING_BYTES - waitingBytes) {
+                return OresFuture.failed(new IllegalStateException(
+                        "async stdio pending admission quota exhausted"));
+            }
+            PendingAdmission pending = new PendingAdmission(text, bytes);
+            waiting.addLast(pending);
+            waitingBytes += bytes;
+            return pending.admitted;
+        }
+    }
+
+    // Called under lock; completion notifications are delivered outside lock.
+    private List<PendingAdmission> detachWaitingLocked() {
+        List<PendingAdmission> detached = new ArrayList<>(waiting);
+        waiting.clear();
+        waitingBytes = 0;
+        return detached;
+    }
+
+    private static void rejectWaiting(List<PendingAdmission> pending, Throwable error) {
+        for (PendingAdmission admission : pending) admission.admitted.failFromRuntime(error);
+    }
     private final Semaphore wake = new Semaphore(0);
     private final PrintWriter writer;
     private Thread drain;
@@ -49,22 +190,15 @@ public final class AsyncStdioLogs implements AutoCloseable {
      * dropped silently. No sink I/O, future joining, or queue wait on caller.
      */
     public OresFuture<Void> logAsync(String text) {
-        java.util.Objects.requireNonNull(text, "text");
-        if (text.length() > MAX_RECORD_BYTES
-                || text.getBytes(StandardCharsets.UTF_8).length > MAX_RECORD_BYTES) {
-            throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
-        }
+        int bytes = checkedBytes(text);
         synchronized (lock) {
             if (failure != null) throw new IllegalStateException("async stdio writer failed", failure);
             if (!accepting) throw new IllegalStateException("async stdio writer is closed");
-            OresFuture<Void> completion = new OresFuture<>(() -> false, () -> { });
-            long next = submitted + 1;
-            if (!queue.offer(new Record(next, text, completion))) {
-                throw new IllegalStateException("async stdio queue is full (1024 records)");
+            if (!waiting.isEmpty()) {
+                throw new IllegalStateException("async stdio queue is full (waiting producers)");
             }
-            submitted = next;
-            startDrainLocked();
-            wake.release();
+            OresFuture<Void> completion = deliveryFuture();
+            enqueueLocked(text, bytes, completion);
             return completion;
         }
     }
@@ -105,10 +239,14 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     if (!accepting && queue.isEmpty()) break;
                 }
                 wake.acquire();
-                Record record = queue.poll();
-                if (record == null) continue;
+                Record record;
                 Throwable error;
-                synchronized (lock) { error = failure; }
+                synchronized (lock) {
+                    record = queue.poll();
+                    if (record == null) continue;
+                    inFlight = record;
+                    error = failure;
+                }
                 if (error == null) {
                     try {
                         // PrintWriter is shared with legacy synchronous stdio;
@@ -123,11 +261,23 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     }
                 }
                 List<Barrier> ready = new ArrayList<>();
+                List<PendingAdmission> promoted = new ArrayList<>();
+                List<PendingAdmission> rejected = List.of();
                 synchronized (lock) {
                     if (error != null && failure == null) failure = error;
                     error = failure;
+                    // Terminal shutdown may already have detached this record.
+                    // Never decrement twice or publish success after revocation.
+                    if (inFlight != record) return;
+                    inFlight = null;
+                    acceptedBytes -= record.bytes();
                     completed = record.sequence();
                     deliveringCompletions = true;
+                    if (error != null) {
+                        rejected = detachWaitingLocked();
+                    } else {
+                        promoteWaitingLocked(promoted);
+                    }
                     // Barrier sequence numbers are nondecreasing by admission.
                     // Complete the ready prefix in FIFO registration order so a
                     // later flush observer cannot be notified before an earlier
@@ -140,6 +290,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     }
                     barriers.subList(0, readyCount).clear();
                 }
+                completeAdmissions(promoted);
+                if (error != null) rejectWaiting(rejected, error);
                 if (error == null) record.completion().completeFromRuntime(null);
                 else record.completion().failFromRuntime(error);
                 for (Barrier barrier : ready) {
@@ -193,15 +345,27 @@ public final class AsyncStdioLogs implements AutoCloseable {
 
     private void failPending(Throwable error) {
         List<Barrier> pending;
+        List<PendingAdmission> rejected;
+        List<Record> revoked = new ArrayList<>();
+        Throwable terminal;
         synchronized (lock) {
             if (failure == null) failure = error;
+            terminal = failure;
             accepting = false;
             pending = List.copyOf(barriers);
             barriers.clear();
+            rejected = detachWaitingLocked();
+            if (inFlight != null) {
+                revoked.add(inFlight);
+                inFlight = null;
+            }
+            queue.drainTo(revoked);
+            acceptedBytes = 0;
+            wake.release();
         }
-        for (Barrier barrier : pending) barrier.completion().failFromRuntime(error);
-        Record remaining;
-        while ((remaining = queue.poll()) != null) remaining.completion().failFromRuntime(error);
+        rejectWaiting(rejected, terminal);
+        for (Record record : revoked) record.completion().failFromRuntime(terminal);
+        for (Barrier barrier : pending) barrier.completion().failFromRuntime(terminal);
     }
 
     /** Seal after actor/native-I/O and auxiliary producer shutdown.
@@ -210,10 +374,13 @@ public final class AsyncStdioLogs implements AutoCloseable {
      * accepted records still drain through close().
      */
     public void sealAdmission() {
+        List<PendingAdmission> rejected;
         synchronized (lock) {
             accepting = false;
+            rejected = detachWaitingLocked();
             if (drain != null) wake.release();
         }
+        rejectWaiting(rejected, new IllegalStateException("async stdio writer is closed"));
     }
 
     /**
@@ -224,8 +391,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
      */
     @Override public void close() {
         Thread worker;
+        sealAdmission();
         synchronized (lock) {
-            accepting = false;
             // A context may have used only synchronous stdout. Spawn the
             // drain worker on close to perform that last host flush off-carrier.
             if (drain == null && failure == null) startDrainLocked();
@@ -238,6 +405,9 @@ public final class AsyncStdioLogs implements AutoCloseable {
             }
             return;
         }
+        if (worker == Thread.currentThread()) {
+            throw new IllegalStateException("async stdio drain cannot join itself");
+        }
         try {
             worker.join(CLOSE_TIMEOUT_MILLIS);
         } catch (InterruptedException interrupted) {
@@ -245,7 +415,12 @@ public final class AsyncStdioLogs implements AutoCloseable {
             throw new IllegalStateException("interrupted while flushing async stdio", interrupted);
         }
         if (worker.isAlive()) {
-            throw new IllegalStateException("async stdio drain exceeded 5000ms shutdown deadline; logs may be incomplete");
+            IllegalStateException timeout = new IllegalStateException(
+                    "async stdio drain exceeded 5000ms shutdown deadline; logs may be incomplete");
+            // No successful delivery receipt may escape after the terminal
+            // failure wins. Physical bytes already written cannot be retracted.
+            failPending(timeout);
+            throw timeout;
         }
         synchronized (lock) {
             if (failure != null) throw new IllegalStateException("async stdio drain failed", failure);
