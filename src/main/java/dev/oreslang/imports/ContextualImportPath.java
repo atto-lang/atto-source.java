@@ -12,7 +12,7 @@ public final class ContextualImportPath {
     private static final int MAX_PATH = MAX_COMPONENTS * 65;
     private static final Pattern IDENT = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,63}");
     // Bounded import-v2 profile vocabulary aligned with Rust's static import graph.
-    private static final Set<String> RESERVED = Set.of("abstract", "actor", "arr", "as", "async", "await", "begin", "block", "break", "catch", "cb", "class", "conforms", "const", "continue", "contract", "cpu", "declare", "def", "default", "defer", "define", "do", "done", "durable", "elif", "else", "elseif", "end", "enum", "eq", "extends", "false", "fi", "finally", "fnc", "for", "from", "generator", "gpu", "guard", "if", "impl", "implements", "import", "interface", "is", "isoactor", "let", "loop", "match", "matches", "maybe", "module", "mtd", "mut", "namespace", "nb", "neq", "new", "nlex", "null", "obj", "of", "over", "panic", "persistent", "pipe", "pkg", "private", "pub", "pure", "quantum", "raise", "readch", "recover", "return", "routine", "rpipe", "rt", "select", "self", "shared", "spawn", "static", "stop", "struct", "super", "suspends", "switch", "sync", "task", "then", "throw", "trait", "trap", "true", "try", "type", "typeof", "types", "unsafe", "untrusted", "use", "using", "val", "void", "while", "writech", "yield");
+    private static final Set<String> RESERVED = Set.of("abstract", "actor", "arr", "as", "async", "await", "begin", "block", "break", "catch", "cb", "class", "conforms", "const", "continue", "contract", "cpu", "declare", "def", "default", "defer", "define", "do", "done", "durable", "elif", "else", "elseif", "end", "enum", "eq", "extends", "false", "fi", "finally", "fnc", "for", "from", "generator", "gpu", "guard", "if", "impl", "implements", "import", "interface", "is", "isoactor", "let", "loop", "match", "matches", "maybe", "module", "mtd", "mut", "namespace", "nb", "neq", "new", "nlex", "null", "obj", "of", "over", "panic", "parent", "persistent", "pipe", "pkg", "private", "pub", "pure", "quantum", "raise", "readch", "recover", "return", "routine", "rpipe", "rt", "select", "self", "shared", "spawn", "static", "stop", "struct", "super", "suspends", "switch", "sync", "task", "then", "throw", "trait", "trap", "true", "try", "type", "typeof", "types", "unsafe", "untrusted", "use", "using", "val", "void", "while", "writech", "yield");
     private ContextualImportPath() {}
 
     public static String normalize(String path, String currentNamespace) {
@@ -22,7 +22,7 @@ public final class ContextualImportPath {
         List<String> result = new ArrayList<>();
         String root = parts[0];
         if (!root.equals("pkg")) {
-            if (!root.equals("self") && !root.equals("super")) throw invalid();
+            if (!root.equals("self") && !isParent(root)) throw invalid();
             if (currentNamespace == null || currentNamespace.isEmpty()
                     || currentNamespace.length() > MAX_PATH) throw invalid();
             String[] current = currentNamespace.split("\\.", -1);
@@ -32,9 +32,9 @@ public final class ContextualImportPath {
             result.addAll(Arrays.asList(current));
         }
         int offset = 1;
-        if (root.equals("super")) {
+        if (isParent(root)) {
             int parents = 1;
-            while (offset < parts.length && parts[offset].equals("super")) {
+            while (offset < parts.length && isParent(parts[offset])) {
                 parents++;
                 offset++;
             }
@@ -48,6 +48,8 @@ public final class ContextualImportPath {
         }
         return String.join(".", result);
     }
+
+    private static boolean isParent(String p) { return p.equals("parent") || p.equals("super"); }
 
     static boolean valid(String p) {
         return IDENT.matcher(p).matches() && !p.startsWith("__atto_") && !RESERVED.contains(p);
