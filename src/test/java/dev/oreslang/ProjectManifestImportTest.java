@@ -93,7 +93,7 @@ final class ProjectManifestImportTest {
                 }
 
                 pub routine main(): void {
-                  stdio.stdout.write(parent(1));
+                  stdio.out.write(parent(1));
                   return;
                 }
                 """);
@@ -196,7 +196,7 @@ final class ProjectManifestImportTest {
                 }
 
                 pub routine main(): void {
-                  stdio.stdout.write(wrapped());
+                  stdio.out.write(wrapped());
                   return;
                 }
                 """);
@@ -209,7 +209,7 @@ final class ProjectManifestImportTest {
                 }
 
                 pub routine main(): void {
-                  stdio.stdout.write(wrapped());
+                  stdio.out.write(wrapped());
                   return;
                 }
                 """);
@@ -388,7 +388,7 @@ final class ProjectManifestImportTest {
 
         Files.writeString(helper, """
                 pub fnc imported_marker(): void {
-                  stdio.stdout.write("imported");
+                  stdio.out.write("imported");
                   return;
                 }
                 """);
@@ -451,7 +451,7 @@ final class ProjectManifestImportTest {
                 end
 
                 pub routine main(): void {
-                    stdio.stdout.write(
+                    stdio.out.write(
                         TrainingError.INVALID_INPUT() == foreign_error());
                     return;
                 }
@@ -483,7 +483,7 @@ final class ProjectManifestImportTest {
                 }
 
                 pub routine main(): void {
-                    stdio.stdout.write(wrapped());
+                    stdio.out.write(wrapped());
                     return;
                 }
                 """);
