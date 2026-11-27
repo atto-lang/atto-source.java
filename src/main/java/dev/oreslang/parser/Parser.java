@@ -8113,7 +8113,7 @@ public final class Parser {
         if (match(LPAREN)) {
             if (canonicalAttoSource) {
                 if (match(RPAREN)) return new Ast.TupleExpr(List.of());
-                if (startsParenthesizedRecordItem()) return parseParenthesizedRecord();
+                if (startsParenthesizedRecordItem() || (startsInlinePairRecordItem() && pairPrefixHasNamedRecordItem())) return parseParenthesizedRecord();
             }
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
@@ -8590,6 +8590,32 @@ public final class Parser {
                 || (check(COLON) && checkNext(IDENT));
     }
 
+    private boolean startsInlinePairRecordItem() {
+        return check(IDENT) && checkNext(COLON_EQUAL);
+    }
+
+    private boolean pairPrefixHasNamedRecordItem() {
+        int depth = 0;
+        boolean start = true;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type t = tokens.get(i).type();
+            if (depth == 0 && start) {
+                Token.Type next = i + 1 < tokens.size() ? tokens.get(i + 1).type() : EOF;
+                if ((t == IDENT && (next == EQUAL || next == COLON))
+                        || (t == STRING && next == EQUAL) || (t == COLON && next == IDENT))
+                    return true;
+                start = false;
+            }
+            if (t == LPAREN || t == LBRACE || t == LBRACKET) depth++;
+            else if (t == RPAREN || t == RBRACE || t == RBRACKET) {
+                if (depth == 0) return false;
+                depth--;
+            } else if (t == EOF) return false;
+            else if (t == COMMA && depth == 0) start = true;
+        }
+        return false;
+    }
+
     private String checkedQuotedRecordLabel(Token label) {
         if (label.stringQuote() != '"')
             throw error(label, "E_RECORD_LABEL: expected ordinary double-quoted identifier label");
@@ -8618,7 +8644,7 @@ public final class Parser {
         List<Ast.ObjectField> fields = new ArrayList<>();
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
         while (!check(RPAREN)) {
-            if (!startsParenthesizedRecordItem())
+            if (!startsParenthesizedRecordItem() && !startsInlinePairRecordItem())
                 throw error(peek(), "E_LITERAL_KIND: mixed Record and Tuple items");
             Token label = peek();
             String name;
@@ -8631,7 +8657,7 @@ public final class Parser {
                 advance();
                 name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
                 if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
-                else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=' or ':' after Record field name");
+                else if (!match(EQUAL, COLON, COLON_EQUAL)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
                 value = parseRecordFieldValue();
             }
             if (!names.add(name))
@@ -8645,10 +8671,10 @@ public final class Parser {
         return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
     }
 
-    // Bounded canonical Record slice. Pair := remains distinct from bare
-    // Record fields; only explicit inline product factories admit it for now.
-    // Braced quoted-colon Map syntax and empty literal classification remain
-    // separate, unsupported in this slice, rather than silently misclassified.
+    // Bounded canonical Record slice. Inline identifier-key := entries are
+    // consumed as named fields; standalone Pair expression ABI is separate.
+    // Quoted labels and empty literal classification retain the existing
+    // bounded profile; standalone Pair expressions remain fail-closed.
     private Ast.ObjectExpr parseAnonymousRecord() {
         consume(LBRACE, "expected '{' before Record");
         List<Ast.ObjectField> fields = new ArrayList<>();
@@ -8656,6 +8682,7 @@ public final class Parser {
         if (check(RBRACE)) throw error(peek(), "E_LITERAL_KIND: empty anonymous braces require explicit Record syntax");
         do {
             Token label = peek();
+            boolean pairEntry = false;
             if (match(ELLIPSIS)) {
                 fields.add(Ast.ObjectField.spreading(parseRecordFieldValue()));
             } else {
@@ -8671,13 +8698,23 @@ public final class Parser {
                     advance();
                     name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
                     if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
-                    else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=' or ':' after Record field name");
+                    else if (match(COLON_EQUAL)) pairEntry = true;
+                    else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
                     if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
                     fields.add(Ast.ObjectField.named(name, parseRecordFieldValue()));
                 }
             }
             if (fields.size() > 4096) throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
-            if (!match(COMMA)) break;
+            if (!match(COMMA)) {
+                // Lexer string/template tokens retain their start line. Refuse
+                // inferred separation after decoded multiline tokens unless a
+                // comma is explicit, rather than guessing an end line.
+                Token last = previous();
+                boolean multiline = (last.type() == STRING || last.type() == TEMPLATE_LITERAL)
+                        && (last.lexeme().contains("\n") || last.lexeme().contains("\r"));
+                if (pairEntry && !multiline && check(IDENT) && peek().line() > last.line()) continue;
+                break;
+            }
         } while (!check(RBRACE));
         consume(RBRACE, "expected '}' after Record literal (fields require commas)");
         return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
