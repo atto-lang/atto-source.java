@@ -7240,6 +7240,10 @@ public final class Parser {
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
             }
+            if (canonicalAttoSource && check(FNC) && checkNext(IDENT)) {
+                value = parseClosedNamedPipelineStage(value);
+                continue;
+            }
             // Subject-elided conditional stages share the ordinary checked
             // expression nodes. Do not substitute or repeat the receiver.
             if (canonicalAttoSource && match(IF, IFNOT, UNLESS)) {
@@ -7432,6 +7436,97 @@ public final class Parser {
         if (match(EQ, EQUAL_EQUAL)) return new Ast.BinaryExpr("eq", receiver, parseComparison());
         if (match(NEQ, BANG_EQUAL)) return new Ast.BinaryExpr("neq", receiver, parseComparison());
         return receiver;
+    }
+
+    /**
+     * First named-expression convergence slice. Reuse the existing typed
+     * recursive local lambda binding and ordinary value-pipeline invocation.
+     * The upstream is an argument of the wrapper, never a captured AST or a
+     * repeated expression. The self-name exists only in the wrapper scope.
+     * This is not a direct/AOT allocation-elision or escaping-closure proof.
+     */
+    private Ast.Expr parseClosedNamedPipelineStage(Ast.Expr upstream) {
+        Token start = consume(FNC, "expected fnc");
+        String name = consume(IDENT, "expected named pipeline function").lexeme();
+        consume(LPAREN, "expected '(' after named function");
+        List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after named function parameters");
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        if (parameters.size() != 1 || !integer.equals(parameters.getFirst().type())
+                || parameters.getFirst().mutable() || parameters.getFirst().structural()
+                || parameters.getFirst().name().equals(name)) {
+            throw error(start, "E_NAMED_STAGE_PROFILE: requires one immutable int parameter distinct from the self-name");
+        }
+        if (!match(COLON, ARROW)) {
+            throw error(peek(), "E_RETURN_ANNOTATION: named function requires explicit int result");
+        }
+        if (!integer.equals(parseTypeRef()) || !check(LBRACE)) {
+            throw error(peek(), "E_NAMED_STAGE_PROFILE: requires explicit int result and braced body");
+        }
+        List<Ast.Stmt> body = parseBlock();
+        String parameter = parameters.getFirst().name();
+        if (body.size() != 1 || !(body.getFirst() instanceof Ast.ReturnStmt returned)
+                || returned.value() == null
+                || !closedNamedStageValue(returned.value(), parameter, name, 0)) {
+            throw error(start, "E_NAMED_STAGE_PROFILE: only closed scalar returns and direct lexical self-calls are admitted");
+        }
+        // The lexer cannot spell '$' as an ordinary identifier. Keep the
+        // internal upstream slot out of the source namespace.
+        String slot = "$named_stage_upstream";
+        Ast.LambdaExpr recursive = new Ast.LambdaExpr(parameters, null, body, false, integer);
+        Ast.BindingStmt binding = new Ast.BindingStmt(Ast.BindingKind.CONST,
+                Ast.TypeRef.functionType(List.of(integer), integer), name, recursive);
+        Ast.ReturnStmt invoke = new Ast.ReturnStmt(new Ast.CallExpr(new Ast.NameExpr(name),
+                List.of(new Ast.NameExpr(slot))));
+        Ast.LambdaExpr wrapper = new Ast.LambdaExpr(
+                List.of(new Ast.Param(integer, slot, false, false)), null,
+                List.of(binding, invoke), false, integer);
+        return new Ast.CallExpr(wrapper, List.of(), false, List.of(upstream),
+                Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
+    }
+
+    // Closed before introducing the binding: neither a free reference nor
+    // another source callable may accidentally resolve in the synthetic scope.
+    private static boolean closedNamedStageValue(
+            Ast.Expr expression, String parameter, String self, int depth) {
+        if (depth >= 64) return false;
+        if (expression instanceof Ast.LiteralExpr literal) return literal.value() instanceof Long;
+        if (expression instanceof Ast.NameExpr variable) return variable.name().equals(parameter);
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return (unary.operator().equals("-") || unary.operator().equals("+"))
+                    && closedNamedStageValue(unary.operand(), parameter, self, depth + 1);
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return (binary.operator().equals("+") || binary.operator().equals("-")
+                    || binary.operator().equals("*") || binary.operator().equals("/"))
+                    && closedNamedStageValue(binary.left(), parameter, self, depth + 1)
+                    && closedNamedStageValue(binary.right(), parameter, self, depth + 1);
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            return call.origin() == Ast.CallOrigin.DIRECT && !call.typeArgumentsPresent()
+                    && call.callee() instanceof Ast.NameExpr target && target.name().equals(self)
+                    && call.arguments().size() == 1
+                    && closedNamedStageValue(call.arguments().getFirst(), parameter, self, depth + 1);
+        }
+        if (expression instanceof Ast.MatchExpr matched) {
+            if (matched.arms().size() > 64 || (matched.resultType() != null
+                    && !Ast.TypeRef.simple("int").equals(matched.resultType()))
+                    || !closedNamedStageValue(matched.subject(), parameter, self, depth + 1)) {
+                return false;
+            }
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                if (!(arm.pattern() instanceof Ast.WildcardPattern)
+                        && !(arm.pattern() instanceof Ast.LiteralPattern literal && literal.value() instanceof Long)) {
+                    return false;
+                }
+                if (arm.guard() != null || !arm.prefixStatements().isEmpty()
+                        || !closedNamedStageValue(arm.value(), parameter, self, depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     private static boolean isPipelineCallable(Ast.Expr stage) {
