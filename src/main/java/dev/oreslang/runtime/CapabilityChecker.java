@@ -481,7 +481,8 @@ public final class CapabilityChecker {
                 if (referenced != null) checkReferencedFunction(referenced, policy);
                 Ast.MethodDecl staticValue = findUniqueStaticMethodValue(m);
                 if (staticValue != null) checkReferencedMethod(staticValue, policy);
-                if (path.startsWith("stdio.") || path.equals("stdio")) require(policy, IsolatePolicy.Capability.STDOUT, path);
+                if (path.startsWith("stdio.") || path.equals("stdio") || path.equals("process.stdout")
+                        || path.startsWith("process.stdout.")) require(policy, IsolatePolicy.Capability.STDOUT, path);
                 if (path.equals("std.process.exit") || path.equals("process.exit")) require(policy, IsolatePolicy.Capability.PROCESS_EXIT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
