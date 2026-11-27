@@ -63,6 +63,9 @@ public final class ChannelRuntime {
         DEFAULT
     }
 
+    // Private-to-runtime marker, never a guest value or a channel payload.
+    enum CountedReadEnd { EOF }
+
     public record SelectResult(
             int index,
             SelectOperation operation,
@@ -74,6 +77,22 @@ public final class ChannelRuntime {
             }
             Objects.requireNonNull(operation, "operation");
         }
+    }
+
+    /**
+     * Compiler-owned selection retirement receipt. Unlike isDone(), this
+     * completes only after notification and cancellation cleanup has drained.
+     * No guest callback runs on the settling producer thread.
+     */
+    public static OresFuture<Void> selectionDrained(OresFuture<SelectResult> selection) {
+        Objects.requireNonNull(selection, "selection");
+        OresFuture<Void> receipt = new OresFuture<>(() -> false, () -> {});
+        selection.whenNotificationsDrainedRuntime(() -> {
+            Throwable failure = selection.cancellationHookFailureFromRuntime();
+            if (failure != null) receipt.failFromRuntime(failure);
+            else receipt.completeFromRuntime(null);
+        });
+        return receipt;
     }
 
     /** Admission exhaustion is distinct from closure; no waiter is retained. */
@@ -190,6 +209,22 @@ public final class ChannelRuntime {
      * Write-only channel capability. It cannot read, close, or expose the
      * underlying bidirectional channel.
      */
+    /**
+     * Recoverable, non-registering write probe. A rejected payload remains
+     * owned by the caller. The compiler must move its ownership into this
+     * result only on Full/Closed, and into the channel only on Accepted.
+     */
+    public sealed interface TryWriteResult<T>
+            permits TryWriteResult.Accepted, TryWriteResult.Full, TryWriteResult.Closed {
+        record Accepted<T>() implements TryWriteResult<T> { }
+        record Full<T>(T value) implements TryWriteResult<T> {
+            public Full { Objects.requireNonNull(value, "rejected payload"); }
+        }
+        record Closed<T>(T value) implements TryWriteResult<T> {
+            public Closed { Objects.requireNonNull(value, "rejected payload"); }
+        }
+    }
+
     public static final class WriteChannel<T> {
         private final Channel<T> channel;
 
@@ -204,6 +239,11 @@ public final class ChannelRuntime {
         /** Directional capability for immediate, recoverable owned attempts. */
         public OwnedTryWriteResult<T> tryWriteOwned(T value) {
             return channel.tryWriteOwned(value);
+        }
+
+        /** Guest-facing typed immediate write result (source try writech). */
+        public TryWriteResult<T> tryWriteResult(T value) {
+            return channel.tryWriteResult(value);
         }
 
         public OresFuture<Void> writeAsync(T value) {
@@ -375,8 +415,7 @@ public final class ChannelRuntime {
          * (no value committed) and CLOSED (closure won admission). The
          * asynchronous writeAsync API remains non-recoverable until a
          * separate cancellation-safe escrow and affine guest contract exist.
-         * Do not expose this as a guest ownership guarantee without that
-         * compiler lowering.</p>
+         * Guest code uses {@link #tryWriteResult(Object)} instead.</p>
          */
         public OwnedTryWriteResult<T> tryWriteOwned(T value) {
             requireValue(value);
@@ -389,6 +428,30 @@ public final class ChannelRuntime {
                 if (OresFuture.unwrap(failure) instanceof ChannelClosedException) {
                     return OwnedTryWriteResult.rejected(
                             OwnedWriteOutcome.CLOSED, value);
+                }
+                throw failure;
+            }
+        }
+
+        /**
+         * Typed immediate send result, sharing the existing linearizable
+         * select admission and returning the original payload on rejection.
+         * No waiter or pending write survives Full/Closed. Closed is decoded
+         * only from ChannelClosedException, not from arbitrary failures.
+         *
+         * This host primitive is also the guest interpreter's immediate
+         * write result path. Only the Java-host tryWrite(T) compatibility API
+         * remains Boolean; source try writech returns TryWriteResult<T>.
+         */
+        public TryWriteResult<T> tryWriteResult(T value) {
+            requireValue(value);
+            try {
+                return tryWrite(value)
+                        ? new TryWriteResult.Accepted<>()
+                        : new TryWriteResult.Full<>(value);
+            } catch (java.util.concurrent.CompletionException failure) {
+                if (OresFuture.unwrap(failure) instanceof ChannelClosedException) {
+                    return new TryWriteResult.Closed<>(value);
                 }
                 throw failure;
             }
@@ -570,6 +633,7 @@ public final class ChannelRuntime {
     public static final class SelectSet {
         private final List<SelectCase> cases;
         private final AtomicLong fairCursor;
+        private final boolean countedReadEnd;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -591,7 +655,24 @@ public final class ChannelRuntime {
         private SelectSet(
                 Collection<? extends SelectCase> cases,
                 AtomicLong sharedFairCursor) {
+            this(cases, sharedFairCursor, false);
+        }
+
+        // Host-only opt-in. Ordinary selects retain their closed-channel error
+        // semantics. A counted read needs an identifiable graceful EOF so it
+        // can retire that source without counting an event.
+        static SelectSet countedReads(Collection<? extends SelectCase> cases, long cursor) {
+            for (var candidate : cases) {
+                if (!(candidate instanceof ReadCase<?> || candidate instanceof FutureCase<?>))
+                    throw new SelectAdmissionException("counted selection requires read/Future cases");
+            }
+            return new SelectSet(cases, new AtomicLong(cursor), true);
+        }
+
+        private SelectSet(Collection<? extends SelectCase> cases,
+                          AtomicLong sharedFairCursor, boolean countedReadEnd) {
             Objects.requireNonNull(cases, "cases");
+            this.countedReadEnd = countedReadEnd;
             this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
@@ -1428,10 +1509,12 @@ public final class ChannelRuntime {
                     }
 
                     if (channel.closed) {
-                        commitFailureLocked(
-                                chosen,
-                                channel.closedFailure(),
-                                completions);
+                        if (selection.set.countedReadEnd && channel.closeCause == null) {
+                            commitSingleLocked(chosen, new SelectResult(chosen.index,
+                                    SelectOperation.READ, CountedReadEnd.EOF), completions);
+                        } else {
+                            commitFailureLocked(chosen, channel.closedFailure(), completions);
+                        }
                         progressed = true;
                         break;
                     }

@@ -9,6 +9,8 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
+    // Bound hostile source while scanning, not only after constructing a name.
+    private static final int MAX_QUOTED_SYMBOL_UNITS = 1_024;
 
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
@@ -127,16 +129,18 @@ public final class Lexer {
             case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE); case '•' -> add(BULLET);
+            case '⧖', '∂' -> add(SUSPENDS);
             case '-' -> add(match('>') ? ARROW : MINUS);
             // AttoLang !eq is a single contiguous inequality token. Use the
             // canonical NEQ token kind so precedence and typed backend lowering
             // are identical to the word 'neq', without a runtime rewrite.
             // A following identifier character prevents prefix tokenization.
+            case '¬' -> add(UNICODE_NOT);
             case '!' -> {
                 if (match('=')) add(BANG_EQUAL); // .ores legacy != remains valid
                 else if (source.startsWith("eq", current)
                         && (current + 2 == source.length()
-                            || !isIdentPart(source.charAt(current + 2)))) {
+                            || !isIdentPart(source.codePointAt(current + 2)))) {
                     advance();
                     advance();
                     add(NEQ);
@@ -149,14 +153,17 @@ public final class Lexer {
                 else if (match('*')) blockComment();
                 else add(SLASH);
             }
-            case ' ', '\t' -> { }
+            case ' ', '\t', '\u000b', '\f' -> { }
             case '\r' -> { match('\n'); newline(); }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
             case '#' -> symbol();
             default -> {
                 if (isDigit(c)) number();
-                else if (isIdentStart(c)) identifier();
+                else if (isIdentStart(source.codePointAt(start))) {
+                    if (Character.isHighSurrogate(c)) advance();
+                    identifier();
+                }
                 else throw error("unexpected character '" + c + "'");
             }
         }
@@ -202,6 +209,9 @@ public final class Lexer {
                 };
             }
             value.append(ch);
+            if (value.length() > MAX_QUOTED_SYMBOL_UNITS) {
+                throw error("quoted Symbol name exceeds normalization budget");
+            }
         }
         if (isAtEnd()) throw error("unterminated quoted Symbol literal");
         advance();
@@ -347,9 +357,30 @@ public final class Lexer {
         }
     }
 
+    private static boolean isBangKeyword(String text) {
+        return switch (text) {
+            case "trap", "throw", "raise", "panic", "copy", "take", "move",
+                 "borrow", "share", "pin", "drop", "pipe", "rpipe", "stop", "expand" -> true;
+            default -> false;
+        };
+    }
+
     private void identifier() {
-        while (isIdentPart(peek())) advance();
+        while (!isAtEnd() && isIdentPart(source.codePointAt(current))) {
+            int count = Character.charCount(source.codePointAt(current));
+            for (int i = 0; i < count; i++) advance();
+        }
         String text = source.substring(start, current);
+        // Keep contextual bare identifiers and inequality tokens unchanged.
+        if (isBangKeyword(text)
+                && peek() == '!' && peekNext() != '='
+                && !(source.startsWith("!eq", current)
+                    && (current + 3 == source.length() || !isIdentPart(source.codePointAt(current + 3))))) {
+            int after = current + (text.equals("copy") && peekNext() == '!' ? 2 : 1);
+            if (after >= source.length() || " \t\r\n\u000b\f".indexOf(source.charAt(after)) < 0) {
+                throw error("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword");
+            }
+        }
 
         // Both 'nb' and 'select' are already reserved, so this spelling cannot
         // change the meaning of a legal subtraction expression. Critical and
@@ -358,7 +389,7 @@ public final class Lexer {
         if (text.equals("nb") && source.startsWith("-select", current)
                 && (current + 7 == source.length()
                     || (source.charAt(current + 7) != '-'
-                        && !isIdentPart(source.charAt(current + 7))))) {
+                        && !isIdentPart(source.codePointAt(current + 7))))) {
             add(NB);
             advance(); // ASCII hyphen-minus, U+002D
             int keywordColumn = column;
@@ -366,7 +397,17 @@ public final class Lexer {
             tokens.add(new Token(SELECT, "select", line, keywordColumn));
             return;
         }
-        add(KEYWORDS.getOrDefault(text, IDENT));
+        Token.Type type = KEYWORDS.getOrDefault(text, IDENT);
+        // Bang-suffixed exceptional control is a single contiguous keyword.
+        // Preserve != and !eq, and do not consume an unrelated logical-not.
+        if ((type == TRAP || type == THROW || type == RAISE || type == PANIC)
+                && peek() == '!' && peekNext() != '='
+                && !(source.startsWith("!eq", current)
+                    && (current + 3 == source.length()
+                        || !isIdentPart(source.codePointAt(current + 3))))) {
+            advance();
+        }
+        add(type);
     }
 
     private boolean isAtEnd() { return current >= source.length(); }
@@ -380,8 +421,8 @@ public final class Lexer {
     private void newline() { line++; column = 1; }
     private void add(Token.Type type) { tokens.add(new Token(type, source.substring(start, current), line, startColumn)); }
     private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
-    private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
-    private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
+    private boolean isIdentStart(int c) { return Character.isLetter(c) || c == '_' || c == 0x3007; }
+    private boolean isIdentPart(int c) { return isIdentStart(c) || (c >= '0' && c <= '9'); }
     private static IllegalArgumentException sourceAdmissionError(
             int line, int column, String message) {
         return new IllegalArgumentException(

@@ -1,0 +1,179 @@
+// atto.alloc/bitset: compact, bounded, actor-owned packed bit array.
+// Words have 63 payload bits so every mask and word is a nonnegative int.
+// This Java-backend implementation avoids shift syntax unsupported by the
+// current Java lexer. All guest algorithms remain in AttoLang .atto source.
+define module bitset as
+  pub define class BitSet as
+    let mut Array<int> words = new Array<int>();
+    let mut Array<int> masks = new Array<int>();
+    let int bits;
+
+    pub constructor(int bit_count) {
+      if bit_count < 0 || bit_count > 1048576; do
+        rt fail("bitset: bit_count outside 0..1048576");
+      fi
+      self.bits = bit_count;
+      let mut int word_count = 0;
+      let mut int covered = 0;
+      while covered < bit_count do
+        covered = covered + 63;
+        word_count = word_count + 1;
+      done
+      for (let int i = 0; i < word_count; i = i + 1) {
+        self.words.add(0);
+      }
+      // Cache every legal shift as an exact nonnegative signed integer.
+      let mut int mask = 1;
+      for (let int i = 0; i < 63; i = i + 1) {
+        self.masks.add(mask);
+        if i < 62; do
+          mask = mask * 2;
+        fi
+      }
+    }
+
+    pub len(): int { return self.bits; }
+    pub is_empty(): bool { return self.bits == 0; }
+
+    pub get(int index): Option<bool> {
+      if index < 0 || index >= self.bits; do
+        return None;
+      fi
+      let int word = self.words.get(self.idiv(index, 63));
+      let int mask = self.masks.get(Integer.rem(index, 63));
+      return Some((Integer.rem((self.idiv(word, mask)), 2)) != 0);
+    }
+
+    // Returns previous bit; no state changes for an invalid index.
+    pub try_set(mut self)(int index, bool value): Result<bool, String> {
+      if index < 0 || index >= self.bits; do
+        return Err("IndexOutOfBounds");
+      fi
+      let int slot = self.idiv(index, 63);
+      let int mask = self.masks.get(Integer.rem(index, 63));
+      let int previous = self.words.get(slot);
+      let bool old = (Integer.rem((self.idiv(previous, mask)), 2)) != 0;
+      if value && !old; do
+        self.words.set(slot, previous + mask);
+      fi
+      if !value && old; do
+        self.words.set(slot, previous - mask);
+      fi
+      return Ok(old);
+    }
+
+    pub clear_all(mut self)(): void {
+      for (let int i = 0; i < self.words.size; i = i + 1) {
+        self.words.set(i, 0);
+      }
+      return;
+    }
+
+    pub count_ones(): int {
+      let mut int count = 0;
+      for (let int i = 0; i < self.words.size; i = i + 1) {
+        let mut int word = self.words.get(i);
+        for (let int bit = 0; bit < 63; bit = bit + 1) {
+          if (Integer.rem(word, 2)) != 0; do
+            count = count + 1;
+          fi
+          word = self.idiv(word, 2);
+        }
+      }
+      return count;
+    }
+
+    pub first_set(): Option<int> {
+      // Scan packed words first; sparse empty regions cost one read per word.
+      for (let int slot = 0; slot < self.words.size; slot = slot + 1) {
+        let mut int word = self.words.get(slot);
+        if word != 0; do
+          for (let int bit = 0; bit < 63; bit = bit + 1) {
+            if Integer.rem(word, 2) != 0; do
+              return Some(slot * 63 + bit);
+            fi
+            word = self.idiv(word, 2);
+          }
+        fi
+      }
+      return None;
+    }
+
+    // Combine two nonnegative words without depending on bitwise shift or ~.
+    // At most 63 iterations, with result always within signed int range.
+    combine_word(int left, int right, bool intersection): int {
+      let mut int a = left;
+      let mut int b = right;
+      let mut int result = 0;
+      for (let int i = 0; i < 63; i = i + 1) {
+        let bool left_set = (Integer.rem(a, 2)) != 0;
+        let bool right_set = (Integer.rem(b, 2)) != 0;
+        if intersection; do
+          if left_set && right_set; do
+            result = result + self.masks.get(i);
+          fi
+        else
+          if left_set || right_set; do
+            result = result + self.masks.get(i);
+          fi
+        fi
+        a = self.idiv(a, 2);
+        b = self.idiv(b, 2);
+      }
+      return result;
+    }
+
+    pub try_union_with(mut self)(borrow BitSet other): Result<int, String> {
+      if self.bits != other.bits; do
+        return Err("LengthMismatch");
+      fi
+      for (let int i = 0; i < self.words.size; i = i + 1) {
+        self.words.set(i, self.combine_word(
+            self.words.get(i), other.words.get(i), false));
+      }
+      return Ok(self.count_ones());
+    }
+
+    pub try_intersect_with(mut self)(borrow BitSet other): Result<int, String> {
+      if self.bits != other.bits; do
+        return Err("LengthMismatch");
+      fi
+      for (let int i = 0; i < self.words.size; i = i + 1) {
+        self.words.set(i, self.combine_word(
+            self.words.get(i), other.words.get(i), true));
+      }
+      return Ok(self.count_ones());
+    }
+
+    // Floor division for a >= 0 and b > 0 (int/int yields float on this backend).
+    idiv(int a, int b): int {
+      let mut int q = 0;
+      let mut int r = a;
+      while r >= b do
+        let mut int d = b;
+        let mut int m = 1;
+        while d <= r - d do
+          d = d + d;
+          m = m + m;
+        done
+        r = r - d;
+        q = q + m;
+      done
+      return q;
+    }
+  end
+
+  // Bounds-only fallible constructor. The allocator provider must separately
+  // make physical allocation failure a typed error before this is try_alloc.
+  pub fnc try_new_bitset(int length): Result<BitSet, String> {
+    if length < 0 || length > 1048576; do
+      return Err("InvalidBitCount");
+    fi
+    return Ok(new BitSet(length));
+  }
+
+  pub fnc new_bitset(int length): BitSet {
+    return new BitSet(length);
+  }
+
+end

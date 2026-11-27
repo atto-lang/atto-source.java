@@ -104,12 +104,12 @@ final class CanonicalCallerTrapParityV1Test {
     }
 
     @Test
-    void panicIsNeverReclassifiedAsCaughtOrdinaryError() throws Exception {
-        String name = "06-panic-bypass.atto";
-        String code = source(name);
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(code));
-        PolyglotException panic = assertThrows(PolyglotException.class, () -> execute(name));
-        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    void historicalPanicFixtureNowUsesCheckedCapture() throws Exception {
+        // Preserve exact historical fixture bytes; the updated unwrap contract
+        // treats failure as ordinary. Explicit expect is tested separately.
+        Guest actual = execute("06-panic-bypass.atto");
+        assertEquals(0L, actual.value());
+        assertEquals("", actual.stdout());
     }
 
     @Test

@@ -1043,6 +1043,27 @@ final class AotClassProxyLanguageTest {
     }
 
     @Test
+    void compilerSynthesizedProxiesPreserveFileLevelExports() {
+        String source = """
+                export pub Foo;
+                define pub class Foo as
+                  pub answer(): int { return 42; }
+                end
+                pub routine main(): void {
+                  val proxy = new Proxy(new Foo());
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        assertEquals(1, parsed.exports().size(), "file-level exports must not disappear");
+        assertTrue(parsed.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .anyMatch(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooProxy")));
+    }
+
+
+    @Test
     void currentMainProxySynthesisPreservesExplicitExports() {
         Ast.TypeRef integer = Ast.TypeRef.simple("int");
         // A publicly exported declaration must actually be public; use the

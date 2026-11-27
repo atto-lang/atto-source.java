@@ -156,7 +156,7 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /** Result of one resumable task turn. */
-    public sealed interface Step<T> permits Done, Await, Cooperate, Sleep { }
+    public sealed interface Step<T> permits Done, Await, Cooperate, Sleep, StdioAdmission { }
 
     /** The async task has produced its final value. */
     public record Done<T>(T value) implements Step<T> { }
@@ -194,6 +194,16 @@ public final class OresScheduler implements AutoCloseable {
                 throw new IllegalArgumentException("negative sleep duration");
             }
         }
+    }
+
+    // Runtime-private owned operation. Never expose arbitrary Future cancellation
+    // as a guest or compiler-controlled option on shared Await.
+    private record StdioAdmission<T>(AsyncStdioLogs descriptor, String text) implements Step<T> { }
+
+    static <T> Step<T> stdioAdmission(AsyncStdioLogs descriptor, String text) {
+        requireCurrent();
+        if (currentExecutionContext() == null) throw new IllegalStateException("stdio admission requires an admitted execution");
+        return new StdioAdmission<>(Objects.requireNonNull(descriptor), Objects.requireNonNull(text));
     }
 
     /**
@@ -900,8 +910,8 @@ public final class OresScheduler implements AutoCloseable {
                 new AtomicReference<>();
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
-        /** Sleep is OWNED by this execution, unlike shared NIO/Future awaits. */
-        private final AtomicReference<OresFuture<Void>> activeOwnedSleep =
+        /** A timer or stdio admission is OWNED by this execution, unlike shared awaits. */
+        private final AtomicReference<OresFuture<Void>> activeOwnedProducer =
                 new AtomicReference<>();
         /** True iff AWAIT_GRAPH holds an edge for completion; written only
          *  under AWAIT_GRAPH_LOCK. Lets turns skip that VM-wide lock. */
@@ -1114,6 +1124,7 @@ public final class OresScheduler implements AutoCloseable {
             // suspended owner retains the updated context after this turn exits.
             TraceContext previousTraceContext = TraceContext.install(traceContext);
             try {
+                ConcurrencyTestProbe.checkpoint("task-turn");
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
                 if (resume == null) {
@@ -1203,6 +1214,11 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                if (step instanceof StdioAdmission<?> output) {
+                    armStdioAdmission(output);
+                    return;
+                }
+
                 if (step instanceof Cooperate<?>) {
                     armCooperate();
                     return;
@@ -1284,29 +1300,61 @@ public final class OresScheduler implements AutoCloseable {
                 // Future/await. Arming happens while the scheduler still owns
                 // the current logical execution; the clock never enters guest.
                 timer = sleep.timers().sleepNanos(sleep.delayNanos());
-                if (!activeOwnedSleep.compareAndSet(null, timer)) {
+                if (!activeOwnedProducer.compareAndSet(null, timer)) {
                     timer.cancel(false);
                     failTerminal(new IllegalStateException(
                             "previous execution-owned sleep was not retired"));
                     return;
                 }
                 // Cancellation/STOP may have beaten registration, including
-                // before activeOwnedSleep was published. Fail closed; never
+                // before activeOwnedProducer was published. Fail closed; never
                 // leave a timer alive after its execution lost admission.
                 if (phase.get() != RUNNING) {
-                    revokeOwnedSleep();
+                    revokeOwnedProducer();
                     return;
                 }
                 armAwait(timer);
-                if (phase.get() == TERMINAL) revokeOwnedSleep();
+                if (phase.get() == TERMINAL) revokeOwnedProducer();
             } catch (RuntimeException | Error failure) {
                 if (timer != null) timer.cancel(false);
                 failTerminal(failure);
             }
         }
 
-        private void revokeOwnedSleep() {
-            OresFuture<Void> owned = activeOwnedSleep.getAndSet(null);
+        private void armStdioAdmission(StdioAdmission<?> output) {
+            OresFuture<Void> admission = null;
+            try {
+                // The trusted scheduler owns this operation. The guest
+                // cannot obtain/cancel another execution's pending producer.
+                if (phase.get() != RUNNING || completion.deferredCancellationCause() != null
+                        && !cleanupCancellationInjected.get()) {
+                    phase.compareAndSet(RUNNING, WAITING);
+                    return;
+                }
+                admission = output.descriptor().admitBuffered(output.text());
+                if (!activeOwnedProducer.compareAndSet(null, admission)) {
+                    admission.cancel(false);
+                    failTerminal(new IllegalStateException("previous execution-owned producer was not retired"));
+                    return;
+                }
+                if (phase.get() != RUNNING || completion.deferredCancellationCause() != null
+                        && !cleanupCancellationInjected.get()) {
+                    revokeOwnedProducer();
+                    // Let afterCarrierTurn inject cleanup cancellation through
+                    // the saved continuation; establish a WAITING boundary.
+                    phase.compareAndSet(RUNNING, WAITING);
+                    return;
+                }
+                armAwait(admission);
+                if (phase.get() == TERMINAL) revokeOwnedProducer();
+            } catch (RuntimeException | Error failure) {
+                if (admission != null) admission.cancel(false);
+                failTerminal(failure);
+            }
+        }
+
+        private void revokeOwnedProducer() {
+            OresFuture<Void> owned = activeOwnedProducer.getAndSet(null);
             if (owned != null) owned.cancel(false);
         }
 
@@ -1347,6 +1395,7 @@ public final class OresScheduler implements AutoCloseable {
                                 OresFuture.runtimeTerminalFailure(terminal));
                         return;
                     }
+                    ConcurrencyTestProbe.deadlock("future-cycle");
                     failTerminal(new IllegalStateException(
                             "cyclic Future await dependency detected"));
                     return;
@@ -1460,9 +1509,9 @@ public final class OresScheduler implements AutoCloseable {
             OresFuture.RuntimeWaiterRegistration<?> registration =
                     activeAwaitRegistration.getAndSet(null);
             if (registration != null) registration.detach();
-            // Only sleep owns its awaited producer. NEVER cancel a shared
-            // NIO readiness, channel or caller-supplied Future from here.
-            revokeOwnedSleep();
+            // Only dedicated execution-owned operations can revoke their producer.
+            // NEVER cancel a shared NIO, channel or caller-supplied Future here.
+            revokeOwnedProducer();
         }
 
         private void finish(T value) {
@@ -1586,6 +1635,9 @@ public final class OresScheduler implements AutoCloseable {
                     || executing.get() || acceptedDispatches.get() != 0
                     || !quiescenceState.compareAndSet(0, 1))
                 return;
+            // Also retire a producer published concurrently with terminal phase
+            // arbitration, after the last physical turn has fully unwound.
+            detachActiveAwaitRegistration();
             cancelWallDeadline();
             try {
                 // Keep the Task registered until the callback has actually

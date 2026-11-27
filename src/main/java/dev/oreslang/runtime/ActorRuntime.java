@@ -22,6 +22,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -355,6 +357,85 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
+
+    /**
+     * Semantic allocation domains used by compiler/runtime lowering.
+     *
+     * <p>These are logical ownership/allocation identities, never carrier-thread
+     * identities. Backends may map them to JVM accounting domains, native
+     * arenas, or hard isolates without changing source semantics.</p>
+     */
+    public enum AllocationDomainKind {
+        ROOT,
+        ACTOR_LOCAL,
+        ACTOR_PRIVATE,
+        UNTRUSTED_ISOLATE,
+        RUNTIME_SHARED
+    }
+
+    /**
+     * Opaque logical allocation-domain identity.
+     *
+     * <p>Actor-owned domains are keyed by ActorId so carrier migration does not
+     * change ownership. ROOT and RUNTIME_SHARED belong to the ActorRuntime as a
+     * whole and therefore have no actor id.</p>
+     */
+    public static final class AllocationDomain {
+        private final UUID runtimeId;
+        private final AllocationDomainKind kind;
+        private final ActorId actorId;
+
+        private AllocationDomain(
+                UUID runtimeId,
+                AllocationDomainKind kind,
+                ActorId actorId) {
+            this.runtimeId = Objects.requireNonNull(runtimeId, "runtimeId");
+            this.kind = Objects.requireNonNull(kind, "kind");
+            boolean actorOwned = switch (kind) {
+                case ACTOR_LOCAL, ACTOR_PRIVATE, UNTRUSTED_ISOLATE -> true;
+                case ROOT, RUNTIME_SHARED -> false;
+            };
+            if (actorOwned && actorId == null) {
+                throw new IllegalArgumentException(
+                        kind + " allocation domain requires an ActorId");
+            }
+            if (!actorOwned && actorId != null) {
+                throw new IllegalArgumentException(
+                        kind + " allocation domain cannot carry an ActorId");
+            }
+            this.actorId = actorId;
+        }
+
+        public UUID runtimeId() { return runtimeId; }
+        public AllocationDomainKind kind() { return kind; }
+        public ActorId actorId() { return actorId; }
+
+        public boolean actorOwned() {
+            return actorId != null;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof AllocationDomain domain)) return false;
+            return runtimeId.equals(domain.runtimeId)
+                    && kind == domain.kind
+                    && Objects.equals(actorId, domain.actorId);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(runtimeId, kind, actorId);
+        }
+
+        @Override
+        public String toString() {
+            return actorId == null
+                    ? "AllocationDomain[" + kind + ", runtime=" + runtimeId + "]"
+                    : "AllocationDomain[" + kind + ", runtime=" + runtimeId
+                            + ", actor=" + actorId + "]";
+        }
+    }
 
     /**
      * Requested physical heap placement is a requirement, not an assertion of
@@ -729,6 +810,34 @@ public final class ActorRuntime implements AutoCloseable {
         public static SupervisorId create() { return new SupervisorId(UUID.randomUUID()); }
     }
 
+    /** Immutable CONTROL metadata: no guest exception message, heap or payload. */
+    public enum VirtualActorTerminalKind { TERMINAL_FAILURE, CANCELLED }
+
+    /**
+     * Host-visible exact-generation terminal receipt, never guest callable.
+     * Actual policy authority is granted separately by a one-shot CONTROL
+     * decision lease after physical quiescence and supervisor validation.
+     */
+    public record VirtualActorTerminalNotice(
+            SupervisorId supervisorId,
+            ActorGroupId groupId,
+            VirtualActorActivationRegistry.Identity identity,
+            long generation,
+            ActorId actorId,
+            VirtualActorTerminalKind kind,
+            String failureClass) {
+        public VirtualActorTerminalNotice {
+            Objects.requireNonNull(supervisorId, "supervisorId");
+            Objects.requireNonNull(groupId, "groupId");
+            VirtualActorRuntimeGenerationFence.validate(identity);
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(failureClass, "failureClass");
+            if (generation <= 0 || failureClass.isBlank() || failureClass.length() > 256)
+                throw new IllegalArgumentException("invalid virtual terminal receipt");
+        }
+    }
+
     /** Stable machine-readable causes for synchronous mailbox admission failure. */
     public interface SendError {
         enum Reason {
@@ -834,6 +943,11 @@ public final class ActorRuntime implements AutoCloseable {
             return value;
         }
 
+        /** Allocation provenance for this explicit runtime-shared value. */
+        public AllocationDomain allocationDomain() {
+            return runtimeSharedAllocationDomain();
+        }
+
         private boolean ownedBy(ActorRuntime runtime) {
             return ActorRuntime.this == runtime;
         }
@@ -848,6 +962,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private final UUID allocationRuntimeId = UUID.randomUUID();
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     /** Stable *runtime-local* WAL actor slot, never a persistent database identity. */
@@ -983,6 +1098,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     /** Exactly one runtime-local generation authority for host virtual bindings. */
     private final VirtualActorRuntimeGenerationFence virtualActorFences;
+    /** Runtime-owned opt-in terminal CONTROL receipt transport, no per-actor pool. */
+    private final VirtualActorTerminalControl virtualActorTerminalControl;
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
     // Root is depth 0; child-supervisor admission permits at most 64 edges.
     private static final int MAX_SUPERVISOR_DEPTH = 64;
@@ -1006,6 +1123,8 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Linked process exit seals new actor admission without revoking dispatch.
+    private boolean linkedExitSealed; // guarded by runtimeLifecycleLock
     /** Distinct from admission sealing: dispatcher stop must still occur later. */
     private final AtomicBoolean dispatchersShutdown = new AtomicBoolean();
     /**
@@ -1024,6 +1143,28 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
+    // Trusted operator control; disabled for all standalone runtimes by
+    // default. Context is stored in immutable envelope metadata, not payload.
+    private volatile boolean tracePropagationEnabled;
+    // Trusted runtime-owned, per-isolate bounded semantic staging only.
+    // Never expose to source actors or forward to userland interceptors.
+    private volatile SemanticTraceBuffer traceSpanBuffer;
+    void configureTraceSpanBuffer(SemanticTraceBuffer collector) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (collector != null && policyCeiling.adversarial()) {
+            throw new SecurityException("untrusted actor runtime cannot own tracing buffer");
+        }
+        traceSpanBuffer = collector;
+    }
+
+    void configureTracePropagation(boolean enabled) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (enabled && policyCeiling.adversarial()) {
+            throw new SecurityException("untrusted runtime cannot propagate trace context");
+        }
+        tracePropagationEnabled = enabled;
+    }
+
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
@@ -1117,6 +1258,8 @@ public final class ActorRuntime implements AutoCloseable {
         this.virtualActorFences = new VirtualActorRuntimeGenerationFence(dispatcherConfig.maxActors());
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        this.virtualActorTerminalControl = new VirtualActorTerminalControl(
+                dispatcherConfig.maxActors(), this.controlDispatcher, this.virtualActorFences);
         this.physicalStopDispatcher = physicalStopDispatcher;
         int physicalLimit = Integer.getInteger("ores.runtime.actor.max-active-turns", 0);
         if (physicalLimit < 0) {
@@ -1156,6 +1299,59 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    /** Stable identity for every logical allocation domain owned by this runtime. */
+    public UUID allocationRuntimeId() { return allocationRuntimeId; }
+
+    /** Root/task allocation domain for code executing outside an actor turn. */
+    public AllocationDomain rootAllocationDomain() {
+        return new AllocationDomain(
+                allocationRuntimeId,
+                AllocationDomainKind.ROOT,
+                null);
+    }
+
+    /** Explicit process-local shared-memory domain owned by this ActorRuntime. */
+    public AllocationDomain runtimeSharedAllocationDomain() {
+        return new AllocationDomain(
+                allocationRuntimeId,
+                AllocationDomainKind.RUNTIME_SHARED,
+                null);
+    }
+
+    /**
+     * Allocation domain for the current semantic execution context.
+     *
+     * <p>This intentionally keys actor-local ownership by ActorId and never by
+     * the current carrier thread. Calling through a different ActorRuntime while
+     * an actor is executing fails closed instead of laundering ownership into a
+     * root domain. ActorGroup Mailman CONTROL callbacks are runtime plumbing,
+     * not guest allocation contexts, and also fail closed here.</p>
+     */
+    public AllocationDomain currentAllocationDomain() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current != null) {
+            if (current.runtime() != this) {
+                throw new SecurityException(
+                        "allocation-domain lookup crossed ActorRuntime boundary");
+            }
+            AllocationDomainKind kind = switch (current.kind()) {
+                case SHARED -> AllocationDomainKind.ACTOR_LOCAL;
+                case PRIVATE -> AllocationDomainKind.ACTOR_PRIVATE;
+                case UNTRUSTED -> AllocationDomainKind.UNTRUSTED_ISOLATE;
+            };
+            return new AllocationDomain(
+                    allocationRuntimeId,
+                    kind,
+                    current.actorId());
+        }
+        ActorGroupMailmanExecution mailman = CURRENT_ACTOR_GROUP_MAILMAN.get();
+        if (mailman != null) {
+            throw new SecurityException(
+                    "ActorGroup Mailman CONTROL execution has no guest allocation domain");
+        }
+        return rootAllocationDomain();
+    }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
@@ -1707,6 +1903,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        /** Closed with the owner slice; outstanding host leases defer payload drops. */
+        private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
         private final Set<PrivateLinearArena> linearArenas = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
@@ -1728,6 +1926,38 @@ public final class ActorRuntime implements AutoCloseable {
         public MemoryReservation reserveHeap(long bytes) {
             requireCurrentOwner();
             return reserve(bytes, "private actor heap");
+        }
+
+        /**
+         * Bounded host-managed graph with owner-checked handles and non-owning
+         * links. This is NOT source-heap lowering or physical GC isolation.
+         * Initially available only to PRIVATE and UNTRUSTED actors.
+         */
+        public <T extends AutoCloseable> ActorOwnedGraphArena<T> newGraphArena(
+                int maxNodes, int maxEdgesPerNode) {
+            requireCurrentOwner();
+            long metadataBytes = ActorOwnedGraphArena.estimatedMetadataBytes(
+                    maxNodes, maxEdgesPerNode);
+            synchronized (this) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap retired");
+                MemoryReservation reservation = reserve(metadataBytes, "actor graph metadata");
+                try {
+                    ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
+                            maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
+                            retired -> {
+                                ownedGraphs.remove(retired);
+                                // Once the slice is closed its bulk refund owns
+                                // the charge. release() itself is a synchronized
+                                // no-op after close; avoid a second refund.
+                                reservation.close();
+                            });
+                    ownedGraphs.add(graph);
+                    return graph;
+                } catch (RuntimeException | Error failure) {
+                    reservation.close();
+                    throw failure;
+                }
+            }
         }
 
         /**
@@ -1802,9 +2032,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            if (sliceClosed.get() || cell == null || !isPrivateKind(cell.kind)
+                    || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
-                        "private actor memory slice may only be reserved by its owning actor");
+                        "private actor memory slice may only be accessed by its live owning actor");
             }
         }
 
@@ -1824,14 +2055,58 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            for (PrivateLinearArena arena : List.copyOf(linearArenas)) arena.invalidateFromSlice();
-            linearArenas.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+        public void close() {
+            final List<ActorOwnedGraphArena<?>> graphs;
+            final List<PrivateMemoryBlock> ownedBlocks;
+            final List<PrivateLinearArena> ownedArenas;
+            final long bytes;
+            synchronized (this) {
+                if (!sliceClosed.compareAndSet(false, true)) return;
+                graphs = List.copyOf(ownedGraphs);
+                ownedGraphs.clear();
+                ownedBlocks = List.copyOf(blocks);
+                blocks.clear();
+                ownedArenas = List.copyOf(linearArenas);
+                linearArenas.clear();
+                bytes = usedBytes.getAndSet(0);
+            }
+            // Do not hold the slice monitor while invoking graph drop hooks:
+            // graph.close() can invoke a reservation refund through this slice.
+            Throwable failure = null;
+            for (ActorOwnedGraphArena<?> graph : graphs) {
+                try { graph.retireFromActor(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            for (PrivateMemoryBlock block : ownedBlocks) {
+                try { block.invalidateFromSlice(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            for (PrivateLinearArena arena : ownedArenas) {
+                try { arena.invalidateFromSlice(); }
+                catch (Throwable problem) { failure = recordTeardownFailure(failure, problem); }
+            }
+            try {
+                if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            } catch (Throwable problem) {
+                failure = recordTeardownFailure(failure, problem);
+            }
+            if (failure instanceof Error fatal) throw fatal;
+            if (failure instanceof RuntimeException problem) throw problem;
+            if (failure != null) throw new IllegalStateException("actor slice retirement failed", failure);
+        }
+
+        private static Throwable recordTeardownFailure(Throwable previous, Throwable next) {
+            if (previous == null) return next;
+            boolean oldFatal = previous instanceof VirtualMachineError
+                    || previous instanceof ThreadDeath;
+            boolean newFatal = next instanceof VirtualMachineError
+                    || next instanceof ThreadDeath;
+            if (newFatal && !oldFatal) {
+                next.addSuppressed(previous);
+                return next;
+            }
+            if (previous != next) previous.addSuppressed(next);
+            return previous;
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -2341,16 +2616,18 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            TraceParent traceParent) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
-                long sequence) {
+                long sequence,
+                TraceParent traceParent) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence, traceParent);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -2359,7 +2636,8 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    null);
         }
 
         private boolean isContinuation() {
@@ -2405,6 +2683,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         public boolean closed() {
             return cellClosed.get() || ActorRuntime.this.closed.get();
+        }
+
+        /** Allocation provenance for this explicit synchronized shared value. */
+        public AllocationDomain allocationDomain() {
+            return runtimeSharedAllocationDomain();
         }
 
         private boolean ownedBy(ActorRuntime runtime) {
@@ -2635,8 +2918,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
-                    new OresFuture<>(() -> read.cancel(false));
+                    new OresFuture<>(() -> read.cancel(false), () -> { });
             read.whenCompleteRuntime((envelope, failure) -> {
+                // The private read's cancellation is initiated by result.cancel().
+                // Let that caller publish cancellation only after the channel
+                // arbitration wins. If a read was already committed, cancelling
+                // the outer Future must fail rather than discard its output.
+                if (read.isCancelled()) return;
                 final boolean shutdownWon;
                 synchronized (runtimeLifecycleLock) {
                     // Linearize output observation against admission sealing.
@@ -2759,6 +3047,13 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
+
+        /**
+         * Compiler-supplied metadata, never a guest-controlled state field.
+         * True gates DATA receive invocations, NOT unrelated receiver methods.
+         * Legacy host code executors default to non-serial declarations.
+         */
+        default boolean serialReceive() { return false; }
     }
 
     /**
@@ -2812,6 +3107,14 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /**
+         * Semantic allocation domain for this actor. The result is stable across
+         * carrier migration and scheduler suspension/resume.
+         */
+        default AllocationDomain allocationDomain() {
+            return runtime().currentAllocationDomain();
+        }
 
         /**
          * This actor incarnation's private 32-bit heap (spec chapter 27).
@@ -2938,6 +3241,52 @@ public final class ActorRuntime implements AutoCloseable {
                     && cell.carrierOwnerThread == Thread.currentThread()
                     && cell.activeTurns == 1;
         }
+    }
+
+    // Runtime-only owner proof for state that survives carrier migration.
+    // The cell identity, code generation and active lease all must match.
+    boolean ownsCountedCursorTurn(ContinuationTarget target) {
+        ActorCell<?> cell = target.currentCell(this);
+        if (target.originatingRuntime.get() != this || cell == null
+                || currentActor.get() != cell) return false;
+        synchronized (cell.lifecycleLock) {
+            return !cell.stopped.get() && !cell.finalized
+                    && cell.codeGeneration == target.codeGeneration
+                    && cell.carrierActive && cell.scheduled.get()
+                    && cell.carrierOwnerThread == Thread.currentThread()
+                    && cell.activeTurns == 1;
+        }
+    }
+
+    // Register the active round as an actor-owned Future and queue a
+    // continuation only after its physical notification-drain receipt.
+    // The callback itself carries the receipt. Receipt listeners may run
+    // out of order when added after notificationDrainComplete is published;
+    // do not depend on one listener setting a flag before another enqueues.
+    void ownTrackedCountedRound(ContinuationTarget target, OresFuture<?> round) {
+        Objects.requireNonNull(round);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round lost its actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round denied by actor lifecycle");
+        }
+    }
+
+    void enqueueCountedRoundRetirement(OresFuture<?> round,
+            ContinuationTarget target, Runnable continuation) {
+        Objects.requireNonNull(round);
+        Objects.requireNonNull(continuation);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("counted cursor requires its owning actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) return;
+        round.whenNotificationsDrainedRuntime(() -> target.enqueue(continuation));
     }
 
     public ContinuationTarget captureCurrentContinuationTarget() {
@@ -3559,6 +3908,10 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 completedSequence = cell.activeMail == null
                         ? -1L : cell.activeMail.sequence();
+                // Waking a suspended receive does NOT retire its logical
+                // invocation. Completion accounting and all synchronous
+                // observer notifications must finish before the DATA permit
+                // becomes available to another serial receive.
                 cell.sourceReceiveSuspended = false;
                 cell.activeMail = null;
                 cell.lifecycleLock.notifyAll();
@@ -3577,6 +3930,11 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("source receive lost pending mail sequence");
             }
             cell.markMessageProcessed(completedSequence);
+            synchronized (cell.lifecycleLock) {
+                // Only a successful terminal completion releases the permit.
+                // A failure holds it until fail-stop physical retirement.
+                cell.completeReceivePermitLocked();
+            }
         })) {
             boolean failActor = false;
             synchronized (cell.lifecycleLock) {
@@ -3626,6 +3984,10 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        // Unlike ActorCell.finalized, this is signaled only after group
+        // deregistration, mailbox/accounting cleanup, and done notification.
+        // It belongs to the ref so lookup removal cannot race host waiters.
+        private final CountDownLatch retirementBarrier = new CountDownLatch(1);
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -3722,10 +4084,10 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            // ActorCell.finalized becomes true at the START of teardown and
+            // the cell leaves actors before doneFuture is signaled. Neither
+            // observation is a complete host-visible retirement barrier.
+            return retirementBarrier.await(timeout, unit);
         }
 
         public void send(M message) {
@@ -3816,6 +4178,139 @@ public final class ActorRuntime implements AutoCloseable {
         public String toString() {
             return "ActorRef[" + kind + ":" + id.value() + "]";
         }
+    }
+
+    /**
+     * CONTROL-minted, physical-actor-only delivery capability. Once the owning
+     * ActorCell has been claimed, ordinary ActorRef.send/sendAsync and Mailman
+     * deliveries to the physical ref are denied permanently, including after
+     * route retirement. Only an exact coordinator PhysicalCompletion can
+     * authorize one physical transport attempt. Not a guest/source capability.
+     *
+     * This is NOT the stable logical ActorRef and never grants actor state or
+     * physical reclamation authority.
+     */
+    final class HotRoutePhysical<M>
+            implements ActorRouteCoordinatorV1.PhysicalRouteWitness {
+        private final ActorRef<M> ref;
+        private ActorPhysicalHotRouteIngressFence.Permit permit;
+        private final AtomicReference<Object> logicalOwner = new AtomicReference<>();
+        /** Captures every already-accepted raw physical message at route claim. */
+        private volatile OresFuture<Void> preclaimDirectDrain;
+
+        private HotRoutePhysical(ActorRef<M> ref) {
+            this.ref = Objects.requireNonNull(ref, "physical ActorRef");
+        }
+
+        private void bind(ActorPhysicalHotRouteIngressFence.Permit minted) {
+            if (permit != null) throw new IllegalStateException("physical route already bound");
+            permit = Objects.requireNonNull(minted, "runtime-minted permit");
+        }
+
+        void sendTracked(
+                M message,
+                ActorRouteCoordinatorV1<HotRoutePhysical<M>>.PhysicalCompletion receipt) {
+            requireSupervisorContext("dispatch a managed physical actor route");
+            // A missing receipt is an attempt to mint physical admission without
+            // the coordinator: deny it as an authority failure, not a bug.
+            if (receipt == null) {
+                throw new SecurityException(
+                        "managed physical route dispatch requires the exact coordinator completion receipt");
+            }
+            receipt.claimPhysicalAdmission(this);
+            sendWithHotRoutePermit(ref, message, permit);
+        }
+
+        OresFuture<Void> processedDrain() {
+            return ref.drain();
+        }
+
+        @Override
+        public boolean preclaimDirectMailDrained() {
+            OresFuture<Void> drain = preclaimDirectDrain;
+            return drain != null && drain.isDone()
+                    && !drain.isCompletedExceptionally();
+        }
+
+        @Override
+        public boolean readyForPublication() {
+            ActorCell<?> cell = actors.get(ref.id());
+            if (cell == null || cell.ref != ref) return false;
+            synchronized (cell.lifecycleLock) {
+                return cell.ref == ref && cell.hotRouteIngress.claimed()
+                        && !permit.retired() && !cell.stopped.get()
+                        && !cell.finalized && !cell.forceKillFenced
+                        && ref.readyFuture.isDone()
+                        && !ref.readyFuture.isCompletedExceptionally()
+                        && preclaimDirectMailDrained();
+            }
+        }
+
+        @Override
+        public boolean sameAuthorityDomain(
+                ActorRouteCoordinatorV1.PhysicalRouteWitness candidate) {
+            return candidate instanceof ActorRuntime.HotRoutePhysical<?> other
+                    && ActorRuntime.this == other.owningRuntime();
+        }
+
+        private ActorRuntime owningRuntime() { return ActorRuntime.this; }
+
+        @Override
+        public void bindToCoordinator(Object coordinator) {
+            Objects.requireNonNull(coordinator, "logical coordinator identity");
+            if (!logicalOwner.compareAndSet(null, coordinator)) {
+                throw new SecurityException(
+                        "physical actor route was already bound to a different logical ActorRef");
+            }
+        }
+
+        @Override
+        public void retireFromLogicalRoute() {
+            permit.retire(); // monotonic and non-blocking; no physical teardown
+        }
+
+        ActorRef<M> physicalRefForHostOnly() { return ref; }
+    }
+
+    /**
+     * One-way physical ingress claim. This method is package-private and
+     * requires host/CONTROL context. The minted endpoint cannot be recreated
+     * by a second coordinator or a stale actor. The caller MUST use it only
+     * after the physical actor is ready and MUST account for pre-claim mail
+     * through an independent physical processing/quiescence receipt.
+     */
+    <M> HotRoutePhysical<M> claimPhysicalForHotRoute(ActorRef<M> ref) {
+        requireSupervisorContext("claim physical actor for hot route");
+        requireCallerRuntimeAffinity("claim physical actor for hot route");
+        Objects.requireNonNull(ref, "physical ActorRef");
+        if (!ref.ownedBy(this)) {
+            throw new SecurityException("cannot claim another runtime's physical ActorRef");
+        }
+        if (ref.kind() != ActorKind.SHARED) {
+            throw new SecurityException("v1 physical hot routes require SHARED actors");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref) {
+            throw terminated(ref);
+        }
+        // Allocate the endpoint BEFORE making the one-way claim, so an
+        // allocation failure does not strand a sealed ActorCell.
+        HotRoutePhysical<M> endpoint = new HotRoutePhysical<>(ref);
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.finalized
+                    || cell.sealing || cell.forceKillFenced) throw terminated(ref);
+            if (!ref.readyFuture.isDone() || ref.readyFuture.isCompletedExceptionally()) {
+                throw new IllegalStateException("physical actor must be successfully ready before route claim");
+            }
+            endpoint.bind(cell.hotRouteIngress.claim());
+        }
+        // The ingress seal linearized under the actor cell monitor above;
+        // no new raw send can enter. Capture the already-admitted physical
+        // mailbox watermark AFTER claim, outside that monitor to avoid
+        // guest/user Future callbacks under a lifecycle lock. A failed
+        // barrier leaves the actor permanently sealed, never falsely safe.
+        endpoint.preclaimDirectDrain = ref.drain();
+        return endpoint;
     }
 
     /**
@@ -3982,9 +4477,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Unforgeable join authority for one ActorGroup. Capabilities may cross
-     * actor mailboxes but are runtime-affine and cannot be reconstructed from a
-     * group id.
+     * Unforgeable join authority for one ActorGroup. Raw capabilities are
+     * runtime-affine manager/CONTROL authority and are deliberately NOT
+     * Sendable through ordinary actor DATA mailboxes. A future target-bound,
+     * one-use invitation must use a distinct CONTROL-lane capability type.
      */
     public final class ActorGroupJoinCapability {
         private final ActorGroupId groupId;
@@ -4254,7 +4750,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireCallerRuntimeAffinity("create a child ActorSupervisor");
         Objects.requireNonNull(parent, "parent");
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (supervisors.get(parent.id()) != parent)
                 throw new IllegalArgumentException(
                         "parent ActorSupervisor belongs to another ActorRuntime");
@@ -4309,6 +4805,11 @@ public final class ActorRuntime implements AutoCloseable {
         // close admission, after their public ActorRefs have been revoked.
         private int closedWorkerCount;
         private final Object authorityLock = new Object();
+        /** Optional host CONTROL callback; copied into each physical binding. */
+        private Function<VirtualActorTerminalNotice, CompletionStage<Void>>
+                virtualActorTerminalHandler;
+        /** No late subscription after a physical virtual actor has bound. */
+        private boolean virtualActorBindingEverStarted;
         // Trusted runtime resource closures, not guest callbacks. Invoked
         // outside authorityLock after the group is fenced but before worker
         // cancellation and event-bus teardown.
@@ -4398,6 +4899,28 @@ public final class ActorRuntime implements AutoCloseable {
          * authority lock fences releaseWorker and close. In this path,
          * lifecycleLock -> authorityLock matches termination ordering.
          */
+        /**
+         * Enable one bounded terminal CONTROL receipt callback per group.
+         * The dispatcher is VM-provided; callbacks must return a completion
+         * stage and remain fenced across asynchronous policy side effects.
+         * This is host-only, never callable from actor guest code.
+         */
+        public void installVirtualActorTerminalHandler(
+                Function<VirtualActorTerminalNotice, CompletionStage<Void>> handler) {
+            requireSupervisor("install virtual actor terminal CONTROL handler");
+            requireCallerRuntimeAffinity("install virtual actor terminal CONTROL handler");
+            Objects.requireNonNull(handler, "handler");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (virtualActorTerminalHandler != null)
+                    throw new IllegalStateException("virtual terminal CONTROL handler already installed");
+                if (virtualActorBindingEverStarted)
+                    throw new IllegalStateException(
+                            "install virtual terminal CONTROL before the first activation bind");
+                virtualActorTerminalHandler = handler;
+            }
+        }
+
         public void bindVirtualActorIdentity(
                 ActorRef<?> worker,
                 VirtualActorActivationRegistry.Identity identity,
@@ -4422,8 +4945,62 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new IllegalStateException(
                                 "virtual worker is not live under this exact ActorGroup");
                     }
-                    virtualActorFences.bind(supervisor.id(), id, identity, generation, worker.id());
+                    var terminalHandler = virtualActorTerminalHandler;
+                    if (terminalHandler != null) {
+                        virtualActorTerminalControl.admit(
+                                this, supervisor.id(), id, identity, generation,
+                                worker.id(), terminalHandler);
+                    }
+                    try {
+                        virtualActorFences.bind(supervisor.id(), id, identity, generation, worker.id());
+                        virtualActorBindingEverStarted = true;
+                    } catch (RuntimeException | Error failure) {
+                        if (terminalHandler != null)
+                            virtualActorTerminalControl.discardUnbound(worker.id());
+                        throw failure;
+                    }
                 }
+            }
+        }
+
+        /**
+         * Host-only inspection bridge. Directory state is a projection of the
+         * same generation/physical/terminal authority used by activation and
+         * CONTROL: no directory-owned generation counters or mutable mirrors.
+         */
+        void requireVirtualActorDirectoryHost() {
+            requireSupervisor("inspect current-main virtual actor directory");
+            requireCallerRuntimeAffinity("inspect current-main virtual actor directory");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor directory group");
+            }
+        }
+
+        Optional<VirtualActorRuntimeGenerationFence.DirectoryEntry>
+        inspectVirtualActorDirectory(VirtualActorActivationRegistry.Identity identity) {
+            requireSupervisor("inspect current-main virtual actor identity");
+            requireCallerRuntimeAffinity("inspect current-main virtual actor identity");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor directory group");
+                return virtualActorFences.inspectDirectory(supervisor.id(), identity);
+            }
+        }
+
+        VirtualActorRuntimeGenerationFence.DirectoryPage
+        pageVirtualActorDirectory(String tenant, int limit, long revision,
+                                  VirtualActorActivationRegistry.Identity after) {
+            requireSupervisor("list current-main virtual actor directory");
+            requireCallerRuntimeAffinity("list current-main virtual actor directory");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor directory group");
+                return virtualActorFences.listDirectory(
+                        supervisor.id(), tenant, limit, revision, after);
             }
         }
 
@@ -5905,7 +6482,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (actorGroups.size() >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
                         "ActorGroup runtime limit exceeded: maximum "
@@ -6641,7 +7218,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -7551,6 +8128,13 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        sendWithHotRoutePermit(ref, message, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendWithHotRoutePermit(
+            ActorRef<M> ref, M message,
+            ActorPhysicalHotRouteIngressFence.Permit routePermit) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -7562,8 +8146,9 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell == null || cell.ref != ref || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
+            cell.hotRouteIngress.require(routePermit);
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
@@ -7641,6 +8226,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorId sender = currentActorId().orElse(null);
+        // Mail metadata is outside the transported user object, never frozen,
+        // serialized as a guest capability, or given to the actor handler.
+        TraceParent mailTrace = tracePropagationEnabled && cell.kind != ActorKind.UNTRUSTED
+                ? TaskContext.traceParent() : null;
         MessageEnvelope envelope = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
@@ -7651,6 +8240,10 @@ public final class ActorRuntime implements AutoCloseable {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
                 synchronized (cell.lifecycleLock) {
+                    // Revalidate under the publication lock. A host may have
+                    // claimed the actor while message transport was freezing
+                    // its graph. Such a racing raw send must not publish.
+                    cell.hotRouteIngress.require(routePermit);
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
@@ -7672,7 +8265,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
+                            prepared, release, sender, sequence, mailTrace);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException(
                                 "actor mailbox credit/capacity invariant violated for " + ref.id());
@@ -7740,7 +8333,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) return OresFuture.failed(terminated(ref));
+        if (cell == null || cell.ref != ref || cell.stopped.get())
+            return OresFuture.failed(terminated(ref));
+        // Fast-fail before expensive transport graph snapshot; async waiters
+        // which predated route claim are checked again at final publication.
+        synchronized (cell.lifecycleLock) {
+            cell.hotRouteIngress.require(null);
+        }
         if (currentActor.get() == cell) {
             return OresFuture.failed(new ActorSendWouldDeadlockException(ref.id()));
         }
@@ -7833,6 +8432,11 @@ public final class ActorRuntime implements AutoCloseable {
             if (payloadReleased.compareAndSet(false, true)) rawRelease.run();
         };
         ActorId sender = currentActorId().orElse(null);
+        // Capture before the asynchronous mailbox credit waiter. A callback
+        // may run on another thread long after the sender's context changes.
+        final TraceParent mailTrace =
+                tracePropagationEnabled && cell.kind != ActorKind.UNTRUSTED
+                        ? TaskContext.traceParent() : null;
 
         final OresFuture<Boolean> slot;
         try {
@@ -7913,6 +8517,9 @@ public final class ActorRuntime implements AutoCloseable {
                         sharedMutexReservations = reserveSharedMutexBindings(prepared);
                     }
                     synchronized (cell.lifecycleLock) {
+                        // Async producers may have waited before the physical
+                        // actor was enrolled; never bypass the new route.
+                        cell.hotRouteIngress.require(null);
                         if (cell.stopped.get() || cell.finalized) throw terminated(ref);
                         if (cell.sealing) throw new ActorSealedException(ref.id());
                         if (cell.forceKillFenced) {
@@ -7931,7 +8538,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     exhausted);
                         }
                         envelope = MessageEnvelope.message(
-                                prepared, releaseOnce, sender, sequence);
+                                prepared, releaseOnce, sender, sequence, mailTrace);
                         if (!cell.mailbox.tryWrite(envelope)) {
                             throw new IllegalStateException(
                                     "transferred actor mailbox slot was not physically writable for "
@@ -8311,8 +8918,15 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)
-                || value instanceof ActorRuntime.ActorRef<?>
-                || value instanceof ActorRuntime.ActorGroupJoinCapability) return;
+                || value instanceof ActorRuntime.ActorRef<?>) return;
+        // Raw ActorGroup join authority belongs to the CONTROL plane. Keep
+        // this transport-specific walker fail-closed on its own so a future
+        // validation-order refactor cannot reopen DATA capability transport.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ChannelRuntime.Channel<?>
                 || value instanceof ChannelRuntime.ReadChannel<?>
                 || value instanceof ChannelRuntime.WriteChannel<?>
@@ -8387,6 +9001,14 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+
+        // SharedMutex payload inspection is an independent DATA authorization
+        // boundary. Do not rely on requireOwnedActorRefs() running later.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
@@ -8473,12 +9095,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) {
-            if (!capability.ownedBy(this)) {
-                throw new IllegalArgumentException(
-                        "ActorGroup capability belongs to a different ActorRuntime");
-            }
-            return;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
         }
         if (value instanceof Shared<?> shared) {
             requireOwnedActorRefs(shared.value(), visiting, depth + 1);
@@ -8529,12 +9149,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) {
-            if (!capability.ownedBy(this)) {
-                throw new IllegalArgumentException(
-                        "ActorGroup capability belongs to a different ActorRuntime");
-            }
-            return;
+        // Defense in depth: this walker is used only for SHARED transport,
+        // and must reject raw manager/CONTROL authority even if an upstream
+        // sender-ownership validation is later reordered or refactored.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
         }
         if (value instanceof Shared<?> shared) {
             if (!shared.ownedBy(this)) {
@@ -8959,7 +9580,11 @@ public final class ActorRuntime implements AutoCloseable {
             return shared;
         }
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -9049,7 +9674,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1, budget);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
@@ -9112,7 +9741,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -9180,7 +9813,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -9236,7 +9873,11 @@ public final class ActorRuntime implements AutoCloseable {
             return estimatePrivateTransportBytes(shared.value(), visiting, depth + 1, limit);
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
@@ -9363,7 +10004,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot be frozen as data; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -9430,6 +10075,57 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (!cell.finalized) cell.sealing = true;
             }
+        }
+    }
+
+    /**
+     * Finite linked-process mailbox drain, not the embedder's general close.
+     * All callbacks/waits run outside admission locks. One deadline bounds
+     * the cohort. A failed drain must not become a successful process exit.
+     */
+    void drainLinkedExit() throws InterruptedException {
+        requireSupervisorContext("drain linked process actors");
+        requireBlockingHostContext("drain linked process actors");
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        final List<ActorCell<?>> snapshot;
+        final List<OresFuture<Void>> drains = new ArrayList<>();
+        final List<Runnable> rejected = new ArrayList<>();
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get() || linkedExitSealed)
+                throw new IllegalStateException("linked exit already sealed");
+            if (!actorGroups.isEmpty() || supervisors.size() != 1)
+                throw new IllegalStateException(
+                        "linked actor drain requires explicit group/supervisor retirement");
+            linkedExitSealed = true;
+            snapshot = List.copyOf(actors.values());
+            for (ActorCell<?> cell : snapshot) {
+                synchronized (cell.lifecycleLock) {
+                    if (cell.finalized || cell.stopped.get()) continue;
+                    cell.sealing = true;
+                    rejected.add(cell.sealAsyncSendAdmission(
+                            new ActorSealedException(cell.ref.id())));
+                    drains.add(cell.drainAcceptedMessages(true));
+                }
+            }
+        }
+        for (Runnable reject : rejected) reject.run();
+        for (ActorCell<?> cell : snapshot) cell.schedule();
+        try {
+            for (OresFuture<Void> drain : drains) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) throw new TimeoutException("linked mailbox drain deadline");
+                drain.get(remaining, TimeUnit.NANOSECONDS);
+            }
+        } catch (ExecutionException | TimeoutException failure) {
+            throw new IllegalStateException("linked mailbox drain incomplete", failure);
+        }
+        // Stop only after EVERY watermark has processed, so structured
+        // parent retirement cannot discard an accepted child message.
+        for (ActorCell<?> cell : snapshot) cell.stop();
+        for (ActorCell<?> cell : snapshot) {
+            cell.awaitFinalized(Math.max(0L, deadline - System.nanoTime()));
+            if (!cell.finalized())
+                throw new IllegalStateException("linked actor carrier retirement incomplete: " + cell.ref.id());
         }
     }
 
@@ -9749,6 +10445,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /** One-way physical DATA seal; normal ActorRefs remain unaffected. */
+        private final ActorPhysicalHotRouteIngressFence hotRouteIngress =
+                new ActorPhysicalHotRouteIngressFence();
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
@@ -9849,6 +10548,10 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        /** Receive-only permit persists across logical source suspension. */
+        private ActorReceiveAdmission receiveAdmission;
+        /** One live permit in the currently single-writer physical scheduler. */
+        private ActorReceiveAdmission.Permit activeReceivePermit;
         /**
          * Separate actor-owned receipts: the currently RUNNING callback may
          * coexist with a fully reserved continuation mailbox.
@@ -9940,6 +10643,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             this.ref = ref;
             this.kind = kind;
+            // Conservative physical stage: even ordinary actors have a
+            // single active receive until parallel stack/state lowering is
+            // independently proven. The serial qualifier is retained below.
+            this.receiveAdmission = ActorReceiveAdmission.concurrent(ref.generation(), 1);
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
             this.policy = policy;
@@ -10734,6 +11441,11 @@ public final class ActorRuntime implements AutoCloseable {
                 recordFinalizationFailure(failure);
             }
             staticSelectCursors.clear();
+            // STOP has already joined physical SourceTask cleanup at this
+            // finalization point. Only now retire the outstanding receive
+            // permit and seal its incarnation-scoped admission gate.
+            releaseReceivePermitLocked();
+            receiveAdmission.close();
             // A compiler-lowered sealed region may only be reclaimed after
             // source tasks and their cleanup reached physical quiescence above.
             // Do not release live state on the first STOP request: closing
@@ -10828,9 +11540,24 @@ public final class ActorRuntime implements AutoCloseable {
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
             if (virtualPhysicalCleanupComplete && actorAndGroupDeregistered && parentReleased) {
-                try { virtualActorFences.retire(ref.id()); }
+                try {
+                    Throwable cause = ref.terminationCause.get();
+                    boolean terminalReceiptRequired = cause != null
+                            && virtualActorTerminalControl.registered(ref.id());
+                    // Publish "CONTROL pending" in the same atomic retirement
+                    // transition so a replacement cannot overtake dispatch.
+                    virtualActorFences.retire(ref.id(), terminalReceiptRequired);
+                    virtualActorTerminalControl.onRetired(ref.id(), cause);
+                }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
+            } else {
+                // Explicitly quarantine in the authoritative ledger before
+                // discarding the host callback. No physical release occurred:
+                // an inspector must never confuse incomplete cleanup with
+                // a successful passivation.
+                virtualActorFences.quarantinePhysical(ref.id());
+                virtualActorTerminalControl.discardIncomplete(ref.id());
             }
             Throwable terminal = ref.terminationCause.get();
             // Decision on #1223 (2026-11-17): ready/done may be awaited by guest
@@ -10847,6 +11574,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(observerFailure);
             finalizedFuture.completeFromRuntime(null);
+            // Publish the terminal host barrier only after every teardown step
+            // above, including ActorGroup subscription drain and notifications.
+            ref.retirementBarrier.countDown();
             lifecycleLock.notifyAll();
         }
 
@@ -11245,18 +11975,19 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "nested actor carrier admission would overwrite the current actor context");
             }
-            // Mint before touching any ThreadLocal: this code is outside the
-            // try/finally that clears them, so a failure here must leave the
-            // carrier exactly as clean as the nested-admission check does.
+            // Mint before touching either ThreadLocal. Failures in minting
+            // must leave the carrier clean; publication itself belongs inside
+            // the cleanup scope so even a failed ThreadLocal.set cannot strand
+            // actor authority on a reused worker.
             ActorExecutionContext entered = new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), ref.generation(), kind, policy, executionDomain,
                     codeImage, codeActorType,
                     mintActorExecutionContext(storageActorOrdinal, ref.generation()));
-            currentActor.set(this);
-            CURRENT_ACTOR_EXECUTION.set(entered);
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
+                currentActor.set(this);
+                CURRENT_ACTOR_EXECUTION.set(entered);
                 // Admission may throw on a single-writer lease violation.
                 // The carrier's actor identity must still be cleared.
                 turnActive = beginTurn();
@@ -11314,7 +12045,17 @@ public final class ActorRuntime implements AutoCloseable {
                                             + " does not match actor "
                                             + ref.id());
                         }
-                        codeActorState = created;
+                        // A serial source declaration must be preserved at
+                        // runtime; numeric 1/1 admission settings alone are
+                        // not a substitute for its receive-only semantics.
+                        synchronized (lifecycleLock) {
+                            if (created.serialReceive()) {
+                                receiveAdmission.close();
+                                receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                                if (stopped.get()) receiveAdmission.fence();
+                            }
+                            codeActorState = created;
+                        }
                     } else {
                         Behavior<M> created = Objects.requireNonNull(
                                 behaviorFactory.create(context),
@@ -11467,11 +12208,53 @@ public final class ActorRuntime implements AutoCloseable {
                                     Optional.ofNullable(activeEnvelope.sender()),
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
-                            activeMail = mail;
+                            synchronized (lifecycleLock) {
+                                if (activeReceivePermit != null) {
+                                    throw new IllegalStateException(
+                                            "actor receive permit retained across fresh DATA dispatch");
+                                }
+                                ActorReceiveAdmission.Permit permit =
+                                        receiveAdmission.tryEnter(ref.generation());
+                                if (permit == null) {
+                                    throw new IllegalStateException(
+                                            "actor receive admission exhausted during DATA dispatch");
+                                }
+                                activeReceivePermit = permit;
+                                activeMail = mail;
+                            }
                             // Each admitted receive invocation gets its own logical stack
                             // (spec ch. 25): its quota does not depend on the carrier, and
                             // its exhaustion fails this actor, not the carrier or process.
                             LogicalStackQuota.Segment receiveStack = LogicalStackQuota.enter(ref.id());
+                            // Every USER dispatch has its own logical context.
+                            // Never borrow a carrier's stale context or mutate
+                            // a sender-owned Span; only immutable W3C metadata
+                            // admitted with this exact mailbox envelope may
+                            // be installed. SourceTask snapshots it on await.
+                            boolean installMailTrace = tracePropagationEnabled;
+                            TaskContext previousMailTask = null;
+                            SemanticTraceBuffer.Scope actorTurnSpan = null;
+                            if (installMailTrace) {
+                                previousMailTask = TaskContext.install(null);
+                                TraceParent admittedParent = activeEnvelope.traceParent();
+                                if (admittedParent != null) {
+                                    TraceParent currentParent = admittedParent;
+                                    SemanticTraceBuffer observer = traceSpanBuffer;
+                                    if (observer != null && admittedParent.sampled()) {
+                                        // A child span represents this actor
+                                        // *dispatch turn*, not the total
+                                        // lifetime of a suspended source Task.
+                                        TraceParent child = admittedParent.newChild();
+                                        actorTurnSpan = observer.begin(child,
+                                                admittedParent.spanId(),
+                                                SemanticTraceBuffer.ACTOR_RECEIVE,
+                                                SemanticTraceBuffer.Kind.INTERNAL);
+                                        currentParent = child;
+                                    }
+                                    TaskContext.pushTraceParent(currentParent);
+                                }
+                            }
+                            boolean actorTurnFailed = false;
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -11493,8 +12276,21 @@ public final class ActorRuntime implements AutoCloseable {
                                 } else if (!rejectedByUpgrade(mail)) {
                                     behavior.onMessage(mail.value(), context);
                                 }
+                            } catch (RuntimeException | Error failure) {
+                                actorTurnFailed = true;
+                                throw failure;
                             } finally {
-                                if (!sourceReceiveSuspended) activeMail = null;
+                                SemanticTraceBuffer.finish(actorTurnSpan, 0, actorTurnFailed);
+                                if (installMailTrace) TaskContext.install(previousMailTask);
+                                synchronized (lifecycleLock) {
+                                    if (!sourceReceiveSuspended) {
+                                        // A completed DATA receive still owns its logical
+                                        // permit until markMessageProcessed has settled
+                                        // the drain/observer accounting below. On failure,
+                                        // hold the permit until fail-stop retirement.
+                                        activeMail = null;
+                                    }
+                                }
                                 receiveStack.close();
                             }
                             if (receiveStack.poisoned()) {
@@ -11518,6 +12314,13 @@ public final class ActorRuntime implements AutoCloseable {
                     // its continuation completes; the continuation marks it.
                     if (!envelope.isContinuation() && !sourceReceiveSuspended) {
                         markMessageProcessed(envelope.sequence());
+                        synchronized (lifecycleLock) {
+                            // Exactly as on suspended Future completion: release
+                            // DATA admission only after successful accounting and
+                            // all synchronous drain notifications. An exception
+                            // leaves this permit owned by fail-stop cleanup.
+                            completeReceivePermitLocked();
+                        }
                     }
                     processed++;
 
@@ -11568,6 +12371,34 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
+            }
+        }
+
+        /**
+         * Successful DATA completion must retire exactly one LIVE receive.
+         * Never treat an absent/already-retired permit as success: doing so
+         * could admit overlapping serial receives or silently conceal a stale
+         * continuation replay. Actor finalization uses the distinct optional
+         * cleanup release below, only after physical quiescence.
+         * Caller holds lifecycleLock.
+         */
+        private void completeReceivePermitLocked() {
+            if (activeReceivePermit == null || activeReceivePermit.isRetired()) {
+                throw new IllegalStateException(
+                        "actor receive completed without a live admission permit for "
+                                + ref.id());
+            }
+            releaseReceivePermitLocked();
+        }
+
+        /**
+         * Lifecycle-monitor-only release. Await/cooperate NEVER returns the
+         * permit: a suspended DATA receive still owns its logical stack.
+         */
+        private void releaseReceivePermitLocked() {
+            if (activeReceivePermit != null) {
+                activeReceivePermit.close();
+                activeReceivePermit = null;
             }
         }
 
@@ -11696,6 +12527,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // STOP is single-shot. Reentrant supervisor/host requests must
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
+                receiveAdmission.fence();
                 // Capture only the sealed compiler-owned region. This is a
                 // non-guest STOP fence; do not hold lifecycleLock while
                 // closing the region's loan arbiter.

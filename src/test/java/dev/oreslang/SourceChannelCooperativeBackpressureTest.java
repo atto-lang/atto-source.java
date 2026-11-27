@@ -21,7 +21,12 @@ final class SourceChannelCooperativeBackpressureTest {
         assertEquals("false|41|42", run("""
                 async fnc produce(Channel<int> data, Channel<bool> ready): void {
                   writech data, 41;
-                  val bool admitted = try writech data, 99;
+                  val TryWriteResult<int> outcome = try writech data, 99;
+                  val bool admitted = match<bool> outcome over
+                    on Accepted -> true
+                    on Full(rejected) -> false
+                    on Closed(rejected) -> false
+                  end;
                   writech ready, admitted;
                   writech data, 42;
                   return;

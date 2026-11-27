@@ -1,5 +1,5 @@
 // Compiler-backed native text validation against the legacy Java policy.
-import module text from "ores.std/text";
+import module text from "atto.std/text";
 pub routine main(): void {
   stdio.println(text.is_identifier("abc_9") == "abc_9".is_identifier());
   stdio.println(text.is_identifier("_") == "_".is_identifier());

@@ -4,16 +4,9 @@ on:
   push:
     branches:
       - feat/lazy-actor-pool-pthreads-20261103
-    paths:
-      - ".github/workflows/lazy-native-carrier-lifecycle.yml"
-      - "src/main/c/oresthread.c"
-      - "src/main/java/dev/oreslang/runtime/NativeCarrierExecutor.java"
-      - "src/main/java/dev/oreslang/runtime/ActorAffinityDispatcher.java"
-      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
-      - "src/test/java/dev/oreslang/runtime/NativeCarrierExecutorTest.java"
-      - "src/test/java/dev/oreslang/runtime/ActorPoolLazyStartTest.java"
-      - "pom.xml"
-      - "scripts/build-native-thread.sh"
+      - audit/scheduler-exact-head-gate-20261108
+    # All branch updates require a new exact-HEAD receipt, including changes
+    # outside the originally focused source/test paths.
   workflow_dispatch:
 
 permissions:
@@ -44,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          git status --porcelain
+          test -z "$(git status --porcelain --untracked-files=all)"
           echo "source_commit=$(git rev-parse HEAD)"
           echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
           echo "jni_blob=$(git rev-parse HEAD:src/main/c/oresthread.c)"
@@ -67,15 +60,64 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Remove stale Surefire XML and compiled JNI libraries on reused runners.
+          # A previous checkout must never be able to supply a passing receipt.
           mvn -B -ntp -Dores.runtime.carriers=native \
-            '-Dtest=ActorPoolLazyStartTest,NativeCarrierExecutorTest,ActorRuntimeNativeCarrierTest,ActorAffinityDispatcherTest,ActorAffinitySoftSpillTest,ActorJvmFirstCarrierAdmissionTest' \
-            test
+            '-Dtest=BootThreadBudgetTest,ActorTurnWatchdogTest,ThreadBudgetFlagsTest,ActorPoolLazyStartTest,NativeCarrierExecutorTest,ActorRuntimeNativeCarrierTest,ActorAffinityDispatcherTest,ActorAffinitySoftSpillTest,ActorJvmFirstCarrierAdmissionTest,SchedulerCrossRuntimeLifecycleTest' \
+            clean test
           test -s target/native/liboresthread.so
           test -n "$(find target/surefire-reports -maxdepth 1 -name 'TEST-*.xml' -print -quit)"
-      - name: Report executed test and source identity
+      - name: Fail closed unless boot, watchdog and native scheduler tests executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Surefire XML is the executable receipt, not a filename-only smoke.
+          # All ten selected suites are required on each compiler matrix leg.
+          for suite in \
+            dev.oreslang.BootThreadBudgetTest \
+            dev.oreslang.runtime.ActorTurnWatchdogTest \
+            dev.oreslang.launcher.ThreadBudgetFlagsTest \
+            dev.oreslang.runtime.ActorPoolLazyStartTest \
+            dev.oreslang.runtime.NativeCarrierExecutorTest \
+            dev.oreslang.runtime.ActorJvmFirstCarrierAdmissionTest \
+            dev.oreslang.runtime.ActorRuntimeNativeCarrierTest \
+            dev.oreslang.runtime.ActorAffinityDispatcherTest \
+            dev.oreslang.runtime.ActorAffinitySoftSpillTest \
+            dev.oreslang.runtime.SchedulerCrossRuntimeLifecycleTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report" || { echo "::error::Missing executed suite: $suite"; exit 1; }
+            suite_header="$(grep -m 1 '<testsuite ' "$report")"
+            if [[ ! "$suite_header" =~ tests=\"([1-9][0-9]*)\" ]]; then
+              echo "::error::No positive test count in $suite"
+              exit 1
+            fi
+            declared_tests="${BASH_REMATCH[1]}"
+            for metric in errors failures skipped; do
+              if [[ ! "$suite_header" =~ ${metric}=\"0\" ]]; then
+                echo "::error::Missing or nonzero $metric count in $suite"
+                exit 1
+              fi
+            done
+            # Surefire writes one testcase element per line; require agreement
+            # with the suite's declared count, not just a nonempty XML file.
+            executed_cases="$(grep -Ec '^[[:space:]]*<testcase[[:space:]]' "$report" || true)"
+            if [[ "$executed_cases" != "$declared_tests" ]]; then
+              echo "::error::Declared $declared_tests but found $executed_cases testcases in $suite"
+              exit 1
+            fi
+            if grep -Eq '<(failure|error|skipped)([[:space:]/>])' "$report"; then
+              echo "::error::Suite contains failed, errored or skipped tests: $suite"
+              exit 1
+            fi
+            echo "executed_suite=$suite executed_cases=$executed_cases"
+          done
+          printf 'scheduler_source_sha=%s\n' "$GITHUB_SHA"
+          printf 'scheduler_source_tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Report attempted test and source identity (non-certifying on failure)
         if: always()
         shell: bash
         run: |
-          echo "verified_source_sha=$GITHUB_SHA"
+          echo "attempted_source_sha=$GITHUB_SHA"
           echo "compiler=$CC"
           test -d target/surefire-reports && grep -h '<testsuite ' target/surefire-reports/TEST-*.xml | head -n 12 || true

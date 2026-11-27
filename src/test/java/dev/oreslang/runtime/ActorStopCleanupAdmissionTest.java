@@ -62,8 +62,11 @@ final class ActorStopCleanupAdmissionTest {
                 return;
             }
             OresFuture<Void> resource = new OresFuture<>(() -> {
-                fixture.firstRevokerEntered.countDown();
+                // Publish the aggregate count FIRST. Tests that observe
+                // firstRevokerEntered must not race the immediately following
+                // decrement of bothRevokersEntered.
                 fixture.bothRevokersEntered.countDown();
+                fixture.firstRevokerEntered.countDown();
                 try {
                     if (!fixture.releaseRevokers.await(5, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("test child revoker not released");

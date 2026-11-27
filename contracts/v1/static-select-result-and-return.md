@@ -1,84 +1,67 @@
 # Static select result, nonblocking completion, and procedural return
 
-**Status (2026-10-13): normative pre-1.0 target and incremental Java hardening.**
+**Status (2026-11-25): normative target; restricted Java typed-default guest preview.**
 This contract corrects the older "do select returns are arm-local/discarded"
 interpretation. It does not claim that the static value/Future forms have
 already been implemented in Java/GraalVM or LLVM.
 
-## Canonical forms
+## Canonical forms — 2026-11-25 superseding decision
 
-| Syntax | Kind | Result | Meaning of return inside selected arm |
-| --- | --- | --- | --- |
-| `select { ... }` | blocking/suspending expression | `T` | terminal `return T;` exits the **select expression arm**, not the enclosing callable |
-| `do select { ... }` | blocking/suspending statement | `void` | `return T;` / `return;` exits the **enclosing function/method**, like `do match` and `do switch` |
-| `nb select { ... }` | nonblocking expression | `Future<T>` | `return T;` supplies eventual Future result; cannot return from an already continued caller |
-| `do nb select { ... }` | **not canonical** | none | reject in the final grammar; legacy Java-only detached syntax must be migrated to a tracked `Future<void>` |
+Static select expressions are nonblocking by default. This replaces the
+historical blocking value-expression target, but is not an implementation claim.
 
-Here, "blocking" means **suspending a continuation**, never parking a bounded
-actor scheduler carrier. `select {}` in the table means the braced syntax
-family, not that an empty case set is valid. The final grammar rejects an empty
-static arm set.
+| Form (both braces and over/end) | Result | Return scope |
+| --- | --- | --- |
+| `select` / `select<T>` | Future<T> | selected arm |
+| `await select` / `await select<T>` | T | selected arm; caller resumes after completion |
+| `nb select` / `nb select<T>` | Future<T>, deprecated tracked alias | selected arm |
+| `do select` | procedural statement, existing cooperative wait | enclosing callable / lexical loop |
+| `do nb select` | legacy detached, not canonical | legacy callback |
+| `try select` | immediate probe; result shape separately gated | separately gated |
 
-## Distinct return scopes (normative)
+Exactly one angle-bracket result type is allowed. The type is T, not
+Future<T> unless a Future-valued result is explicitly requested. Ordinary
+generic parsing applies to nested types. No implicit await/flattening,
+no type-directed switching between blocking/nonblocking. Await requires a
+checked suspension context. Default or ready arms still use tracked
+continuations; completion follows arm cleanup, not merely arbitration.
 
-```ores
-pub fnc read_or_exit(Channel<int> incoming): int {
-  do select {
-    when readch incoming: int value -> {
-      if value < 0 then
-        return -1;  // returns from read_or_exit
-      fi
-      stdio.stdout.write(value);
-    }
-    when cancelled: -> {
-      return 0;     // returns from read_or_exit
-    }
-  }
-  return 42;         // reached only when winning arm falls through
+```atto
+suspends fnc read_value(Channel<int> incoming): int {
+  val int value = await select<int> over
+    when readch incoming: int n -> { return n * 2; }
+  end;
+  return value;
 }
 
-pub fnc read_value(Channel<int> incoming): int {
-  const int v = select {
-    when readch incoming: int value -> {
-      return value + 1; // select-expression result, not read_value's return
-    }
-    when cancelled: -> {
-      return 0;
-    }
+fnc read_later(Channel<int> incoming): Future<int> {
+  return select<int> {
+    when readch incoming: int n -> { return n * 2; }
   };
-  return v * 2;
-}
-
-pub async fnc read_later(Channel<int> incoming): int {
-  const Future<int> pending = nb select {
-    when readch incoming: int value -> {
-      return value + 1;  // resolves pending, never returns from read_later
-    }
-    when cancelled: -> {
-      return 0;
-    }
-  };
-  return await pending;
 }
 ```
 
-These examples use the typed-arrow `Selectable` source syntax **target**.
-Existing Java channel-specific select arms may use legacy
-`when readch ch: val value { ... }` while migration occurs.
+The canonical expression and the deprecated nb alias must have the same
+AST/result/wait mode after normalization, with a migration diagnostic for
+the alias. Historical bare blocking or detached statement syntax must not
+silently change meaning; migrate explicitly. The existing do select
+statement is retained as a separate procedural construct pending any
+further decision about its spelling. Dynamic select-from migration remains
+separately coordinated, rather than changing existing Option-valued APIs
+without an edition/compatibility plan.
 
-A void-result nonblocking expression still has an observable Future:
+## Counted selection target
 
-```ores
-const Future<void> completed = nb select {
-  when readch incoming: int value -> {
-    log(value);
-    return;
-  }
-};
-await completed;  // propagate errors/cancellation; completion is not dropped
-```
-
-This design does not create an implicit detached fire-and-forget operation.
+`select(n)` and `select<T>(n)` return Future<Array<T>>; ordinary await
+returns Array<T>. The count is evaluated once before source registration.
+A successful batch contains exactly n results, ordered by sequential
+winner commit; zero is empty with no source effects. Bound count/bytes and
+allow one pending round, retire one-shot Future aliases, advance fair
+rotation, and fail rather than return a short array on exhaustion. Default,
+write, try-count and do-count are initially unsupported. See the language
+specification counted-select-v1 for lifecycle and streaming proposal.
+This is not currently lowered by Java; explicit admission diagnostics
+protect the unsupported boundary.
 
 ## Semantic audit and hardening requirements
 
@@ -96,7 +79,7 @@ This design does not create an implicit detached fire-and-forget operation.
    single atomic winner commits; losing read/write/stream arms do not
    consume or publish data. Case operands are evaluated once in source order;
    use `Selectable<T>` operations from the cross-backend QoS contract.
-4. **Future completeness.** `nb select` registers once and returns a live
+4. **Future completeness.** `select` (deprecated alias `nb select`) registers once and returns a live
    `Future<T>` without executing a guest arm inline. The Future settles
    **after** the arm body completes, including any nested suspension.
    The result, failure and cancellation have distinct terminal states.
@@ -135,7 +118,8 @@ This design does not create an implicit detached fire-and-forget operation.
 
 Required tests across Java/GraalVM, LLVM and oreslang-format:
 
-- parse four spellings, reject empty arms and canonical `do nb select`;
+- parse inferred and explicit select<T>, await and deprecated nb aliases in both delimiters; reject empty arms and canonical `do nb select`;
+- reject wrong explicit result, missing result, implicit await, illegal await context, extra generic arguments and silent Future discard;
 - `do select` bare/valued returns exit enclosing void/nonvoid functions
   and methods, including nested `do select` after suspension;
 - wrong return types rejected; nested lambda return remains isolated;
@@ -143,7 +127,7 @@ Required tests across Java/GraalVM, LLVM and oreslang-format:
 - defer/finally once on a returned, cancelled, raised or panicked winner;
 - `select` arm return local to expression; compile rejects missing
   results and rejects silent discard;
-- `nb select` returns `Future<T>` immediately but settles only after
+- `select` and deprecated `nb select` return `Future<T>` immediately but settle only after
   selected arm finishes, with no host-thread execution of guest code;
 - `Future<void>` completion and error propagation; unwatched failure
   policy; source-level cancellation and ownership negatives;
@@ -169,3 +153,7 @@ the legacy statement ambiguity and retired warning path. LLVM must reject
 unsupported source-level forms rather than claim parity. Keep feature PRs
 draft until exact-source Maven/JDK25, AOT/hybrid, LLVM CTest + sanitizer
 and formatter idempotence evidence are green.
+
+### Restricted executable Java preview
+
+`select<int>` and `nb select<int>` with exactly one default arm and no event operands lower to a checked CPU Task with fixed Future<int> type. This is a deliberately narrower implementation: it requires Task Send/COPY/MOVE captures, does not inherit actor self, and uses the existing Task scheduler/cleanup. No counted or event selection, generic result inference, alias deprecation warning, or general actor-owned selection admission is claimed. Four source guest tests passed on head 6aef0a44011fc9a07dcd37cd243b26da284ce119; the combined gate had two unrelated ownership/lock-order fixture failures reproduced on the exact preceding tree. The current change corrects the fixture mutability and separates legal lexical cleanup from forbidden nested locks; rerun all targeted suites before merge.

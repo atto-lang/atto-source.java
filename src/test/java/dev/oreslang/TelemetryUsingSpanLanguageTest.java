@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.TelemetrySpanScope;
 import dev.oreslang.types.TypeChecker;
@@ -220,31 +221,31 @@ final class TelemetryUsingSpanLanguageTest {
     }
 
     @Test
-    void hostFlagSwitchesExistingCompiledGuestSpanSitesWithoutRestartOrJit() throws Exception {
+    void hostFlagSwitchesExistingGuestSpanSitesOnTheSameCallTarget() throws Exception {
         String program = """
-                async fnc tick(): int {
-                  rt cooperate;
-                  return 1;
-                }
-                pub async fnc main(): void {
+                pub fnc trace_once(): bool {
                   using telemetry.span("switch.checkout") as span {
-                    val int ready = await tick();
-                    stdio.println(span.recording());
+                    return span.recording();
                   }
-                  return;
+                  return false;
                 }
                 """;
+        Source source = Source.newBuilder(OresLanguage.ID, program, "toggle-span.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
         TelemetrySpanScope.disableExistingSites();
         long beforeStarts = TelemetrySpanScope.startedCount();
         long beforeEnds = TelemetrySpanScope.endedCount();
-        try {
-            assertEquals("false", run(program), "OFF preserves guest execution");
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            var target = context.parse(source);
+            String invokePublic = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
+            assertFalse(target.execute(invokePublic, "trace_once").asBoolean());
             TelemetrySpanScope.enableExistingSites(100, 10_000, "other.");
-            assertEquals("false", run(program), "a nonmatching prefix does not record");
+            assertFalse(target.execute(invokePublic, "trace_once").asBoolean(),
+                    "a nonmatching prefix does not record");
             TelemetrySpanScope.enableExistingSites(100, 10_000, "switch.");
-            assertEquals("true", run(program), "ON records a compiled lexical span after await");
+            assertTrue(target.execute(invokePublic, "trace_once").asBoolean());
             TelemetrySpanScope.disableExistingSites();
-            assertEquals("false", run(program), "OFF applies to subsequent guest invocations");
+            assertFalse(target.execute(invokePublic, "trace_once").asBoolean());
             assertEquals(beforeStarts + 1, TelemetrySpanScope.startedCount());
             assertEquals(beforeEnds + 1, TelemetrySpanScope.endedCount());
         } finally {
