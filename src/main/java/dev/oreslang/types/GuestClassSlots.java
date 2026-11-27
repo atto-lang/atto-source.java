@@ -94,6 +94,13 @@ public final class GuestClassSlots {
             throw new IllegalArgumentException("E_COPY_BUDGET: invalid graph limits");
         }
         synchronized (domain) {
+            GraphLease lease = prepareDescendants(maxNodes, maxEdges, false);
+            activate(lease);
+            return lease;
+        }
+    }
+
+    private GraphLease prepareDescendants(int maxNodes, int maxEdges, boolean rejectRootBackEdge) {
             if (initializing) throw new IllegalStateException("E_COPY_LAYOUT: unpublished root");
             var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
             var pending = new ArrayDeque<GuestClassSlots>();
@@ -101,6 +108,11 @@ public final class GuestClassSlots {
             int edges = enqueueChildren(this, pending, 0, maxEdges);
             while (!pending.isEmpty()) {
                 GuestClassSlots store = pending.removeFirst();
+                // Diagnose a forbidden source back-edge before charging it as
+                // a descendant or scanning its already-visited root slots.
+                if (rejectRootBackEdge && store == this) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: source root reachable from shared descendant");
+                }
                 if (seen.put(store, Boolean.TRUE) != null) continue;
                 if (ordered.size() >= maxNodes) throw new IllegalArgumentException("E_COPY_BUDGET: graph node limit");
                 if (store.domain != domain) throw new IllegalArgumentException("E_COPY_DOMAIN: foreign class slot store");
@@ -109,9 +121,125 @@ public final class GuestClassSlots {
                 edges = enqueueChildren(store, pending, edges, maxEdges);
             }
             // Allocate every piece of the token before modifying any counters.
-            GraphLease lease = new GraphLease(domain, List.copyOf(ordered));
-            for (GuestClassSlots store : ordered) store.readOnlyLoans++;
-            return lease;
+            return new GraphLease(domain, List.copyOf(ordered));
+    }
+
+    private static void activate(GraphLease lease) {
+        // No callback or allocation between the first counter change and publication.
+        for (int i = 0; i < lease.protectedStores.size(); i++) {
+            lease.protectedStores.get(i).readOnlyLoans++;
+        }
+    }
+
+    /** Scoped root snapshot for trusted runtime callers. The parent and
+     * copy slots are independent, while retained descendants stay protected.
+     * This first profile holds the complete lease until close; it does not
+     * yet detach individual graph edges or admit guest escapes.
+     */
+    public static final class ShallowSnapshot implements AutoCloseable {
+        private final GuestClassSlots copy;
+        private final GraphLease lease;
+        private final GuestClassSlots source;
+        private final IdentityHashMap<GuestClassSlots, Boolean> retained;
+        private final int maxNodes;
+        private final int maxEdges;
+        private boolean closed;
+        private ShallowSnapshot(GuestClassSlots source, GuestClassSlots copy,
+                GraphLease lease, int maxNodes, int maxEdges) {
+            this.source = source;
+            this.copy = copy;
+            this.lease = lease;
+            this.maxNodes = maxNodes;
+            this.maxEdges = maxEdges;
+            retained = new IdentityHashMap<>();
+            for (GuestClassSlots store : lease.protectedStores) retained.put(store, Boolean.TRUE);
+        }
+
+        /** Reject known unsafe replacement graphs before any slot write.
+         * Existing externally leased nodes cannot be imported unless this
+         * snapshot independently retains them. Uniqueness of other nodes and
+         * lifetime of raw host references remain caller proof obligations.
+         * The domain monitor must be held throughout traversal and publication.
+         */
+        private void validateReplacement(GuestClassSlots child) {
+            var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
+            var pending = new ArrayDeque<GuestClassSlots>();
+            pending.add(child);
+            int edges = 0;
+            while (!pending.isEmpty()) {
+                GuestClassSlots store = pending.removeFirst();
+                if (seen.put(store, Boolean.TRUE) != null) continue;
+                if (seen.size() > maxNodes) {
+                    throw new IllegalArgumentException("E_COPY_BUDGET: replacement graph node limit");
+                }
+                if (store.domain != copy.domain) {
+                    throw new IllegalArgumentException("E_COPY_DOMAIN: foreign replacement store");
+                }
+                if (store.initializing) {
+                    throw new IllegalStateException("E_COPY_LAYOUT: unpublished replacement store");
+                }
+                if (store == source || store == copy) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: replacement reaches a snapshot root");
+                }
+                if (store.readOnlyLoans != 0 && !retained.containsKey(store)) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: replacement depends on an external loan");
+                }
+                edges = enqueueChildren(store, pending, edges, maxEdges);
+            }
+        }
+        private void requireOpen() {
+            if (closed) throw stale();
+        }
+        public Object get(String key) {
+            synchronized (copy.domain) {
+                requireOpen();
+                return copy.get(key);
+            }
+        }
+        public void replace(String key, Object value) {
+            synchronized (copy.domain) {
+                requireOpen();
+                // This class-only snapshot never accepts a foreign, unpublished
+                // or opaque replacement root. The caller still proves transitive
+                // ownership and lifetime; this check cannot mint write authority.
+                if (value instanceof GuestClassSlots child) {
+                    validateReplacement(child);
+                } else if (value != null && !CopyScalarAdmission.isImmutableScalar(value)) {
+                    throw new IllegalArgumentException("E_COPY_UNPROVEN: unsupported replacement payload");
+                }
+                copy.replace(key, value);
+            }
+        }
+        public int protectedCount() {
+            synchronized (copy.domain) {
+                requireOpen();
+                return lease.protectedCount();
+            }
+        }
+        @Override public void close() {
+            synchronized (copy.domain) {
+                requireOpen();
+                lease.close();
+                closed = true;
+            }
+        }
+    }
+
+    /** Capture a fresh root and the exact retained descendants atomically.
+     * The caller still must prove type/ownership policy, no escaping handles
+     * or outstanding exclusive loans, and correct lexical cleanup.
+     */
+    public ShallowSnapshot shallowSnapshot(int maxNodes, int maxEdges) {
+        if (maxNodes < 0 || maxNodes > 65536 || maxEdges < 0 || maxEdges > 262144) {
+            throw new IllegalArgumentException("E_COPY_BUDGET: invalid graph limits");
+        }
+        synchronized (domain) {
+            GraphLease lease = prepareDescendants(maxNodes, maxEdges, true);
+            GuestClassSlots copy = new GuestClassSlots(domain, slots);
+            copy.finishInitialization();
+            ShallowSnapshot result = new ShallowSnapshot(this, copy, lease, maxNodes, maxEdges);
+            activate(lease);
+            return result;
         }
     }
 

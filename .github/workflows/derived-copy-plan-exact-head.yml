@@ -12,6 +12,7 @@ on:
       - 'src/main/java/dev/oreslang/types/GuestClassSlots.java'
       - 'src/test/java/dev/oreslang/GuestClassGraphLeaseTest.java'
       - 'tests/graph-topology-host/GuestClassSlotsHarness.java'
+      - 'tests/graph-topology-host/ShallowSnapshotHarness.java'
       - 'tests/graph-topology-host/SlotHarness.java'
       - 'src/main/java/dev/oreslang/types/CheckedCopyPlanSeeds.java'
       - 'src/test/java/dev/oreslang/CopyPlanCacheTest.java'
@@ -91,6 +92,15 @@ jobs:
             tests/graph-topology-host/GuestClassSlotsHarness.java
           java -Xss256k -cp "$RUNNER_TEMP/guest-slots" GuestClassSlotsHarness
           echo 'GUEST_SLOT_SCOPE=HOST_COMPONENT_ONLY'
+      - name: Execute exact shallow snapshot replacement and release-race host tests
+        run: |
+          set -euo pipefail
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/shallow-snapshot" \
+            src/main/java/dev/oreslang/types/GuestClassSlots.java \
+            src/main/java/dev/oreslang/types/CopyScalarAdmission.java \
+            tests/graph-topology-host/ShallowSnapshotHarness.java
+          java -Xss256k -cp "$RUNNER_TEMP/shallow-snapshot" ShallowSnapshotHarness
+          echo 'SHALLOW_SNAPSHOT_SCOPE=HOST_COMPONENT_ONLY'
       - name: Run actual type-checker and GraalVM guest-copy JUnit
         shell: bash
         run: |
