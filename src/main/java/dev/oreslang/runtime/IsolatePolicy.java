@@ -207,6 +207,13 @@ public record IsolatePolicy(
             builder.allowExperimentalOptions(true);
         }
 
+        // The baked AOT-only image deliberately selects the fallback runtime.
+        // Suppress only its expected interpreter-performance notice, not guest
+        // diagnostics or warnings from JIT-capable JVM/hybrid configurations.
+        if (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT) {
+            builder.option("engine.WarnInterpreterOnly", "false");
+        }
+
         if (!profile.guestJitAllowed() && NativeBuildMode.kind() != NativeBuildMode.Kind.AOT) {
             try (org.graalvm.polyglot.Engine probe = org.graalvm.polyglot.Engine.create()) {
                 if (probe.getOptions().get("engine.Compilation") != null) {
