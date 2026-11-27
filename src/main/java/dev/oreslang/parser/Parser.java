@@ -7045,6 +7045,7 @@ public final class Parser {
             throw error(peek(), "removed collection constructor; '~' is reserved for structural typing; use "
                     + canonical + ".of(...) to construct collections");
         }
+        if (match(UNICODE_NOT)) return new Ast.UnaryExpr("!", parseUnary());
         if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(TILDE)) {
             Token sigil = previous();
@@ -8340,7 +8341,7 @@ public final class Parser {
             Token.Type first = tokens.get(current + 1).type();
             if (first == NB || first == AWAIT || first == READCH
                     || first == WRITECH || first == RT || first == TRAP
-                    || first == TRY || first == SELECT || first == BANG) {
+                    || first == TRY || first == SELECT || first == BANG || first == UNICODE_NOT) {
                 return false;
             }
         }
