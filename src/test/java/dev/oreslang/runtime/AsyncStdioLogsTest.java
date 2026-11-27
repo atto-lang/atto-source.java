@@ -96,6 +96,97 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void bufferedAdmissionWaitsInFifoWithoutBlockingCallerAndCancelsBeforeCommit() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.io.StringWriter backing = new java.io.StringWriter();
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+                backing.write(chars, off, len);
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            logs.admitBuffered("first|").get(1, TimeUnit.SECONDS);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            try {
+                for (int i = 0; i < 1024; i++) {
+                    assertTrue(logs.admitBuffered("q").isDone());
+                }
+                var first = logs.admitBuffered("A");
+                var cancelled = logs.admitBuffered("DROP");
+                var second = logs.admitBuffered("B");
+                assertFalse(first.isDone());
+                assertFalse(second.isDone());
+                assertTrue(cancelled.cancel(false));
+                assertThrows(IllegalStateException.class, () -> logs.logAsync("overtake"));
+                release.countDown();
+                first.get(3, TimeUnit.SECONDS);
+                second.get(3, TimeUnit.SECONDS);
+                assertFalse(first.cancel(false));
+                logs.flushAsync().get(3, TimeUnit.SECONDS);
+                assertEquals("first|" + "q".repeat(1024) + "AB", backing.toString());
+            } finally {
+                release.countDown();
+            }
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void bufferedAdmissionQuotaAndSealSettleUnadmittedWaiters() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            logs.admitBuffered("first").get(1, TimeUnit.SECONDS);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            try {
+                for (int i = 0; i < 1024; i++) logs.admitBuffered("q");
+                var pending = new java.util.ArrayList<OresFuture<Void>>();
+                for (int i = 0; i < 64; i++) pending.add(logs.admitBuffered("x"));
+                assertThrows(ExecutionException.class,
+                        () -> logs.admitBuffered("overflow").get(1, TimeUnit.SECONDS));
+                assertTrue(pending.getFirst().cancel(false));
+                var replacement = logs.admitBuffered("replacement");
+                assertFalse(replacement.isDone());
+                logs.sealAdmission();
+                assertThrows(ExecutionException.class,
+                        () -> replacement.get(1, TimeUnit.SECONDS));
+                for (int i = 1; i < pending.size(); i++) {
+                    final var waiter = pending.get(i);
+                    assertThrows(ExecutionException.class, () -> waiter.get(1, TimeUnit.SECONDS));
+                }
+            } finally {
+                release.countDown();
+            }
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void sinkFailuresPropagateIntoAwaitAndGracefulShutdown() throws Exception {
         Writer broken = new Writer() {
             @Override public void write(char[] cbuf, int off, int len) throws IOException {
