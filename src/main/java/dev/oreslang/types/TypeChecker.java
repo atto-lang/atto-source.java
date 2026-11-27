@@ -13517,10 +13517,14 @@ public final class TypeChecker {
             requireMutableReferentCompatible(
                     actual, params.get(i).mutable(),
                     "argument " + (i + 1) + " to mutable parameter");
-            requireAssignable(
-                    actual,
-                    expected,
-                    "argument " + (i + 1));
+            try {
+                requireAssignable(
+                        actual,
+                        expected,
+                        "argument " + (i + 1));
+            } catch (IllegalArgumentException mismatch) {
+                throw new IllegalArgumentException(mismatch.getMessage() + " in call to " + label, mismatch);
+            }
         }
 
         Type result = substituteGenerics(

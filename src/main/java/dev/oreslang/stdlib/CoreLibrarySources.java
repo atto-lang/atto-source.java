@@ -333,8 +333,14 @@ public final class CoreLibrarySources {
         for (String root : new String[] {"ores.core", "ores.std", "atto.core", "atto.alloc", "atto.std", "alloc"}) {
             if (normalized.equals(root) || normalized.startsWith(root + "/")) return true;
         }
-        // Bare layer names are never package or project selectors.
-        return normalized.equals("core") || normalized.equals("std");
+        // Bare layer names are never package or project selectors, and a
+        // dotted namespace under a layer root (std.http) is still reserved:
+        // namespace names use '.', file paths '/'.
+        if (normalized.equals("core") || normalized.equals("std")) return true;
+        for (String root : new String[] {"core.", "alloc.", "std.", "atto."}) {
+            if (normalized.startsWith(root)) return true;
+        }
+        return false;
     }
 
     public static Set<String> packagedCorePaths() {

@@ -334,6 +334,17 @@ public final class IncrementalCompiler {
                         id, imported, parsed.keySet(), importResolutions);
                 Ast.Program target = targetId == null ? null : parsed.get(targetId);
                 if (target == null) continue;
+                java.util.Set<String> privateModules = new java.util.HashSet<>();
+                for (Ast.ModuleDecl module : target.modules()) {
+                    if (!module.name().equals(Parser.ROOT_MODULE)
+                            && module.visibility() != Ast.Visibility.PUBLIC) privateModules.add(module.name());
+                }
+                String leaked = ImportedMemberScan.firstReference(program, imported.namespace(), privateModules);
+                if (leaked != null) {
+                    throw new IllegalArgumentException("module '" + leaked + "' in '" + imported.path()
+                            + "' is private and is not exported through 'import * as "
+                            + imported.namespace() + "'");
+                }
                 for (Ast.ModuleDecl module : target.modules()) {
                     if (!module.name().equals(Parser.ROOT_MODULE)) continue;
                     Ast.ModuleDecl qualified = ForeignModuleQualifier.qualify(imported.namespace(), module);
