@@ -1515,6 +1515,7 @@ public final class Parser {
                 continue;
             }
 
+            rejectObsoleteMethodIntroducer();
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
             if (explicitFnc && explicitMethod) {
@@ -2123,6 +2124,7 @@ public final class Parser {
                 continue;
             }
 
+            rejectObsoleteMethodIntroducer();
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
             if (explicitFnc && explicitMethod) {
@@ -2404,6 +2406,7 @@ public final class Parser {
             // signatures. Module receiver requirements keep their distinct
             // receiver grammar. A method named mtd() or a field typed mtd
             // must not be consumed as a marker.
+            if (!moduleContract) rejectObsoleteMethodIntroducer();
             boolean explicitFnc = match(FNC);
             boolean explicitMtd = !moduleContract && isContextualIdentifier("mtd")
                     && looksLikeInterfaceMethodHead(current + 1);
@@ -2480,6 +2483,15 @@ public final class Parser {
     // A generic type-first field (e.g. Box<T> value;) is not a method.
     // Inspect token kinds only; declaration validation is performed once by
     // parseGenericParameters after admission, without speculative parsing.
+    // Reject only a distinguishable obsolete declaration header, not an
+    // ordinary callable named method() or a type-first field method value.
+    // Token-based lookahead naturally handles comments and newlines.
+    private void rejectObsoleteMethodIntroducer() {
+        if (isContextualIdentifier("method") && looksLikeInterfaceMethodHead(current + 1)) {
+            throw error(peek(), "OBSOLETE_METHOD_INTRODUCER: obsolete method introducer; use mtd");
+        }
+    }
+
     private boolean looksLikeInterfaceMethodHead(int index) {
         if (index + 1 >= tokens.size() || tokens.get(index).type() != IDENT) return false;
         if (tokens.get(index + 1).type() == LPAREN) return true;
