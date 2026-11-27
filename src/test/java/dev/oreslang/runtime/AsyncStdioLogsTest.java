@@ -487,12 +487,22 @@ final class AsyncStdioLogsTest {
         };
         AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, true));
         try {
-            logs.logAsync("blocked\n");
+            var inFlight = logs.logAsync("blocked\n");
             assertTrue(entered.await(2, TimeUnit.SECONDS));
+            var queued = logs.logAsync("queued");
+            var barrier = logs.flushAsync();
             // A worker owns the sink lock. close() must report incomplete
             // shutdown within its deadline without entering that monitor.
             IllegalStateException timeout = assertThrows(IllegalStateException.class, logs::close);
             assertTrue(timeout.getMessage().contains("shutdown deadline"));
+            for (var receipt : java.util.List.of(inFlight, queued, barrier)) {
+                var error = assertThrows(ExecutionException.class,
+                        () -> receipt.get(1, TimeUnit.SECONDS));
+                assertSame(timeout, error.getCause());
+            }
+            release.countDown();
+            assertThrows(IllegalStateException.class, logs::close);
+            assertThrows(ExecutionException.class, () -> inFlight.get(1, TimeUnit.SECONDS));
         } finally {
             release.countDown();
         }
