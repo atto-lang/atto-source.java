@@ -43,11 +43,59 @@ final class DeclarativeExportsParserTest {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("export pub fnc Foo;\n" + DEFINITIONS));
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("export pub Foo; export pub class Foo;\n" + DEFINITIONS));
+                () -> Parser.parse("export pub Foo; export pub[pkg] class Foo;\n" + DEFINITIONS));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("export pub Foo; export pub fnc Foo;\n" + DEFINITIONS));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("export pub[pkg] Foo; pub define class Foo as end"));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("export pub[world] class Foo;\n" + DEFINITIONS));
+    }
+
+    @Test void identicalResolvedExportsAreIdempotent() {
+        for (String directives : java.util.List.of(
+                "export pub Foo; export pub class Foo;",
+                "export pub class Foo; export pub Foo;",
+                "export pub class Foo; export pub class Foo;")) {
+            var top = Parser.parse(directives + "\n" + DEFINITIONS);
+            var bottom = Parser.parse(DEFINITIONS + directives);
+            assertEquals(1, top.exports().size());
+            assertEquals(top.exports(), bottom.exports());
+            assertEquals(Ast.ExportKind.CLASS, top.exports().getFirst().kind());
+        }
+        var pkg = Parser.parse("export pub[pkg] Bar; export pub[pkg] class Bar;\n" + DEFINITIONS);
+        assertEquals(1, pkg.exports().size());
+        assertEquals(Ast.ExportScope.PACKAGE, pkg.exports().getFirst().scope());
+    }
+
+    @Test void writtenPrivateCannotBePromotedByFileExport() {
+        for (String declaration : java.util.List.of(
+                "private fnc Foo(): int { return 42; }",
+                "define private fnc Foo(): int { return 42; }",
+                "fnc private Foo(): int { return 42; }",
+                "private define class Foo as end",
+                "define private class Foo as end",
+                "private type Foo = int;")) {
+            for (String directive : java.util.List.of("export pub Foo;", "export pub[pkg] Foo;")) {
+                for (String src : java.util.List.of(directive + "\n" + declaration, declaration + "\n" + directive)) {
+                    var error = assertThrows(IllegalArgumentException.class, () -> Parser.parse(src), src);
+                    assertTrue(error.getMessage().contains("explicit private declaration"), error.getMessage());
+                }
+            }
+        }
+        for (String declaration : java.util.List.of("fnc Foo(): int { return 42; }", "define class Foo as end", "type Foo = int;")) {
+            assertDoesNotThrow(() -> Parser.parse("export pub Foo;\n" + declaration));
+        }
+    }
+
+    @Test void privateMemberDoesNotPoisonUnrelatedRootExport() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                export pub fnc Foo;
+                define class C as
+                  private Foo(): int { return 7; }
+                end
+                fnc Foo(): int { return 42; }
+                """));
     }
 
     @Test void methodBodiesCannotContainExportDeclarations() {

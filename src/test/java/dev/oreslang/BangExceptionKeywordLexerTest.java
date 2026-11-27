@@ -90,6 +90,11 @@ final class BangExceptionKeywordLexerTest {
         };
         assertEquals(18, cases.length);
         for (String[] testCase : cases) {
+            if (testCase[0].startsWith("trap!parse") || testCase[0].startsWith("throw!Error")) {
+                var error = assertThrows(IllegalArgumentException.class, () -> new Lexer(testCase[0]).scan());
+                assertTrue(error.getMessage().contains("E_BANG_KEYWORD_WHITESPACE"), error::getMessage);
+                continue;
+            }
             List<String> actual = new Lexer(testCase[0]).scan().stream()
                 .filter(t -> t.type() == Token.Type.TRAP || t.type() == Token.Type.THROW
                     || t.type() == Token.Type.RAISE || t.type() == Token.Type.PANIC)

@@ -27,6 +27,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.CountedTaskSelection;
 import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
@@ -1701,6 +1702,7 @@ public final class OresEvalRootNode extends RootNode {
             private final List<?> arguments;
             private final TaskLaunchAuthority taskLaunchAuthority;
             private Env initialBlockEnv;
+            private CountedGuestPlan countedGuestPlan;
             /** Independent Task launch authority is one-shot even if a scheduler mis-dispatches it. */
             private boolean taskLaunchConsumed;
 
@@ -1925,11 +1927,11 @@ public final class OresEvalRootNode extends RootNode {
                                             ? function.body()
                                             : method.body();
 
-                    runBlock(
-                            this,
-                            body,
-                            params,
-                            this::finishSourceFlow);
+                    if (countedGuestPlan != null) {
+                        runCountedGuest(this, countedGuestPlan, params);
+                    } else {
+                        runBlock(this, body, params, this::finishSourceFlow);
+                    }
                 } else if (!cancellationUnwinding
                         && resume.failure() instanceof java.util.concurrent.CancellationException
                         && OresScheduler.cancellationCleanupTurn()) {
@@ -2247,6 +2249,113 @@ public final class OresEvalRootNode extends RootNode {
             return future;
         }
 
+        private record CountedGuestArm(String source, Ast.ChannelOperation operation,
+                String binding, Ast.BindingKind bindingKind, Ast.Expr projection) {}
+        private record CountedGuestPlan(int count, Ast.SelectPolicy policy,
+                List<CountedGuestArm> arms) {}
+
+        // Each plan is recovered from the same checked synthetic body that
+        // establishes source type, ownership, capture identity and projection.
+        private List<CountedGuestArm> checkedCountedGuestRound(Ast.SelectStmt select,
+                boolean dynamic) {
+            if (select.arms().isEmpty() || select.arms().size() > 8
+                    || select.policy() == Ast.SelectPolicy.RANDOM)
+                throw new IllegalStateException("invalid checked counted round");
+            List<CountedGuestArm> arms = new ArrayList<>();
+            for (var arm : select.arms()) {
+                if (!(arm.channel() instanceof Ast.NameExpr source)
+                        || (arm.operation() != Ast.ChannelOperation.READ
+                            && arm.operation() != Ast.ChannelOperation.AWAIT)
+                        || !Ast.TypeRef.simple("int").equals(arm.bindingType())
+                        || arm.bindingName() == null || arm.mutableReferent()
+                        || arm.body().size() != 1
+                        || !(arm.body().getFirst() instanceof Ast.ExprStmt stmt))
+                    throw new IllegalStateException("invalid checked counted arm");
+                Ast.Expr projection;
+                if (dynamic) {
+                    if (!(stmt.expression() instanceof Ast.CallExpr call)
+                            || !(call.callee() instanceof Ast.MemberExpr member)
+                            || !member.member().equals("add")
+                            || call.arguments().size() != 1)
+                        throw new IllegalStateException("invalid checked counted projection");
+                    projection = call.arguments().getFirst();
+                } else {
+                    if (!(stmt.expression() instanceof Ast.AssignExpr assignment))
+                        throw new IllegalStateException("invalid checked counted projection");
+                    projection = assignment.value();
+                }
+                arms.add(new CountedGuestArm(source.name(), arm.operation(), arm.bindingName(),
+                        arm.bindingKind(), projection));
+            }
+            return List.copyOf(arms);
+        }
+
+        private CountedGuestPlan checkedCountedGuestPlan(List<Ast.Stmt> body, Long dynamicCount) {
+            if (dynamicCount != null) {
+                if (body.size() != 4 || !(body.get(2) instanceof Ast.LoopStmt loop)
+                        || loop.body().size() != 2
+                        || !(loop.body().get(1) instanceof Ast.SelectStmt select))
+                    throw new IllegalStateException("invalid checked counted loop");
+                return new CountedGuestPlan(dynamicCount.intValue(), select.policy(),
+                        checkedCountedGuestRound(select, true));
+            }
+            int count = (body.size() - 1) / 2;
+            if (count < 1 || count > 16 || body.size() != count * 2 + 1)
+                throw new IllegalStateException("invalid checked counted body");
+            CountedGuestPlan plan = null;
+            for (int i = 0; i < count; i++) {
+                if (!(body.get(i * 2 + 1) instanceof Ast.SelectStmt select))
+                    throw new IllegalStateException("invalid checked counted round");
+                var round = new CountedGuestPlan(count, select.policy(),
+                        checkedCountedGuestRound(select, false));
+                if (plan == null) plan = round;
+                else if (!plan.equals(round))
+                    throw new IllegalStateException("counted rounds changed checked source/projection");
+            }
+            return plan;
+        }
+
+        private void runCountedGuest(SourceTask task, CountedGuestPlan plan, Env params) {
+            List<ChannelRuntime.SelectCase> cases = new ArrayList<>();
+            List<java.util.function.LongUnaryOperator> projectors = new ArrayList<>();
+            for (var arm : plan.arms()) {
+                Object source = params.lookup(arm.source());
+                if (arm.operation() == Ast.ChannelOperation.READ) {
+                    cases.add(ChannelRuntime.read(requireChannel(source, "counted select")));
+                } else if (source instanceof OresFuture<?> future) {
+                    cases.add(ChannelRuntime.await(future));
+                } else {
+                    throw new IllegalStateException("counted select requires checked Future<int>");
+                }
+                projectors.add(number -> {
+                    Env armEnv = new Env(params);
+                    armEnv.define(arm.binding(), number, arm.bindingKind());
+                    Object value = eval(arm.projection(), armEnv);
+                    if (!(value instanceof Long projected))
+                        throw new IllegalStateException("counted projection produced non-i64");
+                    return projected;
+                });
+            }
+            var cursor = new CountedTaskSelection(plan.count(), cases,
+                    runtimeSelectPolicy(plan.policy()), projectors);
+            runCountedGuestRound(task, cursor);
+        }
+
+        private void runCountedGuestRound(SourceTask task, CountedTaskSelection cursor) {
+            // Each scheduler resume follows the physical drain; even a ready
+            // source uses an ordinary scheduler Await, never a producer callback.
+            task.suspend(cursor.begin(), (owner, ignored, failure) -> {
+                if (failure != null) throw sourceFailure(failure);
+                if (cursor.retire()) {
+                    var result = new NativeAttoSequence("Array");
+                    result.addAll(cursor.result());
+                    owner.done(result);
+                } else {
+                    runCountedGuestRound(owner, cursor);
+                }
+            });
+        }
+
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr taskExpr,
                 Env env) {
@@ -2339,7 +2448,7 @@ public final class OresEvalRootNode extends RootNode {
                     return SourceTaskHandles.completedWithoutWork(new NativeAttoSequence("Array"));
                 admitted = otherCaptures;
             }
-            if (taskExpr.zeroCountSourceName() != null) {
+            if (!taskExpr.zeroCountWitnesses().isEmpty()) {
                 // Checked identity and empty capture admission are required
                 // before bypassing scheduler allocation. Never execute a
                 // retained body, look up the witness, or create a waiter.
@@ -2365,6 +2474,9 @@ public final class OresEvalRootNode extends RootNode {
                             taskBody,
                             true,
                             launchAuthority);
+            if (taskExpr.typedCountedSelectI64()) {
+                task.countedGuestPlan = checkedCountedGuestPlan(taskBody, dynamicCount);
+            }
             Env.DetachedTaskSnapshot transfer =
                     env.detachedTaskSnapshot(
                             admitted,
@@ -4035,37 +4147,41 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
-            if (future.isDone()) {
-                ChannelRuntime.SelectResult chosen;
-                try {
-                    chosen = (ChannelRuntime.SelectResult) future.join();
-                } catch (RuntimeException | Error failure) {
-                    continuation.accept(task, SourceFlow.throwing(failure));
+            // A blocking source select owns this newly registered operation,
+            // unlike a general await of a caller-supplied shared Future.
+            // Retire the registration on cancellation before publishing task
+            // cleanup; wait for its physical notification drain before the
+            // next source round or selected arm executes.
+            OresFuture<Void> drained = ChannelRuntime.selectionDrained(future);
+            SourceCleanupFrame cleanup = task.registerSourceCleanup((owner, finished) -> {
+                future.cancel(false);
+                owner.suspend(drained, (t, ignored, failure) ->
+                        finished.accept(t, failure == null ? SourceFlow.normal()
+                                : SourceFlow.throwing(OresFuture.unwrap(failure))));
+            });
+            SourceValueCont retire = (t, ignored, failure) -> {
+                t.disarmSourceCleanup(cleanup);
+                if (failure != null) {
+                    continuation.accept(t, SourceFlow.throwing(OresFuture.unwrap(failure)));
                     return;
                 }
-                runSelectedArmSuspendable(
-                        task, select, chosen, env, continuation);
-                return;
+                ChannelRuntime.SelectResult chosen;
+                try {
+                    chosen = future.join();
+                } catch (RuntimeException | Error failed) {
+                    continuation.accept(t, SourceFlow.throwing(failed));
+                    return;
+                }
+                runSelectedArmSuspendable(t, select, chosen, env, continuation);
+            };
+            if (drained.isDone()) {
+                Throwable failure = null;
+                try { drained.join(); }
+                catch (RuntimeException | Error failed) { failure = failed; }
+                retire.accept(task, null, failure);
+            } else {
+                task.suspend(drained, retire);
             }
-
-            task.suspend(
-                    future,
-                    (t, value, failure) -> {
-                        if (failure != null) {
-                            continuation.accept(
-                                    t,
-                                    SourceFlow.throwing(
-                                            OresFuture.unwrap(failure)));
-                            return;
-                        }
-                        // The selected arm runs in the same source task. An
-                        // exception from a downstream completion must not be
-                        // reclassified as a second selected-arm completion.
-                        runSelectedArmSuspendable(
-                                t, select,
-                                (ChannelRuntime.SelectResult) value,
-                                env, continuation);
-                    });
         }
 
         private void finishStructuredTaskScope(
@@ -8953,8 +9069,8 @@ public final class OresEvalRootNode extends RootNode {
             long right = integralLong(values.get(1));
             if (checkedI64Arithmetic && right == 0
                     && (operation.equals("rem") || operation.equals("mod"))) {
-                throw new ArithmeticException(
-                        "ORES_I64_DIVISION_BY_ZERO: checked signed i64 denominator");
+                throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                        dev.oreslang.runtime.GuestErrorValue.divisionByZero());
             }
             return switch (operation) {
                 case "rem" -> dev.oreslang.runtime.StrictIntegerArithmetic.rem(left, right);
@@ -8964,8 +9080,8 @@ public final class OresEvalRootNode extends RootNode {
                         yield dev.oreslang.runtime.StrictIntegerArithmetic.pow(left, right);
                     } catch (ArithmeticException overflow) {
                         if (checkedI64Arithmetic) {
-                            throw new ArithmeticException(
-                                    "ORES_I64_OVERFLOW: checked signed i64 power");
+                            throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                    dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                         }
                         throw overflow;
                     }
@@ -11715,7 +11831,8 @@ public final class OresEvalRootNode extends RootNode {
                 case "is_none" -> (Invokable) args -> { requireZero(args, "Option.is_none"); return !option.present(); };
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap");
-                    if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
+                    if (!option.present()) throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                            dev.oreslang.runtime.GuestErrorValue.optionUnwrap());
                     return option.value();
                 };
                 case "unwrap_all" -> (Invokable) args -> {
@@ -11818,7 +11935,8 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Result.unwrap");
                     if (!result.ok()) {
-                        throw new OresPanic("called Result::unwrap() on an Err value: " + display(result.value()));
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.resultUnwrap(result.value()));
                     }
                     return result.value();
                 };
@@ -13067,6 +13185,10 @@ public final class OresEvalRootNode extends RootNode {
                 return structuralRecordMatches(value, target);
             }
             String name = target.name();
+            if (value instanceof dev.oreslang.runtime.GuestErrorValue error
+                    && target.arguments().isEmpty()
+                    && (name.equals("Error") || name.equals(error.nominalType()))) return true;
+            if (name.equals("ArithmeticOverflowError") || name.equals("DivisionByZeroError")) return false;
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
                     || name.equals("i64") || name.equals("u8") || name.equals("u16")
                     || name.equals("u32") || name.equals("u64") || name.equals("uint")
@@ -13111,6 +13233,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String oresRuntimeTypeName(Object value) {
+            if (value instanceof dev.oreslang.runtime.GuestErrorValue error) return error.nominalType();
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -13182,8 +13305,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
-                case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
-                case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
+                case "<", "<=", ">", ">=" -> orderedCompare(left, right, op);
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
@@ -13380,9 +13502,17 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
-            boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
+            boolean integral = isIntegral(a) && isIntegral(b) && (op != '/' || checkedI64Arithmetic);
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                if (op == '/') {
+                    if (y == 0) throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                            dev.oreslang.runtime.GuestErrorValue.divisionByZero());
+                    if (x == Long.MIN_VALUE && y == -1)
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
+                    return dev.oreslang.runtime.StrictIntegerArithmetic.div(x, y);
+                }
                 // An implicit VM fast-throw exception may have suppression disabled,
                 // which would discard source-boundary diagnostics after warm-up.
                 if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
@@ -13395,8 +13525,8 @@ public final class OresEvalRootNode extends RootNode {
                             default -> throw new AssertionError("unreachable checked operator");
                         };
                     } catch (ArithmeticException overflow) {
-                        throw new ArithmeticException(
-                                "ORES_I64_OVERFLOW: checked signed i64 operator " + op);
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                     }
                 }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -13428,8 +13558,8 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         return Math.negateExact(operand);
                     } catch (ArithmeticException overflow) {
-                        throw new ArithmeticException(
-                                "ORES_I64_OVERFLOW: checked signed i64 unary negation");
+                        throw dev.oreslang.runtime.GuestOrdinaryThrow.signal(
+                                dev.oreslang.runtime.GuestErrorValue.arithmeticOverflow());
                     }
                 }
                 return -operand;
@@ -13438,14 +13568,20 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unary - requires a number");
         }
 
-        private int compare(Object left, Object right) {
+        private boolean orderedCompare(Object left, Object right, String op) {
             if (left instanceof Number a && right instanceof Number b) {
-                if (isIntegral(a) && isIntegral(b)) {
-                    return Long.compare(a.longValue(), b.longValue());
-                }
-                return Double.compare(a.doubleValue(), b.doubleValue());
+                return dev.oreslang.types.NumericValueOrdering.ordered(a, b, op);
             }
-            if (left instanceof String a && right instanceof String b) return a.compareTo(b);
+            if (left instanceof String a && right instanceof String b) {
+                int c = a.compareTo(b);
+                return switch (op) {
+                    case "<" -> c < 0;
+                    case "<=" -> c <= 0;
+                    case ">" -> c > 0;
+                    case ">=" -> c >= 0;
+                    default -> throw new IllegalArgumentException("not an ordering operator");
+                };
+            }
             throw new IllegalArgumentException("values are not comparable");
         }
 

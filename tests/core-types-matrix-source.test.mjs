@@ -13,7 +13,7 @@ const limits=new Map([
 ]);
 function evalSourceArg(value){
   value=value.trim();
-  const m=/^(types\.int_(min|max)_value\(\))(?:\s*([+-])\s*(\d+))?$/.exec(value);
+  const m=/^(ctypes\.int_(min|max)_value\(\))(?:\s*([+-])\s*(\d+))?$/.exec(value);
   if(m){
     const base=m[2]==='min'?MIN:MAX;
     return base+(m[3]==='-'?-1n:1n)*BigInt(m[4]??0);
@@ -22,13 +22,13 @@ function evalSourceArg(value){
   return BigInt(value);
 }
 function verify(body){
-  assert.match(body,/import \* as types from "\.\.\/\.\.\/\.\.\/core\/types\.atto";/);
+  assert.match(body,/import \* as ctypes from "\.\.\/\.\.\/\.\.\/library\/policy\/core\/types\.atto";/);
   assert.match(body,/pub fnc main\(\) -> int \{/);
-  const expressions=[...body.matchAll(/^\s*if (!?)types\.(fits_[iu](?:8|16|32|64))\(([^;\n]+)\); do return (\d+); fi$/gm)];
+  const expressions=[...body.matchAll(/^\s*if (!?)ctypes\.(fits_[iu](?:8|16|32|64))\(([^;\n]+)\); do return (\d+); fi$/gm)];
   assert.ok(expressions.length>=60,'guest must cover at least sixty cases');
   const source=body.replace(/\/\/[^\r\n]*/g,'');
-  const withoutAssertions=source.replace(/^\s*if (!?)types\.(fits_[iu](?:8|16|32|64))\(([^;\n]+)\); do return (\d+); fi$/gm,'')
-    .replace(/import \* as types from "\.\.\/\.\.\/\.\.\/core\/types\.atto";/,'')
+  const withoutAssertions=source.replace(/^\s*if (!?)ctypes\.(fits_[iu](?:8|16|32|64))\(([^;\n]+)\); do return (\d+); fi$/gm,'')
+    .replace(/import \* as ctypes from "\.\.\/\.\.\/\.\.\/library\/policy\/core\/types\.atto";/,'')
     .replace(/pub fnc main\(\) -> int \{/,'').replace(/return 0;/,'').replace(/\}/g,'').trim();
   assert.equal(withoutAssertions,'','unreviewed statement in guest matrix');
   const cases=new Map([...limits.keys()].map(key=>[key,{accepted:0,rejected:0}]));
@@ -53,8 +53,8 @@ test('second compiled guest matrix has independent boundary expectations',()=>{
   assert.ok(verify(guest)>=60);
 });
 test('source-only matrix mutation controls fail for switched expected outcome and duplicate assertion',()=>{
-  assert.throws(()=>verify(guest.replace('if !types.fits_i8(-128)', 'if types.fits_i8(-128)')));
-  assert.throws(()=>verify(guest.replace('return 2;', 'return 1;')));
-  assert.throws(()=>verify(guest.replace('4294967295','4294967296')));
-  assert.throws(()=>verify(guest+'\\nimport * as sys from "std/fs";\\n'));
+  const variants = [guest.replace('if !ctypes.fits_i8(-128)', 'if ctypes.fits_i8(-128)'),
+    guest.replace('return 2;', 'return 1;'), guest.replace('4294967295','4294967296'),
+    guest+'\nimport * as sys from "std/fs";\n'];
+  for (const changed of variants) { assert.notEqual(changed,guest); assert.throws(()=>verify(changed)); }
 });

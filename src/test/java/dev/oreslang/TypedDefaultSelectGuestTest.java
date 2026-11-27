@@ -9,7 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Restricted executable typed-default and single-channel counted selection. */
+/** Restricted executable typed-default and checked scalar counted selection. */
 @Timeout(20)
 final class TypedDefaultSelectGuestTest {
     @Test void bareTypedSelectAndLegacyAliasReturnTrackedFuture() throws Exception {
@@ -351,6 +351,112 @@ final class TypedDefaultSelectGuestTest {
         }
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
                 "pub async fnc main(): void { val bool count = true; val Channel<int> incoming = Channel.new<int>(1); val Future<Array<int>> result = select<int>(count+1) { when readch incoming: int n -> { return n; } }; return; }"));
+    }
+
+    @Test void countedGuestCancellationAfterCommittedProgress() throws Exception {
+        // The second write cannot finish until the counted guest consumes
+        // at least one input. The host regression independently proves
+        // physical retirement; this checks the compiled guest completion.
+        assertEquals("true|#cancelled", run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 10;
+                  val Future<Array<int>> pending = select<int>(4) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  writech incoming, 20;
+                  writech incoming, 30;
+                  // The third write forces progress beyond the first read.
+                  // A fourth read may be pending; it must not steal data
+                  // after the task's get_done receipt.
+                  stdio.stdout.write(pending.cancel());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await pending.get_done());
+                  return;
+                }
+                """));
+    }
+
+    @Test void countedGuestExhaustionUsesAggregateCursor() throws Exception {
+        var failure = assertThrows(org.graalvm.polyglot.PolyglotException.class, () -> run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 42;
+                  incoming.close();
+                  val Array[int] result = await select<int>(2) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  stdio.stdout.write(result.size);
+                  return;
+                }
+                """));
+        assertTrue(failure.getMessage().contains("all counted selection sources exhausted"), failure.getMessage());
+    }
+
+    @Test void portableMixedCountedExactBlobsReturn42() throws Exception {
+        for (String name : new String[]{"counted-mixed-future-alias", "counted-multi-channel-fair", "counted-distinct-alias-projection", "counted-mixed-zero"}) {
+            String code = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "tests/fixtures/select-source-v2", name + ".atto"));
+            try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+                assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code, name+".atto")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong(), name);
+            }
+        }
+    }
+
+    @Test void dynamicMultiChannelCountUsesPersistentFairRotation() throws Exception {
+        assertEquals("11|22|13|99", run("""
+                pub async fnc main(): void {
+                  val Channel<int> a = Channel.new<int>(2);
+                  val Channel<int> b = Channel.new<int>(2);
+                  writech a, 1; writech a, 3;
+                  writech b, 2; writech b, 99;
+                  val int count = 3;
+                  val Array[int] values = await select<int>(count) fair over
+                    when readch a: int n -> { return n + 10; }
+                    when readch b: int n -> { return n + 20; }
+                  end;
+                  stdio.stdout.write(values[0]); stdio.stdout.write("|");
+                  stdio.stdout.write(values[1]); stdio.stdout.write("|");
+                  stdio.stdout.write(values[2]); stdio.stdout.write("|");
+                  stdio.stdout.write(readch b); return;
+                }
+                """));
+    }
+
+    @Test void literalMixedZeroDoesNotCaptureOrConsumeAnySource() throws Exception {
+        assertEquals("false|0|20|22", run("""
+                pub async fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 22;
+                  val Future<int> f = select<int> { default: -> { return 20; } };
+                  val Future<Array<int>> empty = select<int>(0) fair over
+                    when await f: int n -> { return n + 1; }
+                    when readch incoming: int n -> { return n * 2; }
+                    when await f: int n -> { return n; }
+                  end;
+                  stdio.stdout.write(empty.cancel()); stdio.stdout.write("|");
+                  val Array[int] values = await empty;
+                  stdio.stdout.write(values.size); stdio.stdout.write("|");
+                  stdio.stdout.write(await f); stdio.stdout.write("|");
+                  stdio.stdout.write(readch incoming);
+                  return;
+                }
+                """));
+    }
+
+    @Test void mixedZeroStillChecksEveryLexicalWitness() {
+        for (String arm : new String[]{
+                "when readch missing: int n -> { return n; }",
+                "when await incoming: int n -> { return n; }",
+                "when readch f: int n -> { return n; }",
+                "when readch wrong: int n -> { return n; }"
+        }) assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(1); "
+                + "val Channel<bool> wrong = Channel.new<bool>(1); "
+                + "val Future<int> f = select<int> { default: -> { return 20; } }; "
+                + "val Future<Array<int>> result = select<int>(0) { when readch incoming: int n -> { return n; } "
+                + arm + " }; return; }"), arm);
     }
 
     private static String run(String program) throws Exception {
