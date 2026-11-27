@@ -339,6 +339,15 @@ public final class Parser {
     }
 
     private Ast.Program parseProgram(boolean protocolActorsRequired) {
+        if (!strictVerifiedI64 && !singletonCheckOnly && !protocolActorsRequired && current==0
+                && MeasurePrelude.requested(tokens)) {
+            // Re-run the same admission checks with trusted declarations and
+            // unchanged user token locations; no ordinary fallback.
+            var parser = new Parser(MeasurePrelude.prepend(tokens), attoCallableVersion, canonicalAttoSource, false);
+            var result = parser.parseProgram(false);
+            warnings.addAll(parser.warnings);
+            return result;
+        }
         // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
         // execution regions and quantum fail-closed, but allow canonical task
         // forms (plus legacy nb aliases) to reach typed lowering. GPU task is
