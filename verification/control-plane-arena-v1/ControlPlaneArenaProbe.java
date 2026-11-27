@@ -34,6 +34,28 @@ final class ControlPlaneArenaProbe {
             for(int i=1;i<=4095;i++){h=a.tryAllocate();check(h!=0&&((int)h>>>20)==i);a.drop(h);}
             check(a.tryAllocate()==0&&((int)h&0x80000000)!=0);
         }
+        // Exhaust every generation in a non-power-of-two arena, rotating slots fairly.
+        try(var fifo=new ControlPlaneArena32(3)){
+            for(int generation=1;generation<=4095;generation++){
+                for(int slot=1;slot<=3;slot++){
+                    long h=fifo.tryAllocate();
+                    check(h!=0&&((int)h&ControlPlaneArena32.SLOT_MASK)==slot&&((int)h>>>20)==generation);
+                    check(fifo.readI64(h,0)==0&&fifo.readRef32(h)==0);
+                    fifo.writeI64(h,0,slot);fifo.drop(h);
+                }
+            }
+            check(fifo.tryAllocate()==0);
+        }
+        try(var fifo=new ControlPlaneArena32(5)){
+            long[] held=new long[5];for(int i=0;i<5;i++)held[i]=fifo.tryAllocate();
+            check(fifo.tryAllocate()==0);
+            for(int i=4;i>=0;i--)fifo.drop(held[i]);
+            for(int i=4;i>=0;i--){long h=fifo.tryAllocate();check(h!=held[i]&&((int)h&ControlPlaneArena32.SLOT_MASK)==i+1);deny(()->fifo.readI64(held[0],0));}
+        }
+        try(var longLived=new ControlPlaneArena32(256)){
+            cycle(longLived,1_000_000);
+            System.out.println("JAVA_CONTROL_FIFO_PASS cycles=1000000 retirement=12285");
+        }
         var closed=new ControlPlaneArena32(1);long stale=closed.tryAllocate();closed.close();closed.close();
         check(closed.tryAllocate()==0);deny(()->closed.readI64(stale,0));
         var base=ManagementFactory.getThreadMXBean();
