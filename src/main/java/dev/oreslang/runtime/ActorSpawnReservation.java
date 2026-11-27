@@ -1,6 +1,6 @@
 package dev.oreslang.runtime;
 
-/** Host-only quota substrate. No guest access, allocation, scheduler, or AOT proof. */
+/** Host quota substrate only. Physical quiescence and guest lowering remain external. */
 final class ActorSpawnReservation {
     record Charge(long heap, long stacks, long mailboxBytes, long messages) {
         Charge {
@@ -22,40 +22,66 @@ final class ActorSpawnReservation {
                 charge.mailboxBytes > limit.mailboxBytes - mailboxBytes || charge.messages > limit.messages - messages)
             throw new IllegalStateException("E_SPAWN_QUOTA");
         if (generation == Long.MAX_VALUE) throw new IllegalStateException("E_SPAWN_GENERATION_EXHAUSTED");
-        // Create the host bookkeeping before committing counters. No guest allocation here.
-        Permit permit = new Permit(this, generation + 1, charge);
-        active.add(permit);
+        Permit p = new Permit(this, generation + 1, charge);
+        active.add(p);
         generation++;
         heap += charge.heap; stacks += charge.stacks;
         mailboxBytes += charge.mailboxBytes; messages += charge.messages;
-        return permit;
+        return p;
     }
-    synchronized void beginInit(Permit p) {
+    synchronized InitLease beginInit(Permit p) {
         requireActive(p);
         if (p.phase != Phase.INITIALIZING || p.initStarted)
             throw new IllegalStateException("E_SPAWN_INIT_AUTHORITY");
+        InitLease lease = new InitLease(p);
         p.initStarted = true;
+        p.initLease = lease;
+        return lease;
     }
-    synchronized boolean completeInit(Permit p) {
+    /** Settle exactly once, including cancellation after retirement. */
+    synchronized boolean completeInit(InitLease lease, boolean success) {
+        if (lease == null) throw new IllegalStateException("E_SPAWN_INIT_AUTHORITY");
+        Permit p = lease.permit;
         requireActive(p);
-        if (p.phase == Phase.RETIRING) return false;
-        if (p.phase != Phase.INITIALIZING || !p.initStarted)
-            throw new IllegalStateException("E_SPAWN_INIT_AUTHORITY");
+        if (p.initLease != lease) throw new IllegalStateException("E_SPAWN_INIT_AUTHORITY");
+        p.initLease = null;
+        if (p.phase == Phase.RETIRING || !success) {
+            p.phase = Phase.RETIRING;
+            return false;
+        }
         p.phase = Phase.READY;
         return true;
     }
+    /** Observation only; cannot authorize execution. */
     synchronized boolean mayReceive(Permit p) {
         return p != null && p.owner == this && active.contains(p) && p.phase == Phase.READY;
+    }
+    /** Atomic readiness check and host execution lease. Scheduler limits are separate. */
+    synchronized ReceiveLease tryEnterReceive(Permit p) {
+        requireActive(p);
+        if (p.phase != Phase.READY) return null;
+        if (p.receives == Long.MAX_VALUE) throw new IllegalStateException("E_SPAWN_LEASE_LIMIT");
+        ReceiveLease lease = new ReceiveLease(p);
+        p.receives++;
+        return lease;
+    }
+    private synchronized void leaveReceive(ReceiveLease lease) {
+        if (lease.closed) return;
+        Permit p = lease.permit;
+        requireActive(p);
+        if (p.receives == 0) throw new IllegalStateException("E_SPAWN_LEASE_UNDERFLOW");
+        p.receives--;
+        lease.closed = true;
     }
     synchronized void retire(Permit p) {
         requireActive(p);
         p.phase = Phase.RETIRING;
     }
-    /** Trusted dispatcher only, AFTER real physical quiescence and cleanup.
-     * This host prototype cannot establish those prerequisites itself. */
+    /** Trusted dispatcher must also prove tasks, FFI, allocator and physical cleanup. */
     synchronized void releaseAfterQuiescence(Permit p) {
         requireActive(p);
         if (p.phase != Phase.RETIRING) throw new IllegalStateException("E_SPAWN_NOT_RETIRED");
+        if (p.initLease != null || p.receives != 0) throw new IllegalStateException("E_SPAWN_IN_FLIGHT");
         active.remove(p);
         Charge c = p.charge;
         heap -= c.heap; stacks -= c.stacks;
@@ -73,8 +99,20 @@ final class ActorSpawnReservation {
         private final Charge charge;
         private Phase phase = Phase.INITIALIZING;
         private boolean initStarted;
+        private InitLease initLease;
+        private long receives;
         private Permit(ActorSpawnReservation owner, long generation, Charge charge) {
             this.owner = owner; this.generation = generation; this.charge = charge;
         }
+    }
+    static final class InitLease {
+        private final Permit permit;
+        private InitLease(Permit permit) { this.permit = permit; }
+    }
+    static final class ReceiveLease implements AutoCloseable {
+        private final Permit permit;
+        private boolean closed;
+        private ReceiveLease(Permit permit) { this.permit = permit; }
+        @Override public void close() { permit.owner.leaveReceive(this); }
     }
 }
