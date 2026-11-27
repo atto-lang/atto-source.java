@@ -3287,6 +3287,9 @@ public final class Parser {
                     && (tokens.get(current + 2).type() == IDENT
                         || tokens.get(current + 2).type() == COLON
                         || tokens.get(current + 2).type() == LT
+                        || tokens.get(current + 2).type() == MUT
+                        || tokens.get(current + 2).type() == QUESTION
+                        || tokens.get(current + 2).type() == PIPE
                         || tokens.get(current + 1).type() == MUT
                         || tokens.get(current + 1).lexeme().equals("borrow")
                         || tokens.get(current + 1).lexeme().equals("structural"))) {
