@@ -69,16 +69,17 @@ public final class Ast {
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
         }
-        // Legacy hand-authored module ASTs remain private by default.
+        // An unmarked module is public (the v1 library form), matching the
+        // parser; `define private module` is the explicit opt-out.
         public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts,
                           List<Decl> declarations) {
-            this(name, annotations, contracts, declarations, Visibility.PRIVATE);
+            this(name, annotations, contracts, declarations, Visibility.PUBLIC);
         }
         public ModuleDecl(String name, List<Decl> declarations) {
-            this(name, List.of(), List.of(), declarations, Visibility.PRIVATE);
+            this(name, List.of(), List.of(), declarations, Visibility.PUBLIC);
         }
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
-            this(name, annotations, List.of(), declarations, Visibility.PRIVATE);
+            this(name, annotations, List.of(), declarations, Visibility.PUBLIC);
         }
     }
 

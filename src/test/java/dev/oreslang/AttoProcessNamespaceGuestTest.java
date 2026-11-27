@@ -20,12 +20,15 @@ final class AttoProcessNamespaceGuestTest {
                     return 42;
                 }
                 """.formatted(importPath);
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).build()) {
-            return context.eval(Source.newBuilder(OresLanguage.ID, source,
-                    "std-process-namespace-guest.atto")
-                    .mimeType(OresLanguage.MIME_TYPE).build()).asInt();
-        }
+        // std/process is a compiler-owned unit: the linked program runner
+        // binds it (a bare Context.eval has no library loader by design).
+        java.nio.file.Path entry = java.nio.file.Files.createTempDirectory("atto-process-namespace")
+                .resolve("main.atto");
+        java.nio.file.Files.writeString(entry, source);
+        return dev.oreslang.runtime.LinkedProgramRunner.runWithExitStatus(
+                entry, dev.oreslang.runtime.IsolatePolicy.developer(),
+                dev.oreslang.runtime.ExecutionProfile.serverJit(),
+                new java.io.ByteArrayOutputStream(), new java.io.ByteArrayOutputStream()).exitStatus();
     }
 
     @Test void defaultStdProcessImportExecutesLowercaseModule() throws Exception {

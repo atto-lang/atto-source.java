@@ -966,15 +966,16 @@ public final class TypeChecker {
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
         Set<String> builtinNames = Set.copyOf(localNames);
+        Set<String> userDeclaredNames = new HashSet<>();
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) {
-                localNames.add(module.name());
+                { localNames.add(module.name()); userDeclaredNames.add(module.name()); }
                 nonFunctionDeclarations.add(module.name());
             }
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
-                    localNames.add(fn.name());
+                    { localNames.add(fn.name()); userDeclaredNames.add(fn.name()); }
                     if (module.name().equals(Parser.ROOT_MODULE)) {
                         rootFunctions.add(fn.name());
                     } else {
@@ -993,15 +994,15 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 klass.name() + " is a sealed HTTP transport type; user classes cannot shadow it");
                     }
-                    localNames.add(klass.name());
+                    { localNames.add(klass.name()); userDeclaredNames.add(klass.name()); }
                     nonFunctionDeclarations.add(klass.name());
                 }
                 else if (declaration instanceof Ast.InterfaceDecl iface) {
-                    localNames.add(iface.name());
+                    { localNames.add(iface.name()); userDeclaredNames.add(iface.name()); }
                     nonFunctionDeclarations.add(iface.name());
                 }
                 else if (declaration instanceof Ast.FieldDecl field) {
-                    localNames.add(field.name());
+                    { localNames.add(field.name()); userDeclaredNames.add(field.name()); }
                     nonFunctionDeclarations.add(field.name());
                 }
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
@@ -1013,7 +1014,7 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
                     }
-                    localNames.add(alias.name());
+                    { localNames.add(alias.name()); userDeclaredNames.add(alias.name()); }
                     nonFunctionDeclarations.add(alias.name());
                 }
             }
@@ -1039,7 +1040,16 @@ public final class TypeChecker {
                 }
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
-                if (localNames.contains(name)
+                // `import module process from "std/process"` deliberately shadows
+                // the builtin namespace of the same name (a user declaration of
+                // that name still conflicts).
+                boolean stdModuleShadowsBuiltin = imported.kind() == Ast.ImportKind.MODULE
+                        && !imported.wildcard()
+                        && builtinNames.contains(name)
+                        && !userDeclaredNames.contains(name)
+                        && dev.oreslang.stdlib.CoreLibrarySources.isStdImport(imported.path())
+                        && imported.names().contains(name);
+                if (localNames.contains(name) && !stdModuleShadowsBuiltin
                         && !(imported.kind() == Ast.ImportKind.FUNCTION
                                 && !imported.wildcard()
                                 && rootFunctions.contains(name)

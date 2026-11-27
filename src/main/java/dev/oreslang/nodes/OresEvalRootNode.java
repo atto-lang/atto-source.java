@@ -9454,6 +9454,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
+                // An explicit import binding (the checker admits only a
+                // same-named std module, e.g. std/process) wins over the
+                // builtin namespace of that name.
+                if (namedImports.containsKey(name.name()) || namespaceImports.containsKey(name.name())) {
+                    Object imported = importedValue(name.name());
+                    if (imported != Env.MISSING) return imported;
+                }
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);

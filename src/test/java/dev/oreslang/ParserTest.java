@@ -289,11 +289,9 @@ final class ParserTest {
 
     @Test
     void unsupportedModifiersAreNeverSilentlyDiscarded() {
+        // `private define module` is the legacy spelling of module visibility
+        // (atto-source.java#1754), so it is no longer an unsupported modifier.
         List<String> invalid = List.of(
-                """
-                private define module app as
-                end
-                """,
                 """
                 define module app as
                   async type Alias = int;
