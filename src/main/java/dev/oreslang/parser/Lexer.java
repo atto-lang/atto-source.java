@@ -126,7 +126,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : match('=') ? COLON_ASSIGN : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE); case '•' -> add(BULLET);
             case '⧖', '∂' -> add(SUSPENDS);
