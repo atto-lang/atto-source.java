@@ -7129,6 +7129,48 @@ public final class ActorRuntime implements AutoCloseable {
                 Objects.requireNonNull(executor.codeImage()), executor, actorTypeName, true);
     }
 
+    /** Host test bridge only. The schema is not yet minted by typed HIR. */
+    ActorRef<Object> spawnCodeActorWithStartup(
+            ActorKind kind, IsolatePolicy policy, ActorCodeExecutor executor,
+            String actorTypeName, dev.oreslang.ast.Ast.ClassDecl declaration,
+            ActorStartupPayload.Schema schema, ActorStartupPayload payload) {
+        Objects.requireNonNull(executor, "executor");
+        Objects.requireNonNull(schema, "schema");
+        Objects.requireNonNull(payload, "payload");
+        var image = Objects.requireNonNull(executor.codeImage());
+        Objects.requireNonNull(declaration, "actor declaration");
+        boolean exact = false;
+        int simpleNames = 0;
+        for (var module : image.program().modules()) {
+            for (var candidate : module.declarations()) {
+                if (!(candidate instanceof dev.oreslang.ast.Ast.ClassDecl actor)) continue;
+                if (actor.name().equals(declaration.name())) simpleNames++;
+                if (actor == declaration && (actorTypeName.equals(actor.name())
+                        || actorTypeName.equals(module.name() + "." + actor.name()))) exact = true;
+            }
+        }
+        if (!exact || (actorTypeName.equals(declaration.name()) && simpleNames != 1)
+                || declaration.actorKind() == dev.oreslang.ast.Ast.ActorKind.NONE
+                || !payload.matches(schema)) throw new SecurityException("E_SPAWN_INIT_SCHEMA");
+        return spawnInternal(kind, policy, null, false, image, executor, actorTypeName, true, payload);
+    }
+
+    /** Host-only, authenticated synchronous initialization turn. Never a guest API. */
+    ActorStartupPayload takeCurrentActorStartup() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || currentActorRuntime() != this
+                || currentActorCodeImage() != cell.codeImage)
+            throw new SecurityException("E_SPAWN_INIT_AUTHORITY");
+        synchronized (cell.lifecycleLock) {
+            if (cell.startupSegment != currentMutexExecutionSegment() || cell.stopped.get()
+                    || cell.forceKillFenced || cell.startupPayload == null)
+                throw new SecurityException("E_SPAWN_INIT_AUTHORITY");
+            ActorStartupPayload value = cell.startupPayload;
+            cell.startupPayload = null;
+            return value;
+        }
+    }
+
     private <M> ActorRef<M> spawnInternal(
             ActorKind kind,
             IsolatePolicy policy,
@@ -7166,6 +7208,15 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind, IsolatePolicy policy, BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory, SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor, String codeActorType, boolean reserveNativeHeap) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, codeImage,
+                codeExecutor, codeActorType, reserveNativeHeap, null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind, IsolatePolicy policy, BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory, SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor, String codeActorType, boolean reserveNativeHeap,
+            ActorStartupPayload startupPayload) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -7255,6 +7306,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // promise. Arena slabs consume only local credit, never
                     // charge the aggregate a second time.
                     long heapLimit = effectivePolicy.maxHeapBytes();
+                    if (startupPayload != null && startupPayload.bytes() > heapLimit)
+                        throw new IllegalArgumentException("E_SPAWN_INIT_BYTES");
                     ActorReservedArenaBudget candidate = new ActorReservedArenaBudget(
                             heapLimit, () -> releaseSharedRuntimeBytes(heapLimit));
                     reserveSharedRuntimeBytes(heapLimit, "reserved actor native heap");
@@ -7277,7 +7330,7 @@ public final class ActorRuntime implements AutoCloseable {
                         codeImage,
                         codeExecutor,
                         codeActorType,
-                        parent, heapCredit);
+                        parent, heapCredit, startupPayload);
                 actorOutputStreams.add(cell.outputStream);
                 // Lazy pools: the first actor of a kind creates its carrier here.
                 startCarrierForAdmission(kind, cell.dispatchLane);
@@ -10474,6 +10527,10 @@ public final class ActorRuntime implements AutoCloseable {
         // Replaced only by a committed hot upgrade, on this actor's own turn.
         private volatile ActorNativeArena heap;
         private final ActorReservedArenaBudget reservedHeapCredit;
+        // Guarded by lifecycleLock; only the synchronous init execution segment
+        // can consume this immutable host payload. Never placed in USER mail.
+        private ActorStartupPayload startupPayload;
+        private Object startupSegment;
         /** Code generation of this incarnation (spec ch. 27); bumped by a committed upgrade. */
         private volatile long codeGeneration = 1;
         /** Guarded by lifecycleLock: a requested upgrade waiting for generation N to drain. */
@@ -10598,8 +10655,10 @@ public final class ActorRuntime implements AutoCloseable {
                 SharedCodeImageStore.CodeImage codeImage,
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
-                ActorCell<?> parent, ActorReservedArenaBudget reservedHeapCredit) {
+                ActorCell<?> parent, ActorReservedArenaBudget reservedHeapCredit,
+                ActorStartupPayload startupPayload) {
             this.reservedHeapCredit = reservedHeapCredit;
+            this.startupPayload = startupPayload;
             this.storageActorOrdinal = nextStorageActorOrdinal.getAndIncrement();
             if (storageActorOrdinal <= 0) {
                 throw new IllegalStateException("runtime WAL actor slot sequence exhausted");
@@ -11389,6 +11448,8 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             abortUpgradesLocked();
+            startupPayload = null;
+            startupSegment = null;
             finalized = true;
             // Only release virtual activation ownership after *all* physical
             // reclamation, group deregistration and parent-child finalization.
@@ -12010,12 +12071,21 @@ public final class ActorRuntime implements AutoCloseable {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
                                 (ActorContext<Object>) (ActorContext<?>) context;
-                        ActorOwnedGuestState created =
-                                Objects.requireNonNull(
-                                        codeExecutor.initializeActor(
-                                                codeActorType,
-                                                sourceContext),
-                                        "source actor executor returned null state");
+                        final ActorOwnedGuestState created;
+                        synchronized (lifecycleLock) {
+                            if (stopped.get() || forceKillFenced) return;
+                            startupSegment = currentMutexExecutionSegment();
+                        }
+                        try {
+                            created = Objects.requireNonNull(
+                                    codeExecutor.initializeActor(codeActorType, sourceContext),
+                                    "source actor executor returned null state");
+                        } finally {
+                            synchronized (lifecycleLock) {
+                                startupSegment = null;
+                                startupPayload = null;
+                            }
+                        }
                         if (!created.ownerActorId().equals(ref.id())) {
                             throw new SecurityException(
                                     "source actor state owner "
