@@ -19,7 +19,7 @@ final class ActorSpawnAdmission {
         var plan = ActorSpawnChargePlan.resolve(policy, defaults, request);
         // Construct the wrapper before charging; after reserve only assignment remains.
         var admission = new Admission(this, schema, payload, plan);
-        admission.permit = reservation.reserve(plan.charge());
+        admission.permit = reservation.reserve(plan.charge(), policy.serial() ? 1 : policy.liveStackSlots());
         return admission;
     }
 
