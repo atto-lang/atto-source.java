@@ -12017,11 +12017,14 @@ public final class ActorRuntime implements AutoCloseable {
                         // A serial source declaration must be preserved at
                         // runtime; numeric 1/1 admission settings alone are
                         // not a substitute for its receive-only semantics.
-                        if (created.serialReceive()) {
-                            receiveAdmission.close();
-                            receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                        synchronized (lifecycleLock) {
+                            if (created.serialReceive()) {
+                                receiveAdmission.close();
+                                receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                                if (stopped.get()) receiveAdmission.fence();
+                            }
+                            codeActorState = created;
                         }
-                        codeActorState = created;
                     } else {
                         Behavior<M> created = Objects.requireNonNull(
                                 behaviorFactory.create(context),
@@ -12493,6 +12496,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // STOP is single-shot. Reentrant supervisor/host requests must
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
+                receiveAdmission.fence();
                 // Capture only the sealed compiler-owned region. This is a
                 // non-guest STOP fence; do not hold lifecycleLock while
                 // closing the region's loan arbiter.
