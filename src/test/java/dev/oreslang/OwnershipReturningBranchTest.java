@@ -17,7 +17,7 @@ final class OwnershipReturningBranchTest {
               pub val int id = 7;
             end
 
-            fnc consume(Resource value): int { return value.id; }
+            fnc consume(take! Resource value): int { return value.id; }
             """;
 
     private static void accepts(String body) {

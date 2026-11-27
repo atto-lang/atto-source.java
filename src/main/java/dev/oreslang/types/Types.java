@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, DiscardFunction, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     /** Distinguishes runtime records, internal structural contracts, and concrete structs. */
     public enum AggregateKind { RECORD, CONTRACT, STRUCT }
@@ -134,6 +134,9 @@ public final class Types {
                     result, CheckedEffects.none());
         }
     }
+
+    /** A `_ : T -> e` lambda: callable with any bounded arity, never assignable to a Function. */
+    public record DiscardFunction(Type result) implements Type { }
 
     public record ListType(Type element) implements Type { }
 

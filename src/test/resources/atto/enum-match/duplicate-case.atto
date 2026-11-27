@@ -1,0 +1,14 @@
+define enum Light as
+    Red
+    Green
+    Yellow
+end
+
+fnc next(Light value): Light {
+    return match value over
+        on Light.Red -> Light.Green;
+        on Light.Red -> Light.Yellow;
+        on Light.Green -> Light.Yellow;
+        on Light.Yellow -> Light.Red;
+    end
+}

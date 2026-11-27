@@ -35,19 +35,29 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
-    void ordinaryParametersAreImmutableForFieldMutation() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        define class Bar as
-                          pub let String foo = "start";
-                        end
+    void mutatingParameterNeedsAWritableCallerOwner() {
+        // implicit-argument-borrow-v1: change(Bar b) holds an exclusive loan,
+        // so it may write b.foo, and a readonly `let` caller cannot lend it.
+        String change = """
+                define class Bar as
+                  pub let String foo = "start";
+                end
 
-                        fnc change(Bar b): void {
-                          b.foo = "foobar";
+                fnc change(Bar b): void {
+                  b.foo = "foobar";
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(change)));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(change + """
+                        fnc caller(): void {
+                          let Bar b = new Bar();
+                          change(b);
                           return;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("read-only binding"));
+        assertTrue(error.getMessage().contains("immutable owner"), error::getMessage);
     }
 
     @Test
@@ -172,7 +182,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b): void {
+                        fnc consume(take! Bar b): void {
                           return;
                         }
 
@@ -262,7 +272,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b): void { return; }
+                        fnc consume(take! Bar b): void { return; }
 
                         fnc bad(): void {
                           let Bar b = new Bar();
@@ -307,7 +317,7 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc consume(Bar b): void { return; }
+                fnc consume(take! Bar b): void { return; }
 
                 fnc ok(bool flag): void {
                   let Bar b = new Bar();
@@ -326,7 +336,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b): void { return; }
+                        fnc consume(take! Bar b): void { return; }
 
                         fnc bad(bool flag): void {
                           let Bar b = new Bar();

@@ -20,7 +20,7 @@ final class FunctionArityOwnershipTest {
                 end
 
                 fnc consume(int marker): void { return; }
-                fnc consume(Resource value, int marker): void { return; }
+                fnc consume(take! Resource value, int marker): void { return; }
 
                 fnc bad(): void {
                   let Resource resource = new Resource();
@@ -44,7 +44,7 @@ final class FunctionArityOwnershipTest {
                 end
 
                 routine consume(int marker): void { return; }
-                routine consume(Resource value, int marker): void { return; }
+                routine consume(take! Resource value, int marker): void { return; }
 
                 routine bad(): void {
                   let Resource resource = new Resource();
@@ -65,7 +65,7 @@ final class FunctionArityOwnershipTest {
         String source = """
                 define module library as
                   fnc consume(int marker): void { return; }
-                  fnc consume(Resource value, int marker): void { return; }
+                  fnc consume(take! Resource value, int marker): void { return; }
                 end
 
                 define class Resource as

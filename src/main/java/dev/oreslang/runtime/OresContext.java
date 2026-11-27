@@ -252,6 +252,14 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public AsyncStdioLogs asyncStdio() { return asyncStdio; }
     public OresVM vm() { return vm; }
+    /** Futures of `do task` detached tasks, joined after root main completes. */
+    private final java.util.List<OresFuture<?>> detachedTasks =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+    public void registerDetachedTask(Object task) {
+        if (task instanceof OresFuture<?> future) detachedTasks.add(future);
+    }
+
     public ActorRuntime actors() { return actors; }
     public SourceActorPubSub actorPubSub() { return actorPubSub; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
@@ -519,6 +527,10 @@ public final class OresContext implements AutoCloseable {
                 }
             }
             Object result = task.join();
+            // Detached `do task` work finishes before shutdown (failures stay isolated).
+            for (OresFuture<?> detached : java.util.List.copyOf(detachedTasks)) {
+                try { detached.join(); } catch (RuntimeException ignored) { }
+            }
             if (physicallyRetired.getCount() != 0) {
                 if (location != null) {
                     com.oracle.truffle.api.TruffleSafepoint.setBlockedThreadInterruptible(

@@ -62,6 +62,7 @@ public final class OresMain {
             System.err.println("oreslang: " + safeDiagnosticText(failure.getMessage()));
             return 2;
         } catch (Exception failure) {
+            if (Boolean.getBoolean("atto.debug.stack")) failure.printStackTrace();
             String message = failure.getMessage();
             System.err.println("oreslang: " + safeDiagnosticText(
                     message == null || message.isBlank()

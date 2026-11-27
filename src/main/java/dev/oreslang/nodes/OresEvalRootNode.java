@@ -41,6 +41,7 @@ import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
 import dev.oreslang.runtime.Utf8StringAbi;
 import dev.oreslang.types.NumericValueEquality;
+import dev.oreslang.types.NominalEnumRegistry;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -303,6 +304,7 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private final NominalEnumRegistry.Registry nominalEnums;
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -359,6 +361,8 @@ public final class OresEvalRootNode extends RootNode {
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
+        /** Active guest catch/trap boundaries on this thread (two-phase recover search). */
+        private final ThreadLocal<int[]> activeCatchers = ThreadLocal.withInitial(() -> new int[1]);
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         // Per-carrier synchronous call chains. A routine remains logically active
         // after tail-transfer to a fnc, until that entire invocation returns.
@@ -409,6 +413,7 @@ public final class OresEvalRootNode extends RootNode {
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
+            this.nominalEnums = NominalEnumRegistry.forProgram(program);
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -3670,8 +3675,7 @@ public final class OresEvalRootNode extends RootNode {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
-                                            flow.failure() instanceof dev.oreslang.runtime.GuestOrdinaryThrow guest
-                                                    ? guest.error() : flow.failure(),
+                                            guestErrorValue(flow.failure()),
                                             Ast.BindingKind.VAL);
                                     runBlock(
                                             t,
@@ -5311,6 +5315,25 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return;
                     }
+                    // Nullary nominal enum variants are values even in
+                    // suspendable evaluation. Resolve before evaluating the
+                    // namespace name, which is compile-time-only.
+                    if (member.receiver() instanceof Ast.NameExpr enumOwner
+                            && env.lookup(enumOwner.name()) == Env.MISSING) {
+                        NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                                enumOwner.name() + "." + member.member());
+                        if (enumCase != null) {
+                            try {
+                                continuation.accept(
+                                        task,
+                                        constructNominalEnum(enumCase, List.of()),
+                                        null);
+                            } catch (RuntimeException | Error failure) {
+                                continuation.accept(task, null, failure);
+                            }
+                            return;
+                        }
+                    }
                     evalSuspendableExpr(
                             task,
                             member.receiver(),
@@ -5515,7 +5538,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             failure == null
-                                                    ? List.copyOf(values)
+                                                    ? new TupleList(List.copyOf(values))
                                                     : null,
                                             failure));
                     return;
@@ -5936,6 +5959,17 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     null,
                                     channelFailure);
+                            return;
+                        }
+
+                        if (isStdioStream(channelValue)) {
+                            try {
+                                Object written = operation.operation() == Ast.ChannelOperation.WRITE
+                                        ? eval(operation.value(), env) : null;
+                                continuation.accept(t, stdioStreamOperation(channelValue, operation, written), null);
+                            } catch (RuntimeException | Error failure) {
+                                continuation.accept(t, null, failure);
+                            }
                             return;
                         }
 
@@ -6437,6 +6471,34 @@ public final class OresEvalRootNode extends RootNode {
                             }
                         });
                 return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr enumMember
+                    && enumMember.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == Env.MISSING) {
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                enumOwner.name() + "." + enumMember.member());
+                if (enumCase != null) {
+                    evalSuspendableArguments(
+                            task,
+                            call.arguments(),
+                            env,
+                            (t, values, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                try {
+                                    continuation.accept(
+                                            t,
+                                            constructNominalEnum(enumCase, values),
+                                            null);
+                                } catch (RuntimeException | Error enumFailure) {
+                                    continuation.accept(t, null, enumFailure);
+                                }
+                            });
+                    return;
+                }
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
@@ -7459,6 +7521,18 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new ReadonlyRecordValue(fields);
                 }
+                if (value instanceof NominalEnumValue nominal) {
+                    return nominal.payload() == null
+                            ? nominal
+                            : new NominalEnumValue(
+                                    nominal.ownerUnitId(),
+                                    nominal.enumName(),
+                                    nominal.variant(),
+                                    nominal.tag(),
+                                    detachAsyncValue(
+                                            nominal.payload(),
+                                            visiting));
+                }
                 if (value instanceof MutableStructValue mutableStruct) {
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> entry : mutableStruct.entrySet()) {
@@ -7541,7 +7615,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
-            return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+            return !(failure instanceof GuestRaise) && dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
         }
 
@@ -7560,7 +7634,8 @@ public final class OresEvalRootNode extends RootNode {
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
-            return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
+            return !(failure instanceof GuestRaise) && !(failure instanceof RecoveryCursorNext)
+                    && dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
 
@@ -7577,11 +7652,15 @@ public final class OresEvalRootNode extends RootNode {
 
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
             bindSyncReadonlyShapeArguments(env, fn.parameters(), args, "function " + fn.name());
+            boolean recovering = registersRecover(fn.body());
+            List<Object> recoverHandlers = recovering ? new ArrayList<>() : null;
+            if (recovering) env.define(RECOVER_SLOT, recoverHandlers, Ast.BindingKind.VAL);
             try {
                 // A trap boundary must survive tail-call lowering. Treat it as a
                 // tail barrier so a callee failure cannot escape by replacing
-                // this function's dynamic boundary.
-                executeBlock(fn.body(), env, fn.trapped());
+                // this function's dynamic boundary. A recover registration is
+                // a boundary in the same way.
+                executeBlock(fn.body(), env, fn.trapped() || recovering);
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -7593,10 +7672,88 @@ public final class OresEvalRootNode extends RootNode {
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
             } catch (RuntimeException failure) {
+                if (recovering && !recoverHandlers.isEmpty() && recoverEligible(failure)) {
+                    // finally blocks and defers have already run (unwind order);
+                    // the handler's result becomes this function's result.
+                    return shapeReturnedValue(fn.returnType(),
+                            runRecoverHandlers(recoverHandlers, failure), "function " + fn.name());
+                }
                 throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, fn.name(), "function");
             } finally {
                 env.revokeReadonlyShapeLoans();
             }
+        }
+
+        /** Runtime `typeof value`: a readonly descriptor with name and to_string(). */
+        private static Object typeInfoOf(Object value) {
+            String name;
+            if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte) name = "int";
+            else if (value instanceof Double || value instanceof Float) name = "float";
+            else if (value instanceof String) name = "string";
+            else if (value instanceof Boolean) name = "bool";
+            else if (value instanceof OresObject object) name = object.klass.name();
+            else if (value instanceof NominalEnumValue nominal) name = nominal.enumName();
+            else if (value instanceof OptionValue) name = "Option";
+            else if (value instanceof ResultValue) name = "Result";
+            else if (value instanceof TupleList) name = "Tuple";
+            else if (value instanceof List<?>) name = "List";
+            else if (value == null) name = "void";
+            else name = value.getClass().getSimpleName();
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("name", name);
+            fields.put("to_string", (Invokable) ignored -> name);
+            return new ReadonlyRecordValue(fields);
+        }
+
+        private static final String RECOVER_SLOT = "$recover$";
+
+        private static boolean registersRecover(List<Ast.Stmt> body) {
+            for (Ast.Stmt stmt : body) {
+                if (stmt instanceof Ast.ExprStmt statement
+                        && statement.expression() instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("recover")) return true;
+            }
+            return false;
+        }
+
+        @SuppressWarnings("unchecked")
+        private void registerRecoverHandler(Object handler, Env env) {
+            if (!(handler instanceof Invokable)) {
+                throw new IllegalArgumentException("recover requires a |err, cursor| -> { ... } handler");
+            }
+            Object slot = env.lookup(RECOVER_SLOT);
+            if (!(slot instanceof List<?> handlers)) {
+                throw new IllegalStateException(
+                        "recover is admitted only at the top level of a synchronous fnc body");
+            }
+            ((List<Object>) handlers).add(handler);
+        }
+
+        /**
+         * Two-phase dispatch (defer-recover-unwind-v1): a raise always reaches
+         * recover; an ordinary throw only when no catch or trap boundary is
+         * active anywhere up the dynamic call chain; panic never.
+         */
+        private boolean recoverEligible(RuntimeException failure) {
+            if (failure instanceof GuestRaise) return true;
+            return failure instanceof GuestThrow && activeCatchers.get()[0] == 0;
+        }
+
+        /** Run handlers newest-first; `cursor.next()` delegates to the next older one. */
+        private Object runRecoverHandlers(List<Object> handlers, RuntimeException failure) {
+            Object errorView = guestErrorValue(failure);
+            for (int i = handlers.size() - 1; i >= 0; i--) {
+                Invokable handler = (Invokable) handlers.get(i);
+                Map<String, Object> cursorFields = new LinkedHashMap<>();
+                cursorFields.put("next", (Invokable) ignored -> { throw new RecoveryCursorNext(); });
+                Object cursor = new ReadonlyRecordValue(cursorFields);
+                try {
+                    return invoke(invokableInvocation(handler, List.of(errorView, cursor)));
+                } catch (RecoveryCursorNext delegated) {
+                    // Terminal delegation: try the next older registration.
+                }
+            }
+            throw failure;
         }
 
         private boolean methodContainsPotentialSuspension(
@@ -8016,19 +8173,23 @@ public final class OresEvalRootNode extends RootNode {
                 // earlier explicit exit with a different one.
                 Throwable pendingTryFailure = null;
                 try {
-                    try { executeBlock(tried.body(), env, true); }
+                    // An active catch is visible to the two-phase recover search:
+                    // a callee's recover handler must not preempt this catch.
+                    boolean countsAsCatcher = tried.hasCatch();
+                    try {
+                        if (countsAsCatcher) activeCatchers.get()[0]++;
+                        try { executeBlock(tried.body(), env, true); }
+                        finally { if (countsAsCatcher) activeCatchers.get()[0]--; }
+                    }
                     catch (TailCallSignal signal) { throw signal; }
                     catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                     catch (OresPanic panic) { throw panic; }
                     catch (RuntimeException failure) {
                         // Guest catch may recover explicit denials and other ordinary
-                        // errors, but must never consume panic or scheduler control.
+                        // errors, but must never consume panic, raise or scheduler control.
                         if (!tried.hasCatch() || !isGuestCatchableFailure(failure)) throw failure;
                         Env catchEnv = new Env(env);
-                        catchEnv.define(tried.errorName(),
-                                failure instanceof dev.oreslang.runtime.GuestOrdinaryThrow guest
-                                        ? guest.error() : failure,
-                                Ast.BindingKind.VAL);
+                        catchEnv.define(tried.errorName(), guestErrorValue(failure), Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);
                     }
                 } catch (RuntimeException | Error failure) {
@@ -8312,11 +8473,44 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private static boolean isStdioStream(Object target) {
+            return target instanceof StdoutFacade || target instanceof StderrFacade
+                    || target instanceof StdinFacade;
+        }
+
+        /**
+         * stdio streams behave as line channels: writech stdio.out/stdio.err
+         * writes one line; readch stdio.in reads one line ("" at end of input).
+         */
+        private Object stdioStreamOperation(Object target, Ast.ChannelOpExpr operation, Object value) {
+            boolean write = operation.operation() == Ast.ChannelOperation.WRITE;
+            if (write && target instanceof StdoutFacade stdout) {
+                stdout.println(List.of(value));
+                return null;
+            }
+            if (write && target instanceof StderrFacade stderr) {
+                stderr.println(value);
+                return null;
+            }
+            if (!write && target instanceof StdinFacade stdin) {
+                Object line = stdin.readLine(List.of());
+                return line instanceof OptionValue option && option.present() ? option.value() : "";
+            }
+            throw new IllegalArgumentException(
+                    (write ? "writech" : "readch") + " is not supported on this stdio stream");
+        }
+
         private Object evalChannelOperation(
                 Ast.ChannelOpExpr operation,
                 Env env) {
+            Object channelTarget = eval(operation.channel(), env);
+            if (isStdioStream(channelTarget)) {
+                Object written = operation.operation() == Ast.ChannelOperation.WRITE
+                        ? eval(operation.value(), env) : null;
+                return stdioStreamOperation(channelTarget, operation, written);
+            }
             ChannelRuntime.Channel<Object> channel = requireChannel(
-                    eval(operation.channel(), env),
+                    channelTarget,
                     operation.operation() == Ast.ChannelOperation.READ
                             ? "readch"
                             : "writech");
@@ -8531,7 +8725,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private void requireLexicalClassAccess(Env env, Ast.ClassDecl target) {
             Ast.ClassDecl lexicalClass = env.lexicalContainerClass();
-            if (!isActorLexicalBoundary(lexicalClass) || lexicalClass == target) return;
+            if (!isActorLexicalBoundary(lexicalClass) || lexicalClass == target
+                    || target.actorKind() != Ast.ActorKind.NONE // sibling actors: isolated mailboxes
+                    || dev.oreslang.types.TypeChecker.isPreludeClass(target)) return;
             throw new IllegalArgumentException(
                     "actor '" + lexicalClass.name()
                             + "' cannot implicitly access sibling "
@@ -8728,6 +8924,20 @@ public final class OresEvalRootNode extends RootNode {
                 namedImportedFnc(imported.member());
                 return prepareExplicitImportInvocation(
                         imported.member(), evaluateArguments(call.arguments(), env));
+            }
+            if (call.callee() instanceof Ast.MemberExpr enumMember
+                    && enumMember.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == Env.MISSING) {
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                enumOwner.name() + "." + enumMember.member());
+                if (enumCase != null) {
+                    List<Object> args =
+                            evaluateArguments(call.arguments(), env);
+                    return invokableInvocation(
+                            ignored -> constructNominalEnum(enumCase, args),
+                            List.of());
+                }
             }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
@@ -8963,6 +9173,29 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return List.copyOf(values);
+        }
+
+        private Object constructNominalEnum(
+                NominalEnumRegistry.Case enumCase,
+                List<Object> args) {
+            int expected = enumCase.payload() == null ? 0 : 1;
+            if (args.size() != expected) {
+                throw new IllegalArgumentException(
+                        "enum constructor " + enumCase.qualifiedName()
+                                + " expects " + expected + " argument(s)");
+            }
+            Object payload = expected == 0
+                    ? null
+                    : shapeReturnedValue(
+                            enumCase.payload(),
+                            args.getFirst(),
+                            "enum constructor " + enumCase.qualifiedName());
+            return new NominalEnumValue(
+                    codeUnitId,
+                    enumCase.owner(),
+                    enumCase.name(),
+                    enumCase.tag(),
+                    payload);
         }
 
         /** A sealed guest intrinsic, never host Java's Integer class. */
@@ -9322,6 +9555,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
+                case "throw" -> throw new GuestThrow(value);
+                case "raise" -> throw new GuestRaise(value);
+                case "panic" -> throw new OresPanic(guestErrorMessage(value));
                 case "fail" -> {
                     if (!(value instanceof String message)) {
                         throw new IllegalArgumentException("rt fail message must be a String");
@@ -9455,12 +9691,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("int")) return IntNamespace.INSTANCE;
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Atomic")) return AtomicFactory.INSTANCE;
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("Bytes")) return BytesFactory.INSTANCE;
+                if (name.name().equals("ByteBuffer")) return ByteBufferFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this, false);
@@ -9626,7 +9864,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 try {
-                    return trapOk(eval(trapped.expression(), env));
+                    activeCatchers.get()[0]++;
+                    try {
+                        return trapOk(eval(trapped.expression(), env));
+                    } finally {
+                        activeCatchers.get()[0]--;
+                    }
                 } catch (RuntimeException failure) {
                     if (!isTrappableFailure(failure)) throw failure;
                     return trapErr(failure);
@@ -9753,6 +9996,27 @@ public final class OresEvalRootNode extends RootNode {
                 if (runtime.operation().equals("workflow_request")) {
                     return submitWorkflowGuestIntrinsic(value, env);
                 }
+                if (runtime.operation().equals("recover")) {
+                    registerRecoverHandler(value, env);
+                    return null;
+                }
+                if (runtime.operation().equals("typeof")) return typeInfoOf(value);
+                if (runtime.operation().equals("propagate")) {
+                    if (value instanceof ResultValue result) {
+                        if (result.ok()) return result.value();
+                        throw new ReturnSignal(result);
+                    }
+                    if (value instanceof OptionValue option) {
+                        if (option.present()) return option.value();
+                        throw new ReturnSignal(option);
+                    }
+                    throw new IllegalStateException("'?' reached a value that is not a Result or Option");
+                }
+                if (runtime.operation().equals("detach")) {
+                    // `do task`: the root program joins detached tasks before shutdown.
+                    context.registerDetachedTask(value);
+                    return null;
+                }
                 return applyScopedMapOwnership(runtime, value, env);
             }
             if (expr instanceof Ast.CallExpr call) {
@@ -9763,6 +10027,14 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.MemberExpr member) {
                 if (isImportsMember(member)) return explicitImportValue(member.member());
                 if (isPkgRootMember(member)) return pkgRootFunctionValue(member.member());
+                if (member.receiver() instanceof Ast.NameExpr enumOwner
+                        && env.lookup(enumOwner.name()) == Env.MISSING) {
+                    NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                            enumOwner.name() + "." + member.member());
+                    if (enumCase != null) {
+                        return constructNominalEnum(enumCase, List.of());
+                    }
+                }
                 return member(eval(member.receiver(), env), member.member(), env);
             }
             if (expr instanceof Ast.IndexExpr indexed) {
@@ -9799,6 +10071,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
                             "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
+                }
+                if (created.type().name().equals("Channel") && findClass("Channel") == null) {
+                    // Canonical `new Channel<T>(capacity)` is the same bounded
+                    // runtime channel as `Channel.new<T>(capacity)`.
+                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return new ChannelFactory().create(args);
                 }
                 HostClassFacade hostClass = hostClasses.get(created.type().name());
                 if (hostClass != null) {
@@ -9959,7 +10237,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "unverified typed empty aggregate cannot execute: " + witness);
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) return new TupleList(tuple.elements().stream().map(item -> eval(item, env)).toList());
             if (expr instanceof Ast.ObjectExpr object) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
@@ -9983,10 +10261,12 @@ public final class OresEvalRootNode extends RootNode {
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
                 Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
-                return tailCallable(args -> {
-                    if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
+                return tailCallable(given -> {
+                    List<Object> args = lambda.discardsRest() ? List.of() : given;
+                    List<Ast.Param> formals = lambda.discardsRest() ? List.of() : lambda.parameters();
+                    if (args.size() != formals.size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
-                    bindCallableArguments(local, lambda.parameters(), args, "lambda");
+                    bindCallableArguments(local, formals, args, "lambda");
                     try {
                         if (lambda.expressionBody() != null) {
                             // An expression-bodied lambda's sole expression is
@@ -10123,6 +10403,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof String text && name.equals("length")) {
+                return (long) text.codePointCount(0, text.length());
+            }
+            if (receiver instanceof NominalEnumValue nominal) {
+                Ast.FunctionDecl enumMethod = findSingleFunction(nominal.enumName() + "$" + name);
+                if (enumMethod != null) return (Invokable) args -> {
+                    List<Object> bound = new ArrayList<>(args.size() + 1);
+                    bound.add(receiver);
+                    bound.addAll(args);
+                    return callFunction(enumMethod, bound);
+                };
+            }
             if (receiver instanceof dev.oreslang.runtime.OresJsonValue json) {
                 return (Invokable) args -> {
                     return switch (name) {
@@ -10186,7 +10478,7 @@ public final class OresEvalRootNode extends RootNode {
 
             if (receiver instanceof dev.oreslang.runtime.TelemetrySpanScope scope) {
                 return switch (name) {
-                    case "attribute" -> (Invokable) args -> {
+                    case "attribute", "set_attribute" -> (Invokable) args -> {
                         if (args.size() != 2 || !(args.get(0) instanceof String key)) {
                             throw new IllegalArgumentException(
                                     "span.attribute requires (string key, scalar value)");
@@ -10407,8 +10699,9 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "stdio.flush_async_logs");
                         return context.asyncStdio().flushAsync();
                     };
-                    case "stdout" -> new StdoutFacade(stdio.context());
-                    case "stdin" -> new StdinFacade(stdio.context());
+                    case "stdout", "out" -> new StdoutFacade(stdio.context());
+                    case "stdin", "in" -> new StdinFacade(stdio.context());
+                    case "stderr", "err" -> new StderrFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
                 };
             }
@@ -10537,7 +10830,10 @@ public final class OresEvalRootNode extends RootNode {
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
                                 "network." + name, () -> network.connect(values));
                     };
-                    default -> throw new IllegalArgumentException("unknown network member " + name);
+                    default -> {
+                        network.context().requireCapability(dev.oreslang.runtime.IsolatePolicy.Capability.NETWORK, "network." + name);
+                        throw new IllegalArgumentException("unknown network member " + name);
+                    }
                 };
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Listener listener) {
@@ -10992,8 +11288,26 @@ public final class OresEvalRootNode extends RootNode {
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
                                 "http." + name, () -> http.postText(values));
                     };
-                    default -> throw new IllegalArgumentException("unknown http member " + name);
+                    default -> {
+                        // Authority comes from the namespace: deny before reporting the member.
+                        http.context().requireCapability(dev.oreslang.runtime.IsolatePolicy.Capability.NETWORK, "http." + name);
+                        throw new IllegalArgumentException("unknown http member " + name);
+                    }
                 };
+            }
+            if (receiver instanceof IntNamespace) {
+                if (name.equals("parse")) return (Invokable) args -> {
+                    requireOne(args, "int.parse");
+                    String text = requireString(args.getFirst(), "int.parse text");
+                    if (!text.matches("-?[0-9]{1,19}")) {
+                        return new ResultValue(false, new TrapError("ParseError", TrapError.bounded("not a decimal int: " + text)));
+                    }
+                    try { return new ResultValue(true, Long.parseLong(text)); }
+                    catch (NumberFormatException overflow) {
+                        return new ResultValue(false, new TrapError("ParseError", "int out of range"));
+                    }
+                };
+                throw new IllegalArgumentException("unknown int member " + name);
             }
             if (receiver instanceof EnvFacade environment) {
                 return switch (name) {
@@ -11156,6 +11470,48 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
+                };
+            }
+            if (receiver == ByteBufferFactory.INSTANCE) {
+                if (!name.equals("allocate")) throw new IllegalArgumentException("unknown ByteBuffer constructor " + name);
+                return (Invokable) args -> {
+                    requireOne(args, "ByteBuffer.allocate");
+                    long size = bytesIndex(args.getFirst(), "ByteBuffer.allocate size");
+                    if (size > GuestByteBuffer.MAX_SIZE) {
+                        throw new IllegalArgumentException("ByteBuffer.allocate size exceeds " + GuestByteBuffer.MAX_SIZE);
+                    }
+                    return new GuestByteBuffer(new byte[(int) size]);
+                };
+            }
+            if (receiver instanceof GuestByteBuffer buffer) {
+                if (name.equals("size")) return (Invokable) args -> { requireZero(args, "ByteBuffer.size"); return (long) buffer.bytes().length; };
+                java.util.regex.Matcher op = java.util.regex.Pattern.compile("(read|write)_u(8|16|32)(_le|_be)?").matcher(name);
+                if (!op.matches()) throw new IllegalArgumentException("unknown ByteBuffer member " + name);
+                boolean write = op.group(1).equals("write");
+                int width = Integer.parseInt(op.group(2)) / 8;
+                boolean little = "_le".equals(op.group(3));
+                return (Invokable) args -> {
+                    if (args.size() != (write ? 2 : 1)) throw new IllegalArgumentException("ByteBuffer." + name + " arity mismatch");
+                    long offset = bytesIndex(args.getFirst(), "ByteBuffer." + name + " offset");
+                    if (offset + width > buffer.bytes().length) {
+                        throw new IndexOutOfBoundsException("ByteBuffer." + name + " offset " + offset + " out of bounds");
+                    }
+                    if (write) {
+                        if (!(args.get(1) instanceof Long value) || value < 0 || value > (1L << (8 * width)) - 1) {
+                            throw new IllegalArgumentException("ByteBuffer." + name + " value must fit u" + (8 * width));
+                        }
+                        for (int i = 0; i < width; i++) {
+                            int shift = 8 * (little ? i : width - 1 - i);
+                            buffer.bytes()[(int) offset + i] = (byte) (value >>> shift);
+                        }
+                        return null;
+                    }
+                    long result = 0;
+                    for (int i = 0; i < width; i++) {
+                        int shift = 8 * (little ? i : width - 1 - i);
+                        result |= (buffer.bytes()[(int) offset + i] & 0xFFL) << shift;
+                    }
+                    return result;
                 };
             }
             if (receiver == BytesFactory.INSTANCE) {
@@ -12959,6 +13315,26 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(name);
+                if (enumCase != null) {
+                    if (!(value instanceof NominalEnumValue nominal)
+                            || !nominal.ownerUnitId().equals(codeUnitId)
+                            || !nominal.enumName().equals(enumCase.owner())
+                            || !nominal.variant().equals(enumCase.name())
+                            || nominal.tag() != enumCase.tag()) {
+                        return false;
+                    }
+                    int expected = enumCase.payload() == null ? 0 : 1;
+                    if (constructor.arguments().size() != expected) {
+                        return false;
+                    }
+                    return expected == 0
+                            || patternMatches(
+                                    constructor.arguments().getFirst(),
+                                    nominal.payload(),
+                                    bindings);
+                }
                 if (name.equals("Some")) {
                     if (!(value instanceof OptionValue option) || !option.present() || constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), option.value(), bindings);
@@ -13192,6 +13568,29 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("HttpClientBody"))
                 return value instanceof OutboundHttpRequest.Body;
 
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.enums().get(name);
+            if (enumeration != null) {
+                if (!(value instanceof NominalEnumValue nominal)
+                        || !nominal.ownerUnitId().equals(codeUnitId)
+                        || !nominal.enumName().equals(name)) {
+                    return false;
+                }
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                nominal.enumName() + "." + nominal.variant());
+                if (enumCase == null || enumCase.tag() != nominal.tag()) {
+                    return false;
+                }
+                if (enumCase.payload() == null) {
+                    return nominal.payload() == null;
+                }
+                return nominal.payload() != null
+                        && oresTypeMatches(
+                                nominal.payload(),
+                                enumCase.payload());
+            }
+
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
                 if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, classVisitSet());
@@ -13216,6 +13615,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof NominalEnumValue nominal) return nominal.enumName();
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
@@ -13371,6 +13771,25 @@ public final class OresEvalRootNode extends RootNode {
                         && right instanceof ActorRuntime.ActorRef<?> b
                         && a.kind() == b.kind()
                         && a.id().equals(b.id());
+            }
+
+            if (left instanceof NominalEnumValue
+                    || right instanceof NominalEnumValue) {
+                if (!(left instanceof NominalEnumValue a)
+                        || !(right instanceof NominalEnumValue b)) {
+                    return false;
+                }
+                if (!a.ownerUnitId().equals(b.ownerUnitId())
+                        || !a.enumName().equals(b.enumName())
+                        || !a.variant().equals(b.variant())
+                        || a.tag() != b.tag()) {
+                    return false;
+                }
+                if (a.payload() == null || b.payload() == null) {
+                    return a.payload() == null && b.payload() == null;
+                }
+                if (comparisonPairSeen(left, right, seen)) return true;
+                return valueEquals(a.payload(), b.payload(), seen);
             }
 
             if (left instanceof OptionValue || right instanceof OptionValue) {
@@ -13638,6 +14057,41 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
 
+            NominalEnumRegistry.EnumType enumType =
+                    nominalEnums.enums().get(declared.name());
+            if (enumType != null) {
+                if (!(value instanceof NominalEnumValue nominal)
+                        || !nominal.ownerUnitId().equals(codeUnitId)
+                        || !nominal.enumName().equals(enumType.name())) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                nominal.enumName() + "." + nominal.variant());
+                if (enumCase == null || enumCase.tag() != nominal.tag()) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                if (enumCase.payload() == null) {
+                    if (nominal.payload() != null) {
+                        throw returnTypeMismatch(callable, declared, value);
+                    }
+                    return value;
+                }
+                if (nominal.payload() == null) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                Object payload = shapeReturnedValue(
+                        enumCase.payload(),
+                        nominal.payload(),
+                        callable + " enum payload",
+                        resolving);
+                return new NominalEnumValue(
+                        nominal.ownerUnitId(),
+                        nominal.enumName(),
+                        nominal.variant(),
+                        nominal.tag(),
+                        payload);
+            }
             if (declared.name().equals("Vector") && value instanceof List<?>) {
                 return admitDeclaredVector(declared, value);
             }
@@ -14455,12 +14909,26 @@ public final class OresEvalRootNode extends RootNode {
     }
 
 
+    /** Immutable positional tuple value; a List for runtime purposes, rendered as (a, b). */
+    static final class TupleList extends java.util.AbstractList<Object> implements java.util.RandomAccess {
+        private final List<Object> elements;
+        TupleList(List<?> elements) { this.elements = java.util.Collections.unmodifiableList(new ArrayList<>(elements)); }
+        @Override public Object get(int index) { return elements.get(index); }
+        @Override public int size() { return elements.size(); }
+    }
+
     /** Identity-aware bounded diagnostic rendering; not a serializer. */
     static final class CycleSafeDisplay {
         private static final int MAX_DEPTH = 64;
         private static final int MAX_NODES = 8192;
         private static final int MAX_CHARS = 65536;
         private static final String TRUNCATED = "<truncated>";
+
+        private static boolean isPreludeProduct(OresObject object) {
+            List<String> names = List.copyOf(object.fields.keySet());
+            return (object.klass.name().equals("Pair") && names.equals(List.of("first", "second")))
+                    || (object.klass.name().equals("Entry") && names.equals(List.of("key", "value")));
+        }
 
         static String render(Object value) {
             State state = new State();
@@ -14507,7 +14975,18 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 try {
-                    if (value instanceof OresObject object) {
+                    if (value instanceof OresObject object && isPreludeProduct(object)) {
+                        // Prelude products render positionally: Pair(widgets, 2).
+                        write(object.klass.name());
+                        write("(");
+                        boolean first = true;
+                        for (Object field : object.fields.values()) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(field, depth + 1);
+                        }
+                        write(")");
+                    } else if (value instanceof OresObject object) {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
@@ -14548,6 +15027,16 @@ public final class OresEvalRootNode extends RootNode {
                             if (output.length() >= MAX_CHARS) break;
                         }
                         write("}");
+                    } else if (value instanceof TupleList tupleList) {
+                        write("(");
+                        boolean first = true;
+                        for (Object element : tupleList) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(element, depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write(")");
                     } else if (value instanceof List<?> list) {
                         write("[");
                         boolean first = true;
@@ -14593,6 +15082,14 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString() { return String.valueOf(value); }
     }
     /** Static receiver for the Bytes v1 constructors. */
+    private static final class ByteBufferFactory {
+        static final ByteBufferFactory INSTANCE = new ByteBufferFactory();
+        private ByteBufferFactory() { }
+    }
+    /** Owned fixed-size mutable byte buffer (ByteBuffer.allocate). */
+    private record GuestByteBuffer(byte[] bytes) {
+        static final long MAX_SIZE = 1L << 20;
+    }
     private static final class BytesFactory {
         static final BytesFactory INSTANCE = new BytesFactory();
         private BytesFactory() { }
@@ -14763,6 +15260,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!seen.add(value)) return true;
 
+            if (value instanceof NominalEnumValue nominal) {
+                return nominal.payload() == null
+                        || runtimeSharedSafe(nominal.payload(), seen);
+            }
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
             }
@@ -14803,6 +15304,29 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
     }
+    private record NominalEnumValue(
+            String ownerUnitId,
+            String enumName,
+            String variant,
+            int tag,
+            Object payload) implements OresMutex.SharedState {
+        private NominalEnumValue {
+            Objects.requireNonNull(ownerUnitId, "ownerUnitId");
+            Objects.requireNonNull(enumName, "enumName");
+            Objects.requireNonNull(variant, "variant");
+            if (tag < 1) {
+                throw new IllegalArgumentException("invalid nominal enum tag");
+            }
+        }
+        @Override public Iterable<?> sharedStateChildren() {
+            return payload == null ? List.of() : List.of(payload);
+        }
+        @Override public String toString() {
+            String name = enumName + "." + variant;
+            return payload == null ? name : name + "(" + payload + ")";
+        }
+    }
+
     private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
         @Override public String toString(){return CycleSafeDisplay.render(this);}
@@ -14845,17 +15369,60 @@ public final class OresEvalRootNode extends RootNode {
      *  Strict source admission remains closed until typed throw lowering.
      */
     private static ResultValue trapErr(Throwable failure) {
+        // A trapped source throw yields its original Error (trap-result-v1).
+        if (failure instanceof GuestThrow thrown) return new ResultValue(false, thrown.payload);
         if (failure instanceof dev.oreslang.runtime.GuestOrdinaryThrow guest) {
             return new ResultValue(false, guest.error());
         }
         return new ResultValue(false, TrapError.of(failure));
     }
+    private enum IntNamespace { INSTANCE }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
     private static final class OresPanic extends RuntimeException
             implements dev.oreslang.runtime.UntrappableTaskFailure {
         private OresPanic(String message) { super(message, null, true, false); }
+    }
+
+    /** The message of a guest Error payload (its `message` field), for diagnostics. */
+    private static String guestErrorMessage(Object payload) {
+        if (payload instanceof OresObject object && object.fields.get("message") instanceof String text) {
+            return text;
+        }
+        return String.valueOf(payload);
+    }
+
+    /** Ordinary source `throw`: visits catch and trap boundaries; carries its Error. */
+    private static final class GuestThrow extends RuntimeException {
+        private final Object payload;
+        private GuestThrow(Object payload) {
+            super(guestErrorMessage(payload), null, true, false);
+            this.payload = payload;
+        }
+    }
+
+    /** Source `raise`: bypasses catch and trap; only a registered `recover` handles it. */
+    private static final class GuestRaise extends RuntimeException
+            implements dev.oreslang.runtime.UntrappableTaskFailure {
+        private final Object payload;
+        private GuestRaise(Object payload) {
+            super(guestErrorMessage(payload), null, true, false);
+            this.payload = payload;
+        }
+    }
+
+    /** `cursor.next()` inside a recover handler: delegate to the next older handler. */
+    private static final class RecoveryCursorNext extends RuntimeException {
+        private RecoveryCursorNext() { super("recover cursor.next()", null, false, false); }
+    }
+
+    /** The guest value bound by `catch (e)` / returned by trap for a failure. */
+    private static Object guestErrorValue(Throwable failure) {
+        if (failure instanceof dev.oreslang.runtime.GuestOrdinaryThrow ordinary) return ordinary.error();
+        if (failure instanceof GuestThrow thrown) return thrown.payload;
+        if (failure instanceof GuestRaise raised) return raised.payload;
+        return failure;
     }
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }
@@ -15057,6 +15624,14 @@ public final class OresEvalRootNode extends RootNode {
             return text.append('\n').toString();
         }
     }
+    /** stdio.err: one-line diagnostic writes to the host error stream. */
+    private record StderrFacade(OresContext context) {
+        private void println(Object value) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.err");
+            System.err.println(CycleSafeDisplay.render(value));
+        }
+    }
+
     private record StdinFacade(OresContext context) {
         private Object readLine(List<Object> args) {
             context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");

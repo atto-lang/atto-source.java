@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
+import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -19,15 +20,17 @@ final class TypedExceptionalEffectAdmissionTest {
     }
 
     @Test
-    void unsupportedEffectsRejectBeforeSourceExecution() {
+    void illTypedEffectOperandsRejectBeforeSourceExecution() {
+        // Effects are executable (defer-recover-unwind-v1); a non-Error
+        // throw/raise/panic operand or a non-handler recover is still rejected
+        // by the checker before any guest code runs.
         for (String effect : List.of("throw", "raise", "panic", "recover")) {
             String source = "pub fnc main(): int { " + effect + " 1; return 0; }";
+            assertDoesNotThrow(() -> Parser.parse(source), effect);
             IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class, () -> Parser.parse(source), effect);
-            assertTrue(failure.getMessage().contains("typed exceptional effect '" + effect + "'"),
-                    failure::getMessage);
-            assertTrue(failure.getMessage().contains("not yet enabled"),
-                    failure::getMessage);
+                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)), effect);
+            assertTrue(failure.getMessage().contains("requires an Error value")
+                    || failure.getMessage().contains("|err, cursor|"), failure::getMessage);
         }
     }
 

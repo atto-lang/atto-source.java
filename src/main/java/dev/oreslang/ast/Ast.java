@@ -77,7 +77,7 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, SingletonDecl { }
+            ExternalActorMethodDecl, EnumDecl, SingletonDecl { }
 
     /**
      * Parsed singleton for the opt-in semantic check-only path. No runtime or
@@ -449,9 +449,17 @@ public final class Ast {
         }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
-        public Param(TypeRef type, String name) { this(type, name, false, false); }
-        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
+    /**
+     * {@code consuming} marks an explicit owned formal (`take! Foo f` /
+     * `f: take! Foo`). Without it, an ordinary non-Copy class formal is an
+     * implicit borrow (atto-spec implicit-argument-borrow-v1).
+     */
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable, boolean consuming) {
+        public Param(TypeRef type, String name) { this(type, name, false, false, false); }
+        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false, false); }
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable, false);
+        }
     }
 
     /** A source generic name and its optional compile-time default type. */
@@ -1012,6 +1020,14 @@ public final class Ast {
             if (name == null || name.isBlank()) throw new IllegalArgumentException("method name cannot be blank");
             if (arity < 0) throw new IllegalArgumentException("method arity cannot be negative");
         }
+    }
+
+    /** Closed nominal enum case. The positive tag is declaration identity metadata. */
+    public record EnumCase(String name, TypeRef payload, int tag) { }
+
+    /** Closed nominal enum declaration used by compiler-owned exhaustive matching. */
+    public record EnumDecl(String name, List<EnumCase> cases) implements Decl {
+        public EnumDecl { cases = List.copyOf(cases); }
     }
 
     public record TypeAliasDecl(
@@ -2766,6 +2782,12 @@ public final class Ast {
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
                              boolean nonLexical, TypeRef declaredReturnType) implements Expr {
+        /** Standalone `_ : T -> e`: accepts and discards any statically resolved arity. */
+        public static final String DISCARD_REST = "$discard_rest";
+        public boolean discardsRest() {
+            return parameters.size() == 1 && parameters.getFirst().name().equals("$rest")
+                    && parameters.getFirst().type().name().equals(DISCARD_REST);
+        }
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);

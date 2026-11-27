@@ -82,6 +82,7 @@ public final class OwnershipChecker {
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
+    private final NominalEnumRegistry.Registry nominalEnums;
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -144,6 +145,7 @@ public final class OwnershipChecker {
         // older executable Task proofs. A failed check must fail closed.
         Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
+        nominalEnums = NominalEnumRegistry.forProgram(program);
         index(program);
     }
 
@@ -391,7 +393,7 @@ public final class OwnershipChecker {
                     && !fn.trapped() && fn.effects().isEmpty());
         }
         for (Ast.Param param : fn.parameters()) {
-            VarState value = stateForParam(param);
+            VarState value = stateForParam(effectiveParam(param));
             scope.define(param.name(), value);
             if (borrowMirAudit != null) {
                 borrowMirAudit.parameter(value, value.kind == ValueKind.COPY);
@@ -526,7 +528,13 @@ public final class OwnershipChecker {
                                         receiverKind,
                                         Origin.PARAM));
                     } else {
+                        // The receiver's mutability is inferred from the method
+                        // body (implicit-argument-borrow-v1): a method that
+                        // assigns self.field holds an exclusive self loan.
                         ValueKind receiverKind = AnnotationExpander.isGeneratedFromJsonSetter(method)
+                                        || (explicitReceiver == null
+                                                && method.annotations().stream().noneMatch(a -> a.name().equals("$ReadonlySelf"))
+                                                && assignsSelfField(method.body()))
                                 ? ValueKind.MUT_BORROW
                                 : ValueKind.IMM_BORROW;
                         scope.define(
@@ -539,7 +547,7 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
+            for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(effectiveParam(param)));
             defineImplicitArguments(scope, method.parameters());
             Ast.ClassDecl previousInstanceOwner = currentInstanceMethodOwner;
             currentInstanceMethodOwner = method.isStatic() ? null : klass;
@@ -587,6 +595,265 @@ public final class OwnershipChecker {
         }
         arguments.aggregateSources = List.copyOf(sources);
         scope.define("arguments", arguments);
+    }
+
+    /**
+     * Implicit argument borrowing (atto-spec implicit-argument-borrow-v1):
+     * an ordinary, non-Copy class-typed function/method parameter `Foo f` is
+     * non-owning. It is checked as an exclusive incoming loan, so the callee
+     * may read and mutate the referent but cannot move, return or retain it,
+     * and the caller's owner stays valid after the call. Constructors, actor
+     * types, generics, structural and already-borrowed parameters keep their
+     * declared ownership.
+     */
+    /** True when any statement/expression in {@code node} assigns `self.<field>`. */
+    static boolean assignsSelfField(Object node) {
+        if (node instanceof Ast.AssignExpr assign
+                && assign.target() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr receiver
+                && receiver.name().equals("self")) {
+            return true;
+        }
+        if (node instanceof Ast.LambdaExpr) return false; // closures are checked on their own
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (assignsSelfField(item)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (assignsSelfField(component.getAccessor().invoke(record))) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true; // unknown shape: fail closed toward the stricter exclusive loan
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Declared parameter (by identity) to its effective implicit-borrow parameter. */
+    private Map<Ast.Param, Ast.Param> implicitBorrowParams;
+
+    private Ast.Param effectiveParam(Ast.Param param) {
+        if (implicitBorrowParams == null) computeImplicitBorrowParams();
+        return implicitBorrowParams.getOrDefault(param, param);
+    }
+
+    private boolean isImplicitBorrowParam(Ast.Param effective) {
+        if (implicitBorrowParams == null) computeImplicitBorrowParams();
+        return implicitBorrowParams.containsValue(effective);
+    }
+
+    private void computeImplicitBorrowParams() {
+        implicitBorrowParams = new HashMap<>();
+        List<Map.Entry<Ast.Param, List<Ast.Stmt>>> candidates = new ArrayList<>();
+        for (Ast.ModuleDecl module : checkedProgram.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    if (fn.async() || fn.suspends() || fn.generator()) continue;
+                    for (Ast.Param param : fn.parameters()) candidates.add(Map.entry(param, fn.body()));
+                } else if (declaration instanceof Ast.ClassDecl klass
+                        && klass.actorKind() == Ast.ActorKind.NONE) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        if (method.async() || method.suspends()) continue;
+                        for (Ast.Param param : method.parameters()) {
+                            candidates.add(Map.entry(param, method.body()));
+                        }
+                    }
+                }
+            }
+        }
+        for (Map.Entry<Ast.Param, List<Ast.Stmt>> candidate : candidates) {
+            implicitBorrow(candidate.getKey(), candidate.getValue());
+        }
+        // Fixed point: a parameter passed on to an owned formal is itself
+        // consumed, so it is owned too. Demotion is monotone, so this ends.
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (Map.Entry<Ast.Param, List<Ast.Stmt>> candidate : candidates) {
+                Ast.Param param = candidate.getKey();
+                if (implicitBorrowParams.containsKey(param)
+                        && passesToOwnedFormal(candidate.getValue(), param.name())) {
+                    implicitBorrowParams.remove(param);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    /** True when local {@code name} is passed directly to an owned formal of a known function. */
+    private boolean passesToOwnedFormal(Object node, String name) {
+        if (node instanceof Ast.CallExpr call && call.callee() instanceof Ast.NameExpr callee) {
+            Ast.FunctionDecl fn = findFunction(callee.name(), call.arguments().size());
+            if (fn != null) {
+                for (int i = 0; i < call.arguments().size() && i < fn.parameters().size(); i++) {
+                    if (!isName(call.arguments().get(i), name)) continue;
+                    Ast.Param formal = fn.parameters().get(i);
+                    if (formal.consuming()) return true;
+                    Ast.TypeRef type = formal.type();
+                    if (type != null && !type.isBorrow() && !formal.structural()
+                            && findClass(type.name()) != null && !isCopyType(type)
+                            && !implicitBorrowParams.containsKey(formal)) return true;
+                }
+            }
+        }
+        if (node instanceof Ast.LambdaExpr) return false;
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (passesToOwnedFormal(item, name)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (passesToOwnedFormal(component.getAccessor().invoke(record), name)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Implicit argument borrowing (atto-spec implicit-argument-borrow-v1): an
+     * ordinary non-Copy class formal `Foo f` of a synchronous fnc/method is a
+     * non-owning loan. It is exclusive only when the body writes through `f`
+     * (or calls a field-mutating method on it); otherwise shared. The callee
+     * cannot move, return or retain it; `take! Foo f` declares an owned formal.
+     */
+    private void implicitBorrow(Ast.Param param, List<Ast.Stmt> body) {
+        Ast.TypeRef type = param.type();
+        if (param.consuming() || type == null || type.isBorrow() || param.structural()
+                || param.mutable()) return;
+        if (!type.arguments().isEmpty() || type.isRecordType() || type.isUnion()
+                || type.isTupleType() || type.inferArguments()) return;
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE || isCopyType(type)) return;
+        // A body that explicitly takes ownership (take!/rt take, return, store,
+        // destructure, aggregate element) declares an owned formal.
+        if (consumesName(body, param.name())) return;
+        boolean mutable = mutatesThrough(body, param.name(), klass);
+        // Keyed by value: resolved call signatures may re-create equal Params.
+        // If equal declarations disagree, the exclusive loan wins.
+        Ast.Param previous = implicitBorrowParams.get(param);
+        boolean exclusive = mutable || (previous != null && previous.type().mutableBorrow());
+        implicitBorrowParams.put(param,
+                new Ast.Param(Ast.TypeRef.borrowed(type, exclusive), param.name(), false, false));
+    }
+
+    /** True when {@code node} explicitly transfers ownership of local {@code name}. */
+    private static boolean consumesName(Object node, String name) {
+        if (node instanceof Ast.RuntimeCallExpr runtime
+                && (runtime.operation().equals("take") || runtime.operation().equals("share")
+                        || runtime.operation().equals("copy"))
+                && runtime.arguments().size() == 1 && isName(runtime.arguments().getFirst(), name)) return true;
+        if (node instanceof Ast.ReturnStmt returned && isName(returned.value(), name)) return true;
+        // Returning a loan of the parameter needs a lifetime proof: keep it owned so
+        // the existing "borrow cannot outlive its owner" rule applies.
+        if (node instanceof Ast.ReturnStmt returned
+                && ((returned.value() instanceof Ast.RuntimeCallExpr loan && loan.operation().equals("borrow")
+                        && loan.arguments().size() == 1 && isName(loan.arguments().getFirst(), name))
+                    || (returned.value() instanceof Ast.UnaryExpr unary && unary.operator().startsWith("&")
+                        && isName(unary.operand(), name)))) return true;
+        if (node instanceof Ast.YieldStmt yielded && isName(yielded.value(), name)) return true;
+        // Pattern binders over the parameter create aliases whose lifetime cannot be
+        // related to an incoming loan yet: keep such parameters owned.
+        if (node instanceof Ast.TypeTestExpr test && test.binding() != null && isName(test.value(), name)) return true;
+        if (node instanceof Ast.PatternTestExpr test && isName(test.value(), name)) return true;
+        if (node instanceof Ast.MatchStmt matched && isName(matched.subject(), name)
+                && matched.arms().stream().anyMatch(arm -> bindsName(arm.pattern()))) return true;
+        if (node instanceof Ast.MatchExpr matched && isName(matched.subject(), name)
+                && matched.arms().stream().anyMatch(arm -> bindsName(arm.pattern()))) return true;
+        if (node instanceof Ast.BindingStmt binding && isName(binding.initializer(), name)) return true;
+        if (node instanceof Ast.AssignExpr assign && isName(assign.value(), name)) return true;
+        if (node instanceof Ast.DestructureStmt) {
+            for (java.lang.reflect.RecordComponent component : node.getClass().getRecordComponents()) {
+                try {
+                    if (isName(component.getAccessor().invoke(node), name)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true;
+                }
+            }
+        }
+        if (node instanceof Ast.TupleExpr tuple && tuple.elements().stream().anyMatch(e -> isName(e, name))) return true;
+        if (node instanceof Ast.ListExpr array && array.elements().stream().anyMatch(e -> isName(e, name))) return true;
+        if (node instanceof Ast.ObjectExpr object
+                && object.fields().stream().anyMatch(f -> isName(f.value(), name))) return true;
+        if (node instanceof Ast.LambdaExpr) return false;
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (consumesName(item, name)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (consumesName(component.getAccessor().invoke(record), name)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true; // unknown shape: keep the declared (owned) formal
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean bindsName(Ast.Pattern pattern) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.LiteralPattern) return false;
+        if (pattern instanceof Ast.TypePattern typed) return typed.binding() != null;
+        if (pattern instanceof Ast.ConstructorPattern constructor) {
+            return constructor.arguments().stream().anyMatch(OwnershipChecker::bindsName);
+        }
+        return true; // binding, structural, tuple, record and sequence patterns bind
+    }
+
+    private static boolean isName(Object expression, String name) {
+        return expression instanceof Ast.NameExpr reference && reference.name().equals(name);
+    }
+
+    /** True when {@code node} writes through local {@code name} of class {@code klass}. */
+    private static boolean mutatesThrough(Object node, String name, Ast.ClassDecl klass) {
+        if (node instanceof Ast.AssignExpr assign && rootedAt(assign.target(), name)
+                && !(assign.target() instanceof Ast.NameExpr)) return true;
+        if (node instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")
+                && rootedAt(unary.operand(), name)) return true;
+        if (node instanceof Ast.CallExpr call && call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr receiver && receiver.name().equals(name)) {
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.name().equals(member.member()) && assignsSelfField(method.body())) return true;
+            }
+        }
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (mutatesThrough(item, name, klass)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (mutatesThrough(component.getAccessor().invoke(record), name, klass)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true; // unknown shape: fail closed toward the exclusive loan
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean rootedAt(Ast.Expr place, String name) {
+        Ast.Expr current = place;
+        while (true) {
+            if (current instanceof Ast.NameExpr root) return root.name().equals(name);
+            if (current instanceof Ast.MemberExpr member) current = member.receiver();
+            else if (current instanceof Ast.IndexExpr index) current = index.receiver();
+            else return false;
+        }
     }
 
     private VarState stateForParam(Ast.Param param) {
@@ -1396,7 +1663,10 @@ public final class OwnershipChecker {
         }
 
         boolean readonlyRecord = value.type.isReadonlyRecordType();
-        if (readonlyRecord && binding.mutableReferent()) {
+        // Only a fresh record literal (no other alias) may be bound by a
+        // writable-referent binding; its readonly type still rejects writes.
+        if (readonlyRecord && binding.mutableReferent()
+                && !(binding.initializer() instanceof Ast.ObjectExpr)) {
             throw error(E_MUTABILITY, "readonly structural records cannot gain mutable bindings or aliases");
         }
 
@@ -1826,6 +2096,33 @@ public final class OwnershipChecker {
                     }
                     yield source;
                 }
+                case "throw", "raise", "panic" -> {
+                    // The Error payload moves into the failure; it is not borrowed.
+                    checkExpr(argument, scope, true);
+                    yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
+                case "propagate" -> {
+                    // The Result/Option is consumed: its payload moves out, or it is returned.
+                    ValueInfo source = checkExpr(argument, scope, true);
+                    Ast.TypeRef payload = source.type != null && !source.type.arguments().isEmpty()
+                            ? source.type.arguments().getFirst() : Ast.TypeRef.inferred();
+                    yield new ValueInfo(payload, isCopyType(payload) ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+                }
+                case "detach" -> {
+                    // The detached task owns its captures exactly like any task.
+                    checkExpr(argument, scope, true);
+                    yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
+                case "typeof" -> {
+                    // Observes the operand's runtime type; never consumes it.
+                    checkExpr(argument, scope, false);
+                    yield new ValueInfo(Ast.TypeRef.simple("TypeInfo"), ValueKind.COPY, null);
+                }
+                case "recover" -> {
+                    // The handler closure's captures are checked like any closure.
+                    checkExpr(argument, scope, false);
+                    yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
                 default -> throw error(E_UNKNOWN, "unknown runtime operation 'rt " + runtime.operation() + "'");
             };
         }
@@ -1927,6 +2224,15 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
         }
+        if (expr instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr ambient
+                && ambient.name().equals("stdio")
+                && scope.lookup("stdio") == null
+                && java.util.Set.of("in", "out", "err", "stdin", "stdout", "stderr").contains(member.member())) {
+            // Ambient stdio streams are runtime capability handles, not owned
+            // guest data: binding one copies the handle (authority is checked at use).
+            return new ValueInfo(Ast.TypeRef.simple("stdio." + member.member()), ValueKind.COPY, null);
+        }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr qualifier
                     && (qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
@@ -1934,6 +2240,23 @@ public final class OwnershipChecker {
                 throw error(E_UNSUPPORTED, (qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
                         ? "imports::" : "pkg::")
                         + member.member() + " is direct-call-only without a checked callable value ABI");
+            }
+            // Immutable enum symbols have no actor-owned receiver or loan.
+            // A local binding with the same spelling must still be checked as
+            // ordinary member access, not promoted to enum namespace authority.
+            if (member.receiver() instanceof Ast.NameExpr enumOwner
+                    && scope.lookup(enumOwner.name()) == null) {
+                NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                        enumOwner.name() + "." + member.member());
+                if (enumCase != null) {
+                    if (enumCase.payload() != null) {
+                        throw error(E_ARITY, "enum case " + enumCase.qualifiedName()
+                                + " requires a payload argument");
+                    }
+                    return new ValueInfo(
+                            Ast.TypeRef.simple(enumCase.qualifiedName()),
+                            ValueKind.COPY, null);
+                }
             }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
@@ -2106,7 +2429,8 @@ public final class OwnershipChecker {
                 throw error(E_LIFETIME, "constructed object type cannot contain borrowed generic arguments "
                         + "without an explicit scoped lifetime");
             }
-            return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(constructedType,
+                    isCopyType(constructedType) ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TaskExpr task) {
             if (task.domain() == Ast.ExecutionDomain.GPU) {
@@ -2692,6 +3016,37 @@ public final class OwnershipChecker {
                 }
             }
         }
+
+        if (call.callee() instanceof Ast.MemberExpr enumMember
+                && enumMember.receiver() instanceof Ast.NameExpr enumOwner) {
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums.caseOrNull(
+                            enumOwner.name() + "." + enumMember.member());
+            if (enumCase != null) {
+                int expected = enumCase.payload() == null ? 0 : 1;
+                if (call.typeArgumentsPresent()
+                        || call.arguments().stream()
+                                .anyMatch(argument -> argument instanceof Ast.SpreadExpr)
+                        || call.arguments().size() != expected) {
+                    throw error(E_TYPE, 
+                            "invalid nominal enum constructor "
+                                    + enumCase.qualifiedName());
+                }
+                if (expected == 1) {
+                    checkExpr(call.arguments().getFirst(), scope, true);
+                }
+                Ast.TypeRef caseType =
+                        Ast.TypeRef.simple(enumCase.qualifiedName());
+                return new ValueInfo(
+                        caseType,
+                        enumCase.payload() == null
+                                        || isCopyType(enumCase.payload())
+                                ? ValueKind.COPY
+                                : ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -2801,7 +3156,7 @@ public final class OwnershipChecker {
                 requireUsable(handle, spanName.name(), false);
                 Ast.TypeRef result;
                 switch (spanCall.member()) {
-                    case "attribute" -> {
+                    case "attribute", "set_attribute" -> {
                         if (call.arguments().size() != 2) {
                             throw error(E_ARITY, "telemetry span attribute requires exactly two arguments");
                         }
@@ -3316,6 +3671,17 @@ public final class OwnershipChecker {
                             member.receiver(),
                             scope,
                             "mutable method receiver '" + method.name() + "'");
+                }
+                if (method.explicitReceiverType() == null
+                        && target.owner().actorKind() == Ast.ActorKind.NONE
+                        && method.annotations().stream().noneMatch(a -> a.name().equals("$ReadonlySelf"))
+                        && assignsSelfField(method.body())) {
+                    // A method that writes self.field holds an inferred exclusive
+                    // self loan, so its receiver must be writable at the call site.
+                    ensureMutableReceiver(
+                            member.receiver(),
+                            scope,
+                            "field-mutating method receiver '" + method.name() + "'");
                 }
                 boolean protectedReceiver = false;
                 if (member.receiver() instanceof Ast.NameExpr receiverName) {
@@ -4030,7 +4396,7 @@ public final class OwnershipChecker {
                 }
 
                 if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-                Ast.Param param = params.get(parameterIndex);
+                Ast.Param param = effectiveParam(params.get(parameterIndex));
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
@@ -4171,6 +4537,14 @@ public final class OwnershipChecker {
                 if (isActorConfinedBorrow(state)) {
                     throw error(E_ACTOR_LOAN_ESCAPE, "actor self borrow cannot cross an ordinary callable boundary");
                 }
+                if (state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW
+                        && !(state.type != null && state.type.isBorrow())) {
+                    // A plain owned argument to a borrowed parameter is an
+                    // implicit borrow! (implicit-argument-borrow-v1) with the
+                    // same loan proof as the explicit spelling; it is not a move.
+                    validateBorrow(state, mutable);
+                    return;
+                }
                 if (mutable && state.kind != ValueKind.MUT_BORROW) {
                     throw error(E_BORROW, callable + " argument " + position + " requires a mutable borrowed value");
                 }
@@ -4179,7 +4553,11 @@ public final class OwnershipChecker {
                 }
                 return;
             }
-            throw error(E_BORROW, callable + " argument " + position + " must be an explicit borrow");
+            if (!isImplicitBorrowParam(param)) {
+                throw error(E_BORROW, callable + " argument " + position + " must be an explicit borrow");
+            }
+            // A temporary or explicit take! argument to an implicitly borrowed
+            // formal has no other owner: it is passed (and dropped) by value.
         }
         ValueInfo argument = checkExpr(arg, scope, true);
         if (containsMutexGuardType(argument.type)) {
@@ -5267,13 +5645,35 @@ public final class OwnershipChecker {
             List<Ast.TypeRef> argTypes = constructorPatternTypes(constructor.constructor(), subjectType);
             for (int i = 0; i < constructor.arguments().size(); i++) {
                 Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
-                definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+                definePatternAliases(
+                        constructor.arguments().get(i),
+                        argType,
+                        isCopyType(argType) ? null : source,
+                        destination);
             }
         }
     }
 
     private List<Ast.TypeRef> constructorPatternTypes(String constructor, Ast.TypeRef subjectType) {
         if (subjectType == null) return List.of();
+        NominalEnumRegistry.Case enumCase =
+                nominalEnums.caseOrNull(constructor);
+        if (enumCase != null) {
+            Ast.TypeRef domain =
+                    subjectType.isBorrow()
+                            ? subjectType.borrowedTarget()
+                            : subjectType;
+            if (!domain.arguments().isEmpty()
+                    || !domain.name().equals(enumCase.owner())) {
+                throw error(E_ARITY, 
+                        "enum case " + enumCase.qualifiedName()
+                                + " does not belong to match subject "
+                                + domain.name());
+            }
+            return enumCase.payload() == null
+                    ? List.of()
+                    : List.of(enumCase.payload());
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }
@@ -7217,6 +7617,26 @@ public final class OwnershipChecker {
         if (type.isUnion()) return !type.arguments().isEmpty()
                 && type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        // A Channel<T> value is a handle to one runtime-synchronized channel
+        // (like ActorRef): copying the handle aliases the same channel and
+        // never copies or moves buffered payloads.
+        if (type.name().equals("Channel") && type.arguments().size() == 1 && !hasLocalTypeAliasNamed("Channel")
+                && findClass("Channel") == null) return true;
+        if (type.arguments().isEmpty()) {
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.enums().get(type.name());
+            if (enumeration != null) {
+                return enumeration.cases().stream().allMatch(
+                        variant -> variant.payload() == null
+                                || isCopyType(variant.payload()));
+            }
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums.caseOrNull(type.name());
+            if (enumCase != null) {
+                return enumCase.payload() == null
+                        || isCopyType(enumCase.payload());
+            }
+        }
         // Only immutable RECORDs can be copied structurally; a mutable
         // struct remains affine even if every field is a scalar.
         if (type.isRecordType()) return type.isReadonlyRecordType()

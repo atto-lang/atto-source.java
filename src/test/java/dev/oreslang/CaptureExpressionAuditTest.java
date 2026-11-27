@@ -13,10 +13,10 @@ final class CaptureExpressionAuditTest {
     @Test
     void predicateArgumentEvaluatesOnceAndBindsTheOriginalValue() {
         assertEquals("p42", run("""
-                fnc produce(): int { stdio.stdout.write("p"); return 42; }
+                fnc produce(): int { stdio.out.write("p"); return 42; }
                 fnc is_ready(int value): bool { return value > 0; }
                 pub fnc main(): void {
-                  if is_ready(produce() as let value) { stdio.stdout.write(value); fi
+                  if is_ready(produce() as let value) { stdio.out.write(value); fi
                   return;
                 }
                 """));
@@ -26,9 +26,9 @@ final class CaptureExpressionAuditTest {
     void comparisonsFalsePayloadAndMemberCallsKeepTheirValueSemantics() {
         assertEquals("5falseok", run("""
                 pub fnc main(): void {
-                  if (5 as let value) > 0 then stdio.stdout.write(value); fi
-                  if (false as let flag) eq false { stdio.stdout.write(flag); fi
-                  if ("ok" as let text).starts_with("o") { stdio.stdout.write(text); fi
+                  if (5 as let value) > 0 then stdio.out.write(value); fi
+                  if (false as let flag) eq false { stdio.out.write(flag); fi
+                  if ("ok" as let text).starts_with("o") { stdio.out.write(text); fi
                   return;
                 }
                 """));
@@ -39,10 +39,10 @@ final class CaptureExpressionAuditTest {
         assertEquals("79", run("""
                 pub fnc main():void {
                   const value=7;
-                  if (0 as let value) > 0 { stdio.stdout.write(value);
-                  } else { stdio.stdout.write(value); fi
-                  if false { stdio.stdout.write(0);
-                  } elif (9 as let value) > 0 { stdio.stdout.write(value); fi
+                  if (0 as let value) > 0 { stdio.out.write(value);
+                  } else { stdio.out.write(value); fi
+                  if false { stdio.out.write(0);
+                  } elif (9 as let value) > 0 { stdio.out.write(value); fi
                   return;
                 }
                 """));
@@ -54,13 +54,13 @@ final class CaptureExpressionAuditTest {
     @Test
     void runtimeEvaluationOrderAndMultipleCapturesArePreserved() {
         assertEquals("12312", run("""
-                fnc first():int{stdio.stdout.write(1);return 1;}
-                fnc second():int{stdio.stdout.write(2);return 2;}
-                fnc third():int{stdio.stdout.write(3);return 3;}
+                fnc first():int{stdio.out.write(1);return 1;}
+                fnc second():int{stdio.out.write(2);return 2;}
+                fnc third():int{stdio.out.write(3);return 3;}
                 fnc ready(int a,int b,int c):bool{return a+b eq c;}
                 pub fnc main():void {
                   if ready(first() as let a, second() as let b, third()) {
-                    stdio.stdout.write(a); stdio.stdout.write(b);
+                    stdio.out.write(a); stdio.out.write(b);
                   fi
                   return;
                 }
@@ -76,7 +76,7 @@ final class CaptureExpressionAuditTest {
                   while ready(n as let value) {
                     n=n-1;
                     if value eq 2 {continue;fi
-                    stdio.stdout.write(value);
+                    stdio.out.write(value);
                     if value eq 1 {break;fi
                   }
                   return;
@@ -91,7 +91,7 @@ final class CaptureExpressionAuditTest {
                 async fnc ready(int value):bool{return value>0;}
                 pub async fnc main():void {
                   if await ready((await produce()) as let value) {
-                    stdio.stdout.write(value);
+                    stdio.out.write(value);
                   fi
                   return;
                 }
@@ -102,8 +102,8 @@ final class CaptureExpressionAuditTest {
     void nonbooleanPredicatesAndSkippedOrEscapingCapturesAreRejected() {
         reject("fnc f():void{if (1 as let value) {return;fi}");
         reject("fnc f():void{const x=(1 as let value);return;}");
-        reject("fnc f():void{if true || (1 as let value)>0 {stdio.stdout.write(value);fi}");
-        reject("fnc f():void{if true && (1 as let value)>0 {stdio.stdout.write(value);fi}");
+        reject("fnc f():void{if true || (1 as let value)>0 {stdio.out.write(value);fi}");
+        reject("fnc f():void{if true && (1 as let value)>0 {stdio.out.write(value);fi}");
         reject("fnc f():void{if (true ? (1 as let value) : 0)>0 {return;fi}");
         reject("fnc f():void{if ((1 as let value)+(2 as let value))>0 {return;fi}");
     }
@@ -112,7 +112,7 @@ final class CaptureExpressionAuditTest {
     void consumingTheCapturedOwnerCannotLeaveAReusableAlias() {
         rejectOwnership("""
                 define class Box as end
-                fnc ready(Box value):bool{return true;}
+                fnc ready(take! Box value):bool{return true;}
                 pub fnc main():void {
                   if ready(new Box() as let value) { ready(value); fi
                   return;
@@ -124,7 +124,7 @@ final class CaptureExpressionAuditTest {
     void capturesCanBeReboundWithoutGrantingReferentMutability() {
         assertEquals("6", run("""
                 pub fnc main():void {
-                  if (5 as let value)>0 {value=6;stdio.stdout.write(value);fi
+                  if (5 as let value)>0 {value=6;stdio.out.write(value);fi
                   return;
                 }
                 """));
@@ -136,7 +136,7 @@ final class CaptureExpressionAuditTest {
         assertEquals("ok", run("""
                 define class Box as end
                 fnc ready(borrow Box value):bool{return true;}
-                fnc consume(Box value):void{stdio.stdout.write("ok");return;}
+                fnc consume(take! Box value):void{stdio.out.write("ok");return;}
                 pub fnc main():void {
                   if ready(rt borrow (new Box() as let value)) {consume(value);fi
                   return;
@@ -149,7 +149,7 @@ final class CaptureExpressionAuditTest {
         assertEquals("ok", run("""
                 define class Box as end
                 fnc ready(borrow Box value):bool{return true;}
-                fnc consume(Box value):void{stdio.stdout.write("ok");return;}
+                fnc consume(take! Box value):void{stdio.out.write("ok");return;}
                 pub fnc main():void {
                   val Box owner=new Box();
                   if ready((rt borrow owner) as let view) {ready(view);fi
@@ -160,7 +160,7 @@ final class CaptureExpressionAuditTest {
         rejectOwnership("""
                 define class Box as end
                 fnc ready(borrow Box value):bool{return true;}
-                fnc consume(Box value):void{return;}
+                fnc consume(take! Box value):void{return;}
                 fnc f():void {
                   val Box owner=new Box();
                   if ready((rt borrow owner) as let view) {consume(owner);fi
@@ -211,16 +211,16 @@ final class CaptureExpressionAuditTest {
         assertEquals("false02", run("""
                 fnc maybe():Option<int>{return None;}
                 pub fnc main():void {
-                  if let Some(flag)=Some(false) then stdio.stdout.write(flag);fi
-                  if let Some(n)=Some(0) {stdio.stdout.write(n);fi
-                  if let Some(n)=maybe() {stdio.stdout.write(9);
-                  } else {stdio.stdout.write(2);fi
+                  if let Some(flag)=Some(false) then stdio.out.write(flag);fi
+                  if let Some(n)=Some(0) {stdio.out.write(n);fi
+                  if let Some(n)=maybe() {stdio.out.write(9);
+                  } else {stdio.out.write(2);fi
                   return;
                 }
                 """));
         reject("fnc f():void{if let value=1 then return;fi}");
         reject("fnc f():void{if let _=1 then return;fi}");
-        reject("fnc f():void{if let Some(n)=Some(1) then return;fi stdio.stdout.write(n);}");
+        reject("fnc f():void{if let Some(n)=Some(1) then return;fi stdio.out.write(n);}");
     }
 
     @Test
@@ -228,10 +228,10 @@ final class CaptureExpressionAuditTest {
         assertEquals("123", run("""
                 async fnc ready(int n):bool{return n>0;}
                 pub async fnc main():void {
-                  if let Some(n)=Some(1) && await ready(n) {stdio.stdout.write(n);fi
+                  if let Some(n)=Some(1) && await ready(n) {stdio.out.write(n);fi
                   let n=2;
                   while let Some(value)=(n<4 ? Some(n) : None) {
-                    stdio.stdout.write(value);n=n+1;
+                    stdio.out.write(value);n=n+1;
                   }
                   return;
                 }
@@ -251,9 +251,9 @@ final class CaptureExpressionAuditTest {
     void buildOptimizationRetainsCaptureDependenciesAndShadowsModuleConstants() {
         var result = dev.oreslang.compiler.OresCompiler.compileForBuild("""
                 pub const int value=0;
-                fnc produce():int{stdio.stdout.write("p");return 42;}
+                fnc produce():int{stdio.out.write("p");return 42;}
                 fnc ready(int n):bool{return n>0;}
-                fnc consume(int n):void{stdio.stdout.write(n);return;}
+                fnc consume(int n):void{stdio.out.write(n);return;}
                 pub fnc main():void {
                   if ready(produce() as let value) {
                     if value>0 {consume(value);fi

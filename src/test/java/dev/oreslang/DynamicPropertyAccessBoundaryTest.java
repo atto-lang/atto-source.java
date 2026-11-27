@@ -730,7 +730,7 @@ final class DynamicPropertyAccessBoundaryTest {
                     pub let int x = 1;
                 end
 
-                fnc consume(Point point): int {
+                fnc consume(take! Point point): int {
                     return 9;
                 }
 
@@ -747,7 +747,7 @@ final class DynamicPropertyAccessBoundaryTest {
                     pub let int x = 1;
                 end
 
-                fnc consume(Point point): int {
+                fnc consume(take! Point point): int {
                     return 9;
                 }
 
