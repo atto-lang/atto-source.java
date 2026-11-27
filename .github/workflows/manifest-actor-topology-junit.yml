@@ -1,0 +1,96 @@
+name: Manifest actor topology exact-head Java JUnit
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/ActorMethodIndex.java'
+      - 'src/main/java/dev/oreslang/compiler/ActorDescriptorIndex.java'
+      - 'src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java'
+      - 'src/main/java/dev/oreslang/types/ActorReceiverBinder.java'
+      - 'src/main/java/dev/oreslang/types/ActorStateBinder.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/test/java/dev/oreslang/ManifestNamespaceActorTopologyTest.java'
+      - 'src/test/java/dev/oreslang/NamespaceActorIngressAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/NamespaceActorStateAdmissionTest.java'
+      - 'contracts/namespace-actor-state-v1/**'
+      - '.github/workflows/manifest-actor-topology-junit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  topology-junit:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact same-repo head with no persisted token
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact Git head, complete root tree and clean checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          printf 'RECEIPT git_head=%s\n' "$(git rev-parse HEAD)"
+          printf 'RECEIPT git_tree=%s\n' "$(git rev-parse HEAD^{tree})"
+          for file in \
+              src/main/java/dev/oreslang/compiler/ActorMethodIndex.java \
+              src/main/java/dev/oreslang/compiler/ActorDescriptorIndex.java \
+              src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java \
+              src/test/java/dev/oreslang/ManifestNamespaceActorTopologyTest.java; do
+            test -s "$file"
+            sha256sum "$file"
+          done
+
+      - name: Install JDK 25 for actual compiler and Surefire execution
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned v1
+        with:
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Execute manifest actor topology and existing actor regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -Dtest=ManifestNamespaceActorTopologyTest,NamespaceActorIngressAdmissionTest,NamespaceActorStateAdmissionTest,NamespaceActorHeaderAdmissionTest,CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+
+      - name: Demand unskipped positive and negative JUnit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          total=0
+          for suite in \
+              ManifestNamespaceActorTopologyTest \
+              NamespaceActorIngressAdmissionTest \
+              NamespaceActorStateAdmissionTest \
+              NamespaceActorHeaderAdmissionTest \
+              CrossFileActorReceiverBindingTest \
+              ActorReceiverBinderTest \
+              ExternalActorReceiverAstAdmissionTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            test -s "$report"
+            grep -q '<testcase ' "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then
+              echo "::error::${suite} contains failures/errors/skips" >&2
+              exit 1
+            fi
+            printf 'RECEIPT junit_suite=%s report=%s\n' "$suite" "$report"
+            total=$((total+1))
+          done
+          test "$total" -eq 7
+          echo 'RECEIPT manifest_actor_topology_junit=EXECUTED'
