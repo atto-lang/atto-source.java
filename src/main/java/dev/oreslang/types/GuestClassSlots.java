@@ -151,22 +151,43 @@ public final class GuestClassSlots {
         public void replace(String key, Object value) {
             synchronized (copy.domain) {
                 requireOpen();
-                // This class-only snapshot never accepts a foreign, unpublished
-                // or opaque replacement root. The caller still proves transitive
-                // ownership and lifetime; this check cannot mint write authority.
-                if (value instanceof GuestClassSlots child) {
-                    if (child.domain != copy.domain) {
-                        throw new IllegalArgumentException("E_COPY_DOMAIN: foreign replacement store");
-                    }
-                    if (child.initializing) {
-                        throw new IllegalStateException("E_COPY_LAYOUT: unpublished replacement store");
-                    }
-                } else if (value != null && !CopyScalarAdmission.isImmutableScalar(value)) {
-                    throw new IllegalArgumentException("E_COPY_UNPROVEN: unsupported replacement payload");
-                }
+                // Validate the complete replacement graph before publication.
+                validateReplacement(value);
                 copy.replace(key, value);
             }
         }
+        private void validateReplacement(Object value) {
+            if (!(value instanceof GuestClassSlots root)) {
+                if (value != null && !CopyScalarAdmission.isImmutableScalar(value)) {
+                    throw new IllegalArgumentException("E_COPY_UNPROVEN: unsupported replacement payload");
+                }
+                return;
+            }
+            var covered = new IdentityHashMap<GuestClassSlots, Boolean>();
+            for (GuestClassSlots store : lease.protectedStores) covered.put(store, Boolean.TRUE);
+            var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
+            var pending = new ArrayDeque<GuestClassSlots>();
+            pending.add(root);
+            int edges = 0;
+            while (!pending.isEmpty()) {
+                GuestClassSlots store = pending.removeFirst();
+                if (seen.put(store, Boolean.TRUE) != null) continue;
+                if (seen.size() > 65536) throw new IllegalArgumentException("E_COPY_BUDGET: replacement node limit");
+                if (store.domain != copy.domain) {
+                    throw new IllegalArgumentException("E_COPY_DOMAIN: foreign replacement store");
+                }
+                if (store.initializing) {
+                    throw new IllegalStateException("E_COPY_LAYOUT: unpublished replacement store");
+                }
+                if (store.readOnlyLoans != 0 && !covered.containsKey(store)) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: replacement depends on an unrelated loan");
+                }
+                edges = enqueueChildren(store, pending, edges, 262144);
+            }
+            // Conservative defense, not proof of unique donor ownership.
+            // The typed caller still proves move, lifetime and exclusive authority.
+        }
+
         /** Snapshot the current independent outer root, not the original
          * source. Each generation acquires its own descendant lease before
          * publication, so closing an earlier generation cannot thaw a
