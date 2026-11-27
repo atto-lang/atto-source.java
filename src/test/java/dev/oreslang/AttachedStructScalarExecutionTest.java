@@ -1,0 +1,46 @@
+package dev.oreslang;
+import dev.oreslang.parser.AttachedStructScalarLowering;
+import dev.oreslang.parser.Parser;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+final class AttachedStructScalarExecutionTest {
+    private static final String SOURCE = """
+define struct Point { int x; int y; } with {
+ constructor(int x, int y) { self.x = x; self.y = y; }
+ mtd int • sum() { return self.x + self.y; }
+ mtd int <- product() { return self.x * self.y; }
+ mtd is_origin() -> bool { return self.x == 0 && self.y == 0; }
+}
+define struct Rectangle { Point a; Point b; } with {
+ constructor(Point a, Point b) { self.a = a; self.b = b; }
+ mtd area() -> int { return (self.b.x - self.a.x) * (self.b.y - self.a.y); }
+}
+pub fnc main():int { let p = Point(1, 2); let q = Point(4, 6); let Rectangle r = Rectangle(p,q); let snapshot = copy! r; return snapshot.area() + p.sum() + q.product() + 3; }
+
+""";
+    @Test void actualCheckedJavaGuest() {
+        String lowered=AttachedStructScalarLowering.lowerChecked(SOURCE);
+        assertEquals(lowered,AttachedStructScalarLowering.lowerChecked(SOURCE));
+        assertFalse(lowered.contains("new "));
+        try(Context context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()){
+            var result=context.eval(Source.newBuilder(OresLanguage.ID,lowered,"attached-scalar.atto").mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+            assertEquals(42L,result.asLong());
+        }
+    }
+    @Test void malformedOrUnsupportedNeverReturnsScalarArtifact() {
+        for(String bad:new String[]{
+            SOURCE.replace("let Rectangle r = Rectangle(p,q)","let Point r = Rectangle(p,q)"),
+            SOURCE.replace("self.b = b;",""),
+            SOURCE.replace("Point a;","Rectangle a;"),
+            SOURCE.replace("self.b = b;","self.a = b; self.b = b;"),
+            SOURCE.replace("self.b.x -","self.b.z -"),
+            SOURCE.replace("mtd area()","mut mtd area()"),
+            SOURCE+" fnc extra():int{return 0;}",
+            SOURCE.replace("Rectangle(p,q)","Rectangle(p,42)"),
+            SOURCE.replace("Point(1, 2)","Point(\"1\", 2)")
+        })assertThrows(IllegalArgumentException.class,()->AttachedStructScalarLowering.lowerChecked(bad),bad);
+        assertThrows(IllegalArgumentException.class,()->Parser.parse(SOURCE));
+    }
+}
