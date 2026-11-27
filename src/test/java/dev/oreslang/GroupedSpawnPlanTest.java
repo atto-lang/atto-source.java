@@ -37,6 +37,36 @@ final class GroupedSpawnPlanTest {
         deny("spawn Worker() with { init { extra = 42; } }","init {}","E_SPAWN_INIT_FIELDS");
         deny("spawn Worker(42) with {}","init {}","E_SPAWN_POSITIONAL_UNSUPPORTED");
     }
+    @Test void sourceDeclarationDeterminesNominalSchema() {
+        String declarations = "define actor Worker as init { int seed; } end "
+                + "define actor Decoy as init { bool seed; } end";
+        var p=Parser.checkDeclaredGroupedSpawnPreview(declarations,
+                "spawn Worker() with { init { seed = 42; } }",LIMIT);
+        assertEquals(42L,p.values().getFirst().value());
+        assertThrows(IllegalArgumentException.class,()->Parser.checkDeclaredGroupedSpawnPreview(
+                declarations,"spawn Decoy() with { init { seed = 42; } }",LIMIT));
+        assertThrows(IllegalArgumentException.class,()->Parser.checkDeclaredGroupedSpawnPreview(
+                declarations,"spawn Missing() with {}",LIMIT));
+        assertThrows(IllegalArgumentException.class,()->Parser.checkDeclaredGroupedSpawnPreview(
+                "define actor Worker as init { int seed; } init { int seed; } end",
+                "spawn Worker() with { init { seed = 42; } }",LIMIT));
+        assertThrows(IllegalArgumentException.class,()->Parser.checkDeclaredGroupedSpawnPreview(
+                "define class Worker as end","spawn Worker() with {}",LIMIT));
+        assertThrows(IllegalArgumentException.class,()->Parser.parse(declarations));
+    }
+
+    @Test void ambiguousActorNamesRequireQualifiedResolution() {
+        String declarations = "define module firstMod as define actor Worker as init { int seed; } end end "
+                + "define module secondMod as define actor Worker as init { bool seed; } end end";
+        assertThrows(IllegalArgumentException.class,()->Parser.checkDeclaredGroupedSpawnPreview(
+                declarations,"spawn Worker() with { init { seed = 42; } }",LIMIT));
+        var p=Parser.checkDeclaredGroupedSpawnPreview(declarations,
+                "spawn firstMod.Worker() with { init { seed = 42; } }",LIMIT);
+        assertEquals(42L,p.values().getFirst().value());
+        assertThrows(IllegalArgumentException.class,()->Parser.checkDeclaredGroupedSpawnPreview(
+                declarations,"spawn secondMod.Worker() with { init { seed = 42; } }",LIMIT));
+    }
+
     @Test void initSchemaCannotEnterExecutableAst() {
         assertEquals(3,Parser.parseActorInitSchemaPreview(SCHEMA).size());
         assertThrows(IllegalArgumentException.class,()->Parser.parseActorInitSchemaPreview("init { int seed; bool seed; }"));
