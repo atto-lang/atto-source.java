@@ -313,4 +313,21 @@ final class CrossFileLinkedTypingTest {
                 }
                 """, "read-only");
     }
+
+    @Test
+    void actorsMayUseExplicitlyImportedModules() {
+        accepts("""
+                import module lib from "./lib.atto";
+                define actor Counter as
+                  receive(ActorMail<int> mail): void {
+                    let mut Array<int> values = new Array<int>();
+                    values.add(mail.value);
+                    stdio.println(lib.total(rt borrow values));
+                    self.end();
+                    return;
+                  }
+                end
+                pub fnc main(): int { return 0; }
+                """);
+    }
 }

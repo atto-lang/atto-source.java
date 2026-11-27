@@ -9,10 +9,8 @@ use namespace http;
   define pub class HeaderField as
     pub val String name;
     pub val String value;
-    pub constructor(String name, String value) {
-      if !header_line_valid(name, value, 65536) then
-        rt fail("invalid HTTP header construction");
-      fi
+    // Module-private: only the validating header_field() factory constructs.
+    constructor(String name, String value) {
       self.name = name;
       self.value = value;
     }
@@ -23,9 +21,9 @@ use namespace http;
     pub val String target;
     // -1 means unspecified, NOT zero and NOT an admitted stream length.
     pub val int content_length;
-    pub constructor(String method, String target, int content_length) {
-      if !method_valid(method) || !origin_target_valid(target) ||
-         content_length < -1 || content_length > 1073741824 then
+    // Module-private: only the validating request_meta() factory constructs.
+    constructor(String method, String target, int content_length) {
+      if content_length < -1 || content_length > 1073741824 then
         rt fail("invalid HTTP request metadata construction");
       fi
       self.method = method;
@@ -50,10 +48,8 @@ use namespace http;
     pub val String method;
     pub val String target;
 
-    pub constructor(String method, String target) {
-      if !method_valid(method) || !origin_target_valid(target) then
-        rt fail("invalid HTTP request line construction");
-      fi
+    // Module-private: only the validating parse_request_line() constructs.
+    constructor(String method, String target) {
       self.method = method;
       self.target = target;
     }

@@ -123,6 +123,9 @@ public final class TypeChecker {
     // import fnc bindings whose checked signature is linked; imports::f(...)
     // then types as a call into the synthetic $imports$ module.
     private final Set<String> linkedImportCallables = new HashSet<>();
+    // Aliases of imported modules linked from other units: explicit
+    // dependencies, so actors may use them (same-file modules they may not).
+    private final Set<String> linkedModuleAliases = new HashSet<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -792,6 +795,7 @@ public final class TypeChecker {
             }
             checker.importedValues.remove(alias);
             checker.modules.put(alias, module);
+            checker.linkedModuleAliases.add(alias);
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn
                         && fn.visibility() == Ast.Visibility.PUBLIC) {
@@ -3099,7 +3103,8 @@ public final class TypeChecker {
     }
 
     private void rejectUnimportedModuleNamespace(String name) {
-        if (!insideActorLexicalBoundary()) return;
+        // An explicitly imported (linked) module is a declared dependency.
+        if (!insideActorLexicalBoundary() || linkedModuleAliases.contains(name)) return;
         throw new IllegalArgumentException(
                 "actor '" + lexicalClassOrigin.name()
                         + "' cannot implicitly access module '" + name
