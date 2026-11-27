@@ -33,6 +33,11 @@ final class ActorContinuationLedger {
 
     synchronized boolean hasReleaseFailure() { return releaseFailed; }
 
+    /** Final actor retirement requires sealed admission and no physical receipts. */
+    synchronized boolean retirementReady() {
+        return allSealed && !releaseFailed && live.isEmpty();
+    }
+
     ActorContinuationLedger(int capacity) {
         if (capacity < 1) throw new IllegalArgumentException("ledger capacity must be positive");
         this.capacity = capacity;
