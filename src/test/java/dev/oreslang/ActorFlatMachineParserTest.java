@@ -75,4 +75,41 @@ final class ActorFlatMachineParserTest {
         rejects("define actor Foo as " + machine + " state { let int count: 0; } end",
                 "E_MACHINE_LOWERING_UNSUPPORTED");
     }
+
+    @Test void inspectionRetainsGraphAndSeparateStorage() {
+        String src = GOOD.replace("state machine as", "state { let int count: 0; } state machine as");
+        var actor = Parser.inspectActorMachines(src).get(0);
+        assertEquals("Foo", actor.actor());
+        assertTrue(actor.storageDeclared());
+        assertEquals("count", actor.storage().get(0).name());
+        var machine = actor.machine();
+        assertEquals("Idle", machine.nodes().get(machine.initial()).name());
+        var edge = machine.nodes().get(machine.initial()).transitions().get(0);
+        assertEquals("Start", edge.event());
+        assertEquals("Running", machine.nodes().get(edge.target()).name());
+        var terminal = machine.nodes().stream().filter(n -> n.name().equals("Complete")).findFirst().orElseThrow();
+        assertTrue(terminal.terminal());
+        assertTrue(terminal.transitions().isEmpty());
+        rejects(src, "E_MACHINE_LOWERING_UNSUPPORTED");
+    }
+
+    @Test void emptyStorageInspectionCannotEnableEmission() {
+        String src = "define actor Foo as state {} end";
+        var actor = Parser.inspectActorMachines(src).get(0);
+        assertTrue(actor.storageDeclared());
+        assertTrue(actor.storage().isEmpty());
+        assertNull(actor.machine());
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(src));
+    }
+
+    @Test void inspectionRejectsDuplicateOrMixedStorage() {
+        for (String src : new String[] {
+                "define actor Foo as state {} state {} end",
+                "define actor Foo as state {} let int count: 0; end",
+                "define actor Foo as state { let int n: 0; let int n: 1; } end"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.inspectActorMachines(src));
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(src));
+        }
+    }
 }
