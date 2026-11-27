@@ -1,0 +1,8 @@
+pub routine main(): void {
+    const root = record{x: 2, child: record{z: 7}};
+    const next = root with {x => 3};
+    stdio.stdout.write(root.child.z);
+    stdio.stdout.write(next.child.z);
+    stdio.stdout.write(next.x);
+    return;
+}

@@ -1,0 +1,5 @@
+// Compiler-owned Java runtime allocations are NOT Atto source exports.
+// Any successful import of TrustedAllocationScopeV1 would manufacture a privileged capability.
+import class TrustedAllocationScopeV1 from "atto.alloc/allocator";
+
+pub fnc main(): int { return 42; }

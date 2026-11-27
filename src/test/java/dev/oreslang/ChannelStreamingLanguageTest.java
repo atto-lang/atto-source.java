@@ -180,7 +180,7 @@ final class ChannelStreamingLanguageTest {
                 actor fnc relay(): void {
                   val Channel<int> inbox = Channel.new<int>(1);
                   val Channel<int> replies = Channel.new<int>(1);
-                  try writech inbox, 7;
+                  writech inbox, 7;
                   nb select {
                     case readch inbox: val value {
                       nb writech replies, value * 10;

@@ -1,0 +1,63 @@
+// Portable, bounded AoS/SoA/AoSoA address math from DataOrientedLayout.java.
+// This is a VALUE POLICY only. It cannot mint allocation, GPU or region authority.
+// kind: 1=AoS, 2=SoA, 3=AoSoA; all results are signed i64 integers.
+define module layout_policy as
+  fnc power_of_two(int value): bool {
+    if value < 1 || value > 4096; do return false; fi
+    for (let int bit = 1; bit <= 4096; bit = bit + bit) {
+      if bit == value; do return true; fi
+    }
+    return false;
+  }
+
+  fnc align_to(int value, int alignment): int {
+    if value == 0; do return 0; fi
+    return ((value - 1) / alignment + 1) * alignment;
+  }
+
+  // Caps are intentionally narrower than the Java host planner's.
+  // Even the maximum intermediate product fits signed i64 without wrap.
+  pub fnc valid_shape(int kind, int rows, int fields, int scalar_bytes,
+                      int alignment, int lanes): bool {
+    if kind < 1 || kind > 3 || rows < 0 || rows > 1000000; do return false; fi
+    if fields < 1 || fields > 1024 || scalar_bytes < 1 || scalar_bytes > 256; do return false; fi
+    if alignment < scalar_bytes || alignment > 4096; do return false; fi
+    if !power_of_two(scalar_bytes) || !power_of_two(alignment); do return false; fi
+    if lanes < 1 || lanes > 1024 || !power_of_two(lanes); do return false; fi
+    if kind != 3 && lanes != 1; do return false; fi
+    return true;
+  }
+
+  pub fnc byte_length(int kind, int rows, int fields, int scalar_bytes,
+                      int alignment, int lanes): Result<int, String> {
+    if !valid_shape(kind, rows, fields, scalar_bytes, alignment, lanes); do
+      return Err("layout_policy: invalid or unbounded shape");
+    fi
+    if kind == 1; do
+      return Ok(rows * align_to(fields * scalar_bytes, alignment));
+    fi
+    if kind == 2; do
+      return Ok(fields * align_to(rows * scalar_bytes, alignment));
+    fi
+    val int tiles = (rows + lanes - 1) / lanes;
+    return Ok(tiles * align_to(fields * lanes * scalar_bytes, alignment));
+  }
+
+  pub fnc byte_offset(int kind, int rows, int fields, int scalar_bytes,
+                      int alignment, int lanes, int row, int field): Result<int, String> {
+    if !valid_shape(kind, rows, fields, scalar_bytes, alignment, lanes) ||
+       row < 0 || row >= rows || field < 0 || field >= fields; do
+      return Err("layout_policy: row or field outside validated shape");
+    fi
+    if kind == 1; do
+      return Ok(row * align_to(fields * scalar_bytes, alignment) + field * scalar_bytes);
+    fi
+    if kind == 2; do
+      return Ok(field * align_to(rows * scalar_bytes, alignment) + row * scalar_bytes);
+    fi
+    val int tile = row / lanes;
+    val int tile_bytes = align_to(fields * lanes * scalar_bytes, alignment);
+    return Ok(tile * tile_bytes + field * lanes * scalar_bytes +
+              (row - tile * lanes) * scalar_bytes);
+  }
+end

@@ -29,6 +29,13 @@ public final class CorePerf {
     public static final int HTTP_EXECUTOR_QUEUE = 15;
     public static final int STDIO_WRITE = 16;
     public static final int HTTP_LIFETIME = 17;
+    // Redis RESP2 diagnosis: numeric-only phases, core-owned, no guest data or logging I/O.
+    public static final int REDIS_RESP_PARSE = 18;
+    public static final int REDIS_RESP_HEX = 19;
+    public static final int REDIS_RESP_ENCODE = 20;
+    public static final int REDIS_TCP_WRITE = 21;
+    public static final int REDIS_TCP_WRITE_SUBMIT = 22;
+
 
     private static final String[] NAMES = {
         "unused", "vm.control.startup", "actor.pools.startup",
@@ -37,7 +44,9 @@ public final class CorePerf {
         "http.io.queue", "http.io.work",
         "async.io.queue", "async.io.work",
         "http.timer.schedule", "actor.spawn", "http.executor.queue",
-        "stdio.write", "http.lifetime"
+        "stdio.write", "http.lifetime",
+        "redis.resp.parse", "redis.resp.hex", "redis.resp.encode",
+        "redis.tcp.write", "redis.tcp.write.submit"
     };
     private static final String[] DEBUG_NAMES = {
         "unused", "actor.pools.created", "http.listener.ready",

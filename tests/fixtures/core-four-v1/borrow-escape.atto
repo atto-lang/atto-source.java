@@ -1,0 +1,10 @@
+// Compiler-negative: an imported core policy API cannot grant a leaked loan.
+import module cell from "core/cell";
+define class Box as
+  pub let int value = 7;
+end
+fnc leak(): borrow Box {
+  let Box box = new Box();
+  return rt borrow box;
+}
+pub fnc main(): int { return 0; }

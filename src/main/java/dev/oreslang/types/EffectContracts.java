@@ -24,7 +24,31 @@ public final class EffectContracts {
         ACTOR, SCHEDULER, SYNCHRONIZATION, FFI_UNKNOWN, UNKNOWN_CALL,
         THROW, RAISE, PANIC, CANCELLATION,
         // Compiler resource/control effects: separate from observational purity.
-        ALLOC, BLOCK, SUSPEND
+        ALLOC, BLOCK, SUSPEND,
+        // Internal resumability, never a source-level suspension annotation.
+        RUNTIME_PARK
+    }
+
+    /** Lowering policy for a checked, overload-resolved effect row.
+     * UNKNOWN_CALL and FFI_UNKNOWN never prove that a frame cannot park.
+     * This classification grants no host capability and is not a source checker.
+     */
+    public record ParkingPolicy(boolean explicitSuspend, boolean runtimePark, boolean unresolved) {
+        public boolean requiresResumableFrame() {
+            return explicitSuspend || runtimePark || unresolved;
+        }
+        public boolean requiresSuspendAnnotation() { return explicitSuspend; }
+        public boolean safeWithExclusiveLoan() {
+            return !requiresResumableFrame();
+        }
+    }
+
+    public static ParkingPolicy parkingPolicy(Set<Effect> inferred) {
+        Objects.requireNonNull(inferred, "checked effect row");
+        return new ParkingPolicy(inferred.contains(Effect.SUSPEND),
+                inferred.contains(Effect.RUNTIME_PARK),
+                inferred.contains(Effect.UNKNOWN_CALL) || inferred.contains(Effect.FFI_UNKNOWN)
+                        || inferred.contains(Effect.BLOCK));
     }
 
     /** Pure is an observational guarantee, not a no-throw/no-panic guarantee. */

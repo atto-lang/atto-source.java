@@ -69,6 +69,50 @@ final class MainlineSelectArrowBoundaryTest {
     }
 
     @Test
+    void singleArrowAcceptedAcrossAllSelectFormsAndDelimiters() {
+        for (String form : new String[] {"select", "do select", "nb select", "do nb select", "try select"}) {
+            for (String[] delimiter : new String[][] {{" { ", " }"}, {" over ", " end"}}) {
+                for (String arm : new String[] {
+                        "when readch channel: int value -> {}",
+                        "when readch channel: val value -> {}",
+                        "when val value = readch(channel) -> {}",
+                        "when await pending: int value -> {}",
+                        "when await pending: -> {}",
+                        "when writech channel, 1: -> {}",
+                        "default: -> {}"
+                }) {
+                    String source = "fnc route(Channel<int> channel, Future<int> pending): void { "
+                            + form + delimiter[0] + arm + delimiter[1] + " }";
+                    assertDoesNotThrow(() -> firstSelect(source), source);
+                }
+            }
+        }
+    }
+
+    @Test
+    void rejectsRepeatedAndMixedArmArrowsAcrossAllSelectForms() {
+        for (String form : new String[] {"select", "do select", "nb select", "do nb select", "try select"}) {
+            for (String[] delimiter : new String[][] {{" { ", " }"}, {" over ", " end"}}) {
+                for (String prefix : new String[] {
+                        "when readch channel: int value ",
+                        "when readch channel: val value ",
+                        "when val value = readch(channel) ",
+                        "when await pending: int value ",
+                        "when await pending: ",
+                        "when writech channel, 1: ",
+                        "default: "
+                }) {
+                    for (String arrows : new String[] {"-> -> ", "-> => "}) {
+                        String source = "fnc route(Channel<int> channel, Future<int> pending): void { "
+                                + form + delimiter[0] + prefix + arrows + "{}" + delimiter[1] + " }";
+                        assertThrows(IllegalArgumentException.class, () -> firstSelect(source), source);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void malformedSlimArrowBodyIsRejected() {
         for (String bad : new String[] {
                 "when readch channel: val value -> return;",

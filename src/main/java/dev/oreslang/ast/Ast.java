@@ -77,7 +77,32 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl { }
+            ExternalActorMethodDecl, SingletonDecl { }
+
+    /**
+     * Parsed singleton for the opt-in semantic check-only path. No runtime or
+     * backend may lower it until separate identity/publication proof exists.
+     * Field positions are retained for stable safety diagnostics.
+     */
+    public record SingletonField(FieldDecl declaration, int line, int column) {
+        public SingletonField {
+            java.util.Objects.requireNonNull(declaration, "singleton field");
+            if (line < 1 || column < 1) throw new IllegalArgumentException("invalid singleton field source location");
+        }
+    }
+
+    public record SingletonDecl(String name, Visibility visibility,
+                                List<SingletonField> fields, int line, int column)
+            implements Decl {
+        public SingletonDecl {
+            java.util.Objects.requireNonNull(name, "singleton name");
+            java.util.Objects.requireNonNull(visibility, "singleton visibility");
+            fields = List.copyOf(fields);
+            if (name.isBlank() || line < 1 || column < 1) {
+                throw new IllegalArgumentException("invalid singleton declaration");
+            }
+        }
+    }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -145,19 +170,38 @@ public final class Ast {
      * declaration, it must not be turned into an empty actor class.
      */
     public record StandaloneActorDecl(
-            String name, String receiverName, Visibility visibility, ActorKind actorKind)
-            implements Decl {
+            String name, String receiverName, Visibility visibility, ActorKind actorKind,
+            List<TypeRef> implementedContracts) implements Decl {
         public StandaloneActorDecl {
-            if (name == null || name.isBlank() || receiverName == null
-                    || receiverName.isBlank() || name.equals(receiverName)) {
+            // A semicolon-only declaration has no source-level receiver alias.
+            // Receiver authority is never created by an absent alias.
+            if (name == null || name.isBlank()
+                    || (receiverName != null
+                        && (receiverName.isBlank() || name.equals(receiverName)))) {
                 throw new IllegalArgumentException(
-                        "standalone actor requires distinct nominal type and receiver binding names");
+                        "standalone actor requires a nominal type and an optional distinct receiver name");
             }
             java.util.Objects.requireNonNull(visibility, "standalone actor visibility");
             if (actorKind != ActorKind.SHARED) {
                 throw new IllegalArgumentException(
                         "standalone actor AST currently supports only generic shared actors");
             }
+            implementedContracts = List.copyOf(implementedContracts);
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (TypeRef contract : implementedContracts) {
+                if (contract == null || contract.name() == null || contract.name().isBlank()
+                        || contract.isBorrow() || contract.inferArguments()
+                        || !contract.arguments().isEmpty()
+                        || !names.add(contract.name())) {
+                    throw new IllegalArgumentException(
+                            "standalone actor requires distinct nominal non-generic contract references");
+                }
+            }
+        }
+        /** Compatibility for the earlier 'as receiver;' declaration form. */
+        public StandaloneActorDecl(
+                String name, String receiverName, Visibility visibility, ActorKind actorKind) {
+            this(name, receiverName, visibility, actorKind, List.of());
         }
     }
 
@@ -566,17 +610,41 @@ public final class Ast {
      * The legacy actor scheduler currently implements precisely (1,1).
      */
     public record ActorConcurrency(
-            ActorTransport transport, int requestConcurrency, int messageConcurrency) {
+            ActorTransport transport, int requestConcurrency, int messageConcurrency,
+            boolean serialReceive) {
         public ActorConcurrency {
             java.util.Objects.requireNonNull(transport, "actor transport");
             if (requestConcurrency < 1 || messageConcurrency < 1) {
                 throw new IllegalArgumentException(
                         "actor concurrency limits must be positive");
             }
+            if (serialReceive && (requestConcurrency != 1 || messageConcurrency != 1)) {
+                throw new IllegalArgumentException(
+                        "serial receive requires one request and message lane");
+            }
         }
+
+        /** Three-argument legacy callers now mean concurrent-by-default. */
+        public ActorConcurrency(ActorTransport transport, int requestConcurrency,
+                                int messageConcurrency) {
+            this(transport, requestConcurrency, messageConcurrency, false);
+        }
+
         public static ActorConcurrency serial(ActorTransport transport) {
-            return new ActorConcurrency(transport, 1, 1);
+            return new ActorConcurrency(transport, 1, 1, true);
         }
+    }
+
+    /**
+     * Explicit actor application-message contracts. Null means the clause was
+     * omitted, NOT that it permits arbitrary messages. Supervisor CONTROL
+     * messages are outside both contracts.
+     */
+    public record ActorMessageContract(TypeRef receives, TypeRef sends) {
+        public static ActorMessageContract unspecified() {
+            return new ActorMessageContract(null, null);
+        }
+        public boolean declared() { return receives != null || sends != null; }
     }
 
     public record ClassDecl(
@@ -592,10 +660,14 @@ public final class Ast {
             List<MethodDecl> methods,
             ActorConcurrency actorConcurrency,
             List<ProtectedStateField> sealedStateFields,
-            List<Annotation> annotations) implements Decl {
+            List<Annotation> annotations,
+            ActorMessageContract actorMessageContract) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             annotations = List.copyOf(annotations);
+            actorMessageContract = java.util.Objects.requireNonNull(actorMessageContract);
+            if (actorKind == ActorKind.NONE && actorMessageContract.declared())
+                throw new IllegalArgumentException("ordinary classes cannot declare receives/sends");
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
@@ -610,6 +682,32 @@ public final class Ast {
                 if (!fields.isEmpty())
                     throw new IllegalArgumentException("sealed actor state cannot mix ordinary actor fields");
             }
+        }
+
+        /** Annotated call sites (main) default to no receives/sends contract. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields,
+                         List<Annotation> annotations) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, annotations, ActorMessageContract.unspecified());
+        }
+
+        /** Actor headers with receives/sends but no class annotations. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields,
+                         ActorMessageContract actorMessageContract) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, List.of(), actorMessageContract);
         }
 
         /** Existing actor concurrency call sites default to no sealed state or annotations. */
@@ -643,7 +741,7 @@ public final class Ast {
                          List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, genericParameters,
                     parents, interfaces, fields, constructor, methods,
-                    ActorConcurrency.serial(ActorTransport.GENERIC));
+                    new ActorConcurrency(ActorTransport.GENERIC, 1, 1));
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -759,17 +857,33 @@ public final class Ast {
         }
     }
 
+    /** Lexical protocol identity survives parsing, linking and ABI hashing. */
+    public enum InterfaceKind { INTERFACE, TRAIT, CONTRACT }
+
     public record InterfaceDecl(
             String name,
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            InterfaceKind declarationKind) implements Decl {
         public InterfaceDecl {
+            java.util.Objects.requireNonNull(declarationKind, "protocol declaration kind");
+            if (moduleContract != (declarationKind == InterfaceKind.CONTRACT)) {
+                throw new IllegalArgumentException(
+                        "protocol declaration kind and module-contract authority mismatch");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
+        }
+        /** Compatibility for older source/interface clients; parser sets TRAIT explicitly. */
+        public InterfaceDecl(String name, Visibility visibility,
+                List<String> genericParameters, List<TypeRef> parents,
+                List<InterfaceMember> members, boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members,
+                    moduleContract, moduleContract ? InterfaceKind.CONTRACT : InterfaceKind.INTERFACE);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
             this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
@@ -2103,10 +2217,59 @@ public final class Ast {
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
     public enum TaskCaptureTransfer { COPY, MOVE }
-    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) implements Expr {
+    // Static type witnesses are deliberately not executable AST children.
+    public record CountedZeroWitness(String name, ChannelOperation operation) {
+        public CountedZeroWitness {
+            if (name == null || name.isBlank() || name.startsWith("$")
+                    || (operation != ChannelOperation.READ && operation != ChannelOperation.AWAIT))
+                throw new IllegalArgumentException("invalid counted zero source witness");
+        }
+    }
+    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                           boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                           String zeroCountSourceName, String dynamicCountName,
+                           List<CountedZeroWitness> zeroCountWitnesses) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
+            if ((typedDefaultSelectI64 || typedCountedSelectI64) && domain != ExecutionDomain.CPU)
+                throw new IllegalArgumentException("typed select requires CPU task authority");
+            if (typedDefaultSelectI64 && typedCountedSelectI64)
+                throw new IllegalArgumentException("inconsistent typed select result");
+            if (zeroCountSourceName != null && (!typedCountedSelectI64 || zeroCountSourceName.isBlank()))
+                throw new IllegalArgumentException("invalid zero-count select type witness");
+            zeroCountWitnesses = List.copyOf(zeroCountWitnesses);
+            if (zeroCountWitnesses.size() > 8 || (!zeroCountWitnesses.isEmpty() && !typedCountedSelectI64)
+                    || (zeroCountSourceName != null && !zeroCountWitnesses.equals(
+                            List.of(new CountedZeroWitness(zeroCountSourceName, ChannelOperation.READ)))))
+                throw new IllegalArgumentException("invalid counted zero witness set");
+            if (dynamicCountName != null && (!typedCountedSelectI64
+                    || !zeroCountWitnesses.isEmpty() || dynamicCountName.isBlank()))
+                throw new IllegalArgumentException("invalid dynamic counted select witness");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName, String dynamicCountName) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, dynamicCountName, zeroCountSourceName == null ? List.of()
+                        : List.of(new CountedZeroWitness(zeroCountSourceName, ChannelOperation.READ)));
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, false);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) {
+            this(domain, body, legacyNb, false, false);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body) {
             this(domain, body, false);
@@ -2410,7 +2573,7 @@ public final class Ast {
         }
     }
 
-    /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
+    /** Caller-side capture of ordinary failure as a Result. */
     public record TrapExpr(Expr expression) implements Expr { }
 
     public record ChannelOpExpr(

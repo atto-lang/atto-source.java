@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "scope": "synthetic correctness, never performance",
+  "benchmark_repo": "atto-lang/atto-benchmarks",
+  "benchmark_commit": "a87f57a063d1ae621a91a0fcb3e1420726865ab5",
+  "benchmark_tree": "4f85bc3ad8a5be98a39974ff564ef91957c56775",
+  "blobs": {
+    "tests/fixtures/sharkbench-admission/sharkbench-web.atto": "095288d5e3487c3beac1f393fbe2576cc951e135",
+    "tests/fixtures/sharkbench-admission/check_contract.py": "2f5514245444e5fc9f268f18bf73a5a09a58b3e2",
+    "tests/fixtures/sharkbench-admission/check_faults.py": "11f3f35ecb5d17871122c8ff9ccc67ad92904ca5",
+    "tests/fixtures/sharkbench-admission/check_lifecycle.py": "805b1318ce56495535f80699553abd09223118be",
+    "tests/fixtures/sharkbench-admission/sharkbench-web-native.atto": "9d51478489dbfc7e3995db4e3fb2b15606b1b597"
+  },
+  "compiler_parents": {
+    "http": "7b2c0238d2df63c83fd5263456956db0d5dd80b0",
+    "utf8": "6b20f0d1985b2441038e281a4b4c67c9e86a96cd",
+    "json": "6172308c29d89448ca6e6876afb029b9b63e1363"
+  },
+  "additional_probe_source": {
+    "repo": "atto-lang/atto-benchmarks",
+    "commit": "df8e5dc33a9ecb28d8d43713335f2db71032a84c"
+  },
+  "workload_source": {
+    "repo": "atto-lang/atto-benchmarks",
+    "commit": "b5fd8a9ed8d79c00515ad57a267aa745ace35245",
+    "tree": "027a754c15afe1ed0bcf96ace577c9aadc0e5fa4",
+    "path": "benchmark/web/sharkbench/adapters/jvm/sharkbench-web.atto"
+  },
+  "fault_probe_source": {
+    "repo": "atto-lang/atto-benchmarks",
+    "commit": "4689b87c388fb66113f61987b454b94fda80f5e2",
+    "tree": "d1b462fed3043e8ef6290a69b42794e482497a27",
+    "path": "benchmark/web/sharkbench/check_faults.py"
+  },
+  "native_candidate": {
+    "source_base_blob": "095288d5e3487c3beac1f393fbe2576cc951e135",
+    "http_parent": "0ddc5a15930bc209e2a102dafac4a8fbc8e1c76f",
+    "bytes_parent": "3ee424540b058ca59a08d16d8e3444ffc1983984",
+    "scope": "separate compiler-repo synthetic guest variant; no upstream score"
+  }
+}
