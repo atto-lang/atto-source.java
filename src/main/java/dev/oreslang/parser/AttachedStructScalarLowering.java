@@ -18,8 +18,10 @@ public final class AttachedStructScalarLowering {
     private record Init(String field,String parameter) {}
     private record Ctor(List<Field> parameters,List<Init> assignments) {}
     private record Method(String internal,String type) {}
+    private record Write(String path,String helper) {}
+    private record Mutation(List<Field> parameters,List<Write> writes) {}
     private record Expr(String code,String type) {}
-    private record Value(Owner owner,Map<String,Expr> slots) {}
+    private record Value(Owner owner,Map<String,Expr> slots,boolean mutable) {}
     private record Arg(String type,Map<String,Expr> slots) {}
     private static final class Owner {
         final String name;
@@ -27,6 +29,7 @@ public final class AttachedStructScalarLowering {
         final List<Leaf> leaves=new ArrayList<>();
         final List<Ctor> ctors=new ArrayList<>();
         final Map<String,Method> methods=new LinkedHashMap<>();
+        final Map<String,Mutation> mutations=new LinkedHashMap<>();
         Owner(String name){this.name=name;}
     }
     private static final class Reader {
@@ -82,6 +85,7 @@ public final class AttachedStructScalarLowering {
             return y.lexeme().equals(b)&&x.line()==y.line()&&x.column()+a.length()==y.column();
         }
         private void member(Owner o){
+            if(eat("mut")){mutableMember(o);return;}
             if(eat("constructor")){
                 List<Field> p=params();List<String> types=p.stream().map(Field::type).toList();
                 require(o.ctors.stream().noneMatch(c->c.parameters.stream().map(Field::type).toList().equals(types)),"E_DUPLICATE","constructor signature");
@@ -102,7 +106,7 @@ public final class AttachedStructScalarLowering {
                     n=name();expect("(");expect(")");
                 }else{n=name();expect("(");expect(")");require(eat("->")||eat(":"),"E_STRUCT_SYNTAX","postfix return separator");t=type();}
                 require(scalar(t),"E_TYPE","scalar result required");
-                require(!o.methods.containsKey(n),"E_DUPLICATE","method signature");
+                require(!o.methods.containsKey(n)&&!o.mutations.containsKey(n),"E_DUPLICATE","method signature");
                 require(methods<64,"E_SOURCE_LIMIT","total method budget");
                 String generated="atto_struct_method_"+methods++;Map<String,Expr> self=new LinkedHashMap<>();List<String> ps=new ArrayList<>();
                 for(Leaf l:o.leaves){String s=slot();ps.add(l.type+" "+s);self.put(l.path,new Expr(s,l.type));}
@@ -111,7 +115,59 @@ public final class AttachedStructScalarLowering {
                 helpers.append("fnc ").append(generated).append('(').append(String.join(",",ps)).append("): ").append(t).append(" { return ").append(result.code).append("; }\n");
                 require(helpers.length()<262144,"E_SOURCE_LIMIT","helper expansion");o.methods.put(n,new Method(generated,t));
             }
-            require(o.ctors.size()+o.methods.size()<=64,"E_SOURCE_LIMIT","member budget");
+            require(o.ctors.size()+o.methods.size()+o.mutations.size()<=64,"E_SOURCE_LIMIT","member budget");
+        }
+        // Mutations create new scalar slot versions, never writable aliases.
+        // Each right-hand side executes once and sees previous leaf updates.
+        private void mutableMember(Owner o){
+            expect("mtd");String n=name();List<Field> formals=params();
+            require(formals.stream().allMatch(f->scalar(f.type)),"E_TYPE","scalar mutation parameters");
+            require(o.leaves.size()+formals.size()<=16,"E_SOURCE_LIMIT","mutation parameter slots");
+            require(!o.methods.containsKey(n)&&!o.mutations.containsKey(n),"E_DUPLICATE","method signature");
+            require(eat(":")||eat("->"),"E_STRUCT_SYNTAX","mutable method result separator");
+            expect("void");expect("{");List<Write> writes=new ArrayList<>();
+            while(!eat("}")){
+                if(eat("return")){expect(";");expect("}");break;}
+                expect("self");expect(".");String field=name();while(eat("."))field=path(field,name());
+                final String target=field;
+                Leaf leaf=o.leaves.stream().filter(l->l.path.equals(target)).findFirst().orElse(null);
+                require(leaf!=null,"E_TYPE","unknown mutable leaf");expect("=");
+                Map<String,Expr> env=new LinkedHashMap<>();List<String> ps=new ArrayList<>();
+                for(Leaf l:o.leaves){String slot=slot();ps.add(l.type+" "+slot);env.put(l.path,new Expr(slot,l.type));}
+                for(Field f:formals){String slot=slot();ps.add(f.type+" "+slot);env.put("$arg."+f.name,new Expr(slot,f.type));}
+                Expr result=expr(env,1);expect(";");
+                require(result.type.equals(leaf.type),"E_TYPE","mutable leaf type mismatch");
+                require(methods<64,"E_SOURCE_LIMIT","mutation helper budget");
+                String generated="atto_struct_method_"+methods++;
+                helpers.append("fnc ").append(generated).append('(').append(String.join(",",ps)).append("): ").append(result.type).append(" { return ").append(result.code).append("; }\n");
+                require(helpers.length()<262144,"E_SOURCE_LIMIT","helper expansion");
+                writes.add(new Write(field,generated));
+            }
+            require(!writes.isEmpty(),"E_STRUCT_SYNTAX","empty mutation outside profile");
+            require(o.ctors.size()+o.methods.size()+o.mutations.size()<64,"E_SOURCE_LIMIT","member budget");
+            o.mutations.put(n,new Mutation(formals,writes));
+        }
+        private void invokeMutation(){
+            String name=name();expect(".");String member=name();Value v=values.get(name);
+            require(v!=null,"E_TYPE","unknown receiver");
+            Mutation mutation=v.owner.mutations.get(member);require(mutation!=null,"E_TYPE","unknown mutable method");
+            require(v.mutable,"E_BORROW_MUT_REQUIRED","immutable receiver");
+            List<Expr> args=new ArrayList<>();expect("(");
+            if(!eat(")")){
+                do{
+                    require(args.size()<mutation.parameters.size(),"E_TYPE","mutation arity");
+                    Expr e=expr(null,1);require(e.type.equals(mutation.parameters.get(args.size()).type),"E_TYPE","mutation argument type");
+                    args.add(snapshot(e));
+                }while(eat(","));expect(")");
+            }
+            require(args.size()==mutation.parameters.size(),"E_TYPE","mutation arity");expect(";");
+            for(Write write:mutation.writes){
+                List<String> operands=new ArrayList<>();
+                for(Leaf l:v.owner.leaves)operands.add(v.slots.get(l.path).code);
+                for(Expr e:args)operands.add(e.code);
+                String type=v.slots.get(write.path).type;
+                v.slots.put(write.path,snapshot(new Expr(write.helper+"("+String.join(",",operands)+")",type)));
+            }
         }
         private void declaration(){
             String n;if(eat("define")){expect("struct");n=name();}else{expect("type");n=name();expect("=");expect("struct");}
@@ -138,7 +194,9 @@ public final class AttachedStructScalarLowering {
             require(++depth<=64,"E_SOURCE_LIMIT","expression depth");
             try{
                 Expr a=atom(self);
+                int chain=0;
                 while(precedence(op())>=min){
+                    require(++chain<=32,"E_SOURCE_LIMIT","scalar expression chain");
                     String op=op();int prec=precedence(op);at+=op.equals("&&")||op.equals("||")?2:1;
                     Expr b=expr(self,prec+1);require(a.type.equals(b.type),"E_TYPE","mixed scalar operands");
                     boolean arith=Set.of("+","-","*").contains(op),logic=Set.of("&&","||").contains(op),cmp=Set.of("<",">","<=",">=").contains(op);
@@ -157,7 +215,9 @@ public final class AttachedStructScalarLowering {
                 long n;try{n=Long.parseLong(raw);}catch(NumberFormatException ex){throw new IllegalArgumentException("E_TYPE: i64 literal overflow");}
                 at++;return new Expr(Long.toString(n),"int");
             }
-            String root=eat("self")?"self":name();expect(".");String f=name();
+            String root=eat("self")?"self":name();
+            if(self!=null&&!root.equals("self")&&self.containsKey("$arg."+root))return self.get("$arg."+root);
+            expect(".");String f=name();
             Value v=values.get(root);
             if(self==null&&v!=null&&eat("(")){
                 expect(")");Method m=v.owner.methods.get(f);require(m!=null,"E_TYPE","unknown nominal method");
@@ -168,7 +228,7 @@ public final class AttachedStructScalarLowering {
             require(result!=null,"E_TYPE","unknown scalar projection");return result;
         }
         private void binding(){
-            expect("let");String first=name(),n=first;Owner annotation=owners.get(first);if(annotation!=null)n=name();
+            expect("let");boolean mutable=eat("mut");String first=name(),n=first;Owner annotation=owners.get(first);if(annotation!=null)n=name();
             require(!owners.containsKey(n)&&!values.containsKey(n),"E_DUPLICATE","local shadow");
             expect("=");boolean copy=adjacent("copy","!");if(copy)at+=2;
             Owner o;Map<String,Expr> slots=new LinkedHashMap<>();Value old=values.get(word());
@@ -194,14 +254,14 @@ public final class AttachedStructScalarLowering {
                     for(var leaf:args.get(index).slots.entrySet())slots.put(path(i.field,leaf.getKey()),snapshot(leaf.getValue()));
                 }
             }
-            require(annotation==null||annotation==o,"E_TYPE","nominal binding mismatch");expect(";");values.put(n,new Value(o,slots));
+            require(annotation==null||annotation==o,"E_TYPE","nominal binding mismatch");expect(";");values.put(n,new Value(o,slots,mutable));
         }
         String lower(){
             while(word().equals("define")||word().equals("type"))declaration();
             require(!owners.isEmpty(),"E_STRUCT_SYNTAX","attached struct required");
             eat("pub");expect("fnc");expect("main");expect("(");expect(")");
             require(eat(":")||eat("->"),"E_STRUCT_SYNTAX","main return separator");expect("int");expect("{");
-            while(word().equals("let"))binding();
+            while(!word().equals("return")){if(word().equals("let"))binding();else invokeMutation();}
             expect("return");Expr result=expr(null,1);require(result.type.equals("int"),"E_TYPE","main result");expect(";");expect("}");require(tok().type()==EOF,"E_STRUCT_SYNTAX","trailing input");
             return helpers+"pub fnc main(): int {\n"+main+"return "+result.code+";\n}\n";
         }

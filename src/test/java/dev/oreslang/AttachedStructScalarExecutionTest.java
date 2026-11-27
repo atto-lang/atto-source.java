@@ -20,6 +20,37 @@ define struct Rectangle { Point a; Point b; } with {
 pub fnc main():int { let p = Point(1, 2); let q = Point(4, 6); let Rectangle r = Rectangle(p,q); let snapshot = copy! r; return snapshot.area() + p.sum() + q.product() + 3; }
 
 """;
+    private static final String MUTABLE = """
+define struct Point { int x; int y; } with {
+ constructor(int x, int y) { self.x = x; self.y = y; }
+ mut mtd shift(int n):void { self.x = self.x + n; }
+ mtd int • sum() { return self.x + self.y; }
+ mtd int <- product() { return self.x * self.y; }
+ mtd is_origin() -> bool { return self.x == 0 && self.y == 0; }
+}
+define struct Rectangle { Point a; Point b; } with {
+ constructor(Point a, Point b) { self.a = a; self.b = b; }
+ mut mtd shift(int n):void { self.a.x = self.a.x + n; self.b.y = self.b.y + n; }
+ mtd area() -> int { return (self.b.x - self.a.x) * (self.b.y - self.a.y); }
+}
+pub fnc main():int { let mut p = Point(1, 2); let q = Point(4, 6); let mut Rectangle r = Rectangle(p,q); let snapshot = copy! r; p.shift(10); let before = Point(1,2); r.shift(1); return snapshot.area() * 100 + r.area() * 10 + p.sum() + before.sum(); }
+
+""";
+    @Test void mutableNestedSnapshotsExecuteIndependently() {
+        String lowered=AttachedStructScalarLowering.lowerChecked(MUTABLE);
+        assertEquals(lowered,AttachedStructScalarLowering.lowerChecked(MUTABLE));
+        try(Context context=Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()){
+            var result=context.eval(Source.newBuilder(OresLanguage.ID,lowered,"attached-mutable.atto").mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+            assertEquals(1316L,result.asLong());
+        }
+        for(String bad:new String[]{
+            MUTABLE.replace("let mut Rectangle","let Rectangle"),
+            MUTABLE.replace("r.shift(1)","r.shift(true)"),
+            MUTABLE.replace("self.a.x = self.a.x + n","self.a.z = self.a.x + n"),
+            MUTABLE.replace("p.shift(10);","let invalid = p.shift(10);"),
+            MUTABLE.replace("mut mtd shift(int n):void { self.x","mtd shift(int n):void { self.x")
+        })assertThrows(IllegalArgumentException.class,()->AttachedStructScalarLowering.lowerChecked(bad),bad);
+    }
     @Test void actualCheckedJavaGuest() {
         String lowered=AttachedStructScalarLowering.lowerChecked(SOURCE);
         assertEquals(lowered,AttachedStructScalarLowering.lowerChecked(SOURCE));
