@@ -21,6 +21,18 @@ final class LocalNameFirstAsBindingTest {
         }
     }
 
+    @Test void constMutAndValShareTheSameLocalBindingAst() {
+        for (String declaration : new String[]{"int x = 42;", "x : int = 42;",
+                "x as int = 42;", "x = 42;", "List<int> x = [1, 2];"}) {
+            var alias = binding("const mut " + declaration);
+            assertEquals(binding("val " + declaration), alias);
+            assertEquals(Ast.BindingKind.VAL, alias.kind());
+            assertTrue(alias.mutableReferent());
+        }
+        assertEquals(Ast.BindingKind.CONST, binding("const int x = 42;").kind());
+        assertThrows(IllegalArgumentException.class, () -> binding("val mut int x = 42;"));
+    }
+
     @Test void postfixCastStaysAnExpressionNotADeclarationAnnotation() {
         var postfix = binding("const x = 42 as int;");
         assertNull(postfix.declaredType());
