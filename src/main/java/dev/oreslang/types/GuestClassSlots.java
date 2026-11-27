@@ -167,6 +167,19 @@ public final class GuestClassSlots {
                 copy.replace(key, value);
             }
         }
+        /** Snapshot the current independent outer root, not the original
+         * source. Each generation acquires its own descendant lease before
+         * publication, so closing an earlier generation cannot thaw a
+         * referent retained by a later one. The caller still proves guest
+         * ownership, lifetime, and exclusive-loan admission.
+         */
+        public ShallowSnapshot shallowSnapshot(int maxNodes, int maxEdges) {
+            synchronized (copy.domain) {
+                requireOpen();
+                return copy.shallowSnapshot(maxNodes, maxEdges);
+            }
+        }
+
         public int protectedCount() {
             synchronized (copy.domain) {
                 requireOpen();
