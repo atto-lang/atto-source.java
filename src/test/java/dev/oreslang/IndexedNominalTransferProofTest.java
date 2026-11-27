@@ -26,6 +26,16 @@ final class IndexedNominalTransferProofTest {
     @Test void listElementCannotBecomeOwnedArgument() {
         reject("fnc bad(List<Leaf> items): int { return consume(items[0]); }");
     }
+    @Test void borrowedListElementCannotBecomeOwnedReturn() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(TYPES
+                        + "fnc bad(borrow List<Leaf> items): Leaf { return items[0]; }")));
+        assertTrue(error.getMessage().contains("E_BORROW"), error::getMessage);
+    }
+    @Test void scalarReadThroughBorrowRemainsLegal() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
+                + "fnc good(borrow List<int> counts): int { return counts[0]; }")));
+    }
     @Test void scalarAndNonconsumingNestedReadRemainLegal() {
         assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
                 + "fnc good(List<int> counts, List<Leaf> items): int { return counts[0] + items[0].number; }")));
