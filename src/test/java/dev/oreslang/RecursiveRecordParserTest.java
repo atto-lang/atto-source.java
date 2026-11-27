@@ -42,7 +42,8 @@ final class RecursiveRecordParserTest {
         reject("foo('x' = 42)", "E_RECORD_LABEL");
         reject("(\"x\" = 1, x = 2)", "E_DUPLICATE");
         reject("(\"x\" = 1, :x)", "E_DUPLICATE");
-        reject("(\"x\" = 1, \"\\u{78}\" = 2)", "E_DUPLICATE");
+        reject("(\"x\" = 1, \"\\u0078\" = 2)", "E_DUPLICATE");
+        reject("(\"x\" = 1, \"\\u{78}\" = 2)", "invalid Unicode escape");
     }
     @Test void anonymousColonAndEqualsRecordsPreserveAstAndCallArity() {
         assertEquals(parse("{x : 5, y : 6}"), parse("{x = 5, y = 6}"));
