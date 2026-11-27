@@ -1,0 +1,33 @@
+name: Compiler cache key envelope conformance
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/CompilerCacheKey.java'
+      - 'src/test/java/dev/oreslang/compiler/CompilerCacheKeyTest.java'
+      - '.github/workflows/compiler-cache-key.yml'
+permissions:
+  contents: read
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact head and physical tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          git diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          git rev-parse HEAD HEAD^{tree}
+      - name: Compile production compiler and execute cache key tests
+        run: |
+          set -eu
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          mvn -B -Dtest=CompilerCacheKeyTest -Dsurefire.failIfNoSpecifiedTests=true test

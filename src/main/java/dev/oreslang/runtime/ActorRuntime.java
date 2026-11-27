@@ -1123,6 +1123,8 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Linked process exit seals new actor admission without revoking dispatch.
+    private boolean linkedExitSealed; // guarded by runtimeLifecycleLock
     /** Distinct from admission sealing: dispatcher stop must still occur later. */
     private final AtomicBoolean dispatchersShutdown = new AtomicBoolean();
     /**
@@ -2916,8 +2918,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
-                    new OresFuture<>(() -> read.cancel(false));
+                    new OresFuture<>(() -> read.cancel(false), () -> { });
             read.whenCompleteRuntime((envelope, failure) -> {
+                // The private read's cancellation is initiated by result.cancel().
+                // Let that caller publish cancellation only after the channel
+                // arbitration wins. If a read was already committed, cancelling
+                // the outer Future must fail rather than discard its output.
+                if (read.isCancelled()) return;
                 final boolean shutdownWon;
                 synchronized (runtimeLifecycleLock) {
                     // Linearize output observation against admission sealing.
@@ -3234,6 +3241,52 @@ public final class ActorRuntime implements AutoCloseable {
                     && cell.carrierOwnerThread == Thread.currentThread()
                     && cell.activeTurns == 1;
         }
+    }
+
+    // Runtime-only owner proof for state that survives carrier migration.
+    // The cell identity, code generation and active lease all must match.
+    boolean ownsCountedCursorTurn(ContinuationTarget target) {
+        ActorCell<?> cell = target.currentCell(this);
+        if (target.originatingRuntime.get() != this || cell == null
+                || currentActor.get() != cell) return false;
+        synchronized (cell.lifecycleLock) {
+            return !cell.stopped.get() && !cell.finalized
+                    && cell.codeGeneration == target.codeGeneration
+                    && cell.carrierActive && cell.scheduled.get()
+                    && cell.carrierOwnerThread == Thread.currentThread()
+                    && cell.activeTurns == 1;
+        }
+    }
+
+    // Register the active round as an actor-owned Future and queue a
+    // continuation only after its physical notification-drain receipt.
+    // The callback itself carries the receipt. Receipt listeners may run
+    // out of order when added after notificationDrainComplete is published;
+    // do not depend on one listener setting a flag before another enqueues.
+    void ownTrackedCountedRound(ContinuationTarget target, OresFuture<?> round) {
+        Objects.requireNonNull(round);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round lost its actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round denied by actor lifecycle");
+        }
+    }
+
+    void enqueueCountedRoundRetirement(OresFuture<?> round,
+            ContinuationTarget target, Runnable continuation) {
+        Objects.requireNonNull(round);
+        Objects.requireNonNull(continuation);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("counted cursor requires its owning actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) return;
+        round.whenNotificationsDrainedRuntime(() -> target.enqueue(continuation));
     }
 
     public ContinuationTarget captureCurrentContinuationTarget() {
@@ -4697,7 +4750,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireCallerRuntimeAffinity("create a child ActorSupervisor");
         Objects.requireNonNull(parent, "parent");
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (supervisors.get(parent.id()) != parent)
                 throw new IllegalArgumentException(
                         "parent ActorSupervisor belongs to another ActorRuntime");
@@ -6429,7 +6482,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (actorGroups.size() >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
                         "ActorGroup runtime limit exceeded: maximum "
@@ -7165,7 +7218,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -9994,6 +10047,57 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Finite linked-process mailbox drain, not the embedder's general close.
+     * All callbacks/waits run outside admission locks. One deadline bounds
+     * the cohort. A failed drain must not become a successful process exit.
+     */
+    void drainLinkedExit() throws InterruptedException {
+        requireSupervisorContext("drain linked process actors");
+        requireBlockingHostContext("drain linked process actors");
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        final List<ActorCell<?>> snapshot;
+        final List<OresFuture<Void>> drains = new ArrayList<>();
+        final List<Runnable> rejected = new ArrayList<>();
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get() || linkedExitSealed)
+                throw new IllegalStateException("linked exit already sealed");
+            if (!actorGroups.isEmpty() || supervisors.size() != 1)
+                throw new IllegalStateException(
+                        "linked actor drain requires explicit group/supervisor retirement");
+            linkedExitSealed = true;
+            snapshot = List.copyOf(actors.values());
+            for (ActorCell<?> cell : snapshot) {
+                synchronized (cell.lifecycleLock) {
+                    if (cell.finalized || cell.stopped.get()) continue;
+                    cell.sealing = true;
+                    rejected.add(cell.sealAsyncSendAdmission(
+                            new ActorSealedException(cell.ref.id())));
+                    drains.add(cell.drainAcceptedMessages(true));
+                }
+            }
+        }
+        for (Runnable reject : rejected) reject.run();
+        for (ActorCell<?> cell : snapshot) cell.schedule();
+        try {
+            for (OresFuture<Void> drain : drains) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) throw new TimeoutException("linked mailbox drain deadline");
+                drain.get(remaining, TimeUnit.NANOSECONDS);
+            }
+        } catch (ExecutionException | TimeoutException failure) {
+            throw new IllegalStateException("linked mailbox drain incomplete", failure);
+        }
+        // Stop only after EVERY watermark has processed, so structured
+        // parent retirement cannot discard an accepted child message.
+        for (ActorCell<?> cell : snapshot) cell.stop();
+        for (ActorCell<?> cell : snapshot) {
+            cell.awaitFinalized(Math.max(0L, deadline - System.nanoTime()));
+            if (!cell.finalized())
+                throw new IllegalStateException("linked actor carrier retirement incomplete: " + cell.ref.id());
+        }
+    }
+
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
@@ -11913,11 +12017,14 @@ public final class ActorRuntime implements AutoCloseable {
                         // A serial source declaration must be preserved at
                         // runtime; numeric 1/1 admission settings alone are
                         // not a substitute for its receive-only semantics.
-                        if (created.serialReceive()) {
-                            receiveAdmission.close();
-                            receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                        synchronized (lifecycleLock) {
+                            if (created.serialReceive()) {
+                                receiveAdmission.close();
+                                receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                                if (stopped.get()) receiveAdmission.fence();
+                            }
+                            codeActorState = created;
                         }
-                        codeActorState = created;
                     } else {
                         Behavior<M> created = Objects.requireNonNull(
                                 behaviorFactory.create(context),
@@ -12389,6 +12496,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // STOP is single-shot. Reentrant supervisor/host requests must
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
+                receiveAdmission.fence();
                 // Capture only the sealed compiler-owned region. This is a
                 // non-guest STOP fence; do not hold lifecycleLock while
                 // closing the region's loan arbiter.

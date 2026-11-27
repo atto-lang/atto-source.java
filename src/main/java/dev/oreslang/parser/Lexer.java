@@ -19,7 +19,7 @@ public final class Lexer {
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
         KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("ifnot", IFNOT); KEYWORDS.put("unless", UNLESS); KEYWORDS.put("guard", GUARD); KEYWORDS.put("do", DO);
         KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("spawn", SPAWN); KEYWORDS.put("stop", STOP); KEYWORDS.put("done", DONE); KEYWORDS.put("gpu", GPU); KEYWORDS.put("quantum", QUANTUM);
-        KEYWORDS.put("await", AWAIT); KEYWORDS.put("rt", RT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("suspends", SUSPENDS); KEYWORDS.put("generator", GENERATOR); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("trap", TRAP); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("isoactor", ISOACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
+        KEYWORDS.put("await", AWAIT); KEYWORDS.put("rt", RT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("suspends", SUSPENDS); KEYWORDS.put("susp", SUSPENDS); KEYWORDS.put("generator", GENERATOR); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("trap", TRAP); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("isoactor", ISOACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
         KEYWORDS.put("while", WHILE); KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("loop", LOOP); KEYWORDS.put("block", BLOCK); KEYWORDS.put("break", BREAK); KEYWORDS.put("continue", CONTINUE); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("elif", ELSEIF); KEYWORDS.put("switch", SWITCH); KEYWORDS.put("over", OVER); KEYWORDS.put("match", MATCH); KEYWORDS.put("matches", MATCHES); KEYWORDS.put("is", IS); KEYWORDS.put("default", DEFAULT);
         KEYWORDS.put("eq", EQ); KEYWORDS.put("neq", NEQ);
         KEYWORDS.put("nb", NB); KEYWORDS.put("select", SELECT); KEYWORDS.put("readch", READCH); KEYWORDS.put("writech", WRITECH);
@@ -126,19 +126,21 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : match('=') ? COLON_ASSIGN : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE); case '•' -> add(BULLET);
+            case '⧖', '∂' -> add(SUSPENDS);
             case '-' -> add(match('>') ? ARROW : MINUS);
             // AttoLang !eq is a single contiguous inequality token. Use the
             // canonical NEQ token kind so precedence and typed backend lowering
             // are identical to the word 'neq', without a runtime rewrite.
             // A following identifier character prevents prefix tokenization.
+            case '¬' -> add(UNICODE_NOT);
             case '!' -> {
                 if (match('=')) add(BANG_EQUAL); // .ores legacy != remains valid
                 else if (source.startsWith("eq", current)
                         && (current + 2 == source.length()
-                            || !isIdentPart(source.charAt(current + 2)))) {
+                            || !isIdentPart(source.codePointAt(current + 2)))) {
                     advance();
                     advance();
                     add(NEQ);
@@ -151,14 +153,17 @@ public final class Lexer {
                 else if (match('*')) blockComment();
                 else add(SLASH);
             }
-            case ' ', '\t' -> { }
+            case ' ', '\t', '\u000b', '\f' -> { }
             case '\r' -> { match('\n'); newline(); }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
             case '#' -> symbol();
             default -> {
                 if (isDigit(c)) number();
-                else if (isIdentStart(c)) identifier();
+                else if (isIdentStart(source.codePointAt(start))) {
+                    if (Character.isHighSurrogate(c)) advance();
+                    identifier();
+                }
                 else throw error("unexpected character '" + c + "'");
             }
         }
@@ -249,6 +254,7 @@ public final class Lexer {
     }
 
     private void string(char quote) {
+        int tokenLine = line;
         StringBuilder value = new StringBuilder();
         while (!isAtEnd() && peek() != quote) {
             char c = advance();
@@ -271,7 +277,7 @@ public final class Lexer {
         if (isAtEnd()) throw error("unterminated string");
         advance();
         validateDecodedUnicode(value, "string");
-        tokens.add(new Token(STRING, value.toString(), line, startColumn));
+        tokens.add(new Token(STRING, value.toString(), tokenLine, startColumn, quote));
     }
 
     private void validateDecodedUnicode(CharSequence value, String kind) {
@@ -335,9 +341,30 @@ public final class Lexer {
         }
     }
 
+    private static boolean isBangKeyword(String text) {
+        return switch (text) {
+            case "trap", "throw", "raise", "panic", "copy", "take", "move",
+                 "borrow", "share", "pin", "drop", "pipe", "rpipe", "stop", "expand" -> true;
+            default -> false;
+        };
+    }
+
     private void identifier() {
-        while (isIdentPart(peek())) advance();
+        while (!isAtEnd() && isIdentPart(source.codePointAt(current))) {
+            int count = Character.charCount(source.codePointAt(current));
+            for (int i = 0; i < count; i++) advance();
+        }
         String text = source.substring(start, current);
+        // Keep contextual bare identifiers and inequality tokens unchanged.
+        if (isBangKeyword(text)
+                && peek() == '!' && peekNext() != '='
+                && !(source.startsWith("!eq", current)
+                    && (current + 3 == source.length() || !isIdentPart(source.codePointAt(current + 3))))) {
+            int after = current + (text.equals("copy") && peekNext() == '!' ? 2 : 1);
+            if (after >= source.length() || " \t\r\n\u000b\f".indexOf(source.charAt(after)) < 0) {
+                throw error("E_BANG_KEYWORD_WHITESPACE: whitespace required after bang keyword");
+            }
+        }
 
         // Both 'nb' and 'select' are already reserved, so this spelling cannot
         // change the meaning of a legal subtraction expression. Critical and
@@ -346,7 +373,7 @@ public final class Lexer {
         if (text.equals("nb") && source.startsWith("-select", current)
                 && (current + 7 == source.length()
                     || (source.charAt(current + 7) != '-'
-                        && !isIdentPart(source.charAt(current + 7))))) {
+                        && !isIdentPart(source.codePointAt(current + 7))))) {
             add(NB);
             advance(); // ASCII hyphen-minus, U+002D
             int keywordColumn = column;
@@ -361,7 +388,7 @@ public final class Lexer {
                 && peek() == '!' && peekNext() != '='
                 && !(source.startsWith("!eq", current)
                     && (current + 3 == source.length()
-                        || !isIdentPart(source.charAt(current + 3))))) {
+                        || !isIdentPart(source.codePointAt(current + 3))))) {
             advance();
         }
         add(type);
@@ -378,8 +405,8 @@ public final class Lexer {
     private void newline() { line++; column = 1; }
     private void add(Token.Type type) { tokens.add(new Token(type, source.substring(start, current), line, startColumn)); }
     private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
-    private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
-    private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
+    private boolean isIdentStart(int c) { return Character.isLetter(c) || c == '_' || c == 0x3007; }
+    private boolean isIdentPart(int c) { return isIdentStart(c) || (c >= '0' && c <= '9'); }
     private static IllegalArgumentException sourceAdmissionError(
             int line, int column, String message) {
         return new IllegalArgumentException(

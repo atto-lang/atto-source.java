@@ -99,8 +99,8 @@ final class SuspendsContractLanguageTest {
                     let int value = await fetch();
                     return value + 1;
                 }
-                pub fnc main(): void {
-                    stdio.stdout.write(await compute());
+                pub suspends fnc main(): void {
+                    stdio.stdout.write(compute());
                     return;
                 }
                 """;

@@ -183,7 +183,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         boolean checkedI64 = AttoCheckedI64Profile.select(text, codeUnitId);
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
-            program = OresCompiler.parseAndTypeCheck(text);
+            program = OresCompiler.parseAndTypeCheckNumericProfile(text, checkedI64);
         }
         // `use default namespace(n);` names the last n folders of this unit.
         program = dev.oreslang.compiler.PackageLayout.NONE.withEffectiveNamespace(codeUnitId, program);

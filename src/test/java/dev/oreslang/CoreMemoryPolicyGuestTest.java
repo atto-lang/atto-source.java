@@ -62,6 +62,15 @@ final class CoreMemoryPolicyGuestTest {
     }
 
     @Test
+    void allOriginalMemoryPolicyVectorsExecuteAsLinkedAttoGuests() throws Exception {
+        for (String module : new String[] {"mem", "ptr", "atomic"}) {
+            Path fixture = Path.of("tests", "fixtures", "core-memory-policy-v1", module + ".atto");
+            assertTrue(Files.isRegularFile(fixture), fixture.toString());
+            assertEquals(42, linkedGuestExit(Files.readString(fixture), "vectors-" + module), module);
+        }
+    }
+
+    @Test
     void linkedMemAttoCalculatesAlignedSize42() throws Exception {
         assertEquals(42, linkedGuestExit("""
                 import module mem from "atto.core/mem";

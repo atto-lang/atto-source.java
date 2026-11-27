@@ -432,6 +432,7 @@ public final class LinkedProgramRunner {
                             Value entryPoint = parsedUnits.get(entryId);
                             if (entryPoint == null) throw new IllegalStateException("entry unit was not linked: " + entryId);
                             exitStatus = requireExitStatus(entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND));
+                            entryPoint.execute(OresEvalRootNode.LINKED_EXIT_COMMAND);
                         }
                     }
                 }

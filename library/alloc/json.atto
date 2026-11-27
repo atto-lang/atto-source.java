@@ -1,0 +1,46 @@
+// Canonical allocator-backed JSON ABI. These bodies are fail-closed stubs:
+// the JVM backend binds only the compiler-owned linked library identity.
+// No host Map, reflective constructor, or mutable reference is exposed.
+pub define class JsonValue as
+  pub constructor() {
+    rt fail("JsonValue is opaque");
+  }
+  pub get(string key): Option<JsonValue> {
+    rt fail("JSON guest lowering unavailable");
+    return None;
+  }
+  pub at(int index): Option<JsonValue> {
+    rt fail("JSON guest lowering unavailable");
+    return None;
+  }
+  pub as_string(): Option<string> {
+    rt fail("JSON guest lowering unavailable");
+    return None;
+  }
+  pub as_int(): Option<int> {
+    rt fail("JSON guest lowering unavailable");
+    return None;
+  }
+  pub as_bool(): Option<bool> {
+    rt fail("JSON guest lowering unavailable");
+    return None;
+  }
+  pub is_null(): bool {
+    rt fail("JSON guest lowering unavailable");
+    return false;
+  }
+end
+
+pub define class Json as
+  pub constructor() {
+    rt fail("Json is a factory namespace");
+  }
+  pub static fnc parse(string source): JsonValue {
+    rt fail("JSON guest lowering unavailable");
+    return new JsonValue();
+  }
+  pub static fnc stringify(borrow JsonValue value): string {
+    rt fail("JSON guest lowering unavailable");
+    return "";
+  }
+end

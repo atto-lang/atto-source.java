@@ -62,9 +62,10 @@ public final class AttoInlineTaskV2Compiler {
     private interface Stmt {}
     private record Binding(String name, Expr value) implements Stmt {}
     private record InlineVoid(Block body) implements Stmt {}
+    private record Cooperate() implements Stmt {}
     private record ReturnStmt(Expr value) implements Stmt {}
     private record Block(List<Stmt> statements) {}
-    public enum MirOp { INLINE_TASK_ENTER, INLINE_TASK_EXIT, SCALAR_BIND, CHECKED_ARITHMETIC, RETURN_INLINE, RETURN_MAIN }
+    public enum MirOp { INLINE_TASK_ENTER, INLINE_TASK_EXIT, INLINE_COOPERATE, SCALAR_BIND, CHECKED_ARITHMETIC, RETURN_INLINE, RETURN_MAIN }
     public record Plan(String javaSource, List<MirOp> typedOps) {
         public Plan { typedOps = List.copyOf(typedOps); }
     }
@@ -154,6 +155,9 @@ public final class AttoInlineTaskV2Compiler {
                 } else if (is("sync")) {
                     // Bare inline expressions cannot stand as statements.
                     throw reject("E_SYNTAX");
+                } else if (is("rt") && depth > 0) {
+                    expect("rt"); expect("cooperate"); expect(";");
+                    list.add(new Cooperate());
                 } else if (is("await") || is("using") || is("defer")
                     || is("task") || is("spawn") || is("critical")
                     || is("while") || is("for") || is("if") || is("let")) {
@@ -292,6 +296,11 @@ public final class AttoInlineTaskV2Compiler {
                     block(task.body(), new Scope(scope), indent + 1, innerLabel, null, true);
                     ops.add(MirOp.INLINE_TASK_EXIT);
                     line(indent, "}");
+                } else if (statement instanceof Cooperate) {
+                    // Standalone root profile: offer the OS time slice, then
+                    // continue on the same Java thread with no scheduled child.
+                    line(indent, "java.lang.Thread.yield();");
+                    ops.add(MirOp.INLINE_COOPERATE);
                 } else if (statement instanceof ReturnStmt ret) {
                     if (voidBlock) {
                         if (ret.value() != null) throw reject("E_TASK_RETURN_TYPE");

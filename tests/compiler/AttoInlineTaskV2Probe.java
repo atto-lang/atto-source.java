@@ -54,6 +54,11 @@ public final class AttoInlineTaskV2Probe {
 
         accept(main("do sync task {}; return 42;"));
         accept(main("do sync task<void> { return; }; return 42;"));
+        var cooperating = accept(main("return sync task<int> { rt cooperate; return 42; };"));
+        if (!cooperating.typedOps().contains(AttoInlineTaskV2Compiler.MirOp.INLINE_COOPERATE)
+                || !cooperating.javaSource().contains("java.lang.Thread.yield();")) {
+            throw new AssertionError("inline cooperation must yield and continue on its caller thread");
+        }
         accept(main("val answer = sync task<int> { return 42; }; return answer;"));
         accept(main("val int answer = sync task<int> { val n = 40; return n + 2; }; return answer;"));
         accept(main("val x = sync task { val a = 40; val b = 2; return a + b; }; return x;"));
@@ -175,7 +180,7 @@ public final class AttoInlineTaskV2Probe {
         // The public compiler still reports its exact lexical rejection.
         rejectIntegratedLexical(commentGap);
         rejectIntegratedLexical(hyphenGap);
-        if (positives != 20 || negatives != 116)
+        if (positives != 21 || negatives != 116)
             throw new AssertionError("inline hardened keyword/grammar probes omitted");
         System.out.println("ATTO_INLINE_V2_PASS positives=" + positives + " negatives=" + negatives);
     }
