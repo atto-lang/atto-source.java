@@ -2039,7 +2039,7 @@ public final class Parser {
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
-            Modifiers mods = parseModifiers();
+            Modifiers mods = parseModifiers(true);
             if (match(DEFINE)) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
@@ -3042,7 +3042,9 @@ public final class Parser {
         return result;
     }
 
-    private Modifiers parseModifiers() {
+    private Modifiers parseModifiers() { return parseModifiers(false); }
+
+    private Modifiers parseModifiers(boolean actorBareCriticalAstOnly) {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean suspends = false;
@@ -3076,6 +3078,14 @@ public final class Parser {
             // A method literally named critical(...) is left to the normal
             // callable-name path during migration.
             if (isContextualIdentifier("critical") && !checkNext(LPAREN)) {
+                // The narrow actor-local legacy AST lane retains the critical
+                // bit for checked rejection. Never enable the generic modifier,
+                // return-first signatures, or critical-read/write here.
+                if (actorBareCriticalAstOnly && checkNext(IDENT)
+                        && current + 2 < tokens.size()
+                        && tokens.get(current + 2).type() == LPAREN
+                        && !isAdjacentCompoundKeyword("critical", "read")
+                        && !isAdjacentCompoundKeyword("critical", "write")) break;
                 if (suspends || checkNext(SUSPENDS)) {
                     throw error(peek(), "E_CALLABLE_MODIFIERS: critical suspends callable is forbidden");
                 }
