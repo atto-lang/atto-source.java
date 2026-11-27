@@ -4739,6 +4739,9 @@ public final class Parser {
                     throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'");
                 }
                 List<Ast.Stmt> body = parseBlock();
+                if (canonicalAttoSource && explicitDo && mode == Ast.WaitMode.BLOCKING) {
+                    body = normalizeTerminalVoidDispatchArm(body, "do select");
+                }
                 arms.add(new Ast.SelectArm(
                         operation,
                         channel,
@@ -4766,6 +4769,9 @@ public final class Parser {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
                 List<Ast.Stmt> body = parseBlock();
+                if (canonicalAttoSource && explicitDo && mode == Ast.WaitMode.BLOCKING) {
+                    body = normalizeTerminalVoidDispatchArm(body, "do select");
+                }
                 arms.add(new Ast.SelectArm(
                         Ast.ChannelOperation.DEFAULT,
                         null,
@@ -6102,7 +6108,7 @@ public final class Parser {
                 throw error(peek(), "match arms in 'over ... end' use '->'");
             }
             List<Ast.Stmt> body = parseBlock();
-            if (canonicalAttoSource && procedural) body = normalizeTerminalVoidMatchArm(body);
+            if (canonicalAttoSource && procedural) body = normalizeTerminalVoidDispatchArm(body, "do match");
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
         if (braced) consume(RBRACE, "expected '}' to close braced match");
@@ -6305,16 +6311,16 @@ public final class Parser {
      * Earlier/nested exits need a dedicated ownership CFG join and are rejected,
      * never silently interpreted as enclosing callable returns.
      */
-    private List<Ast.Stmt> normalizeTerminalVoidMatchArm(List<Ast.Stmt> body) {
+    private List<Ast.Stmt> normalizeTerminalVoidDispatchArm(List<Ast.Stmt> body, String construct) {
         List<Ast.Stmt> prefix = body;
         if (!body.isEmpty() && body.getLast() instanceof Ast.ReturnStmt returned) {
             if (returned.value() != null) {
-                throw error(previous(), "do match arm must return void");
+                throw error(previous(), construct + " arm must return void");
             }
             prefix = body.subList(0, body.size() - 1);
         }
         if (valueArmPrefixContainsReturn(prefix)) {
-            throw error(previous(), "do match early or nested arm return requires ownership CFG lowering");
+            throw error(previous(), construct + " early or nested arm return requires ownership CFG lowering");
         }
         return List.copyOf(prefix);
     }
