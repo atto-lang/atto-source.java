@@ -182,8 +182,9 @@ public final class ActorNativeArena implements AutoCloseable {
         this.admissionOpen = Objects.requireNonNull(admissionOpen);
     }
 
-    /** Seal fresh allocations/loans; existing owner turns may still unwind. */
-    public synchronized void retire() { retired = true; }
+    /** CONTROL-only retirement authority; not a guest-accessible operation.
+     * Existing actor turns and off-carrier loans may still unwind. */
+    synchronized void retire() { retired = true; }
 
     public synchronized boolean hasOutstandingLoans() {
         return readLeaseCount != 0 || lifetimePins != 0;
@@ -1501,6 +1502,11 @@ public final class ActorNativeArena implements AutoCloseable {
      */
     @Override public synchronized void close() {
         if (cleanupComplete) return;
+        // An actor (or a holder of its host storage facade) must not be able to
+        // free live guest bytes before ActorCell's physical STOP barrier.
+        // Only trusted runtime CONTROL can call package-private retire().
+        if (!retired)
+            throw new IllegalStateException("native arena close requires runtime retirement");
         if (cleanupInProgress) throw new IllegalStateException("recursive native arena cleanup");
         if (hasOutstandingLoans())
             throw new IllegalStateException("actor native arena has outstanding lifetime loans");
