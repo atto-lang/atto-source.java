@@ -7507,7 +7507,21 @@ public final class Parser {
             throw error(previous(),
                     "Oreslang does not use '&' for borrowing (unary pointer syntax is not supported); use 'rt borrow value'");
         }
-        if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(AWAIT)) {
+            Ast.Expr operand = parseUnary();
+            // First direct callable-await slice: a closed zero-argument
+            // integer lambda, invoked through ordinary checked call lowering.
+            // Keep the outer await for effect checking and the existing int
+            // identity path. Do not flatten callable-returned Futures or
+            // grant suspension authority to a synchronous closure.
+            if (operand instanceof Ast.LambdaExpr lambda
+                    && lambda.parameters().isEmpty()
+                    && lambda.expressionBody() != null
+                    && isCountedScalarProjection(lambda.expressionBody(), "")) {
+                operand = new Ast.CallExpr(lambda, List.of());
+            }
+            return new Ast.AwaitExpr(operand);
+        }
 
         // task is contextual: task(...) and identifiers named task remain legal.
         if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
