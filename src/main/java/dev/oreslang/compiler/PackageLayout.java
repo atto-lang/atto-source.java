@@ -35,11 +35,17 @@ public record PackageLayout(Map<String, String> packageRoots) {
 
     public PackageLayout {
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
+        java.util.HashSet<String> packageNames = new java.util.HashSet<>();
         for (Map.Entry<String, String> entry : packageRoots.entrySet()) {
             String root = normalizeRoot(entry.getKey());
             String name = entry.getValue();
             if (name == null || !Pattern.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*", name)) {
                 throw new IllegalArgumentException("invalid package name '" + name + "'");
+            }
+            // This legacy API supplies names, not pinned package-instance IDs.
+            // Never collapse two distinct roots into the same visibility/cache domain.
+            if (!packageNames.add(name)) {
+                throw new IllegalArgumentException("ambiguous package instance for name '" + name + "'");
             }
             if (normalized.putIfAbsent(root, name) != null) {
                 throw new IllegalArgumentException("duplicate package root '" + root + "'");

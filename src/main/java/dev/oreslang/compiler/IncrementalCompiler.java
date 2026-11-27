@@ -7,12 +7,9 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -42,7 +39,8 @@ public final class IncrementalCompiler {
     private final Map<String, List<ImportBinding>> importBindingCache = new LinkedHashMap<>();
     private final Map<String, List<ImportBinding>> strictAttoImportBindingCache = new LinkedHashMap<>();
     private record ImportBinding(Ast.ImportDecl declaration, String resolvedTarget) { }
-    private PackageLayout layout = PackageLayout.NONE;
+    private PackageLayout legacyLayout = PackageLayout.NONE;
+    private PackageLayout strictLayout = PackageLayout.NONE;
 
     // Raw AST is the input to semantic analysis (which expands annotations
     // itself). The expanded AST is used for graph linking and ABI indexing.
@@ -58,7 +56,7 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
-        return compileWithProfile(sources, importResolutions, false);
+        return compileWithProfile(sources, importResolutions, false, PackageLayout.NONE);
     }
 
     /**
@@ -70,13 +68,7 @@ public final class IncrementalCompiler {
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions,
             PackageLayout packageLayout) {
-        if (packageLayout == null) throw new IllegalArgumentException("package layout cannot be null");
-        if (!packageLayout.equals(layout)) {
-            // Namespace and package identity are part of every checked unit.
-            clear();
-            layout = packageLayout;
-        }
-        return compileWithProfile(sources, importResolutions, false);
+        return compileWithProfile(sources, importResolutions, false, packageLayout);
     }
 
     /**
@@ -91,13 +83,23 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compileStrictAtto(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
-        return compileWithProfile(sources, importResolutions, true);
+        return compileWithProfile(sources, importResolutions, true, PackageLayout.NONE);
+    }
+
+    /** Strict package-aware admission uses an explicit layout, never ambient legacy state. */
+    public synchronized BuildResult compileStrictAtto(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            PackageLayout packageLayout) {
+        return compileWithProfile(sources, importResolutions, true, packageLayout);
     }
 
     private BuildResult compileWithProfile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions,
-            boolean strictAtto) {
+            boolean strictAtto,
+            PackageLayout layout) {
+        if (layout == null) throw new IllegalArgumentException("package layout cannot be null");
         if (sources == null) throw new IllegalArgumentException("sources cannot be null");
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
         Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
@@ -105,12 +107,16 @@ public final class IncrementalCompiler {
                 strictAtto ? strictAttoParsedCache : parsedCache;
         Map<String, List<ImportBinding>> selectedBindingCache =
                 strictAtto ? strictAttoImportBindingCache : importBindingCache;
+        boolean sameLayout = layout.equals(strictAtto ? strictLayout : legacyLayout);
+        // Layout changes cannot reuse old ASTs or checked units, but retain the
+        // committed snapshot until the new layout passes all admission checks.
         if (sources.isEmpty()) {
             // The input map is a complete source snapshot, including removals.
             // A later re-add must not reuse a checked result for deleted files.
             selectedCache.clear();
             selectedParsedCache.clear();
             selectedBindingCache.clear();
+            if (strictAtto) strictLayout = layout; else legacyLayout = layout;
             return new BuildResult(Map.of(), Set.of(), Set.of(), List.of(), Set.of());
         }
 
@@ -135,7 +141,7 @@ public final class IncrementalCompiler {
             String id = entry.getKey();
             String sourceDigest = digest(entry.getValue());
             hashes.put(id, sourceDigest);
-            ParsedUnit previous = selectedParsedCache.get(id);
+            ParsedUnit previous = sameLayout ? selectedParsedCache.get(id) : null;
             ParsedUnit unit;
             if (previous != null && previous.sourceDigest().equals(sourceDigest)) {
                 unit = previous;
@@ -212,7 +218,7 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
-            CompiledUnit previous = selectedCache.get(id);
+            CompiledUnit previous = sameLayout ? selectedCache.get(id) : null;
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
             boolean bindingsChanged = previous == null
@@ -250,7 +256,7 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> reused = new LinkedHashSet<>();
 
         for (String id : normalized.keySet()) {
-            if (!dirty.contains(id) && selectedCache.containsKey(id)) {
+            if (sameLayout && !dirty.contains(id) && selectedCache.containsKey(id)) {
                 next.put(id, selectedCache.get(id));
                 reused.add(id);
                 continue;
@@ -311,6 +317,7 @@ public final class IncrementalCompiler {
         selectedParsedCache.putAll(stagedParsed);
         selectedBindingCache.clear();
         selectedBindingCache.putAll(resolvedBindings);
+        if (strictAtto) strictLayout = layout; else legacyLayout = layout;
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
@@ -547,6 +554,8 @@ public final class IncrementalCompiler {
         strictAttoParsedCache.clear();
         importBindingCache.clear();
         strictAttoImportBindingCache.clear();
+        legacyLayout = PackageLayout.NONE;
+        strictLayout = PackageLayout.NONE;
     }
 
     /**
@@ -1132,12 +1141,7 @@ public final class IncrementalCompiler {
     }
 
     private static String digest(String source) {
-        try {
-            byte[] hash = MessageDigest.getInstance("SHA-256").digest(source.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash);
-        } catch (Exception impossible) {
-            throw new IllegalStateException(impossible);
-        }
+        return NamespaceArtifactIdentity.sourceDigest(source);
     }
 
     public record CompiledUnit(
@@ -1165,37 +1169,40 @@ public final class IncrementalCompiler {
          * digests in unit order. An importer of a namespace needs re-checking
          * only when this digest changes.
          */
+        public Map<NamespaceArtifactIdentity.Key, String> structuredNamespaceInterfaces() {
+            Map<NamespaceArtifactIdentity.Key, Map<String, String>> grouped = new java.util.TreeMap<>();
+            for (CompiledUnit unit : units.values()) {
+                var key = new NamespaceArtifactIdentity.Key(unit.packageId(), unit.namespace());
+                grouped.computeIfAbsent(key, ignored -> new java.util.TreeMap<>())
+                        .put(unit.unitId(), unit.abiDigest());
+            }
+            Map<NamespaceArtifactIdentity.Key, String> out = new LinkedHashMap<>();
+            grouped.forEach((key, members) -> out.put(key, NamespaceArtifactIdentity.namespaceInterface(key, members)));
+            return Map.copyOf(out);
+        }
+
         public Map<String, String> namespaceInterfaces() {
-            java.util.TreeMap<String, StringBuilder> grouped = new java.util.TreeMap<>();
-            for (CompiledUnit unit : new java.util.TreeMap<>(units).values()) {
-                String key = unit.packageId() + "#" + (unit.namespace() == null ? "" : unit.namespace());
-                grouped.computeIfAbsent(key, ignored -> new StringBuilder())
-                        .append(unit.unitId()).append('=').append(unit.abiDigest()).append('\n');
-            }
-            LinkedHashMap<String, String> out = new LinkedHashMap<>();
-            grouped.forEach((key, text) -> out.put(key, digest(text.toString())));
+            Map<String, String> out = new LinkedHashMap<>();
+            structuredNamespaceInterfaces().forEach((key, value) -> out.put(key.displayKey(), value));
             return Map.copyOf(out);
         }
 
-        /** Interface digest per package, over its namespaces' interface digests. */
+        /** Interface digest per package, over structured namespace identities. */
         public Map<String, String> packageInterfaces() {
-            java.util.TreeMap<String, StringBuilder> grouped = new java.util.TreeMap<>();
-            for (Map.Entry<String, String> ns : new java.util.TreeMap<>(namespaceInterfaces()).entrySet()) {
-                String pkg = ns.getKey().substring(0, ns.getKey().indexOf('#'));
-                grouped.computeIfAbsent(pkg, ignored -> new StringBuilder())
-                        .append(ns.getKey()).append('=').append(ns.getValue()).append('\n');
-            }
-            LinkedHashMap<String, String> out = new LinkedHashMap<>();
-            grouped.forEach((key, text) -> out.put(key, digest(text.toString())));
+            Map<String, Map<NamespaceArtifactIdentity.Key, String>> grouped = new java.util.TreeMap<>();
+            structuredNamespaceInterfaces().forEach((key, value) ->
+                    grouped.computeIfAbsent(key.packageId(), ignored -> new java.util.TreeMap<>()).put(key, value));
+            Map<String, String> out = new LinkedHashMap<>();
+            grouped.forEach((pkg, members) -> out.put(pkg, NamespaceArtifactIdentity.packageInterface(pkg, members)));
             return Map.copyOf(out);
         }
 
-        /** (package#namespace) groups that contain a re-checked unit. */
+        /** (package#namespace) display groups that contain a re-checked unit. */
         public Set<String> rebuiltNamespaces() {
             LinkedHashSet<String> out = new LinkedHashSet<>();
             for (String id : rebuiltUnits) {
                 CompiledUnit unit = units.get(id);
-                if (unit != null) out.add(unit.packageId() + "#" + (unit.namespace() == null ? "" : unit.namespace()));
+                if (unit != null) out.add(new NamespaceArtifactIdentity.Key(unit.packageId(), unit.namespace()).displayKey());
             }
             return Set.copyOf(out);
         }
