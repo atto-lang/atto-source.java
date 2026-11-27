@@ -2824,6 +2824,17 @@ public final class OwnershipChecker {
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && importedFncs.contains(name.name())
+                    && !functions.containsKey(name.name())
+                    && !functions.containsKey(dev.oreslang.parser.Parser.ROOT_MODULE + "." + name.name())) {
+                // Apply the same conservative cross-unit lifetime gate as
+                // imports::, even when the typechecker knows the signature.
+                return checkCall(call.rewrite(
+                                new Ast.MemberExpr(new Ast.NameExpr(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE), name.name()),
+                                call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                        scope);
+            }
         }
 
         if (call.callee() instanceof Ast.MemberExpr qualified

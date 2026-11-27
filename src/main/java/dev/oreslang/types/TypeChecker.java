@@ -4849,6 +4849,28 @@ public final class TypeChecker {
                     return trappedCallableResult(target.trapped(), target.async(), target.suspends(), target.generator(), result);
                 }
             }
+            // A uniquely linked, concrete named import can be invoked
+            // directly when no lexical/local callable family owns the name.
+            // Reuse the explicit-import type/effect path, not a local AOT slot
+            // or an opaque first-class callable. Actor calls remain explicit.
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr importedName
+                    && env.lookup(importedName.name()) == null
+                    && !functions.containsKey(importedName.name())
+                    && !functions.containsKey(Parser.ROOT_MODULE + "." + importedName.name())
+                    && linkedImportCallables.contains(importedName.name())) {
+                int arity = fixedCallArity(call.arguments(), env, generics, self,
+                        "imported function " + importedName.name());
+                if (findQualifiedFunction(Parser.IMPORTS_NAMESPACE + "." + importedName.name(), arity) == null) {
+                    throw new IllegalArgumentException("imported function '" + importedName.name()
+                            + "' has no matching arity");
+                }
+                return typeOf(call.rewrite(
+                                new Ast.MemberExpr(new Ast.NameExpr(Parser.IMPORTS_NAMESPACE), importedName.name()),
+                                call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                        env, generics, self);
+            }
             // Primitive display is explicit, deterministic, and not a host
             // Object.toString() escape hatch. Declared user functions win at
             // their exact arity; custom classes must call their own method.
