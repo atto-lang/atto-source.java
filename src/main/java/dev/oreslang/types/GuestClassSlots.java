@@ -46,13 +46,13 @@ public final class GuestClassSlots {
      */
     public static final class GraphLease implements AutoCloseable {
         private final Domain domain;
-        private final List<GuestClassSlots> protectedStores;
+        private List<GuestClassSlots> protectedStores;
         private boolean released;
         private GraphLease(Domain domain, List<GuestClassSlots> stores) {
             this.domain = domain;
             this.protectedStores = stores;
         }
-        public int protectedCount() { return protectedStores.size(); }
+        public int protectedCount() { synchronized (domain) { return protectedStores.size(); } }
         @Override public void close() {
             synchronized (domain) {
                 if (released) throw stale();
@@ -110,6 +110,7 @@ public final class GuestClassSlots {
             int edges = enqueueChildren(this, pending, 0, maxEdges);
             while (!pending.isEmpty()) {
                 GuestClassSlots store = pending.removeFirst();
+                if (store.domain != domain) throw new IllegalArgumentException("E_COPY_DOMAIN: foreign class slot store");
                 // Diagnose a forbidden source back-edge before charging it as
                 // a descendant or scanning its already-visited root slots.
                 if (rejectRootBackEdge && (store == this || store.activeSnapshots != 0 || store.snapshotRoot)) {
@@ -117,7 +118,6 @@ public final class GuestClassSlots {
                 }
                 if (seen.put(store, Boolean.TRUE) != null) continue;
                 if (ordered.size() >= maxNodes) throw new IllegalArgumentException("E_COPY_BUDGET: graph node limit");
-                if (store.domain != domain) throw new IllegalArgumentException("E_COPY_DOMAIN: foreign class slot store");
                 store.checkRetain();
                 ordered.add(store);
                 edges = enqueueChildren(store, pending, edges, maxEdges);
@@ -135,14 +135,15 @@ public final class GuestClassSlots {
 
     /** Scoped root snapshot for trusted runtime callers. The parent and
      * copy slots are independent, while retained descendants stay protected.
-     * This first profile holds the complete lease until close; it does not
-     * yet detach individual graph edges or admit guest escapes.
+     * Generic replacement holds the complete lease until close. Explicit
+     * fresh-slot detachment can retire unreachable nodes when the trusted
+     * caller proves no escaping read handles or untracked aliases.
      */
     public static final class ShallowSnapshot implements AutoCloseable {
         private final GuestClassSlots copy;
         private final GraphLease lease;
         private final GuestClassSlots source;
-        private final IdentityHashMap<GuestClassSlots, Boolean> retained;
+        private IdentityHashMap<GuestClassSlots, Boolean> retained;
         private final int maxNodes;
         private final int maxEdges;
         private boolean closed;
@@ -212,6 +213,77 @@ public final class GuestClassSlots {
                 copy.replace(key, value);
             }
         }
+        /**
+         * Trusted, proof-gated copy-side detachment. The caller must establish
+         * writable slot type, no surviving untracked read aliases, and that
+         * future reattachment follows the ordinary ownership rules. Only
+         * fresh scalar-backed class storage is constructed by this operation.
+         * Unlike generic replace(), it can retire this snapshot's own loans.
+         */
+        public GuestClassSlots replaceWithFresh(String key, Map<String, Object> values) {
+            // Stable ordinary map supplied by trusted runtime code. No caller
+            // map methods are invoked under the domain monitor.
+            if (values.size() > maxEdges) throw new IllegalArgumentException("E_COPY_BUDGET: fresh fields");
+            var initial = new LinkedHashMap<>(values);
+            if (initial.size() > maxEdges) throw new IllegalArgumentException("E_COPY_BUDGET: fresh fields");
+            for (var e : initial.entrySet()) {
+                if (e.getKey() == null ||
+                    (e.getValue() != null && !CopyScalarAdmission.isImmutableScalar(e.getValue()))) {
+                    throw new IllegalArgumentException("E_COPY_UNPROVEN: non-scalar fresh field");
+                }
+            }
+            synchronized (copy.domain) {
+                requireOpen();
+                if (copy.readOnlyLoans != 0) throw new IllegalArgumentException("E_COPY_READONLY: shared class referent");
+                if (!copy.slots.containsKey(key)) throw new IllegalArgumentException("E_COPY_LAYOUT: unknown class slot");
+                var fresh = new GuestClassSlots(copy.domain, initial);
+                fresh.finishInitialization();
+                var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
+                var pending = new ArrayDeque<GuestClassSlots>();
+                int edges = 0;
+                for (var e : copy.slots.entrySet()) {
+                    if (edges >= maxEdges) throw new IllegalArgumentException("E_COPY_BUDGET: graph edge limit");
+                    edges++;
+                    Object value = Objects.equals(e.getKey(), key) ? fresh : e.getValue();
+                    if (value instanceof GuestClassSlots child) pending.addLast(child);
+                    else if (value != null && !CopyScalarAdmission.isImmutableScalar(value)) {
+                        throw new IllegalArgumentException("E_COPY_UNPROVEN: unsupported graph payload");
+                    }
+                }
+                while (!pending.isEmpty()) {
+                    GuestClassSlots store = pending.removeFirst();
+                    if (store.domain != copy.domain) throw new IllegalArgumentException("E_COPY_DOMAIN: foreign class slot store");
+                    if (seen.put(store, Boolean.TRUE) != null) continue;
+                    if (seen.size() > maxNodes) throw new IllegalArgumentException("E_COPY_BUDGET: graph node limit");
+                    if (store.initializing) throw new IllegalStateException("E_COPY_LAYOUT: unpublished class");
+                    if (store == source || store == copy || store.snapshotRoot || store.activeSnapshots != 0) {
+                        throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: detachment reaches a snapshot root");
+                    }
+                    edges = enqueueChildren(store, pending, edges, maxEdges);
+                }
+                var nextRetained = new IdentityHashMap<GuestClassSlots, Boolean>();
+                var kept = new ArrayList<GuestClassSlots>();
+                var retired = new ArrayList<GuestClassSlots>();
+                for (GuestClassSlots store : lease.protectedStores) {
+                    if (store.readOnlyLoans <= 0) throw stale();
+                    if (seen.containsKey(store)) {
+                        kept.add(store);
+                        nextRetained.put(store, Boolean.TRUE);
+                    } else {
+                        retired.add(store);
+                    }
+                }
+                List<GuestClassSlots> next = List.copyOf(kept);
+                // All checks and allocations above; publish the slot and retire
+                // only this token's unreachable nodes under the same monitor.
+                copy.slots.put(key, fresh);
+                for (int i = 0; i < retired.size(); i++) retired.get(i).readOnlyLoans--;
+                lease.protectedStores = next;
+                retained = nextRetained;
+                return fresh;
+            }
+        }
+
         /** Independent descendant retention; no reuse of the parent's lease. */
         public ShallowSnapshot shallowSnapshot(int maxNodes, int maxEdges) {
             synchronized (copy.domain) {
