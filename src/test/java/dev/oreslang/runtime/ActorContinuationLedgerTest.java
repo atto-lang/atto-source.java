@@ -342,4 +342,9 @@ final class ActorContinuationLedgerTest {
         }
     }
 
+    @Test
+    void sixtyFourIndependentOwnersSettleWithoutCrossOwnerCreditRefund() throws Exception {
+        SettlementProbe.main(new String[0]);
+    }
+
 }
