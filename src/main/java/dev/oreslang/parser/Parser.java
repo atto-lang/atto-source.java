@@ -2034,6 +2034,16 @@ public final class Parser {
             if (match(DEFINE)) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
+            if (isContextualIdentifier("init") && checkNext(LBRACE)) {
+                Token site = peek();
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.suspends || mods.generator || mods.isStatic || mods.isAbstract
+                        || mods.shared || mods.untrusted || mods.structural
+                        || mods.nonLexical || mods.trapped)
+                    throw error(site, "E_SPAWN_INIT_SCHEMA: init schema cannot have modifiers or annotations");
+                parseActorInitSchema();
+                throw error(site, "E_SPAWN_INIT_SCHEMA_UNSUPPORTED: compiler-authenticated startup schema lowering is not implemented");
+            }
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
                 if (declaredSealedState)
                     throw error(peek(), "duplicate sealed actor state container");
@@ -8460,11 +8470,68 @@ public final class Parser {
         return List.copyOf(args);
     }
 
-    // Syntax-only representation: cannot enter executable Ast.Expr visitors.
-    // Ordered lists preserve source evaluation order for future typed lowering.
-    private record SpawnOptionEntry(String key, Ast.Expr value) { }
-    private record SpawnOptionSection(String name, List<SpawnOptionEntry> entries) {
-        private SpawnOptionSection { entries = List.copyOf(entries); }
+    // Non-executable syntax representation. Ordered values retain source order.
+    // This deliberately is not Ast.Expr until all executable visitors are gated.
+    public record SpawnOptionEntry(String key, Ast.Expr value) { }
+    public record SpawnOptionSection(String name, List<SpawnOptionEntry> entries) {
+        public SpawnOptionSection { entries = List.copyOf(entries); }
+    }
+    public record GroupedSpawnSyntax(Ast.TypeRef actorType, List<Ast.Expr> arguments,
+                                     List<SpawnOptionSection> sections, boolean awaited) {
+        public GroupedSpawnSyntax {
+            arguments = List.copyOf(arguments);
+            sections = List.copyOf(sections);
+        }
+    }
+    public record ActorInitField(String name, Ast.TypeRef type) { }
+
+    /** Isolated compiler analysis entry point; cannot emit an executable program. */
+    public static GroupedSpawnSyntax parseGroupedSpawnPreview(String source) {
+        Parser p = new Parser(new Lexer(source).scan());
+        boolean awaited = p.match(AWAIT);
+        p.consume(SPAWN, "expected spawn");
+        Ast.TypeRef actor = p.parseTypeRef();
+        p.consume(LPAREN, "expected '(' after actor type");
+        List<Ast.Expr> args = p.parseArgumentsUntil(RPAREN);
+        p.consume(RPAREN, "expected ')' after actor spawn arguments");
+        if (!p.isContextualIdentifier("with") || !p.checkNext(LBRACE))
+            throw p.error(p.peek(), "expected grouped spawn with block");
+        List<SpawnOptionSection> sections = p.parseGroupedSpawnOptions();
+        p.match(SEMICOLON);
+        p.consume(EOF, "expected end of grouped spawn preview");
+        return new GroupedSpawnSyntax(actor, args, sections, awaited);
+    }
+
+    /** Analysis-only scalar init schema fragment. Not an admitted declaration. */
+    public static List<ActorInitField> parseActorInitSchemaPreview(String source) {
+        Parser p = new Parser(new Lexer(source).scan());
+        List<ActorInitField> fields = p.parseActorInitSchema();
+        p.consume(EOF, "expected end of actor init schema");
+        return fields;
+    }
+
+    private List<ActorInitField> parseActorInitSchema() {
+        if (!isContextualIdentifier("init"))
+            throw error(peek(), "expected actor init schema");
+        advance();
+        consume(LBRACE, "expected '{' after actor init");
+        List<ActorInitField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            if (fields.size() >= 64)
+                throw error(peek(), "E_SPAWN_INIT_SCHEMA: exceeds 64-field bound");
+            Ast.TypeRef type = parseTypeRef();
+            if (type.inferArguments() || !type.arguments().isEmpty()
+                    || !List.of("int", "bool", "string").contains(type.name()))
+                throw error(previous(), "E_SPAWN_INIT_TYPE: scalar int/bool/string required");
+            Token name = consume(IDENT, "expected actor init field name");
+            if (!names.add(name.lexeme()))
+                throw error(name, "E_SPAWN_INIT_SCHEMA: duplicate init field");
+            consume(SEMICOLON, "expected ';' after actor init field");
+            fields.add(new ActorInitField(name.lexeme(), type));
+        }
+        consume(RBRACE, "expected '}' after actor init schema");
+        return List.copyOf(fields);
     }
 
     private List<SpawnOptionSection> parseGroupedSpawnOptions() {
