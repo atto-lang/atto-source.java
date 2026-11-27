@@ -17,6 +17,18 @@ import static org.junit.jupiter.api.Assertions.*;
 final class IncomingScalarRebindTest {
     @TempDir Path temp;
 
+    @Test void exactSharedScalarParameterFixture() throws Exception {
+        Path entry = Path.of("contracts/incoming-scalar-bindings-v1/scalar-name-first.atto");
+        byte[] bytes = Files.readAllBytes(entry);
+        var hash = java.security.MessageDigest.getInstance("SHA-1");
+        hash.update(("blob " + bytes.length).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        hash.update((byte) 0);
+        assertEquals("acd7353fb5b0d17e48dffad206210e770304a2f8", java.util.HexFormat.of().formatHex(hash.digest(bytes)));
+        var result = LinkedProgramRunner.runWithExitStatus(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(23, result.exitStatus());
+    }
+
     @Test void realGuestPreservesCallerSlot() throws Exception {
         for (String formal : new String[] {"rebind int n", "rebind n: int"}) {
             Path entry = temp.resolve("main.atto");
