@@ -350,6 +350,47 @@ final class SourceActorSpawnExecutionTest {
         }
     }
 
+    @Test
+    void heapOnlyGroupedSpawnRunsActualActorGuest() throws Exception {
+        String program = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 41; return; }
+                  receive(ActorMail<String> mail): void {
+                    self.count = self.count + 1;
+                    self.send(self.count);
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val a = await spawn Counter() with { resources { heap_size = 16 * 1024 * 1024; } };
+                  a.send("run");
+                  val result = (await a.outputs.next()).value.unwrap();
+                  process.stdout.write(result.value);
+                  await a.get_done();
+                  return;
+                }
+                """;
+        assertEquals("42", run(program, "grouped-heap-only.ores"));
+    }
+
+    @Test
+    void heapOnlyGroupedSpawnRejectsExcessAuthority() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void { self.end(); return; }
+                end
+                pub async routine main(): void {
+                  val a = await spawn Worker() with { resources { heap_size = 9223372036854775807; } };
+                  a.stop();
+                  return;
+                }
+                """;
+        var e=assertThrows(PolyglotException.class, () -> run(program, "grouped-heap-ceiling.ores"));
+        assertTrue(e.getMessage().contains("E_SPAWN_HEAP_PLAN"), e::getMessage);
+    }
+
     private static String resource(String path) throws Exception {
         try (InputStream input =
                 SourceActorSpawnExecutionTest.class.getResourceAsStream(path)) {

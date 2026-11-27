@@ -7918,7 +7918,22 @@ public final class Parser {
             // Parse the closed grammar, but deny execution until lowering is safe.
             if (isContextualIdentifier("with") && checkNext(LBRACE)) {
                 Token site = peek();
-                parseGroupedSpawnOptions();
+                List<SpawnOptionSection> sections = parseGroupedSpawnOptions();
+                // First executable slice: exactly one constant native heap
+                // reservation, no ignored options, no positional payload.
+                if (args.isEmpty() && sections.size() == 1
+                        && sections.getFirst().name().equals("resources")
+                        && sections.getFirst().entries().size() == 1
+                        && sections.getFirst().entries().getFirst().key().equals("heap_size")) {
+                    var ceiling = new GroupedSpawnPlan.Ceiling(Long.MAX_VALUE, 1, 1, 1, false);
+                    var plan = GroupedSpawnPlan.check(
+                            new GroupedSpawnSyntax(type, args, sections, false), List.of(), ceiling);
+                    long bytes = (Long) plan.values().getFirst().value();
+                    if (bytes < 16L*1024*1024)
+                        throw error(site, "E_SPAWN_HEAP_PLAN: minimum native heap is 16 MiB");
+                    return new Ast.RuntimeCallExpr("spawn",
+                            List.of(new Ast.NewExpr(type, args), new Ast.LiteralExpr(bytes)));
+                }
                 throw error(site, "E_SPAWN_OPTIONS_UNSUPPORTED: grouped actor spawn requires typed initialization, resource admission and runtime lowering");
             }
             // Keep actor creation semantically distinct from ordinary class construction.

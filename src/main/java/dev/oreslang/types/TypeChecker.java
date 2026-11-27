@@ -4507,11 +4507,9 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
             if (runtime.operation().equals("spawn")) {
-                if (runtime.arguments().size() != 1
-                        || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
-                    throw new IllegalArgumentException(
-                            "internal spawn intrinsic requires exactly one actor target");
-                }
+                long reservedHeap = runtime.spawnHeapBytes();
+                if (!(runtime.arguments().getFirst() instanceof Ast.NewExpr created))
+                    throw new IllegalArgumentException("invalid actor spawn target");
                 Ast.ClassDecl actorClass = findClass(created.type().name());
                 if (actorClass == null) {
                     throw new IllegalArgumentException(
@@ -4519,6 +4517,10 @@ public final class TypeChecker {
                                     + "' is not a source actor visible to this compilation unit");
                 }
                 rejectUnimportedClassNamespace(actorClass);
+                if (reservedHeap != 0 && (actorClass.actorKind() != Ast.ActorKind.SHARED
+                        || !actorClass.genericParameters().isEmpty()
+                        || !created.type().arguments().isEmpty() || created.type().inferArguments()))
+                    throw new IllegalArgumentException("E_SPAWN_HEAP_PLAN: reserved heap requires a non-generic shared actor");
                 if (actorClass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "spawn requires an actor class; '" + actorClass.name()

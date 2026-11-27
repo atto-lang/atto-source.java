@@ -7129,6 +7129,19 @@ public final class ActorRuntime implements AutoCloseable {
                 Objects.requireNonNull(executor.codeImage()), executor, actorTypeName, true);
     }
 
+    /** Compiler-only constant heap slice. Policy is narrowed, never replaced
+     * by guest-supplied capabilities. All other grouped options stay disabled. */
+    public ActorRef<Object> spawnCodeActorWithHeapLimit(
+            ActorKind kind, ActorCodeExecutor executor, String actorTypeName, long bytes) {
+        IsolatePolicy caller = defaultSpawnPolicy();
+        caller.require(IsolatePolicy.Capability.ACTOR_SPAWN, "source reserved heap spawn");
+        if (kind != ActorKind.SHARED || bytes < 16L*1024*1024 || bytes > caller.maxHeapBytes())
+            throw new SecurityException("E_SPAWN_HEAP_PLAN: invalid actor kind or heap ceiling");
+        IsolatePolicy narrowed = new IsolatePolicy(caller.capabilities(), bytes,
+                caller.maxMailboxMessages(), caller.maxWallTime(), caller.adversarial());
+        return spawnCodeActorWithReservedHeap(kind, narrowed, executor, actorTypeName);
+    }
+
     /** Host test bridge only. The schema is not yet minted by typed HIR. */
     ActorRef<Object> spawnCodeActorWithStartup(
             ActorKind kind, IsolatePolicy policy, ActorCodeExecutor executor,

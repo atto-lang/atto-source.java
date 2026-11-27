@@ -1600,10 +1600,9 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
             if (runtime.operation().equals("spawn")) {
-                if (runtime.arguments().size() != 1
-                        || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
-                    throw error(E_ARITY, "internal spawn intrinsic requires exactly one actor target");
-                }
+                runtime.spawnHeapBytes(); // validate the constant-only internal plan
+                if (!(runtime.arguments().getFirst() instanceof Ast.NewExpr created))
+                    throw error(E_ARITY, "invalid actor spawn target");
                 if (!created.arguments().isEmpty()) {
                     throw error(E_UNSUPPORTED, "actor spawn arguments are not enabled; initialize actor-local state with fields and on_start()");
                 }

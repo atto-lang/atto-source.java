@@ -1850,6 +1850,21 @@ public final class Ast {
                 throw new IllegalArgumentException("runtime operation cannot be blank");
             }
             arguments = List.copyOf(arguments);
+            if (operation.equals("spawn")) checkedSpawnHeapBytes(arguments);
+        }
+        /** Zero denotes legacy spawn; a nonzero value is a checked constant
+         * native heap promise, never an arbitrary runtime expression. */
+        public long spawnHeapBytes() {
+            if (!operation.equals("spawn")) throw new IllegalStateException("not spawn");
+            return checkedSpawnHeapBytes(arguments);
+        }
+        private static long checkedSpawnHeapBytes(List<Expr> args) {
+            if (args.size() == 1 && args.getFirst() instanceof NewExpr) return 0;
+            if (args.size() == 2 && args.getFirst() instanceof NewExpr
+                    && args.get(1) instanceof LiteralExpr literal
+                    && literal.value() instanceof Long bytes && bytes >= 16L*1024*1024)
+                return bytes;
+            throw new IllegalArgumentException("E_SPAWN_HEAP_PLAN: invalid internal spawn operands");
         }
     }
 

@@ -37,6 +37,11 @@ final class GroupedActorSpawnParserAdmissionTest {
 
     @Test void unrelatedSyntaxIsNotCaptured() {
         assertDoesNotThrow(() -> Parser.parse(program("spawn Worker()")));
+        assertDoesNotThrow(() -> Parser.parse(program("spawn Worker() with { resources { heap_size = 16 * 1024 * 1024; } }")));
+        reject("spawn Worker() with { resources { heap_size = 1; } }", "E_SPAWN_HEAP_PLAN");
+        reject("spawn Worker() with { resources { heap_size = compute(); } }", "E_SPAWN_CONST_UNSUPPORTED");
+        reject("spawn Worker() with { resources { stack_size = 65536; } }", "E_SPAWN_OPTIONS_UNSUPPORTED");
+        reject("spawn Worker() with { resources { heap_size = 16777216; mailbox_capacity = 1; } }", "E_SPAWN_OPTIONS_UNSUPPORTED");
         assertDoesNotThrow(() -> Parser.parse(program("p with { x => 2 }")));
         assertDoesNotThrow(() -> Parser.parse(program("\"spawn Worker() with {}\"")));
     }

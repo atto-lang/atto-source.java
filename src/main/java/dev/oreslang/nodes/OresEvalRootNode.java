@@ -6169,6 +6169,18 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            if (runtime.operation().equals("spawn")) {
+                // Spawn's operands are a nominal target and an optional
+                // checked constant, not a guest class constructor to evaluate.
+                Object value;
+                try { value = eval(runtime, env); }
+                catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                continuation.accept(task, value, null);
+                return;
+            }
             if (runtime.arguments().size() != 1) {
                 continuation.accept(
                         task,
@@ -9691,11 +9703,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
                 if (runtime.operation().equals("spawn")) {
-                    if (runtime.arguments().size() != 1
-                            || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
-                        throw new IllegalStateException(
-                                "internal spawn intrinsic requires exactly one actor target");
-                    }
+                    long reservedHeap = runtime.spawnHeapBytes();
+                    if (!(runtime.arguments().getFirst() instanceof Ast.NewExpr created))
+                        throw new IllegalStateException("invalid actor spawn target");
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException(
                                 "actor spawn arguments are not enabled; initialize actor-local state with fields and on_start()");
@@ -9711,6 +9721,14 @@ public final class OresEvalRootNode extends RootNode {
                                 case SHARED -> ActorRuntime.ActorKind.SHARED;
                                 case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
                             };
+                    if (reservedHeap != 0) {
+                        if (runtimeKind != ActorRuntime.ActorKind.SHARED
+                                || !actorClass.genericParameters().isEmpty()
+                                || !created.type().arguments().isEmpty() || created.type().inferArguments())
+                            throw new SecurityException("E_SPAWN_HEAP_PLAN: unsupported actor");
+                        return context.actors().spawnCodeActorWithHeapLimit(
+                                runtimeKind, this, created.type().name(), reservedHeap);
+                    }
                     return context.actors().spawnCodeActor(
                             runtimeKind,
                             this,
