@@ -2845,7 +2845,7 @@ public final class OwnershipChecker {
                     }
                     case "add_event" -> {
                         if (call.arguments().size() != 1) {
-                            throw error("span.add_event requires exactly one string argument");
+                            throw error(E_ARITY, "span.add_event requires exactly one string argument");
                         }
                         checkExpr(call.arguments().get(0), scope, true);
                         result = Ast.TypeRef.simple("void");
