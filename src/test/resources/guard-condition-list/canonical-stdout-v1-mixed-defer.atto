@@ -1,0 +1,6 @@
+pub fnc main(): int {
+  defer stdio.out.write("A");
+  defer process.stdout.write("B");
+  stdio.out.write("C");
+  return 42;
+}
