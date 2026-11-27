@@ -499,6 +499,55 @@ final class GuestClassGraphLeaseTest {
         assertFalse(leaf.isReadOnly());
     }
 
+    @Test void originalSideDetachmentPreservesIndependentSuccessorAndExternalLoans() {
+        var d = new GuestClassSlots.Domain();
+        var leaf = store(d, Map.of("n", 10));
+        var root = store(d, Map.of("left", leaf, "right", leaf));
+        try (var first = root.shallowSnapshot(3, 6)) {
+            try (var successor = first.shallowSnapshot(3, 6);
+                 var external = leaf.retainReadOnly()) {
+                var left = first.replaceOriginalWithFresh("left", Map.of("n", 20));
+                assertEquals(1, first.protectedCount());
+                assertSame(left, root.get("left"));
+                assertSame(leaf, first.get("left"));
+                var right = first.replaceOriginalWithFresh("right", Map.of("n", 30));
+                assertEquals(0, first.protectedCount());
+                right.replace("n", 31);
+                deny("E_COPY_READONLY", () -> leaf.replace("n", 99));
+                assertSame(leaf, successor.get("right"));
+                deny("E_COPY_SHALLOW_ALIAS", () -> successor.replaceOriginalWithFresh("right", Map.of("n", 40)));
+            }
+            assertFalse(leaf.isReadOnly());
+            leaf.replace("n", 12);
+            assertEquals(12, ((GuestClassSlots) first.get("right")).get("n"));
+            assertEquals(31, ((GuestClassSlots) root.get("right")).get("n"));
+        }
+    }
+
+    @Test void originalSideMultipleDirectSnapshotsKeepConservativeLoans() {
+        var d = new GuestClassSlots.Domain();
+        var leaf = store(d, Map.of("n", 10));
+        var root = store(d, Map.of("data", leaf));
+        try (var first = root.shallowSnapshot(1, 2)) {
+            try (var sibling = root.shallowSnapshot(1, 2)) {
+                deny("E_COPY_BUDGET", () -> first.replaceOriginalWithFresh("data", Map.of("a", 1, "b", 2)));
+                assertSame(leaf, root.get("data"));
+                var fresh = first.replaceOriginalWithFresh("data", Map.of("n", 20));
+                assertSame(fresh, root.get("data"));
+                assertSame(leaf, first.get("data"));
+                assertSame(leaf, sibling.get("data"));
+                assertEquals(1, first.protectedCount());
+                assertEquals(1, sibling.protectedCount());
+                deny("E_COPY_READONLY", () -> leaf.replace("n", 99));
+            }
+            assertTrue(leaf.isReadOnly());
+            first.replaceOriginalWithFresh("data", Map.of("n", 21));
+            assertEquals(0, first.protectedCount());
+            leaf.replace("n", 12);
+        }
+        assertFalse(leaf.isReadOnly());
+    }
+
     @Test void freshDetachmentAndSuccessorCaptureLinearize() throws Exception {
         var d = new GuestClassSlots.Domain();
         try (var pool = Executors.newFixedThreadPool(2)) {
