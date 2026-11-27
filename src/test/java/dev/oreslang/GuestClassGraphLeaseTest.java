@@ -499,6 +499,45 @@ final class GuestClassGraphLeaseTest {
         assertFalse(leaf.isReadOnly());
     }
 
+    @Test void freshDetachmentAndSuccessorCaptureLinearize() throws Exception {
+        var d = new GuestClassSlots.Domain();
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 1000; i++) {
+                var leaf = store(d, Map.of("n", 10));
+                var root = store(d, Map.of("data", leaf));
+                try (var first = root.shallowSnapshot(1, 2)) {
+                    var barrier = new CyclicBarrier(2);
+                    var detach = pool.submit(() -> {
+                        barrier.await(5, TimeUnit.SECONDS);
+                        return first.replaceWithFresh("data", Map.of("n", 20));
+                    });
+                    var capture = pool.submit(() -> {
+                        barrier.await(5, TimeUnit.SECONDS);
+                        return first.shallowSnapshot(1, 2);
+                    });
+                    var fresh = detach.get(10, TimeUnit.SECONDS);
+                    try (var successor = capture.get(10, TimeUnit.SECONDS)) {
+                        assertSame(fresh, first.get("data"));
+                        assertEquals(0, first.protectedCount());
+                        assertEquals(1, successor.protectedCount());
+                        if (successor.get("data") == leaf) {
+                            assertTrue(leaf.isReadOnly());
+                            assertFalse(fresh.isReadOnly());
+                            deny("E_COPY_READONLY", () -> leaf.replace("n", 99));
+                        } else {
+                            assertSame(fresh, successor.get("data"));
+                            assertFalse(leaf.isReadOnly());
+                            assertTrue(fresh.isReadOnly());
+                            deny("E_COPY_READONLY", () -> fresh.replace("n", 99));
+                        }
+                    }
+                    assertFalse(leaf.isReadOnly());
+                    assertFalse(fresh.isReadOnly());
+                }
+            }
+        }
+    }
+
     @Test void flatSnapshotQuotaIsReleasedExactlyOnce() {
         var d = new GuestClassSlots.Domain();
         var original = store(d, Map.of("count", 1));
