@@ -30,7 +30,7 @@ verified completion primitive.
 | `http.post_text(url, text)` | `Future<String>` |
 | `http.listen(host, port, capacity, body_limit, deadline_ms)` | `Future<HttpServer>` |
 | `stdio.print(...)`, `stdio.println(...)` | `Future<void>` |
-| `stdio.stdout.write(value)`, `println(value)`, `log(...)`, `logList(values)` | `Future<void>` |
+| `stdio.out.write(value)`, `process.stdout.write(value)`, `println(value)`, `log(...)`, `logList(values)` | `Future<void>` |
 | `stdio.stdin.read_line()` | `Future<Option<String>>` |
 
 Ambient global `print` is not an I/O escape hatch.
