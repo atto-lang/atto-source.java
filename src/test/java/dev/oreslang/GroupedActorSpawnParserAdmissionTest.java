@@ -4,7 +4,7 @@ import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Parser stage only; no actor execution or option lowering is enabled. */
+/** Empty profile normalizes to ordinary spawn; nonempty option lowering is disabled. */
 final class GroupedActorSpawnParserAdmissionTest {
     private static String program(String expr) {
         return "pub routine main(): void { val result = " + expr + "; return; }";
@@ -14,15 +14,24 @@ final class GroupedActorSpawnParserAdmissionTest {
         assertTrue(failure.getMessage().contains(diagnostic), failure::getMessage);
     }
 
-    @Test void wellFormedGroupsBindToSpawnButCannotExecuteYet() {
+    @Test void nonemptyGroupsBindToSpawnButCannotExecuteYet() {
         for (String expr : new String[] {
             "await spawn MyActor() with { schedule { max_parallelism = 2; affinity = sticky; } resources { heap_size = 64 * 1024 * 1024; stack_size = 64 * 1024; mailbox_capacity = 1024; } init { name = \"worker-1\"; seed = 42; } }",
-            "spawn Worker() with {}",
             "spawn Worker() with { init { seed = compute(42); } resources { stack_size = 64; } }",
             "spawn Worker() with { schedule { pool = shared; } }",
-            "spawn Worker() /* comment */ with { init {} }",
-            "spawn Worker() with { schedule {} resources {} init {} }"
+            "spawn Worker() /* comment */ with { init { seed = 42; } }"
         }) reject(expr, "E_SPAWN_OPTIONS_UNSUPPORTED");
+    }
+
+    @Test void emptyGroupsAreExactlyOrdinarySpawn() {
+        for (String expr : new String[] {
+            "spawn Worker() with {}",
+            "spawn Worker() with { init {} }",
+            "spawn Worker() with { schedule {} resources {} init {} }",
+            "spawn Worker() /* comment */ with { resources {} schedule {} }"
+        }) assertEquals(Parser.parse(program("spawn Worker()")), Parser.parse(program(expr)), expr);
+        assertEquals(Parser.parse(program("await spawn Worker()")),
+                Parser.parse(program("await spawn Worker() with {}")));
     }
 
     @Test void malformedGroupsGetSpecificDiagnostics() {
