@@ -4,62 +4,78 @@ import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Real parser admission only; no checked guest or runtime claim. */
+/** Production parser admission only; no typechecker or guest certification. */
 final class RecursiveRecordParserTest {
-    private static Object parse(String expression) {
-        return Parser.parseStrictAtto("pub fnc main(): void { val result = " + expression + "; return; }");
+    private static Object parseBinding(String declaration) {
+        return Parser.parseStrictAtto("pub fnc main(): void { " + declaration + "; return; }");
     }
-    private static void reject(String expression, String diagnostic) {
-        var failure = assertThrows(IllegalArgumentException.class, () -> parse(expression), expression);
+    private static Object parse(String expression) {
+        return parseBinding("val result = " + expression);
+    }
+    private static void rejectBinding(String declaration, String diagnostic) {
+        var failure = assertThrows(IllegalArgumentException.class, () -> parseBinding(declaration), declaration);
         assertTrue(failure.getMessage().contains(diagnostic), failure::getMessage);
     }
+    private static void reject(String expression, String diagnostic) {
+        rejectBinding("val result = " + expression, diagnostic);
+    }
 
-    @Test void nestedRecordSpellingUsesOneAst() {
-        assertEquals(parse("(outer = (inner = 42))"), parse("(\"outer\" = (\"inner\" = 42))"));
-        assertEquals(parse("record{outer: record{inner: 42}}"), parse("(outer = (inner = 42))"));
-        assertEquals(parse("((x = 1), (y = 2))"), parse("((\"x\" = 1), (\"y\" = 2))"));
-        assertEquals(parse("(x = (1, 2), y = (3, 4))"), parse("(\"x\" = (1, 2), \"y\" = (3, 4))"));
-    }
-    @Test void callArgumentsAreNotAssignmentsOrCoalescedRecords() {
-        assertEquals(parse("foo(x = 42)"), parse("foo(\"x\" = 42)"));
-        assertEquals(parse("foo((x = 42))"), parse("foo((\"x\" = 42))"));
-        assertEquals(parse("foo(x: 42)"), parse("foo(x = 42)"));
-        assertNotEquals(parse("foo(x = 42)"), parse("foo((\"x\" = 42))"));
-        assertEquals(parse("foo(x = 1, y = 2)"), parse("foo(\"x\" = 1, \"y\" = 2)"));
-        assertEquals(parse("foo((x = 1), (y = 2))"), parse("foo((\"x\" = 1), (\"y\" = 2))"));
-        assertNotEquals(parse("foo((x = 1, y = 2))"), parse("foo(\"x\" = 1, \"y\" = 2)"));
-        assertEquals(parse("foo(outer = (inner = 42))"), parse("foo(\"outer\" = (\"inner\" = 42))"));
-        assertEquals(parse("foo((outer = (inner = 42)))"), parse("foo((\"outer\" = (\"inner\" = 42)))"));
-        assertEquals(parse("foo((x = (1, 2)), 3)"), parse("foo((\"x\" = (1, 2)), 3)"));
-        assertEquals(parse("foo(x = 1, y = 2)"), parse("foo(x = 1, \"y\" = 2)"));
-        reject("foo(x = 1, (\"y\" = 2))", "positional arguments cannot follow named arguments");
-        reject("foo(\"x\" = 1, 2)", "positional arguments cannot follow named arguments");
-        reject("foo(x = 1, \"x\" = 2)", "duplicate named argument");
-        reject("foo(\"x\" = 1, \"\\u{78}\" = 2)", "duplicate named argument");
-        assertEquals(parse("Record.of(x = 42)"), parse("Record.of(\"x\" = 42)"));
-        reject("foo(x = y = 42)", "E_RECORD_FIELD");
-    }
-    @Test void quotedLabelsAreValidatedAndComparedAfterDecoding() {
-        assertEquals(parse("(outer_value2 = 42)"), parse("(\"outer_value2\" = 42)"));
-        assertEquals(parse("(x = 42)"), parse("(\"x\" /* comment */ = 42)"));
-        for (String label : new String[] {"", "2x", "x-y", "x y", "x ", "x.y", "x/*c*/", "return", "x\\n"}) {
-            reject("(\"" + label + "\" = 42)", "E_RECORD_LABEL");
-            reject("foo(\"" + label + "\" = 42)", "E_RECORD_LABEL");
-        }
-        reject("('x' = 42)", "E_RECORD_LABEL");
-        reject("foo('x' = 42)", "E_RECORD_LABEL");
-        reject("(\"x\" = 1, x = 2)", "E_DUPLICATE");
-        reject("(\"x\" = 1, :x)", "E_DUPLICATE");
-        reject("(\"x\" = 1, \"\\u{78}\" = 2)", "E_DUPLICATE");
-    }
-    @Test void groupingAndTupleArityAreDistinct() {
-        assertEquals(parse("(1)"), parse("1"));
-        assertNotEquals(parse("(1,)"), parse("(1)"));
-        assertNotEquals(parse("((x = 1),)"), parse("(x = 1)"));
-        assertEquals(parse("(x = 1,)"), parse("(x = 1)"));
+    @Test void declarationLocalRecordForms() {
+        assertEquals(parse("(five: 5, six: 8)"), parse("{five: 5, six: 8}"));
+        assertEquals(parse("{five: 5, six: 8}"), parse("{five=5, six:=8}"));
+        var typed = parseBinding("const Record x = {five:5, six:8}");
+        for (String init : new String[]{"(five:5,six:8)", "(five=5,six=8)", "(five:=5,six:=8)", "{five:=5,six=8}", "(five:5,six:=8)"})
+            assertEquals(typed, parseBinding("const Record x = "+init), init);
+        assertEquals(parseBinding("const Record x = ()"),parseBinding("const Record x = {}"));
         assertDoesNotThrow(() -> parse("()"));
-        reject("(x = 1, 2)", "E_LITERAL_KIND");
-        reject("(2, x = 1)", "E_LITERAL_KIND");
-        reject("(x = y = 1)", "E_RECORD_FIELD");
+        assertNotEquals(parse("()"),parse("{five:5}"));
+        reject("{}", "E_EMPTY_AGGREGATE");
+        reject("(five=5)", "E_RECORD_CONTEXT");
+        reject("(five:5,six:=8)", "E_LITERAL_KIND");
+        reject("(five:5,8)", "E_LITERAL_KIND");
+    }
+
+    @Test void recursiveBracesAndCallBoundaries() {
+        assertEquals(parse("{outer:{inner:42}}"), parse("{\"outer\":={\"inner\"=42}}"));
+        assertEquals(parse("(outer: {inner:42})"), parse("{outer:{inner:42}}"));
+        assertEquals(parse("({x:1},{y:2})"),parse("({\"x\"=1},{\"y\":=2})"));
+        assertEquals(parse("foo({x:42})"),parse("foo({\"x\":=42})"));
+        assertEquals(parse("foo(x=42)"),parse("foo(\"x\"=42)"));
+        assertEquals(parse("foo(x:42)"),parse("foo(x=42)"));
+        assertNotEquals(parse("foo(x=42)"),parse("foo({x:42})"));
+        assertNotEquals(parse("foo({x:1,y:2})"),parse("foo({x:1},{y:2})"));
+        assertEquals(parse("foo(outer={inner:42})"),parse("foo(\"outer\"={\"inner\":42})"));
+        reject("foo((x:42))", "E_RECORD_CONTEXT");
+        reject("foo((x=42))", "E_RECORD_CONTEXT");
+        reject("foo(x=1,{y:2})", "positional arguments cannot follow named arguments");
+        reject("foo(x=1,\"x\"=2)", "duplicate named argument");
+        reject("foo(\"x\"=1,\"\\u{78}\"=2)", "duplicate named argument");
+        rejectBinding("const Record x=(outer:=(inner:42))","E_RECORD_CONTEXT");
+        rejectBinding("const Record x=(outer:=(inner=42))","E_RECORD_CONTEXT");
+    }
+
+    @Test void staticLabelsAndMixedKindRejection() {
+        assertEquals(parse("{outer_value2:42}"), parse("{\"outer_value2\"=42}"));
+        assertEquals(parse("{x:42}"),parse("{\"x\" /* comment */ : 42}"));
+        for (String label : new String[]{"", "2x", "x-y", "x y", "x ", "x.y", "x/*c*/", "return", "x\\n"}) {
+            reject("{\"" + label + "\":42}","E_RECORD_LABEL");
+            reject("foo(\"" + label + "\"=42)","E_RECORD_LABEL");
+        }
+        reject("{'x':42}","E_RECORD_LABEL");
+        reject("{\"x\":1,x:=2}","E_DUPLICATE");
+        reject("{\"x\":1,:x}","E_DUPLICATE");
+        reject("{\"x\":1,\"\\u{78}\"=2}","E_DUPLICATE");
+        reject("{x:1,\"y\"=>2}","E_LITERAL_KIND");
+        assertEquals(parse("Record.of(x=42)"),parse("Record.of(\"x\"=42)"));
+    }
+
+    @Test void typedMapAndOrdinaryTupleControls() {
+        assertDoesNotThrow(() -> parseBinding("const Map<string,int> m={}"));
+        assertDoesNotThrow(() -> parseBinding("const Map<string,int> m={\"x-y\"=>42}"));
+        rejectBinding("const Map<string,int> m={\"x\"=>1,y:2}","E_LITERAL_KIND");
+        assertEquals(parse("(1)"),parse("1"));
+        assertNotEquals(parse("(1,)"),parse("1"));
+        assertNotEquals(parse("({x:1},)"),parse("{x:1}"));
+        assertEquals(parse("(x:1,)"),parse("{x:1}"));
     }
 }
