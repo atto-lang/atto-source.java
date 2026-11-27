@@ -7914,11 +7914,15 @@ public final class Parser {
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
             // Grouped spawn options bind to spawn, not immutable with-update.
-            // Parse the closed grammar, but deny execution until lowering is safe.
+            // The empty profile has no requests or expressions to evaluate.
+            // Preserve ordinary spawn defaults and all ordinary type/runtime checks.
+            // Never discard a nonempty group: those require typed lowering.
             if (isContextualIdentifier("with") && checkNext(LBRACE)) {
                 Token site = peek();
-                parseGroupedSpawnOptions();
-                throw error(site, "E_SPAWN_OPTIONS_UNSUPPORTED: grouped actor spawn requires typed initialization, resource admission and runtime lowering");
+                var options = parseGroupedSpawnOptions();
+                if (options.groups().stream().anyMatch(group -> !group.entries().isEmpty())) {
+                    throw error(site, "E_SPAWN_OPTIONS_UNSUPPORTED: grouped actor spawn requires typed initialization, resource admission and runtime lowering");
+                }
             }
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
