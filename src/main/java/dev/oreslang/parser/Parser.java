@@ -8203,7 +8203,7 @@ public final class Parser {
 
     private String readInlineRecordPairName() {
         String name = readInlinePairString();
-        if (canonicalAttoSource) return checkedQuotedRecordLabel(previous());
+        if (canonicalAttoSource) return checkedDecodedRecordLabel(previous());
         // Use the same lexer as parameter declarations, and require exact
         // spelling, not merely one token after trivia/comment removal.
         List<Token> parts = new Lexer(name).scan();
@@ -8306,8 +8306,11 @@ public final class Parser {
                 } else {
                     Token fieldToken = peek();
                     name = consumeStaticObjectKeyName("expected static Record.of field name");
-                    if (canonicalAttoSource && fieldToken.type() == STRING)
-                        name = checkedQuotedRecordLabel(fieldToken);
+                    if (canonicalAttoSource) {
+                        if (fieldToken.type() == STRING) name = checkedQuotedRecordLabel(fieldToken);
+                        else if (fieldToken.type() != IDENT)
+                            throw error(fieldToken, "E_RECORD_LABEL: expected ordinary identifier label");
+                    }
                     if (check(FAT_ARROW)) {
                         throw error(peek(), "mixed record and map entries are forbidden: Record.of does not accept Entry arrows");
                     }
@@ -8624,7 +8627,7 @@ public final class Parser {
     }
 
     private Ast.ObjectExpr requireDirectRecordInitializer(Ast.ObjectExpr record) {
-        if (!check(SEMICOLON) && !check(RBRACE) && !check(EOF))
+        if (!check(SEMICOLON) && !isSafeStatementBoundary() && !isImplicitNewlineTerminator())
             throw error(peek(), "E_RECORD_CONTEXT: parenthesized Record must be the complete declaration initializer");
         return record;
     }
@@ -8649,6 +8652,10 @@ public final class Parser {
     private String checkedQuotedRecordLabel(Token label) {
         if (label.stringQuote() != '"')
             throw error(label, "E_RECORD_LABEL: expected ordinary double-quoted identifier label");
+        return checkedDecodedRecordLabel(label);
+    }
+
+    private String checkedDecodedRecordLabel(Token label) {
         List<Token> decoded;
         try {
             decoded = new Lexer(label.lexeme()).scan();
