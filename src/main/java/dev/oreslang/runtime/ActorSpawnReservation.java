@@ -17,12 +17,16 @@ final class ActorSpawnReservation {
     ActorSpawnReservation(Charge limit) { this.limit = java.util.Objects.requireNonNull(limit); }
 
     synchronized Permit reserve(Charge charge) {
+        return reserve(charge, Long.MAX_VALUE);
+    }
+    synchronized Permit reserve(Charge charge, long maxLiveReceives) {
         java.util.Objects.requireNonNull(charge);
+        if (maxLiveReceives <= 0) throw new IllegalArgumentException("E_SPAWN_POLICY");
         if (charge.heap > limit.heap - heap || charge.stacks > limit.stacks - stacks ||
                 charge.mailboxBytes > limit.mailboxBytes - mailboxBytes || charge.messages > limit.messages - messages)
             throw new IllegalStateException("E_SPAWN_QUOTA");
         if (generation == Long.MAX_VALUE) throw new IllegalStateException("E_SPAWN_GENERATION_EXHAUSTED");
-        Permit p = new Permit(this, generation + 1, charge);
+        Permit p = new Permit(this, generation + 1, charge, maxLiveReceives);
         active.add(p);
         generation++;
         heap += charge.heap; stacks += charge.stacks;
@@ -56,11 +60,11 @@ final class ActorSpawnReservation {
     synchronized boolean mayReceive(Permit p) {
         return p != null && p.owner == this && active.contains(p) && p.phase == Phase.READY;
     }
-    /** Atomic readiness check and host execution lease. Scheduler limits are separate. */
+    /** Logical receive lease; retains its slot across suspension. Physical scheduler limits are separate. */
     synchronized ReceiveLease tryEnterReceive(Permit p) {
         requireActive(p);
         if (p.phase != Phase.READY) return null;
-        if (p.receives == Long.MAX_VALUE) throw new IllegalStateException("E_SPAWN_LEASE_LIMIT");
+        if (p.receives >= p.maxLiveReceives) return null;
         ReceiveLease lease = new ReceiveLease(p);
         p.receives++;
         return lease;
@@ -97,12 +101,14 @@ final class ActorSpawnReservation {
         private final ActorSpawnReservation owner;
         final long generation;
         private final Charge charge;
+        private final long maxLiveReceives;
         private Phase phase = Phase.INITIALIZING;
         private boolean initStarted;
         private InitLease initLease;
         private long receives;
-        private Permit(ActorSpawnReservation owner, long generation, Charge charge) {
+        private Permit(ActorSpawnReservation owner, long generation, Charge charge, long maxLiveReceives) {
             this.owner = owner; this.generation = generation; this.charge = charge;
+            this.maxLiveReceives = maxLiveReceives;
         }
     }
     static final class InitLease {
