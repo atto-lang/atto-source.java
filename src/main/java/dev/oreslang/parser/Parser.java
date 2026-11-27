@@ -8402,7 +8402,10 @@ public final class Parser {
     }
 
     private String readInlineRecordPairName() {
-        String name = readInlinePairString();
+        return checkedInlineRecordPairName(readInlinePairString());
+    }
+
+    private String checkedInlineRecordPairName(String name) {
         // Use the same lexer as parameter declarations, and require exact
         // spelling, not merely one token after trivia/comment removal.
         List<Token> parts = new Lexer(name).scan();
@@ -8493,12 +8496,20 @@ public final class Parser {
                 // their lifetime and partial-move proof is implemented.
                 fields.add(Ast.ObjectField.spreading(parseExpression()));
             } else {
-                boolean pair = inlineProductFactory("Pair");
+                // An immediate := item is Pair syntax, not a named call argument.
+                // Reuse the canonical lexer token and the same key proof as Pair.of.
+                boolean literalPair = canonicalAttoSource
+                        && (check(IDENT) || check(STRING)) && checkNext(COLON_ASSIGN);
+                boolean pair = literalPair || inlineProductFactory("Pair");
                 if (pairStyle != null && pairStyle != pair)
                     throw error(peek(), "Record.of cannot mix named fields and Pair items in this profile");
                 pairStyle = pair;
                 String name;
-                if (pair) {
+                if (literalPair) {
+                    Token key = advance();
+                    consume(COLON_ASSIGN, "expected ':=' after inline Pair key");
+                    name = checkedInlineRecordPairName(key.lexeme());
+                } else if (pair) {
                     openInlineProductFactory();
                     name = readInlineRecordPairName();
                     consume(COMMA, "Pair.of requires exactly two arguments");
@@ -8517,8 +8528,8 @@ public final class Parser {
                 if (!names.add(name)) {
                     throw error(previous(), "duplicate named field in Record.of: '" + name + "'");
                 }
-                Ast.Expr value = parseExpression();
-                if (pair) consume(RPAREN, "Pair.of requires exactly two arguments");
+                Ast.Expr value = canonicalAttoSource ? parseRecordFieldValue() : parseExpression();
+                if (pair && !literalPair) consume(RPAREN, "Pair.of requires exactly two arguments");
                 fields.add(Ast.ObjectField.named(name, value));
             }
             if (!match(COMMA)) break;
