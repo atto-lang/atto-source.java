@@ -669,4 +669,64 @@ final class AsyncStdioLogsTest {
         logs.close();
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(45)
+    void cancellationRacingWithAdmissionHasExactlyOneObservableOutcome() throws Exception {
+        // Race cancellation against the drain's capacity release. Either
+        // cancellation wins before enqueue or admission wins and writes once.
+        // The second waiter must survive in FIFO order in both cases.
+        for (int trial = 0; trial < 8; trial++) {
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var race = new CountDownLatch(1);
+            var backing = new java.io.StringWriter();
+            Writer gated = new Writer() {
+                @Override public void write(char[] chars, int off, int len) throws IOException {
+                    entered.countDown();
+                    try {
+                        if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("gate timeout");
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException(e);
+                    }
+                    backing.write(chars, off, len);
+                }
+                @Override public void flush() { }
+                @Override public void close() { }
+            };
+            try (var logs = new AsyncStdioLogs(new PrintWriter(gated))) {
+                try {
+                    logs.admitBuffered("S").get(2, TimeUnit.SECONDS);
+                    assertTrue(entered.await(2, TimeUnit.SECONDS));
+                    for (int i = 0; i < 1023; i++) logs.admitBuffered("q").get(2, TimeUnit.SECONDS);
+                    var candidate = logs.admitBuffered("A");
+                    var follower = logs.admitBuffered("B");
+                    assertEquals(2, logs.pendingAdmissionCount());
+                    var cancel = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                        try {
+                            if (!race.await(5, TimeUnit.SECONDS)) throw new AssertionError("race timeout");
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                        return candidate.cancel(false);
+                    });
+                    race.countDown();
+                    release.countDown();
+                    boolean cancelled = cancel.get(5, TimeUnit.SECONDS);
+                    if (!cancelled) candidate.get(5, TimeUnit.SECONDS);
+                    else assertTrue(candidate.isCancelled());
+                    follower.get(5, TimeUnit.SECONDS);
+                    logs.flushAsync().get(5, TimeUnit.SECONDS);
+                    assertEquals(0, logs.pendingAdmissionCount());
+                    assertFalse(candidate.cancel(false));
+                    assertEquals("S" + "q".repeat(1023) + (cancelled ? "B" : "AB"), backing.toString());
+                } finally {
+                    race.countDown();
+                    release.countDown();
+                }
+            }
+        }
+    }
+
 }
