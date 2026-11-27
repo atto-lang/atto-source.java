@@ -206,12 +206,14 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
                 || generations[index] == Long.MAX_VALUE) {
             throw new IllegalStateException("actor-native allocator free-list invariant violated");
         }
-        // Commit only after native FFM write succeeds.
+        // Allocate the handle before publishing a live native slot.
+        // A Java allocation failure cannot strand an unreachable capability.
+        Slot handle = new Slot(identity, index, generations[index]);
         put(index, value);
         freeCount--;
         live[index] = true;
         occupied++;
-        return new Slot(identity, index, generations[index]);
+        return handle;
     }
 
     public synchronized long read(Slot slot) {
@@ -261,12 +263,14 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         if (generations[index] == Long.MAX_VALUE) {
             throw new IllegalStateException("native slot generation exhausted");
         }
-        put(index, 0L);
-        generations[index]++;
-        live[index] = false;
+        // Validate accounting before clearing the live slot or consuming its
+        // generation: corrupt metadata must fail without partial revocation.
         if (freeCount >= freeSlots.length) {
             throw new IllegalStateException("actor-native allocator free-list overflow");
         }
+        put(index, 0L);
+        generations[index]++;
+        live[index] = false;
         freeSlots[freeCount++] = index;
         occupied--;
     }

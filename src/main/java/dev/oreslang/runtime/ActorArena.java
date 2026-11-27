@@ -118,7 +118,11 @@ public final class ActorArena implements AutoCloseable {
             this.scratchPin = scratchPin;
         }
 
-        @Override public void close() {
+        @Override public synchronized void close() {
+            // A physical/native close failure can happen after the region
+            // logically consumed its pin. Repeated close retries native
+            // reclamation, so NEVER decrement the actor-level lease count or
+            // consume its retry authority until both regions close cleanly.
             Throwable failure = null;
             try { scratchPin.close(); }
             catch (RuntimeException | Error error) { failure = error; }
@@ -127,16 +131,19 @@ public final class ActorArena implements AutoCloseable {
                 if (failure == null) failure = error;
                 else if (failure != error) failure.addSuppressed(error);
             }
-            if (accounted.compareAndSet(false, true)) {
-                synchronized (ActorArena.this) {
+            if (failure instanceof RuntimeException error) throw error;
+            if (failure instanceof Error error) throw error;
+            synchronized (ActorArena.this) {
+                // Serialize duplicate completion callbacks against the arena
+                // counter. A failed counter check must also remain retryable.
+                if (!accounted.get()) {
                     if (externalLeases <= 0) {
                         throw new IllegalStateException("actor arena external lease accounting underflow");
                     }
                     externalLeases--;
+                    accounted.set(true);
                 }
             }
-            if (failure instanceof RuntimeException error) throw error;
-            if (failure instanceof Error error) throw error;
         }
     }
 
@@ -171,7 +178,17 @@ public final class ActorArena implements AutoCloseable {
         public synchronized ExplicitNativeI64Region.Slot allocate(long value) {
             requireActive();
             var slot = scratch.allocate(value);
-            slots.push(slot);
+            try {
+                slots.push(slot);
+            } catch (RuntimeException | Error failure) {
+                // Preserve the original OOME/failure while rolling back the
+                // native slot absent from the turn's scratch ledger.
+                try { scratch.drop(slot); }
+                catch (RuntimeException | Error cleanup) {
+                    if (cleanup != failure) failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
             return slot;
         }
 
