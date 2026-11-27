@@ -1,6 +1,10 @@
 package dev.oreslang.parser;
 
-public record Token(Type type, String lexeme, int line, int column) {
+public record Token(Type type, String lexeme, int line, int column, char stringQuote) {
+    // Legacy token constructors and synthetic non-string tokens carry no quote provenance.
+    public Token(Type type, String lexeme, int line, int column) {
+        this(type, lexeme, line, column, '\0');
+    }
     public enum Type {
         IDENT,
         INT,
