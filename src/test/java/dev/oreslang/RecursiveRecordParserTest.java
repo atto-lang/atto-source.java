@@ -47,9 +47,19 @@ final class RecursiveRecordParserTest {
         assertEquals(parse("foo(outer={inner:42})"),parse("foo(\"outer\"={\"inner\":42})"));
         reject("foo((x:42))", "E_RECORD_CONTEXT");
         reject("foo((x=42))", "E_RECORD_CONTEXT");
+        // Explicitly distinguish unsupported nominal Pair from named argument/Record.
+        // These are fail-closed staging tests, NOT successful Pair conformance.
+        reject("foo(x:=42)", "E_PAIR_UNSUPPORTED");
+        reject("foo((x:=42))", "E_PAIR_UNSUPPORTED");
+        reject("foo((x:=42,))", "E_PAIR_UNSUPPORTED");
+        reject("foo(x:=1,y:=2)", "E_PAIR_UNSUPPORTED");
+        reject("foo((x:=1,y:=2))", "E_PAIR_UNSUPPORTED");
+        reject("foo(x=(y=42))", "E_RECORD_CONTEXT");
+        reject("foo(x=(obj.field=42))", "E_RECORD_FIELD");
+        rejectBinding("const Record x=(a:1).a","E_RECORD_CONTEXT");
         reject("foo(x=1,{y:2})", "positional arguments cannot follow named arguments");
         reject("foo(x=1,\"x\"=2)", "duplicate named argument");
-        reject("foo(\"x\"=1,\"\\u{78}\"=2)", "duplicate named argument");
+        reject("foo(\"x\"=1,\"\\u0078\"=2)", "duplicate named argument");
         rejectBinding("const Record x=(outer:=(inner:42))","E_RECORD_CONTEXT");
         rejectBinding("const Record x=(outer:=(inner=42))","E_RECORD_CONTEXT");
     }
@@ -64,9 +74,13 @@ final class RecursiveRecordParserTest {
         reject("{'x':42}","E_RECORD_LABEL");
         reject("{\"x\":1,x:=2}","E_DUPLICATE");
         reject("{\"x\":1,:x}","E_DUPLICATE");
-        reject("{\"x\":1,\"\\u{78}\"=2}","E_DUPLICATE");
+        reject("{\"x\":1,\"\\u0078\"=2}","E_DUPLICATE");
         reject("{x:1,\"y\"=>2}","E_LITERAL_KIND");
         assertEquals(parse("Record.of(x=42)"),parse("Record.of(\"x\"=42)"));
+        reject("Record.of(\"x-y\":42)","E_RECORD_LABEL");
+        reject("Record.of(\"x-y\"=42)","E_RECORD_LABEL");
+        reject("{x: =42}","expected expression");
+        assertEquals(parse("{x:=42}"),parse("{x:42}"));
     }
 
     @Test void typedMapAndOrdinaryTupleControls() {
