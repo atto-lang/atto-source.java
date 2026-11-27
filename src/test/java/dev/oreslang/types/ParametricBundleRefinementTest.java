@@ -34,6 +34,21 @@ final class ParametricBundleRefinementTest {
         assertEquals(5, apply(schema, seed, List.of()).get("size"));
     }
 
+    @Test void inheritedInferenceRequiresExactlyTheRequestedEvidence() {
+        assertEquals(Map.of("type", "int", "size", 3),
+                refineInferred(schema, seed, List.of(), List.of("size"), List.of(a("size", 3))));
+        assertEquals(5, seed.get(0).value());
+        assertEquals(0, refineInferred(schema, seed, List.of(), List.of("size"), List.of(a("size", 0))).get("size"));
+        assertThrows(IllegalArgumentException.class, () -> refineInferred(schema, seed, List.of(), List.of("size"), List.of()));
+        assertThrows(IllegalArgumentException.class, () -> refineInferred(schema, seed, List.of(), List.of("size"), List.of(a("size", 3), a("size", 3))));
+        assertThrows(IllegalArgumentException.class, () -> refineInferred(schema, seed, List.of(a("size", 6)), List.of("size"), List.of(a("size", 3))));
+        assertThrows(IllegalArgumentException.class, () -> refineInferred(schema, seed, List.of(), List.of("size"), List.of(a("size", 3), a("type", "int"))));
+        assertThrows(IllegalArgumentException.class, () -> refineInferred(schema, seed, List.of(), List.of("size", "size"), List.of(a("size", 3))));
+        assertThrows(IllegalArgumentException.class, () -> refineInferred(schema, seed.subList(1, 2), List.of(), List.of("size"), List.of(a("size", 3))));
+        assertThrows(IllegalArgumentException.class, () -> refineInferred(schema, seed, List.of(), List.of("size"), List.of(a("size", -1))));
+        assertThrows(IllegalArgumentException.class, () -> refineInferred(schema, seed, List.of(), List.of("size"), List.of(a("size", "3"))));
+    }
+
     @Test void rejectsDuplicatesUnknownKeysAndInvalidKinds() {
         assertThrows(IllegalArgumentException.class, () -> refine(schema, seed, List.of(a("size", 6), a("size", 6))));
         assertThrows(IllegalArgumentException.class, () -> refine(schema, List.of(a("size", 5), a("size", 5)), List.of()));
