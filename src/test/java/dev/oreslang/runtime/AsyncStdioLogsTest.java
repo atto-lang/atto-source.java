@@ -16,6 +16,32 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class AsyncStdioLogsTest {
     @Test
+    void utf8QuotaUsesExactScalarByteLengthWithoutReplacement() {
+        for (String value : new String[]{"", "A", String.valueOf((char) 0), "\u007f", "\u0080", "\u07ff",
+                "\u0800", "\uffff", "\ud800\udc00", "\udbff\udfff",
+                "x".repeat(65_536), "\u00e9".repeat(32_768),
+                "\u20ac".repeat(21_845) + "x", "\ud83d\ude00".repeat(16_384)}) {
+            assertEquals(value.getBytes(StandardCharsets.UTF_8).length,
+                    AsyncStdioLogs.checkedBytes(value));
+        }
+        for (String invalid : new String[]{"\ud800", "\udc00", "\ud800x", "x\ud800",
+                "\udc00\ud800", "x".repeat(65_537), "\u00e9".repeat(32_769),
+                "\u20ac".repeat(21_846), "\ud83d\ude00".repeat(16_385)}) {
+            assertThrows(IllegalArgumentException.class, () -> AsyncStdioLogs.checkedBytes(invalid));
+        }
+        var random = new java.util.Random(1127L);
+        for (int i = 0; i < 2048; i++) {
+            var value = new StringBuilder();
+            for (int j = 0; j < 32; j++) {
+                int cp = random.nextInt(0x110000);
+                if (cp < 0xd800 || cp > 0xdfff) value.appendCodePoint(cp);
+            }
+            String text = value.toString();
+            assertEquals(text.getBytes(StandardCharsets.UTF_8).length, AsyncStdioLogs.checkedBytes(text));
+        }
+    }
+
+    @Test
     void fifoFlushIsABarrierForAlreadyAcceptedRecords() throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (AsyncStdioLogs logs = new AsyncStdioLogs(
