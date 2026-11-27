@@ -82,13 +82,18 @@ final class InterfaceFncKeywordTest {
 
     @Test
     void obsoleteMethodIntroducerIsNotAdmitted() {
-        for (String kind : new String[]{"interface", "trait"}) {
-            assertThrows(IllegalArgumentException.class, () ->
-                    Parser.parse("define " + kind + " Api as method run(): int; end"));
-        }
-        for (String kind : new String[]{"class", "actor"}) {
-            assertThrows(IllegalArgumentException.class, () ->
-                    Parser.parse("define " + kind + " C as pub method run(): int { return 42; } end"));
+        for (String kind : new String[]{"interface", "trait", "class", "actor"}) {
+            boolean abstractSignature = kind.equals("interface") || kind.equals("trait");
+            for (String name : new String[]{"run", "mtd", "method"}) {
+                for (String trivia : new String[]{" ", "\t", "\n", " /* marker */ "}) {
+                    String source = "define " + kind + " C as "
+                            + (abstractSignature ? "" : "pub ") + "method" + trivia + name
+                            + "(): int" + (abstractSignature ? ";" : " { return 42; }") + " end";
+                    var error = assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+                    assertTrue(error.getMessage().contains("OBSOLETE_METHOD_INTRODUCER"),
+                            () -> source + " => " + error.getMessage());
+                }
+            }
         }
         var named = declaration("define interface Api as method(): int; end");
         assertEquals(named, declaration("define interface Api as mtd method(): int; end"));
