@@ -66,6 +66,63 @@ define pub class BoundedIntSet as
     return -1;
   }
 
+  // Membership predicates ignore unused domain capacity. Keep the existing
+  // same-domain contract of the in-place operations below unchanged.
+  pub same_members(borrow BoundedIntSet other): bool {
+    if self.members neq other.len(); do return false; fi
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if self.flags.get(i) eq 1 && !other.contains(i); do return false; fi
+    done
+    return true;
+  }
+
+  pub has_overlap(borrow BoundedIntSet other): bool {
+    if self.members eq 0 || other.is_empty(); do return false; fi
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if self.flags.get(i) eq 1 && other.contains(i); do return true; fi
+    done
+    return false;
+  }
+
+  // Nonmutating set algebra. The result has fresh owned slots, uses the
+  // maximum input domain, and cannot alias either input backing array.
+  // 0 union, 1 intersection, 2 difference, 3 symmetric difference.
+  combine(borrow BoundedIntSet other, int operation): BoundedIntSet {
+    let mut int domain_size = self.domain;
+    if other.capacity() > domain_size; do domain_size = other.capacity(); fi
+    let mut BoundedIntSet result = new BoundedIntSet(domain_size);
+    for (let int i = 0; i < domain_size; i = i + 1) do
+      let bool a = self.contains(i);
+      let bool b = other.contains(i);
+      let bool include = (operation eq 0 && (a || b)) ||
+                         (operation eq 1 && a && b) ||
+                         (operation eq 2 && a && !b) ||
+                         (operation eq 3 && (a ^^ b));
+      if include; do result.insert(i); fi
+    done
+    return result;
+  }
+
+  pub union(borrow BoundedIntSet other): BoundedIntSet {
+    let BoundedIntSet result = self.combine(rt borrow other, 0);
+    return result;
+  }
+
+  pub intersection(borrow BoundedIntSet other): BoundedIntSet {
+    let BoundedIntSet result = self.combine(rt borrow other, 1);
+    return result;
+  }
+
+  pub difference(borrow BoundedIntSet other): BoundedIntSet {
+    let BoundedIntSet result = self.combine(rt borrow other, 2);
+    return result;
+  }
+
+  pub symmetric_difference(borrow BoundedIntSet other): BoundedIntSet {
+    let BoundedIntSet result = self.combine(rt borrow other, 3);
+    return result;
+  }
+
   // All binary operations require identical domains; a mismatch causes no
   // mutation. Callers must not create overlapping mutable/immutable loans.
   pub union_from(mut self)(borrow BoundedIntSet other): bool {
@@ -284,6 +341,30 @@ pub fnc bounded_int_set(int domain_size): BoundedIntSet {
   return new BoundedIntSet(domain_size);
 }
 
+pub fnc dense_set_algebra_self_test(): bool {
+  let mut BoundedIntSet a = new BoundedIntSet(4);
+  let mut BoundedIntSet b = new BoundedIntSet(8);
+  a.insert(0); a.insert(3);
+  b.insert(3); b.insert(7);
+  let BoundedIntSet u = a.union(rt borrow b);
+  let BoundedIntSet i = a.intersection(rt borrow b);
+  let BoundedIntSet d = a.difference(rt borrow b);
+  let BoundedIntSet x = a.symmetric_difference(rt borrow b);
+  let BoundedIntSet y = b.symmetric_difference(rt borrow a);
+  if u.len() neq 3 || !u.contains(0) || !u.contains(3) || !u.contains(7) ||
+     i.len() neq 1 || !i.contains(3) ||
+     d.len() neq 1 || !d.contains(0) ||
+     x.len() neq 2 || !x.contains(0) || !x.contains(7) || x.contains(3) ||
+     !x.same_members(rt borrow y) || !a.has_overlap(rt borrow b); do return false; fi
+  if a.len() neq 2 || b.len() neq 2 || a.contains(7) || b.contains(0); do return false; fi
+  a.clear();
+  b.clear();
+  if u.len() neq 3 || x.len() neq 2 || !x.contains(7) ||
+     a.has_overlap(rt borrow b) || !a.same_members(rt borrow b); do return false; fi
+  let BoundedIntSet empty = a.symmetric_difference(rt borrow b);
+  return empty.is_empty() && empty.capacity() eq 8;
+}
+
 pub fnc self_test(): bool {
   let mut BoundedIntSet lhs = new BoundedIntSet(8);
   let mut BoundedIntSet rhs = new BoundedIntSet(8);
@@ -308,5 +389,5 @@ pub fnc self_test(): bool {
   fi
   lhs.insert(0);
   lhs.clear();
-  return lhs.len() == 0 && !lhs.contains(0) && hash_set_self_test();
+  return lhs.len() == 0 && !lhs.contains(0) && hash_set_self_test() && dense_set_algebra_self_test();
 }
