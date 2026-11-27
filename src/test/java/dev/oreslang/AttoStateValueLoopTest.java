@@ -24,6 +24,11 @@ final class AttoStateValueLoopTest {
         assertEquals(42,run(wrap("loop (val i=0) {if i eq 1 {break 42;} if i eq 1 {break 7;} recur(i+1);}")));
         assertEquals(42,run("pub fnc main():int {val n:int=loop (val i=0) {if i eq 1 {break 42;} recur(i+1);}; return n;}"));
     }
+    @Test void lazyExitsAndIndependentInvocations() throws Exception {
+        assertEquals(42,run(wrap("loop (val i=0) {if true {break 42;} if i eq 0 {break 9223372036854775807+1;} recur(i+1);}")));
+        assertEquals(42,run(wrap("loop (val i=0) {if i eq 0 {break 20;} recur(i+1);} + loop (val i=0) {if i eq 0 {break 22;} recur(i+1);}")));
+        assertEquals(42,run(wrap("loop (val i=0) {if true {break 42;} recur(9223372036854775807+1);}")));
+    }
     @Test void rejects() {
         for(String expr:new String[]{
             "loop (val i=0) {if i eq 1 {break i;} recur(i+1,2);}",
