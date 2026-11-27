@@ -11,6 +11,119 @@ import org.junit.jupiter.api.Test;
  */
 final class DynamicSelectPlanGenerationTest {
     @Test
+    void unstableKeysRejectBeforeHashOrEqualsAndPreservePendingSnapshot() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<Object>();
+        plan.put("stable", ChannelRuntime.read(channel));
+        var original = plan.selectSetSnapshot();
+        var pending = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        Object hostile = new Object() {
+            @Override public int hashCode() {
+                throw new AssertionError("untrusted hashCode executed");
+            }
+            @Override public boolean equals(Object other) {
+                throw new AssertionError("untrusted equals executed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.put(hostile, ChannelRuntime.read(channel)));
+        assertThrows(IllegalArgumentException.class, () -> plan.remove(hostile));
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.put(new StringBuilder("mutable"), ChannelRuntime.read(channel)));
+        assertEquals(1L, plan.version());
+        assertEquals(1, plan.size());
+        assertSame(original, plan.selectSetSnapshot());
+        assertTrue(channel.tryWrite(42));
+        var winner = pending.join();
+        assertEquals("stable", winner.key());
+        assertEquals(1L, winner.version());
+        assertEquals(42, winner.selection().value());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void immutableScalarKeysPreserveReplacementAndLogicalSymbolIdentity() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<Object>();
+        var key = OresSymbol.process("inbox");
+        plan.put(key, ChannelRuntime.read(channel));
+        plan.put(OresSymbol.process("inbox"), ChannelRuntime.read(channel));
+        assertEquals(1, plan.size());
+        assertEquals(2L, plan.version());
+        assertTrue(channel.tryWrite(42));
+        assertEquals(key, plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR)
+                .orElseThrow().key());
+        assertTrue(plan.remove(OresSymbol.process("inbox")));
+        assertEquals(3L, plan.version());
+    }
+
+    @Test
+    void overlappingPendingFairSelectionsUseLatestCommittedGenerationCredit() {
+        var producer = new OresFuture<Integer>();
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("a", ChannelRuntime.await(producer));
+        plan.put("b", ChannelRuntime.await(producer));
+        var first = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var second = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        assertFalse(first.isDone());
+        assertFalse(second.isDone());
+        assertTrue(producer.completeFromRuntime(42));
+        assertEquals("a", first.join().key());
+        assertEquals("b", second.join().key());
+        assertEquals(2L, first.join().version());
+        assertEquals(2L, second.join().version());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void retiredGenerationFairCreditNeverRotatesReplacementPlan() {
+        var producer = new OresFuture<Integer>();
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("a", ChannelRuntime.await(producer));
+        plan.put("b", ChannelRuntime.await(producer));
+        var first = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var second = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var third = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var left = new ChannelRuntime.Channel<Integer>(1);
+        var right = new ChannelRuntime.Channel<Integer>(1);
+        plan.put("a", ChannelRuntime.read(left));
+        plan.put("b", ChannelRuntime.read(right));
+        assertTrue(producer.completeFromRuntime(42));
+        assertEquals("a", first.join().key());
+        assertEquals("b", second.join().key());
+        assertEquals("a", third.join().key());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertTrue(left.tryWrite(10));
+        assertTrue(right.tryWrite(20));
+        var fresh = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+        assertEquals("a", fresh.key());
+        assertEquals(4L, fresh.version());
+        assertEquals(10, fresh.selection().value());
+        assertEquals(20, right.tryRead().orElseThrow());
+    }
+
+    @Test
+    void reusableWritesRejectSubclassPayloadsBeforeGenerationPublication() {
+        var channel = new ChannelRuntime.Channel<java.math.BigInteger>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("write", ChannelRuntime.write(channel, java.math.BigInteger.ONE));
+        var original = plan.selectSetSnapshot();
+        var hostile = new java.math.BigInteger("7") {
+            @Override public int hashCode() {
+                throw new AssertionError("subclass callback executed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> plan.put("write", ChannelRuntime.write(channel, hostile)));
+        assertThrows(IllegalArgumentException.class,
+                () -> ChannelRuntime.SelectPlan.of(ChannelRuntime.write(channel, hostile)));
+        assertEquals(1L, plan.version());
+        assertSame(original, plan.selectSetSnapshot());
+        assertTrue(plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).isPresent());
+        assertEquals(java.math.BigInteger.ONE, channel.tryRead().orElseThrow());
+    }
+
+    @Test
     void repeatedLoopSelectionsReuseTheDescriptorButNotWinnerOrWaiters() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
