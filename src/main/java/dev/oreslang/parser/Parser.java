@@ -5690,6 +5690,58 @@ public final class Parser {
         return expr;
     }
 
+    private record IncomingScalarAlias(Ast.BindingPattern pattern, Ast.BindingStmt replacement) {
+        List<Ast.Stmt> prepend(List<Ast.Stmt> body) {
+            if (replacement == null) return body;
+            var result = new ArrayList<Ast.Stmt>();
+            result.add(replacement);
+            result.addAll(body);
+            return List.copyOf(result);
+        }
+        Ast.MatchValueArm prepend(Ast.MatchValueArm arm) {
+            return new Ast.MatchValueArm(arm.pattern(), arm.guard(), prepend(arm.prefixStatements()), arm.value());
+        }
+    }
+
+    // First bounded slice: a wildcard captures the complete copied scalar.
+    // No nominal/refinement-pattern rewriting or borrowed-reference authority.
+    private IncomingScalarAlias parseIncomingScalarAlias(Ast.Pattern pattern, boolean defaultArm) {
+        if (!match(AS)) return null;
+        if (defaultArm || !(pattern instanceof Ast.WildcardPattern))
+            throw error(previous(), "E_UNSUPPORTED: whole scalar alias requires an explicit wildcard pattern");
+        int site = current;
+        boolean rebind = isContextualIdentifier("rebind") && !checkNext(ARROW) && !checkNext(LBRACE)
+                && !checkNext(WHEN);
+        if (rebind) {
+            advance();
+            if (check(CONST) || check(VAL) || check(LET)
+                    || (isContextualIdentifier("rebind") && !checkNext(ARROW) && !checkNext(LBRACE)))
+                throw error(peek(), "E_SYNTAX: duplicate or conflicting alias modifier");
+        } else if (match(CONST, VAL)) {
+            // Incoming const is fixed at runtime, not compile-time evaluation.
+        } else if (match(LET)) {
+            rebind = true;
+        }
+        if (check(MUT)) throw error(peek(), "E_UNSUPPORTED: scalar alias has no mutable referent");
+        Ast.TypeRef annotation = null;
+        if (check(IDENT) && checkNext(IDENT) && !checkNextLexeme("when")) {
+            String type = advance().lexeme();
+            if (!java.util.Set.of("int", "bool", "boolean").contains(type))
+                throw error(previous(), "E_TYPE: alias annotation must be a copied int/bool type");
+            annotation = Ast.TypeRef.simple(type);
+        }
+        String name = consume(IDENT, "expected incoming scalar alias name").lexeme();
+        if (name.equals("_") || name.startsWith("$"))
+            throw error(previous(), "E_SYNTAX: invalid scalar alias name");
+        // Rebinding must target a distinct ordinary local slot. The match
+        // binder itself is fixed and uses a source-unspellable internal name.
+        String fixed = rebind ? "$incoming_scalar_alias$" + site : name;
+        Ast.BindingStmt replacement = rebind
+                ? new Ast.BindingStmt(Ast.BindingKind.LET, annotation, name, new Ast.NameExpr(fixed), false)
+                : null;
+        return new IncomingScalarAlias(new Ast.BindingPattern(fixed, true, annotation), replacement);
+    }
+
     private Ast.MatchStmt parseMatch(boolean procedural) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
@@ -5753,9 +5805,13 @@ public final class Parser {
             } else {
                 pattern = parsePattern();
             }
+            IncomingScalarAlias alias = parseIncomingScalarAlias(pattern, defaultArm);
+            if (alias != null) pattern = alias.pattern();
 
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
+                if (alias != null && alias.replacement() != null)
+                    throw error(previous(), "E_UNSUPPORTED: guarded rebind alias requires tentative scope lowering");
                 if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
                 int previousGuardStart = matchGuardStartToken;
                 matchGuardStartToken = current;
@@ -5765,7 +5821,7 @@ public final class Parser {
                     matchGuardStartToken = previousGuardStart;
                 }
             }
-            if (canonicalOver && pattern instanceof Ast.WildcardPattern && guard == null) {
+            if (canonicalOver && (pattern instanceof Ast.WildcardPattern || alias != null) && guard == null) {
                 seenUnconditionalWildcard = true;
             }
             if (check(FAT_ARROW)) {
@@ -5779,6 +5835,7 @@ public final class Parser {
             }
             List<Ast.Stmt> body = parseBlock();
             if (canonicalAttoSource && procedural) body = normalizeTerminalVoidMatchArm(body);
+            if (alias != null) body = alias.prepend(body);
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
         if (braced) consume(RBRACE, "expected '}' to close braced match");
@@ -5870,8 +5927,12 @@ public final class Parser {
             }
 
             Ast.Pattern pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
+            IncomingScalarAlias alias = parseIncomingScalarAlias(pattern, defaultArm);
+            if (alias != null) pattern = alias.pattern();
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
+                if (alias != null && alias.replacement() != null)
+                    throw error(previous(), "E_UNSUPPORTED: guarded rebind alias requires tentative scope lowering");
                 if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
                 int previousGuardStart = matchGuardStartToken;
                 matchGuardStartToken = current;
@@ -5882,7 +5943,7 @@ public final class Parser {
                 }
             }
 
-            if (pattern instanceof Ast.WildcardPattern && guard == null) {
+            if ((pattern instanceof Ast.WildcardPattern || alias != null) && guard == null) {
                 seenUnconditionalWildcard = true;
             }
 
@@ -5911,8 +5972,8 @@ public final class Parser {
                     throw error(previous(),
                             "value match block arm v1 permits only its terminal top-level 'return value;' result");
                 }
-                valueArms.add(new Ast.MatchValueArm(
-                        pattern, guard, List.copyOf(prefix), returned.value()));
+                var arm = new Ast.MatchValueArm(pattern, guard, List.copyOf(prefix), returned.value());
+                valueArms.add(alias == null ? arm : alias.prepend(arm));
                 match(COMMA);
                 continue;
             }
@@ -5921,7 +5982,8 @@ public final class Parser {
                 // A block arm is independent of the outer match delimiter.
                 List<Ast.Stmt> body = parseBlock();
                 if (canonicalAttoSource) {
-                    valueArms.add(canonicalBracedValueMatchArm(pattern, guard, body));
+                    var arm = canonicalBracedValueMatchArm(pattern, guard, body);
+                    valueArms.add(alias == null ? arm : alias.prepend(arm));
                 } else {
                     if (body.size() != 1
                             || !(body.getFirst() instanceof Ast.ReturnStmt returned)
@@ -5929,7 +5991,8 @@ public final class Parser {
                         throw error(previous(),
                                 "legacy braced value match arms require exactly one 'return expression;'");
                     }
-                    valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
+                    var arm = new Ast.MatchValueArm(pattern, guard, List.of(), returned.value());
+                    valueArms.add(alias == null ? arm : alias.prepend(arm));
                 }
                 match(COMMA);
                 continue;
@@ -5946,7 +6009,8 @@ public final class Parser {
                     && !(check(IDENT) && peek().lexeme().equals("on"))) {
                 throw error(peek(), "value match arm requires ',', ';', 'on', 'default' or the match closing delimiter");
             }
-            valueArms.add(new Ast.MatchValueArm(pattern, guard, value));
+            var arm = new Ast.MatchValueArm(pattern, guard, value);
+            valueArms.add(alias == null ? arm : alias.prepend(arm));
         }
 
         if (braced) consume(RBRACE, "expected '}' to close braced value match");

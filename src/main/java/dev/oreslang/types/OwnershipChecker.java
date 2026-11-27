@@ -5090,7 +5090,18 @@ public final class OwnershipChecker {
             return;
         }
         if (pattern instanceof Ast.BindingPattern binding) {
-            defineRefinementAlias(binding.name(), subjectType, source, destination);
+            if (binding.copiedScalarAlias()) {
+                if (subjectType == null || subjectType.isBorrow() || subjectType.inferArguments()
+                        || !subjectType.arguments().isEmpty()
+                        || !Set.of("int", "bool").contains(subjectType.name())
+                        || (source != null && source.kind != ValueKind.COPY))
+                    throw error(E_UNSUPPORTED, "whole alias requires copied scalar ownership");
+                if (binding.scalarAnnotation() != null && !binding.scalarAnnotation().equals(subjectType))
+                    throw error(E_UNSUPPORTED, "scalar alias annotation differs from checked subject");
+                defineRefinementAlias(binding.name(), subjectType, null, destination);
+            } else {
+                defineRefinementAlias(binding.name(), subjectType, source, destination);
+            }
             return;
         }
         if (pattern instanceof Ast.TypePattern typed) {

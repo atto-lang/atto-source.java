@@ -39,5 +39,5 @@ jobs:
           set -euo pipefail
           report=target/surefire-reports/TEST-dev.oreslang.IncomingScalarRebindTest.xml
           test -s "$report"
-          test "$(grep -c '<testcase' "$report")" -eq 5
+          test "$(grep -c '<testcase' "$report")" -eq 6
           if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then exit 1; fi

@@ -29,6 +29,33 @@ final class IncomingScalarRebindTest {
         assertEquals(23, result.exitStatus());
     }
 
+    @Test void exactSharedMatchAliasFixtures() throws Exception {
+        String[][] cases = {
+            {"incoming-alias-typed", "a468f12a990b9e228b3dda649ba839526d3a32f9", null},
+            {"incoming-alias-rebind", "389e63ac3aea25b4f20d2baac14908d98809b57a", null},
+            {"incoming-alias-fixed-reject", "3f8fbcd373405d950a16bcc2779d78d46027f493", "E_IMMUTABLE"},
+            {"incoming-alias-type-reject", "f92cd4e128cafdface1a1e0eb8abd3cb0d14698f", "E_TYPE"},
+            {"incoming-alias-duplicate-reject", "c35ceb04f96e8aab70efded4d6ba09854167a390", "E_SYNTAX"},
+        };
+        for (String[] row : cases) {
+            Path entry = Path.of("contracts/incoming-scalar-bindings-v1", row[0] + ".atto");
+            byte[] bytes = Files.readAllBytes(entry);
+            var hash = java.security.MessageDigest.getInstance("SHA-1");
+            hash.update(("blob " + bytes.length).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            hash.update((byte) 0);
+            assertEquals(row[1], java.util.HexFormat.of().formatHex(hash.digest(bytes)), row[0]);
+            if (row[2] == null) {
+                var result = LinkedProgramRunner.runWithExitStatus(entry, IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(), new ByteArrayOutputStream(), new ByteArrayOutputStream());
+                assertEquals(42, result.exitStatus(), row[0]);
+            } else {
+                var ex = assertThrows(RuntimeException.class,
+                        () -> LinkedProgramRunner.validate(entry), row[0]);
+                assertTrue(ex.getMessage().contains(row[2]), ex.getMessage());
+            }
+        }
+    }
+
     @Test void realGuestPreservesCallerSlot() throws Exception {
         for (String formal : new String[] {"rebind int n", "rebind n: int"}) {
             Path entry = temp.resolve("main.atto");

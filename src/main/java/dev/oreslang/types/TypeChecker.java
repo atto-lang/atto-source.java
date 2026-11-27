@@ -3677,7 +3677,11 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.MatchStmt matched) {
-            Type subject = deref(typeOf(matched.subject(), env, generics, self));
+            Type rawSubject = typeOf(matched.subject(), env, generics, self);
+            if (rawSubject instanceof Borrow && matched.arms().stream().anyMatch(arm ->
+                    arm.pattern() instanceof Ast.BindingPattern b && b.copiedScalarAlias()))
+                throw new IllegalArgumentException("E_UNSUPPORTED: scalar alias cannot capture borrowed subject");
+            Type subject = deref(rawSubject);
             Map<Env.Binding, Set<String>> afterSubject = env.initializationSnapshot();
             checkMatch(matched, subject, env, generics, expectedReturn, self);
             // Match-arm flow is checked independently by checkMatch. Until it
@@ -6969,7 +6973,11 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.MatchExpr valueMatch) {
-            Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
+            Type rawSubject = typeOf(valueMatch.subject(), env, generics, self);
+            if (rawSubject instanceof Borrow && valueMatch.arms().stream().anyMatch(arm ->
+                    arm.pattern() instanceof Ast.BindingPattern b && b.copiedScalarAlias()))
+                throw new IllegalArgumentException("E_UNSUPPORTED: scalar alias cannot capture borrowed subject");
+            Type subject = deref(rawSubject);
             Type declaredResult = valueMatch.resultType() == null ? null
                     : resolve(valueMatch.resultType(), generics, self);
             if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
@@ -9704,6 +9712,12 @@ public final class TypeChecker {
             Ast.Pattern pattern, Type subject, Env bindings, Set<String> generics, Type self) {
         if (pattern instanceof Ast.WildcardPattern) return;
         if (pattern instanceof Ast.BindingPattern binding) {
+            if (binding.copiedScalarAlias()) {
+                if (subject != Primitive.INT && subject != Primitive.BOOL)
+                    throw new IllegalArgumentException("E_UNSUPPORTED: whole alias requires a copied int/bool subject");
+                if (binding.scalarAnnotation() != null && !subject.equals(resolve(binding.scalarAnnotation(), generics, self)))
+                    throw new IllegalArgumentException("E_TYPE: alias annotation must equal subject type");
+            }
             bindings.define(binding.name(), subject, Ast.BindingKind.VAL);
             return;
         }

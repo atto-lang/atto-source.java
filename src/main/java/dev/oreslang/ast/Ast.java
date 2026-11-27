@@ -1206,7 +1206,18 @@ public final class Ast {
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
-    public record BindingPattern(String name) implements Pattern { }
+    /** A copied scalar whole-subject alias is distinct from a reference refinement. */
+    public record BindingPattern(String name, boolean copiedScalarAlias, TypeRef scalarAnnotation) implements Pattern {
+        public BindingPattern(String name) { this(name, false, null); }
+        public BindingPattern {
+            if (scalarAnnotation != null && (!copiedScalarAlias
+                    || !scalarAnnotation.arguments().isEmpty()
+                    || scalarAnnotation.inferArguments()
+                    || !java.util.Set.of("int", "bool").contains(scalarAnnotation.name()))) {
+                throw new IllegalArgumentException("E_TYPE: invalid copied scalar alias annotation");
+            }
+        }
+    }
 
     /** Nominal/runtime type pattern such as `Dog dog` or legacy `is Dog dog`. */
     public record TypePattern(TypeRef type, String binding) implements Pattern { }
