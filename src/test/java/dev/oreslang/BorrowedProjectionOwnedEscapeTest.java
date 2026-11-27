@@ -81,4 +81,19 @@ final class BorrowedProjectionOwnedEscapeTest {
         reject("define interface PointLike x: int; y: int; end "
                 + "fnc bad(structural PointLike input): int { return input[\"extra\"]; }");
     }
+    @Test void borrowedScalarArrayRestCanBeDetached() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
+                + "define class Numbers as pub val Array<int> values; end "
+                + "fnc snapshot(borrow Numbers input): Array<int> { "
+                + "const [head, ...rest] = input.values; return rest; }")));
+    }
+    @Test void borrowedNonCopyArrayRestCannotBeDetached() {
+        reject("define class Leaves as pub val Array<Leaf> values; end "
+                + "fnc bad(borrow Leaves input): Array<Leaf> { "
+                + "const [head, ...rest] = input.values; return rest; }");
+    }
+    @Test void borrowedScalarArrayItselfCannotBeReturned() {
+        reject("define class Numbers as pub val Array<int> values; end "
+                + "fnc bad(borrow Numbers input): Array<int> { return input.values; }");
+    }
 }
