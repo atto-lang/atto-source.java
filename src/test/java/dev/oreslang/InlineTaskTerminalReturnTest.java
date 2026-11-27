@@ -376,15 +376,15 @@ final class InlineTaskTerminalReturnTest {
         String source = """
                 pub fnc main(): int {
                   do sync task<void> {
-                    defer stdio.stdout.write("outer|");
+                    defer stdio.out.write("outer|");
                     val int result = sync task<int> {
-                      defer stdio.stdout.write("inner|");
+                      defer stdio.out.write("inner|");
                       return 42;
                     };
-                    stdio.stdout.write("joined|");
+                    stdio.out.write("joined|");
                     return;
                   }
-                  stdio.stdout.write("caller");
+                  stdio.out.write("caller");
                   return 42;
                 }
                 """;
@@ -456,20 +456,20 @@ final class InlineTaskTerminalReturnTest {
         String source = """
                 pub fnc main(): int {
                   do sync task<void> {
-                    defer stdio.stdout.write("outer|");
+                    defer stdio.out.write("outer|");
                     if true then
-                      defer stdio.stdout.write("branch|");
+                      defer stdio.out.write("branch|");
                       if true then
-                        defer stdio.stdout.write("inner|");
+                        defer stdio.out.write("inner|");
                         rt cooperate;
                         return;
                       fi
-                      stdio.stdout.write("bad-branch|");
+                      stdio.out.write("bad-branch|");
                       return;
                     fi
-                    stdio.stdout.write("bad-outer|");
+                    stdio.out.write("bad-outer|");
                   }
-                  stdio.stdout.write("caller");
+                  stdio.out.write("caller");
                   return 42;
                 }
                 """;
@@ -493,10 +493,10 @@ final class InlineTaskTerminalReturnTest {
                 pub async fnc main(): void {
                   val flag = SharedMutex.new(new Flag());
                   let Future<void> child = task {
-                    defer stdio.stdout.write("|outer");
+                    defer stdio.out.write("|outer");
                     do sync task<void> {
-                      defer stdio.stdout.write("|inline");
-                      stdio.stdout.write("started");
+                      defer stdio.out.write("|inline");
+                      stdio.out.write("started");
                       block {
                         val g = flag.lock();
                         g.value = 1;
@@ -505,7 +505,7 @@ final class InlineTaskTerminalReturnTest {
                         rt cooperate;
                       }
                     }
-                    stdio.stdout.write("|unreachable");
+                    stdio.out.write("|unreachable");
                     return;
                   };
                   let mut int started = 0;
@@ -518,8 +518,8 @@ final class InlineTaskTerminalReturnTest {
                   }
                   child.cancel();
                   val outcome = await child.get_done();
-                  stdio.stdout.write("|");
-                  stdio.stdout.write(outcome);
+                  stdio.out.write("|");
+                  stdio.out.write(outcome);
                   return;
                 }
                 """;
