@@ -35,12 +35,13 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
       - name: Run production parser admission and general parser regression tests
-        run: mvn -B -ntp -Dtest=GroupedActorSpawnParserAdmissionTest,ParserTest test
+        run: mvn -B -ntp -Dtest=GroupedActorSpawnParserAdmissionTest,ParserTest,ActorStartupPayloadTest test
       - name: Execute host-only quota and lifecycle smoke
         run: |
           set -euo pipefail
           mkdir -p target/grouped-spawn-host
           javac --release 21 -d target/grouped-spawn-host \
+            src/main/java/dev/oreslang/runtime/ActorStartupPayload.java \
             src/main/java/dev/oreslang/runtime/ActorSpawnReservation.java \
             src/test/java/dev/oreslang/runtime/ActorSpawnReservationSmoke.java
           java -cp target/grouped-spawn-host dev.oreslang.runtime.ActorSpawnReservationSmoke
