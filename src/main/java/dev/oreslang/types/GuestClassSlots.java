@@ -192,6 +192,13 @@ public final class GuestClassSlots {
         }
         synchronized (domain) {
             GraphLease lease = prepareDescendants(maxNodes, maxEdges);
+            // A back-edge to the source would freeze its own root slots and
+            // violate independent source/copy replacement. Reject before any
+            // lease activation or publication; retainDescendants itself still
+            // supports cycles for callers that need an ordinary read loan.
+            if (lease.protectedStores.contains(this)) {
+                throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: source root reachable from shared descendant");
+            }
             GuestClassSlots copy = new GuestClassSlots(domain, slots);
             copy.finishInitialization();
             ShallowSnapshot result = new ShallowSnapshot(copy, lease);
