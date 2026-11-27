@@ -234,6 +234,14 @@ public final class GuestClassSlots {
                 throw new IllegalArgumentException("E_COPY_BUDGET: active snapshot limit");
             }
             GraphLease lease = prepareDescendants(maxNodes, maxEdges);
+            // A back-edge to the original root would freeze that root's slots,
+            // violating the independent-root replacement contract. Reject before
+            // allocation/publication or activation of any descendant counter.
+            for (GuestClassSlots store : lease.protectedStores) {
+                if (store == this) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: cycle reaches source root");
+                }
+            }
             GuestClassSlots copy = new GuestClassSlots(domain, slots);
             copy.finishInitialization();
             ShallowSnapshot result = new ShallowSnapshot(this, copy, lease);
