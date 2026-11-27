@@ -213,6 +213,54 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void staticGeneratorAndSuspensionEffectsParticipateInAbiInvalidation() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> ordinary = Map.of(
+                "methods.ores", """
+                        pub define class Sequences as
+                          pub static fnc values(): int { return 1; }
+                        end
+                        """,
+                "consumer.ores", """
+                        import class Sequences from "./methods.ores";
+                        pub routine main(): void { return; }
+                        """);
+
+        compiler.compile(ordinary);
+
+        Map<String, String> generator = Map.of(
+                "methods.ores", """
+                        pub define class Sequences as
+                          pub static gen* values(): int {
+                            yield 1;
+                            return;
+                          }
+                        end
+                        """,
+                "consumer.ores", ordinary.get("consumer.ores"));
+        var generatorResult = compiler.compile(generator);
+        assertTrue(generatorResult.rebuilt("methods.ores"));
+        assertTrue(generatorResult.rebuilt("consumer.ores"),
+                "ordinary static fnc -> static generator changes activation semantics and must invalidate dependents");
+
+        Map<String, String> suspendGenerator = Map.of(
+                "methods.ores", """
+                        pub define class Sequences as
+                          pub static suspend gen* values(): int {
+                            rt cooperate;
+                            yield 1;
+                            return;
+                          }
+                        end
+                        """,
+                "consumer.ores", ordinary.get("consumer.ores"));
+        var suspendResult = compiler.compile(suspendGenerator);
+        assertTrue(suspendResult.rebuilt("methods.ores"));
+        assertTrue(suspendResult.rebuilt("consumer.ores"),
+                "sync generator -> suspend generator changes pull protocol and must invalidate dependents");
+    }
+
+    @Test
     void inferredPublicBindingsParticipateInAbiInvalidation() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> first = Map.of(

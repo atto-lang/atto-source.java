@@ -620,13 +620,16 @@ public final class TreeShaker {
                             method.isStatic(),
                             method.isAbstract(),
                             method.async(),
+                            method.suspends(),
+                            method.generator(),
                             method.structural(),
                             method.explicitReceiverType(),
                             method.genericParameters(),
                             method.parameters(),
                             method.returnType(),
                             method.annotations(),
-                            rewriteStatements(method.body(), module, locals)));
+                            rewriteStatements(method.body(), module, locals),
+                            method.effects()));
                 }
                 return new Ast.ClassDecl(
                         klass.name(),
