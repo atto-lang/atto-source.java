@@ -105,6 +105,25 @@ final class ContextualIntLowering {
             if(result.size()!=count)throw deny("argument arity");
             return result;
         }
+        List<String> captureSlots(){
+                word(owner);need(DOUBLE_COLON);need(LPAREN);
+                boolean named=token().type()==IDENT&&at+1<input.size()&&input.get(at+1).type()==EQUAL;
+                List<String> captured=new ArrayList<>(Collections.nCopies(contextCount,null));
+                for(int k=0;k<contextCount;k++){
+                    if(k>0)need(COMMA);
+                    int index=k;
+                    if(named){
+                        String key=name();need(EQUAL);index=schema.indexOf(key);
+                        if(index<0||captured.get(index)!=null)throw deny("unknown or duplicate named context");
+                    }
+                    String v=plain(false);
+                    String slot=PREFIX+"slot_"+slots++;
+                    out.append("val int ").append(slot).append(" = ").append(v).append(";\n");
+                    captured.set(index,slot);
+                }
+                need(RPAREN);
+                return captured;
+        }
         List<Token> lower(){
             need(DEFINE);need(CLASS);owner=name();need(AS);need(PUB);need(STATIC);need(FNC);
             member=name();need(DOUBLE_COLON);
@@ -145,26 +164,21 @@ final class ContextualIntLowering {
                 if(token().type()==IDENT&&aliases.containsKey(token().lexeme())){
                     aliases.put(n,aliases.get(token().lexeme()));at++;need(SEMICOLON);continue;
                 }
-                word(owner);need(DOUBLE_COLON);need(LPAREN);
-                boolean named=token().type()==IDENT&&at+1<input.size()&&input.get(at+1).type()==EQUAL;
-                List<String> captured=new ArrayList<>(Collections.nCopies(contextCount,null));
-                for(int k=0;k<contextCount;k++){
-                    if(k>0)need(COMMA);
-                    int index=k;
-                    if(named){
-                        String key=name();need(EQUAL);index=schema.indexOf(key);
-                        if(index<0||captured.get(index)!=null)throw deny("unknown or duplicate named context");
-                    }
-                    String v=plain(false);
-                    String slot=PREFIX+"slot_"+slots++;
-                    out.append("val int ").append(slot).append(" = ").append(v).append(";\n");
-                    captured.set(index,slot);
-                }
-                need(RPAREN);need(SEMICOLON);
+                List<String> captured=captureSlots();need(SEMICOLON);
                 aliases.put(n,List.copyOf(captured));
                 if(out.length()>65536)throw deny("lowering budget");
             }
-            need(RETURN);out.append("return ").append(plain(true)).append("; }");need(SEMICOLON);need(RBRACE);need(EOF);
+            need(RETURN);
+            boolean directNamed=at+4<input.size()&&token().lexeme().equals(owner)&&
+                input.get(at+1).type()==DOUBLE_COLON&&input.get(at+2).type()==LPAREN&&
+                input.get(at+3).type()==IDENT&&input.get(at+4).type()==EQUAL;
+            if(directNamed){
+                var captured=captureSlots();need(DOT);
+                if(!name().equals(member))throw deny("unknown contextual member");
+                captured.addAll(args(ordinaryCount));
+                out.append("return ").append(PREFIX).append("member(").append(String.join(", ",captured)).append("); }");
+            }else out.append("return ").append(plain(true)).append("; }");
+            need(SEMICOLON);need(RBRACE);need(EOF);
             if(at!=input.size()-1||out.length()>65536)throw deny("trailing input or output budget");
             return new Lexer(out.toString()).scan();
         }
