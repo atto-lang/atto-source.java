@@ -50,6 +50,9 @@ public final class Parser {
     // available: preserving ordinary CallExpr beats inventing guest authority.
     private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
     private int current;
+    private final java.util.Map<String, Ast.Pattern> storedPatterns = new java.util.LinkedHashMap<>();
+    private final java.util.Map<String, Ast.TypeRef> storedTypeSets = new java.util.LinkedHashMap<>();
+    private final java.util.Set<Integer> patternNameUses = new java.util.HashSet<>();
     // A long chain of contextual ownership prefixes must not exhaust the JVM
     // call stack before the compiler can issue a deterministic parse error.
     // This budget also covers other recursive unary and parenthesized forms.
@@ -440,6 +443,11 @@ public final class Parser {
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
+        while (check(CONST) && current + 1 < tokens.size()
+                && tokens.get(current + 1).lexeme().equals("Pattern")) {
+            if (!imports.isEmpty()) throw error(peek(), "stored patterns with imported names require lexical resolution");
+            parseStoredPatternDeclaration();
+        }
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
             if (match(EXPORT)) {
@@ -583,6 +591,12 @@ public final class Parser {
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
+        for (int i = 0; i < tokens.size(); i++) {
+            Token t = tokens.get(i);
+            if (t.type() == IDENT && (storedPatterns.containsKey(t.lexeme()) || storedTypeSets.containsKey(t.lexeme()))
+                    && !patternNameUses.contains(i))
+                throw error(t, "compile-time Pattern name cannot escape or be shadowed");
+        }
         validateExports(exports, rootDeclarations);
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
@@ -5820,7 +5834,7 @@ public final class Parser {
                 defaultArm = match(DEFAULT);
                 if (!defaultArm) {
                     if (seenDefault) throw error(peek(), "default match arm must be last");
-                    if (!matchContextualIdentifier("on") && !check(IS)) {
+                    if (!matchContextualIdentifier("on") && !check(IS) && !isContextualIdentifier("in")) {
                         if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
                         throw error(peek(), "match arm must start with 'on' or 'is'");
                     }
@@ -5943,7 +5957,7 @@ public final class Parser {
             boolean defaultArm = match(DEFAULT);
             if (!defaultArm) {
                 if (seenDefault) throw error(peek(), "default match arm must be last");
-                if (!matchContextualIdentifier("on") && !check(IS)) {
+                if (!matchContextualIdentifier("on") && !check(IS) && !isContextualIdentifier("in")) {
                     if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
                     throw error(peek(), "match arm must start with 'on' or 'is'");
                 }
@@ -6246,7 +6260,73 @@ public final class Parser {
     // First type-list slice uses the same checked union pattern as 'is T | U'.
     // Do not silently accept unknown descriptors, structural shapes or
     // generic erasure; those require canonical identity validation separately.
+    private Ast.TypeRef readStoredTypeSet() {
+        Token name = consume(IDENT, "expected compile-time Pattern[] name");
+        Ast.TypeRef result = storedTypeSets.get(name.lexeme());
+        if (result == null) throw error(name, "expected type-test-only Pattern[]");
+        patternNameUses.add(current - 1);
+        return result;
+    }
+
+    private Ast.TypeRef readStoredScalarType() {
+        Token name = consume(IDENT, "expected scalar type in stored pattern");
+        String canonical = switch (name.lexeme()) {
+            case "int" -> "int";
+            case "bool" -> "bool";
+            case "float" -> "float";
+            case "string" -> "string";
+            default -> throw error(name, "stored type test requires a canonical scalar type in this profile");
+        };
+        return new Ast.TypeRef(canonical, List.of(), false);
+    }
+
+    private void parseStoredPatternDeclaration() {
+        consume(CONST, "expected const");
+        consume(IDENT, "expected Pattern");
+        boolean array = match(LBRACKET);
+        if (array) consume(RBRACKET, "expected Pattern[]");
+        Token name = consume(IDENT, "expected Pattern name");
+        int at = current - 1;
+        if (storedPatterns.containsKey(name.lexeme()) || storedTypeSets.containsKey(name.lexeme())
+                || java.util.Set.of("Pattern", "on", "in", "_", "int", "bool", "float", "string").contains(name.lexeme())
+                || storedPatterns.size() + storedTypeSets.size() >= 128)
+            throw error(name, "duplicate, reserved or over-budget Pattern name");
+        consume(EQUAL, "expected '=' in Pattern declaration");
+        if (array) {
+            consume(LBRACKET, "expected '[' in Pattern[]");
+            List<Ast.TypeRef> members = new ArrayList<>();
+            do {
+                consume(IS, "only type-test Pattern[] members supported in this profile");
+                Ast.TypeRef member = readStoredScalarType();
+                if (members.contains(member)) throw error(previous(), "duplicate canonical type in Pattern[]");
+                members.add(member);
+            } while (match(COMMA));
+            consume(RBRACKET, "expected ']' in Pattern[]");
+            storedTypeSets.put(name.lexeme(), Ast.TypeRef.union(members));
+        } else {
+            Ast.Pattern pattern;
+            if (match(IS)) {
+                Ast.TypeRef type = matchContextualIdentifier("in") ? parseScalarMatchTypeList() : readStoredScalarType();
+                pattern = new Ast.TypePattern(type, null);
+            } else {
+                if (!matchContextualIdentifier("on")) throw error(peek(), "stored scalar pattern requires on or is");
+                if (check(IDENT) && storedPatterns.containsKey(peek().lexeme())) {
+                    patternNameUses.add(current);
+                    pattern = storedPatterns.get(advance().lexeme());
+                } else {
+                    if (!(check(INT) || check(FLOAT) || check(STRING) || check(TRUE) || check(FALSE) || check(SYMBOL_LITERAL)))
+                        throw error(peek(), "stored pattern requires a compile-time scalar literal");
+                    pattern = parsePattern();
+                }
+            }
+            storedPatterns.put(name.lexeme(), pattern);
+        }
+        consume(SEMICOLON, "Pattern declaration requires ';'");
+        patternNameUses.add(at);
+    }
+
     private Ast.TypeRef parseScalarMatchTypeList() {
+        if (!check(LBRACKET)) return readStoredTypeSet();
         consume(LBRACKET, "expected '[' after 'is in'");
         if (check(RBRACKET)) throw error(peek(), "type list must not be empty");
         List<Ast.TypeRef> types = new ArrayList<>();
@@ -6268,6 +6348,15 @@ public final class Parser {
     }
 
     private Ast.Pattern parsePattern() {
+        if (check(IDENT) && storedPatterns.containsKey(peek().lexeme())) {
+            patternNameUses.add(current);
+            return storedPatterns.get(advance().lexeme());
+        }
+        if (check(IDENT) && storedTypeSets.containsKey(peek().lexeme()))
+            throw error(peek(), "Pattern[] requires in or is in, not on");
+        if (matchContextualIdentifier("in")) {
+            return new Ast.TypePattern(readStoredTypeSet(), null);
+        }
         if (match(BANG)) {
             // A negative type pattern is a complement of the runtime-reifiable
             // type test, not a cast to the excluded type.

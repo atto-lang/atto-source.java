@@ -140,6 +140,50 @@ final class PipelineMatchExpressionTest {
     }
 
     @Test
+    void storedScalarPatternsAndTypeSetsExecuteThroughExistingMatch() throws Exception {
+        String source = """
+                const Pattern p = on 5;
+                const Pattern s = on "x";
+                const Pattern b = on true;
+                const Pattern[] type_patterns = [is int, is bool];
+                fnc choose(int | bool value): int {
+                    return match value over {
+                        on p -> 5;
+                        is in type_patterns -> 42;
+                    };
+                }
+                fnc text(string value): int {
+                    return match value over { on s -> 42; on _ -> 0; };
+                }
+                fnc flag(bool value): int {
+                    return match value over { on b -> 42; on false -> 0; };
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(choose(5));
+                    stdio.stdout.write(choose(true));
+                    stdio.stdout.write(text("x"));
+                    stdio.stdout.write(flag(true));
+                }
+                """;
+        var program = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        var output = new ByteArrayOutputStream();
+        String name = "stored-patterns.ores";
+        try (var lease = OresLanguage.openPrecheckedProgram(name, source, program);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
+        }
+        assertEquals("5424242", output.toString(StandardCharsets.UTF_8));
+        for (String bad : new String[] {
+                "const Pattern p = on q; fnc f():int { return 42; }",
+                "const Pattern[] z = [is int,is int]; fnc f():int { return 42; }",
+                "const Pattern[] z = [is int,on 5]; fnc f():int { return 42; }",
+                "const Pattern p = on 5; fnc f():int { return p; }",
+                "const Pattern p = on 5; fnc f(int p):int { return match p over on p -> 42, on _ -> 0 end; }"
+        }) assertThrows(IllegalArgumentException.class, () -> Parser.parseStrictAtto(bad), bad);
+    }
+
+    @Test
     void braceDelimitedResultMatchContinuesPipeline() {
         String source = """
                 fnc increment(int n): int { return n + 1; }
