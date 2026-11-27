@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -47,13 +48,15 @@ final class RecursiveRecordParserTest {
         assertEquals(parse("foo(outer={inner:42})"),parse("foo(\"outer\"={\"inner\":42})"));
         reject("foo((x:42))", "E_RECORD_CONTEXT");
         reject("foo((x=42))", "E_RECORD_CONTEXT");
-        // Explicitly distinguish unsupported nominal Pair from named argument/Record.
-        // These are fail-closed staging tests, NOT successful Pair conformance.
-        reject("foo(x:=42)", "E_PAIR_UNSUPPORTED");
-        reject("foo((x:=42))", "E_PAIR_UNSUPPORTED");
-        reject("foo((x:=42,))", "E_PAIR_UNSUPPORTED");
-        reject("foo(x:=1,y:=2)", "E_PAIR_UNSUPPORTED");
-        reject("foo((x:=1,y:=2))", "E_PAIR_UNSUPPORTED");
+        assertEquals(parse("foo(x:=42)"),parse("foo((x:=42))"));
+        assertNotEquals(parse("foo(x:=42)"),parse("foo(x=42)"));
+        assertNotEquals(parse("foo(x:=42)"),parse("foo({x:=42})"));
+        assertNotEquals(parse("foo(x:=42)"),parse("foo((x:=42,))"));
+        assertNotEquals(parse("foo(x:=1,y:=2)"),parse("foo((x:=1,y:=2))"));
+        assertEquals(parse("foo(x:=42)"),parse("foo(\"x\":=42)"));
+        reject("foo(n=1,x:=42)","positional arguments cannot follow named arguments");
+        reject("foo(x: =42)","expected expression");
+        reject("foo(x:/* gap */=42)","expected expression");
         reject("foo(x=(y=42))", "E_RECORD_CONTEXT");
         reject("foo(x=(obj.field=42))", "E_RECORD_FIELD");
         rejectBinding("const Record x=(a:1).a","E_RECORD_CONTEXT");
@@ -62,6 +65,39 @@ final class RecursiveRecordParserTest {
         reject("foo(\"x\"=1,\"\\u0078\"=2)", "duplicate named argument");
         rejectBinding("const Record x=(outer:=(inner:42))","E_RECORD_CONTEXT");
         rejectBinding("const Record x=(outer:=(inner=42))","E_RECORD_CONTEXT");
+    }
+
+    @Test void nominalProductNodesAndAssociativity() {
+        assertEquals(parse("x:=42"),parse("(x:=42)"));
+        assertEquals(parse("x:=42"),parse("\"x\":=42"));
+        assertNotEquals(parse("x:=42"),parse("\"x\"=>42"));
+        assertNotEquals(parse("x:=42"),parse("x=>42"));
+        assertNotEquals(parse("x:=42"),parse("{x:42}"));
+        assertNotEquals(parse("x:=42"),parse("(x:=42,)"));
+        assertNotEquals(parse("x:=42"),parse("(42,5)"));
+        assertDoesNotThrow(() -> parse("outer:=(inner:=42)"));
+        assertDoesNotThrow(() -> parse("outer:={inner:42}"));
+        assertDoesNotThrow(() -> parse("{outer:inner:=42}"));
+        assertDoesNotThrow(() -> parse("(x:=1,y:=2)"));
+        assertDoesNotThrow(() -> parse("foo(\"x\"=>42)"));
+        assertDoesNotThrow(() -> parse("foo(x:=1,n=2)"));
+        reject("x:=y:=42","E_PRODUCT_CHAIN");
+        reject("x:=1=>42","E_PRODUCT_CHAIN");
+        reject("1=>x:=42","E_PRODUCT_CHAIN");
+        reject("1=>2=>3","E_PRODUCT_CHAIN");
+        reject("(x+1):=42","E_PRODUCT_KEY");
+    }
+
+    @Test void executableNominalProductGateRemainsClosed() {
+        // These are explicitly staging checks, not conformance passes.
+        for (String expression : new String[]{"x:=42", "(x:=42)", "\"x\"=>42",
+                "(x:=42,)", "{x:(y:=42)}"}) {
+            String src = "pub fnc main(): void { val result = " + expression + "; return; }";
+            assertDoesNotThrow(() -> Parser.parseStrictAtto(src));
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheckStrictAtto(src), expression);
+            assertTrue(failure.getMessage().contains("E_NOMINAL_PRODUCT_UNSUPPORTED"),failure::getMessage);
+        }
     }
 
     @Test void staticLabelsAndMixedKindRejection() {
@@ -86,6 +122,17 @@ final class RecursiveRecordParserTest {
     @Test void typedMapAndOrdinaryTupleControls() {
         assertDoesNotThrow(() -> parseBinding("const Map<string,int> m={}"));
         assertDoesNotThrow(() -> parseBinding("const Map<string,int> m={\"x-y\"=>42}"));
+        assertEquals(parse("{\"name\"=>42}"),parse("Map.of<string,int>(\"name\"=>42)"));
+        assertNotEquals(parse("{\"name\"=>42}"),parse("{\"name\":42}"));
+        assertDoesNotThrow(() -> parse("{\"name\"=>\"Alice\",\"other\"=>\"Bob\"}"));
+        assertDoesNotThrow(() -> parse("{#ready=>true,#done=>false}"));
+        reject("{\"name\"=>42,\"other\"=>true}","E_MAP_INFERENCE");
+        reject("{1=>42}","E_MAP_INFERENCE");
+        reject("{key=>42}","E_MAP_INFERENCE");
+        reject("{\"x\"=>1,y:2}","E_LITERAL_KIND");
+        reject("{\"x\"=>1=>2}","E_PRODUCT_CHAIN");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(
+                "pub fnc main(): void { const m = {\"alpha\"=>1,\"beta\"=>2}; return; }"));
         rejectBinding("const Map<string,int> m={\"x\"=>1,y:2}","E_LITERAL_KIND");
         assertEquals(parse("(1)"),parse("1"));
         assertNotEquals(parse("(1,)"),parse("1"));
