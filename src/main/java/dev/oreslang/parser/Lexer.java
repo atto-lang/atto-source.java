@@ -254,6 +254,7 @@ public final class Lexer {
     }
 
     private void string(char quote) {
+        int tokenLine = line;
         StringBuilder value = new StringBuilder();
         while (!isAtEnd() && peek() != quote) {
             char c = advance();
@@ -276,7 +277,7 @@ public final class Lexer {
         if (isAtEnd()) throw error("unterminated string");
         advance();
         validateDecodedUnicode(value, "string");
-        tokens.add(new Token(STRING, value.toString(), line, startColumn));
+        tokens.add(new Token(STRING, value.toString(), tokenLine, startColumn, quote));
     }
 
     private void validateDecodedUnicode(CharSequence value, String kind) {

@@ -1477,6 +1477,8 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.PairExpr || expr instanceof Ast.EntryExpr)
+            throw error(E_UNSUPPORTED, "nominal Pair/Entry requires checked ownership and guest lowering");
         if (expr instanceof Ast.MatchExpr match) {
             Ast.TypeRef scrutineeType = syntacticType(match.subject(), scope);
             boolean recoverableWrite = isTryWriteResult(scrutineeType);

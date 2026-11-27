@@ -1516,7 +1516,26 @@ public final class Ast {
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr, NamedArgExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
-            TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
+            TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr, PairExpr, EntryExpr { }
+
+    /** Nominal product syntax. The lexical key is never a variable lookup.
+     *  Deliberately gated at executable type and ownership admission until
+     *  nominal product representation, projections and guest lowering exist.
+     */
+    public record PairExpr(String key, Expr value) implements Expr {
+        public PairExpr {
+            java.util.Objects.requireNonNull(key, "Pair key");
+            java.util.Objects.requireNonNull(value, "Pair value");
+        }
+    }
+
+    /** Entry preserves an evaluated key expression, not a static field label. */
+    public record EntryExpr(Expr key, Expr value) implements Expr {
+        public EntryExpr {
+            java.util.Objects.requireNonNull(key, "Entry key");
+            java.util.Objects.requireNonNull(value, "Entry value");
+        }
+    }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.

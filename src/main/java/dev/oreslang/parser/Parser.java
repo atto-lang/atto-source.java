@@ -2502,7 +2502,7 @@ public final class Parser {
             type = parseTypeRef();
             name = consume(IDENT, "expected field name").lexeme();
         }
-        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        Ast.Expr initializer = match(EQUAL) ? parseBindingInitializer(type) : null;
         if (type == null && initializer == null) {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
@@ -2600,7 +2600,7 @@ public final class Parser {
         }
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         consume(EQUAL, "module bindings require an initializer");
-        Ast.Expr initializer = parseExpression();
+        Ast.Expr initializer = parseBindingInitializer(type);
         if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
             throw error(previous(), "'const fnc' requires a lambda initializer");
         }
@@ -5283,7 +5283,7 @@ public final class Parser {
                 throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple (...) literal");
             }
         } else {
-            initializer = parseExpression();
+            initializer = parseBindingInitializer(type);
         }
         if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
             throw error(previous(), "'const fnc' requires a lambda initializer");
@@ -6586,7 +6586,7 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
-        Ast.Expr expr = parsePipeline();
+        Ast.Expr expr = parseAssociation();
         rejectUnsupportedActorPipeline();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
@@ -6595,6 +6595,36 @@ public final class Parser {
             return new Ast.AssignExpr(expr, parseAssignment());
         }
         return expr;
+    }
+
+    /** Nonassociative product operators are outside the ordinary pipeline
+     *  precedence. Pair keys are lexical; Entry keys are expressions.
+     *  Nested products need their own grouping. Do not consume the map
+     *  entry delimiter in parseMapOperand (it deliberately calls parsePipeline).
+     */
+    private Ast.Expr parseAssociation() {
+        if (!canonicalAttoSource) return parsePipeline();
+        if ((check(IDENT) || check(STRING)) && colonEqualsAt(current + 1)) {
+            String key = advance().lexeme();
+            advance(); advance(); // adjacent colon and equals
+            Ast.Expr value = parsePipeline();
+            rejectAssociationTail();
+            return new Ast.PairExpr(key, value);
+        }
+        Ast.Expr key = parsePipeline();
+        if (match(FAT_ARROW)) {
+            Ast.Expr value = parsePipeline();
+            rejectAssociationTail();
+            return new Ast.EntryExpr(key, value);
+        }
+        if (colonEqualsAt(current))
+            throw error(peek(), "E_PRODUCT_KEY: Pair key must be a bare identifier or string literal");
+        return key;
+    }
+
+    private void rejectAssociationTail() {
+        if (check(FAT_ARROW) || colonEqualsAt(current))
+            throw error(peek(), "E_PRODUCT_CHAIN: group nested Pair/Entry associations explicitly");
     }
 
     /**
@@ -8103,16 +8133,37 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            if (canonicalAttoSource) {
+                if (match(RPAREN)) return new Ast.TupleExpr(List.of());
+                if (startsForbiddenParenthesizedField())
+                    throw error(peek(), "E_RECORD_CONTEXT: anonymous Record literals require braces");
+            }
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
                 items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
+                if (canonicalAttoSource) {
+                    while (!check(RPAREN)) {
+                        if (startsForbiddenParenthesizedField())
+                            throw error(peek(), "E_RECORD_CONTEXT: anonymous Record literals require braces");
+                        items.add(parseExpression());
+                        if (items.size() > 4096)
+                            throw error(peek(), "E_SOURCE_LIMIT: tuple exceeds 4096 items");
+                        if (!match(COMMA)) break;
+                    }
+                } else {
+                    do items.add(parseExpression()); while (match(COMMA));
+                }
                 consume(RPAREN, "expected ')' after tuple");
                 return new Ast.TupleExpr(items);
             }
             consume(RPAREN, "expected ')' after expression");
             return first;
+        }
+        if (canonicalAttoSource && match(LBRACE)) {
+            if (check(RBRACE)) throw error(peek(), "E_EMPTY_AGGREGATE: empty braces require an explicit aggregate declaration");
+            if (startsRecordItem(current, true)) return parseDelimitedRecord(RBRACE, true);
+            return parseTypedBraceMap(null);
         }
         if (match(LBRACKET)) {
             List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
@@ -8180,6 +8231,7 @@ public final class Parser {
 
     private String readInlineRecordPairName() {
         String name = readInlinePairString();
+        if (canonicalAttoSource) return checkedDecodedRecordLabel(previous());
         // Use the same lexer as parameter declarations, and require exact
         // spelling, not merely one token after trivia/comment removal.
         List<Token> parts = new Lexer(name).scan();
@@ -8237,9 +8289,9 @@ public final class Parser {
                 value = parseExpression();
                 consume(RPAREN, "product factory requires exactly two arguments");
             } else {
-                key = parseExpression();
+                key = canonicalAttoSource ? parseMapOperand() : parseExpression();
                 consume(FAT_ARROW, "map literals require '=>' between key and value");
-                value = parseExpression();
+                value = canonicalAttoSource ? parseMapValue() : parseExpression();
             }
             // Reject mixed-kind constant duplicates in the new factory syntax.
             // Preserve legacy homogeneous arrow duplicate detection at runtime.
@@ -8282,12 +8334,17 @@ public final class Parser {
                 } else {
                     Token fieldToken = peek();
                     name = consumeStaticObjectKeyName("expected static Record.of field name");
+                    if (canonicalAttoSource) {
+                        if (fieldToken.type() == STRING) name = checkedQuotedRecordLabel(fieldToken);
+                        else if (fieldToken.type() != IDENT)
+                            throw error(fieldToken, "E_RECORD_LABEL: expected ordinary identifier label");
+                    }
                     if (check(FAT_ARROW)) {
                         throw error(peek(), "mixed record and map entries are forbidden: Record.of does not accept Entry arrows");
                     }
                     // Retain existing colon spelling for compatibility.
                     if (match(EQUAL)) {
-                        if (fieldToken.type() != IDENT)
+                        if (fieldToken.type() != IDENT && !(canonicalAttoSource && fieldToken.type() == STRING))
                             throw error(fieldToken, "Record.of equals field must be a parameter identifier");
                     } else consume(COLON, "Record.of requires '=' or legacy ':' after a field name");
                 }
@@ -8537,6 +8594,200 @@ public final class Parser {
         return false;
     }
 
+    // Direct declaration grammar only; never propagate into nested expressions.
+    private boolean explicitBuiltin(Ast.TypeRef type, String name) {
+        return type != null && type.name().equals(name) && !type.inferArguments()
+                && !shadowedOfTypes.contains(name);
+    }
+
+    private Token.Type kindAt(int index) {
+        return index < tokens.size() ? tokens.get(index).type() : EOF;
+    }
+
+    // The legacy lexer represents := as two tokens. Require adjacency here;
+    // standalone Pair token/AST support is a separate, still unimplemented stage.
+    private boolean colonEqualsAt(int index) {
+        return kindAt(index) == COLON && kindAt(index + 1) == EQUAL
+                && adjacent(tokens.get(index), tokens.get(index + 1));
+    }
+
+    private boolean startsRecordItem(int index, boolean allSeparators) {
+        Token.Type first = kindAt(index);
+        Token.Type second = kindAt(index + 1);
+        if (first == COLON && second == IDENT) return true;
+        if (first != IDENT && first != STRING) return false;
+        return second == COLON && (allSeparators || !colonEqualsAt(index + 1))
+                || allSeparators && second == EQUAL;
+    }
+
+    private boolean startsForbiddenParenthesizedField() {
+        return startsRecordItem(current, false)
+                || ((check(IDENT) || check(STRING)) && checkNext(EQUAL));
+    }
+
+    private Ast.Expr parseBindingInitializer(Ast.TypeRef type) {
+        if (canonicalAttoSource) {
+            boolean record = explicitBuiltin(type, "Record") && type.arguments().isEmpty();
+            boolean map = explicitBuiltin(type, "Map") && type.arguments().size() == 2;
+            if (check(LPAREN) && !looksLikeLambda()) {
+                if (record && (kindAt(current + 1) == RPAREN || startsRecordItem(current + 1, true))) {
+                    advance();
+                    return requireDirectRecordInitializer(parseDelimitedRecord(RPAREN, true));
+                }
+                if (type == null && startsRecordItem(current + 1, false)) {
+                    advance();
+                    return requireDirectRecordInitializer(parseDelimitedRecord(RPAREN, false));
+                }
+            }
+            if (check(LBRACE)) {
+                if (kindAt(current + 1) == RBRACE && (record || map)) {
+                    advance(); advance();
+                    return record ? new Ast.ObjectExpr(List.of(), Ast.ObjectKind.RECORD, List.of())
+                            : new Ast.TypedEmptyAggregateExpr(type);
+                }
+                if (map && !startsRecordItem(current + 1, true)) {
+                    advance();
+                    return parseTypedBraceMap(type);
+                }
+            }
+        }
+        return parseExpression();
+    }
+
+    private Ast.ObjectExpr requireDirectRecordInitializer(Ast.ObjectExpr record) {
+        if (!check(SEMICOLON) && !isSafeStatementBoundary() && !isImplicitNewlineTerminator())
+            throw error(peek(), "E_RECORD_CONTEXT: parenthesized Record must be the complete declaration initializer");
+        return record;
+    }
+
+    private Ast.MapLiteralExpr parseTypedBraceMap(Ast.TypeRef type) {
+        List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+        do {
+            if (startsRecordItem(current, true))
+                throw error(peek(), "E_LITERAL_KIND: mixed Map and Record items");
+            Ast.Expr key = parseMapOperand();
+            consume(FAT_ARROW, "expected '=>' after Map key");
+            Ast.Expr value = parseMapValue();
+            entries.add(new Ast.MapLiteralEntry(key, value));
+            if (entries.size() > 4096)
+                throw error(peek(), "E_SOURCE_LIMIT: Map exceeds 4096 entries");
+            if (!match(COMMA)) break;
+        } while (!check(RBRACE));
+        consume(RBRACE, "expected '}' after Map literal");
+        // Initial inferred domain: nonempty homogeneous literal scalar entries
+        // only. Reuse the existing checked Map witness; never infer from an
+        // expected call type or silently fall back to Any/Any.
+        if (type == null) type = inferLiteralMapWitness(entries);
+        return new Ast.MapLiteralExpr(type, entries);
+    }
+
+    private Ast.Expr parseMapOperand() {
+        Ast.Expr expr = parsePipeline();
+        if (check(EQUAL) || expr instanceof Ast.AssignExpr || colonEqualsAt(current))
+            throw error(peek(), "E_MAP_OPERAND: assignment or ungrouped Pair is not a Map operand");
+        return expr;
+    }
+
+    private Ast.Expr parseMapValue() {
+        Ast.Expr expr = parseMapOperand();
+        rejectAssociationTail();
+        return expr;
+    }
+
+    private Ast.TypeRef inferLiteralMapWitness(List<Ast.MapLiteralEntry> entries) {
+        if (shadowedOfTypes.contains("Map"))
+            throw error(previous(), "E_MAP_INFERENCE: canonical Map is shadowed");
+        String key = null;
+        String value = null;
+        for (Ast.MapLiteralEntry entry : entries) {
+            String k = literalMapScalarType(entry.key());
+            String v = literalMapScalarType(entry.value());
+            if (!"string".equals(k) && !"Symbol".equals(k)
+                    || v == null || key != null && !key.equals(k)
+                    || value != null && !value.equals(v))
+                throw error(previous(), "E_MAP_INFERENCE: homogeneous String/Symbol keys and literal scalar values required; use an explicit supported Map<K,V> witness");
+            key = k;
+            value = v;
+        }
+        if (key == null || value == null)
+            throw error(previous(), "E_EMPTY_AGGREGATE: empty Map requires an explicit declaration");
+        return new Ast.TypeRef("Map", List.of(Ast.TypeRef.simple(key), Ast.TypeRef.simple(value)), false);
+    }
+
+    private static String literalMapScalarType(Ast.Expr expression) {
+        if (!(expression instanceof Ast.LiteralExpr literal)) return null;
+        Object value = literal.value();
+        if (value instanceof String) return "string";
+        if (value instanceof Long || value instanceof Integer) return "int";
+        if (value instanceof Boolean) return "bool";
+        if (value instanceof dev.oreslang.runtime.OresSymbol) return "Symbol";
+        return null;
+    }
+
+    private String checkedQuotedRecordLabel(Token label) {
+        if (label.stringQuote() != '"')
+            throw error(label, "E_RECORD_LABEL: expected ordinary double-quoted identifier label");
+        return checkedDecodedRecordLabel(label);
+    }
+
+    private String checkedDecodedRecordLabel(Token label) {
+        List<Token> decoded;
+        try {
+            decoded = new Lexer(label.lexeme()).scan();
+        } catch (IllegalArgumentException invalid) {
+            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
+        }
+        if (decoded.size() != 2 || decoded.getFirst().type() != IDENT
+                || !decoded.getFirst().lexeme().equals(label.lexeme())
+                || label.lexeme().codePoints().anyMatch(Character::isISOControl))
+            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
+        return label.lexeme();
+    }
+
+    private Ast.Expr parseRecordFieldValue() {
+        // An ungrouped second '=' cannot be a hidden assignment expression.
+        Ast.Expr value = parseAssociation();
+        if (check(EQUAL) || value instanceof Ast.AssignExpr)
+            throw error(peek(), "E_RECORD_FIELD: assignment is not a Record field value");
+        return value;
+    }
+
+    private Ast.ObjectExpr parseDelimitedRecord(Token.Type terminator, boolean allSeparators) {
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        while (!check(terminator)) {
+            if (!startsRecordItem(current, allSeparators))
+                throw error(peek(), "E_LITERAL_KIND: mixed Record and non-Record items");
+            Token label = peek();
+            String name;
+            Ast.Expr value;
+            if (match(COLON)) {
+                label = consume(IDENT, "expected identifier after Record capture ':'");
+                name = label.lexeme();
+                value = new Ast.NameExpr(name);
+            } else {
+                advance();
+                name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
+                if (allSeparators && colonEqualsAt(current)) {
+                    advance(); advance();
+                } else if (allSeparators && match(EQUAL)) {
+                    // explicit equals field separator
+                } else {
+                    consume(COLON, "expected Record field separator");
+                }
+                value = parseRecordFieldValue();
+            }
+            if (!names.add(name))
+                throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+            fields.add(Ast.ObjectField.named(name, value));
+            if (fields.size() > 4096)
+                throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
+            if (!match(COMMA)) break;
+        }
+        consume(terminator, "expected closing delimiter after Record literal");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
@@ -8552,14 +8803,16 @@ public final class Parser {
                 args.add(new Ast.SpreadExpr(parseExpression()));
                 continue;
             }
-            if (check(IDENT) && checkNext(COLON)) {
+            if ((check(IDENT) && ((checkNext(COLON) && (!canonicalAttoSource || !colonEqualsAt(current + 1))) || (canonicalAttoSource && checkNext(EQUAL))))
+                    || (canonicalAttoSource && check(STRING) && checkNext(EQUAL))) {
                 namedStarted = true;
-                String name = advance().lexeme();
-                consume(COLON, "expected ':' after named argument");
+                Token label = advance();
+                String name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
+                advance(); // ':' or '=' in canonical Atto
                 if (!seenLabels.add(name)) {
                     throw error(previous(), "duplicate named argument '" + name + "'");
                 }
-                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                args.add(new Ast.NamedArgExpr(name, canonicalAttoSource ? parseRecordFieldValue() : parseExpression()));
                 continue;
             }
             if (namedStarted) {
