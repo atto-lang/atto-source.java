@@ -14,12 +14,11 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Loads compiler-owned Oreslang library source from packaged resources.
+ * Loads compiler-owned AttoLang library sources from packaged resources.
  *
- * <p>Oreslang exposes exactly two public library namespaces:
- * {@code ores.core/*} is freestanding/no-OS source and {@code ores.std/*}
- * is hosted/platform source. Legacy {@code std/*} remains a compatibility
- * spelling for {@code ores.std/*}; it is not a third library layer.</p>
+ * <p>Canonical core, alloc and std namespaces coexist with closed legacy
+ * aliases. The optional actor runtime namespace is reserved separately;
+ * unsupported modules must not resolve through ambient project paths.</p>
  */
 public final class CoreLibrarySources {
     private static final String CORE_IMPORT_PREFIX = "ores.core/";
@@ -288,7 +287,7 @@ public final class CoreLibrarySources {
     public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        for (String root : new String[] {"ores.core", "ores.std", "atto.core", "atto.alloc", "atto.std", "alloc"}) {
+        for (String root : new String[] {"ores.core", "ores.std", "atto.core", "atto.alloc", "atto.std", "atto.runtime.actor", "alloc"}) {
             if (normalized.equals(root) || normalized.startsWith(root + "/")) return true;
         }
         return false;
@@ -420,7 +419,7 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException("Oreslang library import must name a module");
         }
 
-        String[] segments = raw.split("/");
+        String[] segments = raw.split("/", -1);
         if (segments.length > MAX_MODULE_SEGMENTS) {
             throw new IllegalArgumentException("Oreslang library import nesting is too deep");
         }
