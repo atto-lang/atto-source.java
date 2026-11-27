@@ -17,12 +17,18 @@ final class ActorSpawnReservation {
     ActorSpawnReservation(Charge limit) { this.limit = java.util.Objects.requireNonNull(limit); }
 
     synchronized Permit reserve(Charge charge) {
+        return reserve(charge, null, null);
+    }
+    synchronized Permit reserve(Charge charge, ActorStartupPayload.Schema schema, ActorStartupPayload startup) {
         java.util.Objects.requireNonNull(charge);
+        if ((schema == null) != (startup == null) ||
+                (startup != null && (!startup.matches(schema) || startup.bytes() > charge.heap)))
+            throw new IllegalArgumentException("E_SPAWN_INIT_PAYLOAD");
         if (charge.heap > limit.heap - heap || charge.stacks > limit.stacks - stacks ||
                 charge.mailboxBytes > limit.mailboxBytes - mailboxBytes || charge.messages > limit.messages - messages)
             throw new IllegalStateException("E_SPAWN_QUOTA");
         if (generation == Long.MAX_VALUE) throw new IllegalStateException("E_SPAWN_GENERATION_EXHAUSTED");
-        Permit p = new Permit(this, generation + 1, charge);
+        Permit p = new Permit(this, generation + 1, charge, startup);
         active.add(p);
         generation++;
         heap += charge.heap; stacks += charge.stacks;
@@ -38,6 +44,17 @@ final class ActorSpawnReservation {
         p.initLease = lease;
         return lease;
     }
+    /** Host-only one-shot startup slot, authenticated by the live init lease. */
+    synchronized ActorStartupPayload takeStartup(InitLease lease) {
+        if (lease == null) throw new IllegalStateException("E_SPAWN_INIT_AUTHORITY");
+        Permit p = lease.permit;
+        requireActive(p);
+        if (p.initLease != lease || p.phase != Phase.INITIALIZING || p.startup == null)
+            throw new IllegalStateException("E_SPAWN_INIT_AUTHORITY");
+        ActorStartupPayload value = p.startup;
+        p.startup = null;
+        return value;
+    }
     /** Settle exactly once, including cancellation after retirement. */
     synchronized boolean completeInit(InitLease lease, boolean success) {
         if (lease == null) throw new IllegalStateException("E_SPAWN_INIT_AUTHORITY");
@@ -45,6 +62,7 @@ final class ActorSpawnReservation {
         requireActive(p);
         if (p.initLease != lease) throw new IllegalStateException("E_SPAWN_INIT_AUTHORITY");
         p.initLease = null;
+        p.startup = null;
         if (p.phase == Phase.RETIRING || !success) {
             p.phase = Phase.RETIRING;
             return false;
@@ -82,6 +100,7 @@ final class ActorSpawnReservation {
         requireActive(p);
         if (p.phase != Phase.RETIRING) throw new IllegalStateException("E_SPAWN_NOT_RETIRED");
         if (p.initLease != null || p.receives != 0) throw new IllegalStateException("E_SPAWN_IN_FLIGHT");
+        p.startup = null;
         active.remove(p);
         Charge c = p.charge;
         heap -= c.heap; stacks -= c.stacks;
@@ -101,8 +120,10 @@ final class ActorSpawnReservation {
         private boolean initStarted;
         private InitLease initLease;
         private long receives;
-        private Permit(ActorSpawnReservation owner, long generation, Charge charge) {
+        private ActorStartupPayload startup;
+        private Permit(ActorSpawnReservation owner, long generation, Charge charge, ActorStartupPayload startup) {
             this.owner = owner; this.generation = generation; this.charge = charge;
+            this.startup = startup;
         }
     }
     static final class InitLease {
