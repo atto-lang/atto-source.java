@@ -189,7 +189,7 @@ public final class Parser {
     }
 
     public static Ast.Program parse(String source) {
-        return new Parser(new Lexer(source).scan()).parseProgram();
+        return new Parser(ContextualIntLowering.lower(new Lexer(source).scan())).parseProgram();
     }
 
     /** Explicit draft v1/v2 source grammar. This is a real parser entrypoint,
