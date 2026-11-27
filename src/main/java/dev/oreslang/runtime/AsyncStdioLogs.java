@@ -59,6 +59,11 @@ public final class AsyncStdioLogs implements AutoCloseable {
         return true;
     }
 
+    // Trusted runtime diagnostic, not a guest endpoint.
+    int pendingAdmissionCount() {
+        synchronized (lock) { return waiting.size(); }
+    }
+
     // All queue/sequence changes and cancellation arbitration occur under lock.
     private boolean canAdmitLocked(int bytes) {
         return queue.remainingCapacity() > 0 && bytes <= MAX_ACCEPTED_BYTES - acceptedBytes;
