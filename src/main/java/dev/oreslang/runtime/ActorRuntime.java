@@ -1096,6 +1096,19 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    /** Stable logical virtual-actor ownership; passivation does not release this edge. */
+    private final ConcurrentHashMap<VirtualActorActivationRegistry.Identity, SupervisorId> virtualActorOwners =
+            new ConcurrentHashMap<>();
+    /** One canonical host directory instance per supervisor prevents split local registries. */
+    private final ConcurrentHashMap<SupervisorId, Object> virtualActorDirectoryOwners =
+            new ConcurrentHashMap<>();
+    private record VirtualActorRegistryOwner(
+            String domain, int maxIdentities, int mailboxCapacity,
+            VirtualActorActivationRegistry registry) { }
+    /** Logical identity state outlives a host directory facade, but not its ActorRuntime. */
+    private final ConcurrentHashMap<SupervisorId, VirtualActorRegistryOwner> virtualActorRegistries =
+            new ConcurrentHashMap<>();
+    private final AtomicLong nextVirtualActorGeneration = new AtomicLong();
     /** Exactly one runtime-local generation authority for host virtual bindings. */
     private final VirtualActorRuntimeGenerationFence virtualActorFences;
     /** Runtime-owned opt-in terminal CONTROL receipt transport, no per-actor pool. */
@@ -4550,6 +4563,20 @@ public final class ActorRuntime implements AutoCloseable {
         public SupervisorId id() { return id; }
 
         /**
+         * Acquire this supervisor's host-only virtual-actor directory.
+         * Actor turns and ActorGroup Mailmen are explicitly denied by the
+         * existing supervisor-context checks. A supervisor has one active
+         * directory facade; its logical registry remains runtime-owned.
+         */
+        public VirtualActorSupervisorDirectory virtualActorDirectory(
+                String tenant, int maxIdentities, int mailboxCapacity) {
+            requireSupervisorContext("open a virtual actor directory");
+            requireCallerRuntimeAffinity("open a virtual actor directory");
+            return new VirtualActorSupervisorDirectory(
+                    ActorRuntime.this, this, tenant, maxIdentities, mailboxCapacity);
+        }
+
+        /**
          * Register one durable partition under this actual runtime supervisor.
          * No other supervisor in the same runtime can claim the same partition.
          * Called only by a trusted host during bootstrap; activation itself
@@ -4726,6 +4753,129 @@ public final class ActorRuntime implements AutoCloseable {
         return Objects.requireNonNull(
                 controlDispatcher.execute(turn),
                 "configured CONTROL dispatcher returned null Future");
+    }
+
+    /**
+     * Verify exact direct-supervisor lifecycle ownership for a host virtual-actor
+     * activation binding. Merely belonging to an ActorGroup is insufficient:
+     * the worker must be registered as its managed child and the group must
+     * belong to this exact supervisor.
+     */
+    boolean actorManagedBySupervisor(ActorRef<?> ref, ActorSupervisor supervisor) {
+        requireSupervisorContext("verify virtual actor supervisor ownership");
+        requireCallerRuntimeAffinity("verify virtual actor supervisor ownership");
+        Objects.requireNonNull(ref, "ref");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (!ref.ownedBy(this) || supervisors.get(supervisor.id()) != supervisor)
+            return false;
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref || cell.stopped.get() || cell.finalized)
+            return false;
+        ActorGroupId owner = cell.managedByGroup.get();
+        if (owner == null) return false;
+        ActorGroup group = actorGroups.get(owner);
+        return group != null && !group.closed()
+                && group.supervisor == supervisor
+                && group.managedWorkers.get(ref.id()) == ref
+                && !cell.stopped.get();
+    }
+
+    /**
+     * Atomically bind one stable virtual identity to exactly one supervisor for
+     * this runtime lifetime. The directory identity deliberately excludes the
+     * supervisor ID; management ownership is a separate authority edge.
+     */
+    void claimVirtualActorOwner(VirtualActorActivationRegistry.Identity identity,
+                                ActorSupervisor supervisor) {
+        requireSupervisorContext("claim virtual actor ownership");
+        requireCallerRuntimeAffinity("claim virtual actor ownership");
+        Objects.requireNonNull(identity, "identity");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            SupervisorId existing = virtualActorOwners.get(identity);
+            if (existing != null) {
+                if (!existing.equals(supervisor.id()))
+                    throw new SecurityException("virtual actor identity already belongs to another supervisor");
+                return;
+            }
+            if (virtualActorOwners.size() >= dispatcherConfig.maxActors())
+                throw new IllegalStateException("virtual actor logical identity limit exceeded");
+            SupervisorId raced = virtualActorOwners.putIfAbsent(identity, supervisor.id());
+            if (raced != null && !raced.equals(supervisor.id()))
+                throw new SecurityException("virtual actor identity already belongs to another supervisor");
+        }
+    }
+
+    VirtualActorActivationRegistry virtualActorRegistry(
+            ActorSupervisor supervisor, String domain, int maxIdentities, int mailboxCapacity) {
+        requireSupervisorContext("obtain virtual actor registry");
+        requireCallerRuntimeAffinity("obtain virtual actor registry");
+        Objects.requireNonNull(supervisor, "supervisor");
+        Objects.requireNonNull(domain, "domain");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        if (maxIdentities <= 0 || mailboxCapacity <= 0)
+            throw new IllegalArgumentException("virtual actor registry limits must be positive");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            VirtualActorRegistryOwner existing = virtualActorRegistries.get(supervisor.id());
+            if (existing != null) {
+                if (!existing.domain().equals(domain)
+                        || existing.maxIdentities() != maxIdentities
+                        || existing.mailboxCapacity() != mailboxCapacity)
+                    throw new IllegalStateException("virtual actor registry configuration cannot change during runtime lifetime");
+                return existing.registry();
+            }
+            VirtualActorActivationRegistry registry = new VirtualActorActivationRegistry(
+                    domain, maxIdentities, mailboxCapacity, this::allocateVirtualActorGeneration);
+            virtualActorRegistries.put(supervisor.id(), new VirtualActorRegistryOwner(
+                    domain, maxIdentities, mailboxCapacity, registry));
+            return registry;
+        }
+    }
+
+    void claimVirtualActorDirectory(Object directory, ActorSupervisor supervisor) {
+        requireSupervisorContext("claim virtual actor directory");
+        requireCallerRuntimeAffinity("claim virtual actor directory");
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        Object prior = virtualActorDirectoryOwners.putIfAbsent(supervisor.id(), directory);
+        if (prior != null && prior != directory)
+            throw new IllegalStateException("a virtual actor directory is already registered for this supervisor");
+    }
+
+    void releaseVirtualActorDirectory(Object directory, ActorSupervisor supervisor) {
+        requireSupervisorContext("release virtual actor directory");
+        requireCallerRuntimeAffinity("release virtual actor directory");
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (!virtualActorDirectoryOwners.remove(supervisor.id(), directory))
+            throw new IllegalStateException("virtual actor directory ownership changed");
+    }
+
+    long allocateVirtualActorGeneration() {
+        requireSupervisorContext("allocate virtual actor generation");
+        requireCallerRuntimeAffinity("allocate virtual actor generation");
+        while (true) {
+            long current = nextVirtualActorGeneration.get();
+            if (current == Long.MAX_VALUE)
+                throw new IllegalStateException("runtime virtual actor generation budget exhausted");
+            long next = current + 1L;
+            if (nextVirtualActorGeneration.compareAndSet(current, next)) return next;
+        }
+    }
+
+    boolean ownsVirtualActor(VirtualActorActivationRegistry.Identity identity,
+                             ActorSupervisor supervisor) {
+        requireSupervisorContext("inspect virtual actor ownership");
+        requireCallerRuntimeAffinity("inspect virtual actor ownership");
+        return supervisors.get(supervisor.id()) == supervisor
+                && supervisor.id().equals(virtualActorOwners.get(identity));
     }
 
     /** The runtime's non-null fallback supervisor for legacy group creation. */
