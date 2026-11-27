@@ -4750,7 +4750,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireCallerRuntimeAffinity("create a child ActorSupervisor");
         Objects.requireNonNull(parent, "parent");
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (supervisors.get(parent.id()) != parent)
                 throw new IllegalArgumentException(
                         "parent ActorSupervisor belongs to another ActorRuntime");
@@ -6482,7 +6482,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (actorGroups.size() >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
                         "ActorGroup runtime limit exceeded: maximum "
@@ -10062,7 +10062,7 @@ public final class ActorRuntime implements AutoCloseable {
         synchronized (runtimeLifecycleLock) {
             if (closed.get() || linkedExitSealed)
                 throw new IllegalStateException("linked exit already sealed");
-            if (!actorGroups.isEmpty() || !supervisors.isEmpty())
+            if (!actorGroups.isEmpty() || supervisors.size() != 1)
                 throw new IllegalStateException(
                         "linked actor drain requires explicit group/supervisor retirement");
             linkedExitSealed = true;
