@@ -4703,7 +4703,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("canonical stdout.write requires one positional string");
                 }
                 Type actual = typeOf(call.arguments().getFirst(), env, generics, self);
-                if (actual != Primitive.STRING) {
+                // String literals retain their precise type until contextual
+                // widening. Do not accept unknown, borrowed or arbitrary
+                // string-convertible values at this parking boundary.
+                if (!isStringLike(actual)) {
                     throw new IllegalArgumentException("canonical stdout.write requires owned string");
                 }
                 if (!canonicalStdoutCheckOnly) {

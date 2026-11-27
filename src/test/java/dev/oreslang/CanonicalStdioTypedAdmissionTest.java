@@ -41,4 +41,13 @@ final class CanonicalStdioTypedAdmissionTest {
         assertTrue(error.getMessage().contains("borrow"), error.getMessage());
     }
 
+    @Test void literalAndOwnedStringParameterShareTheSameParkingTypeRule() {
+        assertDoesNotThrow(() -> checkOnly("fnc f(string message): void { stdio.out.write(message); process.stdout.write(\"x\" + message); return; }"));
+        for (String value : new String[]{"true", "42", "1.5"}) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> checkOnly("fnc f(): void { stdio.out.write(" + value + "); return; }"));
+            assertTrue(error.getMessage().contains("requires owned string"), error.getMessage());
+        }
+    }
+
 }
