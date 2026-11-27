@@ -453,6 +453,52 @@ final class GuestClassGraphLeaseTest {
         assertEquals(22, child.get("n"));
     }
 
+    @Test void freshDetachmentRetiresOnlyUnreachableNodesOfThisGeneration() {
+        var d = new GuestClassSlots.Domain();
+        var leaf = store(d, Map.of("n", 10));
+        var root = store(d, Map.of("left", leaf, "right", leaf));
+        try (var first = root.shallowSnapshot(3, 6)) {
+            try (var successor = first.shallowSnapshot(3, 6)) {
+                var left = first.replaceWithFresh("left", Map.of("n", 20));
+                left.replace("n", 21);
+                assertEquals(1, first.protectedCount());
+                deny("E_COPY_READONLY", () -> leaf.replace("n", 99));
+                var right = first.replaceWithFresh("right", Map.of("n", 30));
+                right.replace("n", 31);
+                assertEquals(0, first.protectedCount());
+                assertSame(leaf, root.get("left"));
+                assertSame(leaf, successor.get("right"));
+                deny("E_COPY_READONLY", () -> leaf.replace("n", 99));
+            }
+            assertFalse(leaf.isReadOnly());
+            leaf.replace("n", 12);
+            assertEquals(21, ((GuestClassSlots) first.get("left")).get("n"));
+            assertEquals(31, ((GuestClassSlots) first.get("right")).get("n"));
+            assertEquals(12, leaf.get("n"));
+        }
+    }
+
+    @Test void freshDetachmentBudgetAndInvalidPayloadLeaveExistingLeaseIntact() {
+        var d = new GuestClassSlots.Domain();
+        var leaf = store(d, Map.of("n", 10));
+        var root = store(d, Map.of("data", leaf));
+        try (var snapshot = root.shallowSnapshot(1, 2)) {
+            deny("E_COPY_BUDGET", () -> snapshot.replaceWithFresh("data", Map.of("a", 1, "b", 2)));
+            deny("E_COPY_UNPROVEN", () -> snapshot.replaceWithFresh("data", Map.of("a", leaf)));
+            deny("E_COPY_LAYOUT", () -> snapshot.replaceWithFresh("absent", Map.of("n", 20)));
+            assertSame(leaf, snapshot.get("data"));
+            assertEquals(1, snapshot.protectedCount());
+            assertTrue(leaf.isReadOnly());
+            var fresh = snapshot.replaceWithFresh("data", Map.of("n", 22));
+            assertSame(fresh, snapshot.get("data"));
+            assertEquals(0, snapshot.protectedCount());
+            assertFalse(leaf.isReadOnly());
+            leaf.replace("n", 12);
+            assertEquals(22, fresh.get("n"));
+        }
+        assertFalse(leaf.isReadOnly());
+    }
+
     @Test void flatSnapshotQuotaIsReleasedExactlyOnce() {
         var d = new GuestClassSlots.Domain();
         var original = store(d, Map.of("count", 1));
