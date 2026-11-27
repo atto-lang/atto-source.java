@@ -59,8 +59,14 @@ public final class Parser {
     private int unaryNesting;
     private boolean suppressRefinementOperators;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
-    private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
+    private final java.util.ArrayDeque<java.util.Map<String, String>> localTypeScopes =
             new java.util.ArrayDeque<>();
+    // Bounded, literal-only module Record/Tuple shape aliases. Expand their
+    // structural TypeRefs in the lexical parser scope, not in a global map
+    // shared by unrelated modules. Nominal struct layout is not modeled here.
+    private record ModuleAggregateShape(String kind, Ast.TypeRef type) { }
+    private java.util.Map<String, ModuleAggregateShape> moduleAggregateShapes =
+            new java.util.LinkedHashMap<>();
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -585,6 +591,7 @@ public final class Parser {
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
+        validateModuleAggregateNames(rootDeclarations);
         validateExports(exports, rootDeclarations);
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
@@ -860,6 +867,8 @@ public final class Parser {
         List<ForwardType> enclosing = moduleForwards;
         List<ForwardType> forwards = new ArrayList<>();
         moduleForwards = forwards;
+        var enclosingAggregateShapes = moduleAggregateShapes;
+        moduleAggregateShapes = new java.util.LinkedHashMap<>();
         try {
             while (!check(END) && !check(EOF)) {
                 Ast.Decl declaration = parseModuleMember();
@@ -867,7 +876,9 @@ public final class Parser {
             }
             consume(END, "expected 'end' to close module " + name);
             validateForwardTypes(forwards, declarations, "module " + name);
+            validateModuleAggregateNames(declarations);
         } finally {
+            moduleAggregateShapes = enclosingAggregateShapes;
             moduleForwards = enclosing;
         }
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
@@ -1148,7 +1159,7 @@ public final class Parser {
         }
         if (isBindingKind(peek().type())) {
             validateOnlyVisibilityModifiers(modifiers, "module bindings");
-            return parseModuleBinding(annotations, modifiers.visibility);
+            return parseModuleBinding(annotations, modifiers.visibility, true);
         }
         return null;
     }
@@ -1325,7 +1336,7 @@ public final class Parser {
         if (explicitColonColon && (check(LBRACE) || !isImplicitNewlineTerminator())) {
             throw error(peek(), "return-first :: requires statements/end on a later physical line");
         }
-        localTypeScopes.push(new java.util.HashSet<>());
+        localTypeScopes.push(new java.util.HashMap<>());
         try {
             List<Ast.Stmt> body = parseUntil(END);
             consume(END, "expected 'end' after return-first callable body");
@@ -1402,7 +1413,7 @@ public final class Parser {
         if (!explicit && attoCallableVersion == null && !isImplicitNewlineTerminator()) {
             throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
         }
-        localTypeScopes.push(new java.util.HashSet<>());
+        localTypeScopes.push(new java.util.HashMap<>());
         try {
             List<Ast.Stmt> body = parseUntil(END);
             consume(END, "expected 'end' after callable body");
@@ -1418,7 +1429,7 @@ public final class Parser {
      * Commas inside call arguments are consumed by parseExpression and cannot
      * masquerade as body separators. */
     private List<Ast.Stmt> parseVersionedCommaTailBody() {
-        localTypeScopes.push(new java.util.HashSet<>());
+        localTypeScopes.push(new java.util.HashMap<>());
         try {
             List<Ast.Stmt> body = new ArrayList<>();
             for (int count = 0; count < 1024; ++count) {
@@ -2578,11 +2589,29 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        return parseModuleBinding(annotations, visibility, false);
+    }
+
+    private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility,
+                                             boolean allowModuleAggregate) {
         rejectNonCallableReturnAnnotation(annotations, "module bindings");
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
+        if (startsNamedAggregateBinding() && checkNext(LT)) {
+            if (!allowModuleAggregate || visibility != Ast.Visibility.PRIVATE
+                    || kind != Ast.BindingKind.CONST || mutableReferent) {
+                throw error(peek(), "E_MODULE_AGGREGATE_INFER_UNSUPPORTED: expected private immutable module const");
+            }
+            String aggregate = peek().lexeme();
+            if (aggregate.equals("struct")) {
+                throw error(peek(), "E_MODULE_AGGREGATE_INFER_UNSUPPORTED: nominal module struct identity");
+            }
+            Ast.BindingStmt binding = parseNamedAggregateBinding(kind, mutableReferent, annotations, true);
+            return new Ast.FieldDecl(binding.name(), visibility, kind, binding.declaredType(),
+                    annotations, binding.initializer(), false);
+        }
         Ast.TypeRef type = null;
         String name;
         boolean functionShorthand = match(FNC);
@@ -2769,6 +2798,9 @@ public final class Parser {
         Token name = consume(IDENT, diagnostic);
         if ("_".equals(name.lexeme())) {
             throw error(name, "'_' cannot be used as a declared type name");
+        }
+        if (moduleAggregateShapes.containsKey(name.lexeme())) {
+            throw error(name, "duplicate module type declaration '" + name.lexeme() + "'");
         }
         return name.lexeme();
     }
@@ -3344,7 +3376,7 @@ public final class Parser {
         java.util.Set<String> declared = new java.util.HashSet<>();
         do {
             String name = consume(IDENT, "expected generic parameter name").lexeme();
-            if (name.equals("_") || !declared.add(name)) {
+            if (name.equals("_") || moduleAggregateShapes.containsKey(name) || !declared.add(name)) {
                 throw error(previous(), "invalid or duplicate generic parameter '" + name + "'");
             }
             Ast.TypeRef defaultType = match(EQUAL) ? parseTypeRef() : null;
@@ -3362,7 +3394,7 @@ public final class Parser {
             String name = consume(IDENT, "expected generic parameter name").lexeme();
             // All declaration families must reserve inference-only '_' consistently.
             // Functions already enforce this through parseGenericParameterSpecs.
-            if (name.equals("_") || name.startsWith("$")) {
+            if (name.equals("_") || name.startsWith("$") || moduleAggregateShapes.containsKey(name)) {
                 throw error(previous(), "invalid generic parameter name '" + name + "'");
             }
             if ("_".equals(name)) {
@@ -3544,6 +3576,16 @@ public final class Parser {
         if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
         if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
         if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
+        if (check(STRUCT) && checkNext(LT)) {
+            advance();
+            consume(LT, "expected '<' after struct");
+            String alias = consume(IDENT, "expected previously inferred struct type").lexeme();
+            consume(GT, "expected '>' after struct type");
+            if (!"struct".equals(namedAggregateKind(alias))) {
+                throw error(previous(), "unknown or mismatched inferred struct type '" + alias + "'");
+            }
+            return Ast.TypeRef.simple(alias);
+        }
         if ((check(STRUCT) || isContextualIdentifier("record"))
                 && checkNext(LBRACE)) {
             boolean struct = check(STRUCT);
@@ -3607,13 +3649,16 @@ public final class Parser {
             if (check(BANG)) {
                 throw error(peek(), "typeof! is not an ownership operator; use 'typeof name'");
             }
-            if (match(LPAREN)) {
-                Token binding = consume(IDENT, "typeof(...) expects exactly one binding name");
-                consume(RPAREN, "typeof(...) expects exactly one binding name");
-                return Ast.TypeRef.typeQuery(binding.lexeme());
+            boolean grouped = match(LPAREN);
+            String binding = consume(IDENT, "typeof requires a binding name").lexeme();
+            // A single field of a formal parameter is a static projection.
+            // Preserve the existing query AST; never parse an expression or call.
+            if (match(DOT)) {
+                binding += "." + consume(IDENT, "typeof requires a static field name").lexeme();
+                if (check(DOT)) throw error(peek(), "E_TYPE_QUERY_UNSUPPORTED: nested field projections");
             }
-            return Ast.TypeRef.typeQuery(
-                    consume(IDENT, "typeof requires a binding name").lexeme());
+            if (grouped) consume(RPAREN, "typeof(...) expects a binding or static field projection");
+            return Ast.TypeRef.typeQuery(binding);
         }
 
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
@@ -3702,6 +3747,18 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after Newable[T]");
         }
         args = canonicalizeNamedParameters(args);
+        if (isAggregateWrapper(name) && args.size() == 1 && !infer) {
+            Ast.TypeRef argument = args.getFirst();
+            String boundKind = argument.arguments().isEmpty() && !argument.inferArguments()
+                    ? namedAggregateKind(argument.name()) : null;
+            if (boundKind != null) {
+                if (!boundKind.equals(name)) {
+                    throw error(previous(), "inferred aggregate kind mismatch for '" + argument.name() + "'");
+                }
+                Ast.TypeRef moduleShape = moduleAggregateType(argument.name());
+                return moduleShape == null ? Ast.TypeRef.simple(argument.name()) : moduleShape;
+            }
+        }
         while (match(LBRACKET)) {
             // Zero-arity Tuple[] is a named tuple type.
             // Model the empty intrinsic with the existing finite tuple type
@@ -3850,7 +3907,7 @@ public final class Parser {
 
     private List<Ast.Stmt> parseBlock() {
         consume(LBRACE, "expected '{'");
-        localTypeScopes.push(new java.util.HashSet<>());
+        localTypeScopes.push(new java.util.HashMap<>());
         try {
             List<Ast.Stmt> body = new ArrayList<>();
             while (!check(RBRACE) && !check(EOF)) body.add(parseStatement());
@@ -3865,8 +3922,8 @@ public final class Parser {
      *  followed by a control-flow block. Only prior lexical declarations qualify.
      */
     private boolean isLocalTypeName(String name) {
-        for (java.util.Set<String> scope : localTypeScopes) {
-            if (scope.contains(name)) return true;
+        for (java.util.Map<String, String> scope : localTypeScopes) {
+            if ("local".equals(scope.get(name))) return true;
         }
         return false;
     }
@@ -3880,7 +3937,7 @@ public final class Parser {
             consume(EQUAL, "expected '=' after local type name");
             target = parseTypeRef();
         }
-        if (localTypeScopes.isEmpty() || !localTypeScopes.peek().add(name)) {
+        if (localTypeScopes.isEmpty() || localTypeScopes.peek().putIfAbsent(name, "local") != null) {
             throw error(previous(), "duplicate local type declaration '" + name + "'");
         }
         match(SEMICOLON);
@@ -4109,6 +4166,32 @@ public final class Parser {
         }
     }
 
+    /** Return-position comma sequencing uses the existing procedural block IR.
+     * Prefix expressions remain real expression statements, with ordinary
+     * checker/runtime effects and ownership processing, and only the tail
+     * participates in the callable return type. No tuple is constructed.
+     * General expression-position seq is deliberately outside this slice. */
+    private Ast.Stmt parseSequenceReturn() {
+        boolean grouped = match(LPAREN);
+        List<Ast.Stmt> body = new ArrayList<>();
+        if (check(SEMICOLON) || check(RPAREN) || check(COMMA)) {
+            throw error(peek(), "E_SEQ_EMPTY: sequence requires an expression");
+        }
+        Ast.Expr tail = parseExpression();
+        while (match(COMMA)) {
+            if (body.size() >= 127) throw error(previous(), "E_SEQ_LIMIT: at most 128 items");
+            if (check(SEMICOLON) || check(RPAREN) || check(COMMA)) {
+                throw error(peek(), "E_SEQ_COMMA: missing sequence expression");
+            }
+            body.add(new Ast.ExprStmt(tail));
+            tail = parseExpression();
+        }
+        if (grouped) consume(RPAREN, "expected ')' after return seq");
+        consume(SEMICOLON, "return seq requires ';'");
+        body.add(new Ast.ReturnStmt(tail));
+        return new Ast.BlockStmt(body);
+    }
+
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
         if (check(STOP) && (checkNext(IDENT) || checkNext(SELF) || checkNext(BANG))) {
@@ -4313,6 +4396,7 @@ public final class Parser {
             return new Ast.ReturnStmt(value);
         }
         if (match(RETURN)) {
+            if (matchContextualKeyword("seq")) return parseSequenceReturn();
             // Contextual return-maybe: its inner return statements are true
             // FUNCTION_RETURN. It is NOT the value-match ARM_RESULT construct.
             // No synthetic outer ReturnStmt is emitted for diverging arms.
@@ -5215,10 +5299,200 @@ public final class Parser {
         return parseBindingStatement(List.of());
     }
 
+    private static boolean isAggregateWrapper(String name) {
+        return name.equals("Record") || name.equals("Tuple") || name.equals("struct");
+    }
+
+    private String namedAggregateKind(String name) {
+        for (java.util.Map<String, String> scope : localTypeScopes) {
+            String kind = scope.get(name);
+            if (kind != null) return isAggregateWrapper(kind) ? kind : null;
+        }
+        ModuleAggregateShape shape = moduleAggregateShapes.get(name);
+        return shape == null ? null : shape.kind();
+    }
+
+    private void validateModuleAggregateNames(List<Ast.Decl> declarations) {
+        for (Ast.Decl declaration : declarations) {
+            String name = declaration instanceof Ast.TypeAliasDecl alias ? alias.name()
+                    : declaration instanceof Ast.ClassDecl klass ? klass.name()
+                    : declaration instanceof Ast.InterfaceDecl iface ? iface.name() : null;
+            if (name != null && moduleAggregateShapes.containsKey(name)) {
+                throw error(previous(), "duplicate module type declaration '" + name + "'");
+            }
+        }
+    }
+
+    private Ast.TypeRef moduleAggregateType(String name) {
+        for (var scope : localTypeScopes) {
+            if (scope.containsKey(name)) return null;
+        }
+        ModuleAggregateShape shape = moduleAggregateShapes.get(name);
+        return shape == null ? null : shape.type();
+    }
+
+    private Ast.TypeRef moduleLiteralScalarType(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            if (value instanceof Long) return Ast.TypeRef.simple("int");
+            if (value instanceof Boolean) return Ast.TypeRef.simple("bool");
+            if (value instanceof String) return Ast.TypeRef.simple("string");
+            if (value instanceof Double) return Ast.TypeRef.simple("float");
+        }
+        if (expr instanceof Ast.UnaryExpr unary && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long) return Ast.TypeRef.simple("int");
+        throw error(previous(), "E_MODULE_AGGREGATE_INFER_UNSUPPORTED: only scalar literal slots are admitted");
+    }
+
+    private Ast.TypeRef moduleLiteralShape(String kind, Ast.Expr expr) {
+        if (kind.equals("Tuple") && expr instanceof Ast.TupleExpr tuple) {
+            if (tuple.elements().isEmpty() || tuple.elements().size() > 64)
+                throw error(previous(), "E_AGGREGATE_FIELD_BUDGET: expected 1..64 tuple slots");
+            return Ast.TypeRef.tupleType(tuple.elements().stream().map(this::moduleLiteralScalarType).toList());
+        }
+        if (kind.equals("Record") && expr instanceof Ast.ObjectExpr record
+                && record.kind() == Ast.ObjectKind.INFERRED_RECORD) {
+            if (record.fields().isEmpty() || record.fields().size() > 64)
+                throw error(previous(), "E_AGGREGATE_FIELD_BUDGET: expected 1..64 record fields");
+            var fields = new java.util.LinkedHashMap<String, Ast.TypeRef>();
+            for (Ast.ObjectField field : record.fields()) {
+                if (field.spread()) throw error(previous(), "E_MODULE_AGGREGATE_INFER_UNSUPPORTED: spread");
+                fields.put(field.name(), moduleLiteralScalarType(field.value()));
+            }
+            return Ast.TypeRef.recordType(fields);
+        }
+        throw error(previous(), "E_MODULE_AGGREGATE_INFER_UNSUPPORTED: matching literal required");
+    }
+
+    // Recognize the new binder only in the declaration's type-first position.
+    // Reuse the existing inferredTypeName AST/checker pipeline; do not make a
+    // new runtime type or interpret ordinary Tuple<T> as a binder.
+    private boolean startsNamedAggregateBinding() {
+        if (!isAggregateWrapper(peek().lexeme()) || current + 3 >= tokens.size()) return false;
+        if (checkNext(IDENT) && tokens.get(current + 2).type() == EQUAL) {
+            Token.Type opening = peek().lexeme().equals("struct") ? LBRACE : LPAREN;
+            return tokens.get(current + 3).type() == opening
+                    && (!peek().lexeme().equals("Record") || (current + 5 < tokens.size()
+                        && tokens.get(current + 4).type() == IDENT
+                        && tokens.get(current + 5).type() == EQUAL));
+        }
+        if (!checkNext(LT)) return false;
+        String argument = tokens.get(current + 2).lexeme();
+        if (argument.equals("infer")) return true;
+        return current + 4 < tokens.size() && tokens.get(current + 3).type() == GT
+                && tokens.get(current + 4).type() == IDENT
+                && namedAggregateKind(argument) != null;
+    }
+
+    private Ast.BindingStmt parseNamedAggregateBinding(Ast.BindingKind bindingKind,
+            boolean mutableReferent, List<Ast.Annotation> annotations) {
+        return parseNamedAggregateBinding(bindingKind, mutableReferent, annotations, false);
+    }
+
+    private Ast.BindingStmt parseNamedAggregateBinding(Ast.BindingKind bindingKind,
+            boolean mutableReferent, List<Ast.Annotation> annotations, boolean moduleBinding) {
+        Token wrapper = advance();
+        String aggregate = wrapper.lexeme();
+        boolean anonymous = !match(LT);
+        boolean introduce = !anonymous && peek().lexeme().equals("infer");
+        if (introduce) advance();
+        String alias = anonymous ? null
+                : consume(IDENT, "expected named aggregate type identifier").lexeme();
+        if (!anonymous) consume(GT, "expected '>' after named aggregate type");
+        String variable = consume(IDENT, "expected binding name").lexeme();
+        if (!annotations.isEmpty()) {
+            throw error(wrapper, "aggregate literal shorthand does not accept type metadata annotations");
+        }
+        if (introduce && (bindingKind != Ast.BindingKind.CONST || mutableReferent
+                || (!moduleBinding && localTypeScopes.isEmpty()))) {
+            throw error(wrapper, "named aggregate inference requires an unannotated immutable local const binding");
+        }
+        if (!anonymous && !introduce && !aggregate.equals(namedAggregateKind(alias))) {
+            throw error(wrapper, "inferred aggregate kind mismatch for '" + alias + "'");
+        }
+        if (introduce && (alias.length() > 128 || isAggregateWrapper(alias) || alias.equals("infer") || alias.equals("_")
+                || dev.oreslang.types.CoreTypeRegistry.lookup(alias).isPresent()
+                || java.util.Set.of("void","null","self","int","float","bool","string","String",
+                        "Map","List","Array","Option","Result","Future").contains(alias))) {
+            throw error(wrapper, "reserved inferred aggregate type name '" + alias + "'");
+        }
+        if (introduce && (moduleBinding ? moduleAggregateShapes.containsKey(alias)
+                : localTypeScopes.peek().containsKey(alias))) {
+            throw error(wrapper, "duplicate local type declaration '" + alias + "'");
+        }
+        consume(EQUAL, "binding requires initializer");
+        Ast.Expr value;
+        if (aggregate.equals("Record") && check(LPAREN)) {
+            consume(LPAREN, "expected '(' after Record");
+            List<Ast.ObjectField> fields = new ArrayList<>();
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            do {
+                String field = consume(IDENT, "expected Record field name").lexeme();
+                if (!seen.add(field)) throw error(previous(), "duplicate Record field '" + field + "'");
+                consume(EQUAL, "expected '=' after Record field name");
+                fields.add(Ast.ObjectField.named(field, parseExpression()));
+            } while (match(COMMA));
+            consume(RPAREN, "expected ')' after Record literal");
+            value = new Ast.ObjectExpr(fields, Ast.ObjectKind.INFERRED_RECORD, List.of());
+        } else if (aggregate.equals("Tuple") && check(LPAREN)) {
+            consume(LPAREN, "expected '(' after Tuple");
+            List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
+            consume(RPAREN, "expected ')' after Tuple literal");
+            if (items.isEmpty()) throw error(previous(), "named inferred Tuple requires at least one element");
+            value = new Ast.TupleExpr(items);
+        } else if (aggregate.equals("struct") && check(LBRACE)) {
+            value = parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+        } else if (!introduce && !aggregate.equals("struct")) {
+            value = parseExpression();
+        } else {
+            throw error(peek(), "named aggregate binding requires a matching aggregate literal");
+        }
+        consumeExpressionStatementTerminator(value, "binding should end with ';'");
+        if (moduleBinding) {
+            Ast.TypeRef shape = moduleLiteralShape(aggregate, value);
+            if (introduce) {
+                if (moduleAggregateShapes.size() >= 64)
+                    throw error(wrapper, "E_AGGREGATE_TYPE_BUDGET: at most 64 inferred module types");
+                moduleAggregateShapes.put(alias, new ModuleAggregateShape(aggregate, shape));
+            } else if (!shape.equals(moduleAggregateType(alias))) {
+                throw error(wrapper, "E_TYPE_MISMATCH: module aggregate literal does not match " + alias);
+            }
+            return new Ast.BindingStmt(bindingKind, shape, variable, value, false, null);
+        }
+        Ast.TypeRef moduleShape = anonymous || introduce ? null : moduleAggregateType(alias);
+        if (moduleShape != null && value instanceof Ast.TupleExpr tuple) {
+            if (!moduleShape.isTupleType() || tuple.elements().size() != moduleShape.arguments().size())
+                throw error(wrapper, "E_TYPE_MISMATCH: aggregate tuple arity does not match " + alias);
+            // Later contextual construction uses the static types of actual
+            // expressions, not the literal-only inference exemplar grammar.
+        }
+        if (moduleShape != null && value instanceof Ast.ObjectExpr object) {
+            if (!moduleShape.isRecordType()
+                    || object.kind() != Ast.ObjectKind.INFERRED_RECORD
+                    || object.fields().stream().anyMatch(Ast.ObjectField::spread))
+                throw error(wrapper, "E_AGGREGATE_KIND: expected closed Record literal");
+            var keys = new java.util.HashSet<String>();
+            for (Ast.ObjectField field : object.fields()) keys.add(field.name());
+            if (!keys.equals(moduleShape.aggregateMembers().keySet()))
+                throw error(wrapper, "E_TYPE_MISMATCH: closed record fields do not match " + alias);
+            // Preserve expressions and source order for the ordinary type
+            // checker and runtime, rather than evaluating them in the parser.
+        }
+        if (introduce) localTypeScopes.peek().put(alias, aggregate);
+        return new Ast.BindingStmt(bindingKind, anonymous ? null
+                : moduleShape != null ? moduleShape : Ast.TypeRef.simple(alias),
+                variable, value, mutableReferent, introduce ? alias : null);
+    }
+
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
         rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
+        if (startsNamedAggregateBinding() && (checkNext(LT)
+                || (kind == Ast.BindingKind.CONST && !mutableReferent && annotations.isEmpty()))) {
+            return parseNamedAggregateBinding(kind, mutableReferent, annotations);
+        }
         Ast.TypeRef type = null;
         String name;
         boolean functionShorthand = match(FNC);
@@ -6723,7 +6997,7 @@ public final class Parser {
     }
 
     private List<Ast.Stmt> parseTryKeywordBody(Token.Type... stops) {
-        localTypeScopes.push(new java.util.HashSet<>());
+        localTypeScopes.push(new java.util.HashMap<>());
         try {
             return parseUntil(stops);
         } finally {

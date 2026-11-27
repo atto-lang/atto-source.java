@@ -125,4 +125,31 @@ final class TypeofBindingQueryTest {
                 """)));
     }
 
+
+    @Test
+    void staticRecordParameterFieldQueries() {
+        for (String form : new String[]{"typeof input.c", "typeof(input.c)"}) {
+            String src = "fnc value({a: bool, b: string, c: int} input): " + form
+                    + " { return input.c; }";
+            Ast.Program parsed = Parser.parse(src);
+            Ast.FunctionDecl fn = (Ast.FunctionDecl) parsed.modules().getFirst().declarations().getFirst();
+            assertEquals("input.c", fn.returnType().queriedBinding());
+            assertDoesNotThrow(() -> TypeChecker.check(parsed), form);
+        }
+    }
+
+    @Test
+    void staticProjectionRejectsUnknownFieldNonRecordAndNonParameter() {
+        for (String[] bad : new String[][]{
+                {"fnc value({c: int} input): typeof input.missing { return 42; }", "E_NO_FIELD"},
+                {"fnc value(int input): typeof input.c { return input; }", "E_TYPE_QUERY_UNSUPPORTED"},
+                {"fnc value({c: int} input): typeof other.c { return input.c; }", "E_TYPE_QUERY_SCOPE"}
+        }) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(bad[0])), bad[0]);
+            assertTrue(ex.getMessage().contains(bad[1]), ex.getMessage());
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc value({c: int} input): typeof(input.c + 1) { return input.c; }"));
+    }
 }
