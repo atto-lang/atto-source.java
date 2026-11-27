@@ -1974,6 +1974,7 @@ public final class OwnershipChecker {
                     throw error(E_UNKNOWN, "unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                rejectBorrowedProjectionConsumption(member.receiver(), receiverValue, valueKind, consuming, scope);
                 return new ValueInfo(valueType, valueKind, null);
             }
             // Built-in Array/List.size is a computed Copy scalar, not
@@ -2012,6 +2013,7 @@ public final class OwnershipChecker {
                         throw error(E_ACTOR_LOAN_ESCAPE, "cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
+                    rejectBorrowedProjectionConsumption(member.receiver(), receiverValue, fieldKind, consuming, scope);
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
                 if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
@@ -2033,6 +2035,7 @@ public final class OwnershipChecker {
                     && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error(E_ACTOR_LOAN_ESCAPE, "cannot move actor-owned indexed state out of its mailbox turn");
             }
+            rejectBorrowedProjectionConsumption(indexed.receiver(), receiver, elementKind, consuming, scope);
             // Ordinary projection is an aliasing read, not an implicit partial
             // move. Explicit ownership transfer remains spelled rt take; indexed
             // rt take stays fail-closed below until projection-level move
@@ -4432,6 +4435,22 @@ public final class OwnershipChecker {
         if (mutable) root.mutableBorrowed = true;
         else root.immutableBorrows++;
         shadowEvent(mutable ? "BORROW_MUT" : "BORROW_SHARED", root);
+    }
+
+    // A non-Copy projection of a loan is not a new owned value. Check the
+    // lexical root as well as the immediate receiver: an intermediate field
+    // read may already have erased its ValueInfo borrow provenance.
+    private void rejectBorrowedProjectionConsumption(
+            Ast.Expr receiver, ValueInfo value, ValueKind projectedKind,
+            boolean consuming, Scope scope) {
+        if (!consuming || projectedKind == ValueKind.COPY) return;
+        Ast.Expr base = projectionBase(receiver);
+        VarState root = base instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
+        if (isBorrowValue(value) || (root != null
+                && (root.kind == ValueKind.IMM_BORROW || root.kind == ValueKind.MUT_BORROW
+                    || root.type.isBorrow()))) {
+            throw error(E_BORROW, "cannot consume a non-Copy projection of a borrowed value as owned data");
+        }
     }
 
     private void requireKnownReceiverBorrow(ValueInfo receiver) {
