@@ -87,5 +87,74 @@ final class SourceActorNativeStorageTest {
             }
         }
     }
+
+    @Test
+    void realGuestSameKindPeerAdvancesAfterOtherActorPhysicalDone() throws Exception {
+        // Guest-native storage proof using the currently compiled Java actor
+        // syntax, not a replacement for the canonical cross-backend .ores blob.
+        // Both actors are simultaneously live and share the actor definition,
+        // never the native field allocation.
+        for (String kind : new String[] {"actor", "isoactor"}) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false)
+                    .out(output).build()) {
+                context.initialize(OresLanguage.ID);
+                ActorRuntime actors;
+                context.enter();
+                try {
+                    actors = OresContext.get(null).actors();
+                    actors.enableNativeActorStorage();
+                } finally { context.leave(); }
+                String program = """
+                        define %s Counter as
+                          let int count;
+                          on_start(): void { self.count = 0; return; }
+                          receive(ActorMail<String> mail): void {
+                            if mail.value == "inc"; do
+                              self.count = self.count + 1;
+                              self.send(self.count);
+                            fi
+                            if mail.value == "stop"; do
+                              self.end();
+                            fi
+                            return;
+                          }
+                        end
+                        pub async routine main(): void {
+                          val a = spawn Counter();
+                          val b = spawn Counter();
+                          await a.get_ready();
+                          await b.get_ready();
+                          a.send("inc");
+                          b.send("inc");
+                          val firstA = (await a.outputs.next()).value.unwrap();
+                          val firstB = (await b.outputs.next()).value.unwrap();
+                          stdio.stdout.write(firstA.value);
+                          stdio.stdout.write("|");
+                          stdio.stdout.write(firstB.value);
+                          a.send("stop");
+                          // This promise must not settle until A is physically
+                          // quiescent and its native actor storage is reclaimed.
+                          await a.get_done();
+                          b.send("inc");
+                          val secondB = (await b.outputs.next()).value.unwrap();
+                          stdio.stdout.write("|");
+                          stdio.stdout.write(secondB.value);
+                          b.send("stop");
+                          await b.get_done();
+                          return;
+                        }
+                        """.formatted(kind);
+                context.eval(Source.newBuilder(OresLanguage.ID,
+                        program, "native-same-kind-survivor.ores").build());
+                assertEquals("1|1|2", output.toString(StandardCharsets.UTF_8),
+                        "B must retain private mutable guest state after A reaches done");
+                assertEquals(2, actors.nativeActorArenasCreated(),
+                        "simultaneous same-kind actors must allocate distinct native arenas");
+                assertEquals(0, actors.nativeActorMemoryBytes(),
+                        "both actors must physically refund their native storage");
+            }
+        }
+    }
 }
 
