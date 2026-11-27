@@ -601,8 +601,8 @@ public final class OwnershipChecker {
     }
 
     /**
-     * Bounded initial NLL slice: a newly created, named, direct whole-owner
-     * loan with no possible subsequent use cannot have escaped or been
+     * Bounded initial NLL slice: a newly created direct whole-owner loan or
+     * shared scalar-field loan with no possible subsequent use cannot have escaped or been
      * transferred by its binder. This is not general last-use inference.
      * Unknown syntax, calls, control flow, closures and cleanup retain the
      * lexical lease. Never release a loan inherited from an outer scope.
@@ -617,7 +617,11 @@ public final class OwnershipChecker {
                 && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
             operand = unary.operand();
         } else return;
-        if (!(operand instanceof Ast.NameExpr name)) return;
+        // Only a single stable field on a named local owner is eligible.
+        // No indexes, chains, computed receivers, or mutable field loans.
+        boolean projected = operand instanceof Ast.MemberExpr;
+        Ast.Expr base = projected ? ((Ast.MemberExpr) operand).receiver() : operand;
+        if (!(base instanceof Ast.NameExpr name)) return;
         VarState loan = scope.locals.get(binding.name());
         VarState owner = scope.lookup(name.name());
         if (loan == null || owner == null || loan == owner
@@ -626,6 +630,14 @@ public final class OwnershipChecker {
                 || loan.aliasSource != null || loan.borrowSource != owner || !loan.borrowLease
                 || loan.moved || loan.rebindable
                 || (loan.kind != ValueKind.IMM_BORROW && loan.kind != ValueKind.MUT_BORROW)) return;
+        if (projected) {
+            if (loan.kind != ValueKind.IMM_BORROW || !loan.type.isBorrow()) return;
+            Ast.TypeRef target = loan.type.borrowedTarget();
+            if (!target.arguments().isEmpty()
+                    || !(target.name().equals("int") || target.name().equals("bool"))
+                    || hasLocalTypeAliasNamed(target.name())
+                    || findClass(target.name()) != null) return;
+        }
         for (int i = next; i < body.size(); i++) {
             if (!loanAbsentFromStatement(body.get(i), binding.name(), fuel, 0)) return;
         }
