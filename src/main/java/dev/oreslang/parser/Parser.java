@@ -57,10 +57,12 @@ public final class Parser {
 
     /** File-local declaration indices only, not typed MIR or message authority. */
     public record NominalMachineInspection(String actor, List<String> declarations,
-                                            List<Integer> declarationIds, FlatMachineTable table) {
+                                            List<Integer> declarationIds, List<Integer> parsedClassIds,
+                                            FlatMachineTable table) {
         public NominalMachineInspection {
             declarations = List.copyOf(declarations);
             declarationIds = List.copyOf(declarationIds);
+            parsedClassIds = List.copyOf(parsedClassIds);
         }
     }
 
@@ -80,11 +82,15 @@ public final class Parser {
         var emptyClasses = new java.util.TreeSet<String>((x, y) -> java.util.Arrays.compareUnsigned(
                 x.getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 y.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        // Source-order ordinary-class indices are AST-local, not checked type IDs.
+        var classIds = new java.util.HashMap<String, Integer>();
+        int nextClassId = 0;
         for (var decl : program.modules().get(0).declarations()) {
             if (!(decl instanceof Ast.ClassDecl c))
                 throw new IllegalArgumentException("E_MACHINE_EVENT_TYPE: class and actor declarations only");
             if (!seen.add(c.name()))
                 throw new IllegalArgumentException("E_MACHINE_EVENT_TYPE: duplicate nominal declaration");
+            if (c.actorKind() == Ast.ActorKind.NONE) classIds.put(c.name(), nextClassId++);
             if (c.actorKind() == Ast.ActorKind.NONE && !c.isAbstract()
                     && c.genericParameters().isEmpty() && c.parents().isEmpty() && c.interfaces().isEmpty()
                     && c.fields().isEmpty() && c.methods().isEmpty() && c.constructor() == null
@@ -97,13 +103,15 @@ public final class Parser {
             if (actor.machine() == null) continue;
             var table = actor.machine().transitionTable();
             var ids = new ArrayList<Integer>();
+            var parsedIds = new ArrayList<Integer>();
             for (String event : table.events()) {
                 int id = declarations.indexOf(event);
                 if (id < 0)
                     throw new IllegalArgumentException("E_MACHINE_EVENT_TYPE: event must resolve to a unique empty ordinary class in this file");
                 ids.add(id);
+                parsedIds.add(classIds.get(event));
             }
-            result.add(new NominalMachineInspection(actor.actor(), declarations, ids, table));
+            result.add(new NominalMachineInspection(actor.actor(), declarations, ids, parsedIds, table));
         }
         return List.copyOf(result);
     }
