@@ -260,6 +260,11 @@ final class SealedActorStateAdmissionTest {
     }
 
     @Test void directAstCannotForgeCompilerOwnedHandleStateIntrinsic() {
+        for (String alias : java.util.List.of("handle_state", "state_ro", "state_w", "handle_state_ro", "handle_state_w"))
+            assertForgedIntrinsicRejected(alias);
+    }
+
+    private static void assertForgedIntrinsicRejected(String alias) {
         // Parser's reserved-name check is not enough: AST expansion and
         // linked compiler APIs can construct methods without re-parsing.
         var program = Parser.parse("""
@@ -271,7 +276,7 @@ final class SealedActorStateAdmissionTest {
         var actor = (dev.oreslang.ast.Ast.ClassDecl) module.declarations().getFirst();
         var method = actor.methods().getFirst();
         var forged = new dev.oreslang.ast.Ast.MethodDecl(
-                "handle_state", method.visibility(), method.isStatic(),
+                alias, method.visibility(), method.isStatic(),
                 method.isAbstract(), method.async(), method.suspends(),
                 method.structural(), method.explicitReceiverType(),
                 method.genericParameters(), method.parameters(), method.returnType(),
