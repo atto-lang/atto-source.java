@@ -165,6 +165,71 @@ final class GuestClassGraphLeaseTest {
         assertEquals(12, child.get("n"));
     }
 
+    @Test void successiveSnapshotsProtectTransitiveReferentsAfterParentClose() {
+        var d = new GuestClassSlots.Domain();
+        var leaf = store(d, Map.of("n", 10));
+        var child = store(d, Map.of("leaf", leaf));
+        var original = store(d, Map.of("data", child, "count", 1));
+        var first = original.shallowSnapshot(2, 4);
+        try {
+            first.replace("count", 2);
+            try (var second = first.shallowSnapshot(2, 4)) {
+                assertSame(child, second.get("data"));
+                assertEquals(2, second.get("count"));
+                first.replace("count", 3);
+                original.replace("count", 4);
+                assertEquals(2, second.get("count"));
+                var freshLeaf = store(d, Map.of("n", 20));
+                var freshChild = store(d, Map.of("leaf", freshLeaf));
+                original.replace("data", freshChild);
+                freshLeaf.replace("n", 22);
+                assertSame(child, first.get("data"));
+                assertSame(child, second.get("data"));
+                deny("E_COPY_READONLY", () -> child.replace("leaf", freshLeaf));
+                deny("E_COPY_READONLY", () -> leaf.replace("n", 99));
+                first.close();
+                assertThrows(IllegalStateException.class, () -> first.shallowSnapshot(2, 4));
+                deny("E_COPY_READONLY", () -> leaf.replace("n", 99));
+                assertEquals(10, leaf.get("n"));
+                assertEquals(22, freshLeaf.get("n"));
+            }
+        } finally {
+            // Close the first snapshot even if an earlier assertion fails.
+            try { first.close(); } catch (IllegalStateException alreadyClosed) {
+                assertTrue(alreadyClosed.getMessage().startsWith("E_COPY_STALE"));
+            }
+        }
+        assertFalse(child.isReadOnly());
+        leaf.replace("n", 12);
+        assertEquals(12, leaf.get("n"));
+    }
+
+    @Test void successiveSnapshotUsesReplacedRootAndFailedCopyIsAtomic() {
+        var d = new GuestClassSlots.Domain();
+        var old = store(d, Map.of("n", 10));
+        var replacement = store(d, Map.of("n", 20));
+        var original = store(d, Map.of("data", old));
+        try (var first = original.shallowSnapshot(1, 2)) {
+            first.replace("data", replacement);
+            deny("E_COPY_BUDGET", () -> first.shallowSnapshot(0, 2));
+            assertFalse(replacement.isReadOnly());
+            assertTrue(old.isReadOnly());
+            try (var second = first.shallowSnapshot(1, 2)) {
+                assertSame(replacement, second.get("data"));
+                assertSame(old, original.get("data"));
+                deny("E_COPY_READONLY", () -> replacement.replace("n", 99));
+                var fresh = store(d, Map.of("n", 30));
+                second.replace("data", fresh);
+                fresh.replace("n", 32);
+                assertSame(replacement, first.get("data"));
+                assertEquals(32, fresh.get("n"));
+            }
+            replacement.replace("n", 21);
+            assertTrue(old.isReadOnly());
+        }
+        assertFalse(old.isReadOnly());
+    }
+
     @Test void snapshotRootAndLeaseObserveSameConcurrentReplacement() throws Exception {
         var d = new GuestClassSlots.Domain();
         try(var pool=Executors.newFixedThreadPool(2)){
