@@ -1747,7 +1747,8 @@ public final class OwnershipChecker {
                     // last-use proof releases it. Never admit a nominal alias
                     // merely because it has a primitive-looking name.
                     if (runtime.operation().equals("copy")
-                            && source.type != null && source.type.isBorrow()) {
+                            && source.type != null && source.type.isBorrow()
+                            && source.borrowSource != null) {
                         Ast.TypeRef target = source.type.borrowedTarget();
                         if (isPrimitiveCopyType(target)
                                 && !hasLocalTypeAliasNamed(target.name())
