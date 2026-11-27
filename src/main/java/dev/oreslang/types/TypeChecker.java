@@ -3819,8 +3819,12 @@ public final class TypeChecker {
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println"))
                     return new Function(List.of(Unknown.INSTANCE), new Named("Future", List.of(Primitive.VOID)));
-                if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
+                if (member.member().equals("out") || member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
+            }
+            if (member.receiver() instanceof Ast.NameExpr processName && processName.name().equals("process")
+                    && env.lookup("process") == null && member.member().equals("stdout")) {
+                return new Named("stdio.stdout", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
@@ -4766,10 +4770,10 @@ public final class TypeChecker {
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Env env) {
         if (!(call.callee() instanceof Ast.MemberExpr member) || !member.member().equals(memberName)) return false;
-        if (!(member.receiver() instanceof Ast.MemberExpr stdout) || !stdout.member().equals("stdout")) return false;
-        return stdout.receiver() instanceof Ast.NameExpr stdio
-                && stdio.name().equals("stdio")
-                && env.lookup("stdio") == null;
+        if (!(member.receiver() instanceof Ast.MemberExpr stdout)) return false;
+        if (!(stdout.receiver() instanceof Ast.NameExpr root) || env.lookup(root.name()) != null) return false;
+        return (root.name().equals("stdio") && (stdout.member().equals("out") || stdout.member().equals("stdout")))
+                || (root.name().equals("process") && stdout.member().equals("stdout"));
     }
 
     private void requireSpreadable(Type type, String operation) {
