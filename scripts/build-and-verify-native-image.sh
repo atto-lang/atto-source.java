@@ -225,6 +225,12 @@ run_exact_guest '120:9:13' 'native callables guest output differs from expected 
 ) || exit $?
 if [ -s "$guest_stdout" ] || [ -s "$guest_stderr" ]; then
   echo "native actor --check unexpectedly emitted diagnostics or guest output" >&2
+  # Report bounded byte evidence rather than swallowing the actual failure.
+  # od preserves control bytes without allowing them to affect CI log parsing.
+  printf 'actor check stdout bytes=%s (first 4096 bytes in hex):\n' "$(wc -c < "$guest_stdout")" >&2
+  LC_ALL=C od -An -tx1 -N 4096 "$guest_stdout" >&2
+  printf 'actor check stderr bytes=%s (first 4096 bytes in hex):\n' "$(wc -c < "$guest_stderr")" >&2
+  LC_ALL=C od -An -tx1 -N 4096 "$guest_stderr" >&2
   exit 1
 fi
 if [ ! -f examples/private-actor-sharing-invalid.ores ]; then
