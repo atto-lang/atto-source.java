@@ -133,9 +133,11 @@ final class ContextualIntGuestTest {
     @Test void directNamedTerminalReturn(){
         guest(source("int factor, int offset","factor * value + offset",
             "return Scale::(offset=7,factor=5).apply(7);"),42);
+        guest(source("int factor, int offset","factor * value + offset","return 1 + Scale::(offset=7,factor=5).apply(7);"),43);
+        guest(source("int factor, int offset","factor * value + offset","return Scale::(offset=7,factor=5).apply(7) + 1;"),43);
+        guest(source("int factor, int offset","factor * value + offset","return Scale::(offset=7,factor=5).apply(7) - Scale::(factor=2,offset=1).apply(5);"),31);
         for(String body:new String[]{
-            "return 1 + Scale::(offset=7,factor=5).apply(7);",
-            "return Scale::(offset=7,factor=5).apply(7) + 1;",
+            "return Scale::(offset=7,5).apply(7);",
             "return Scale::(offset=7,offset=5).apply(7);"
         })assertThrows(IllegalArgumentException.class,()->OresCompiler.parseAndTypeCheckNumericProfile(
             source("int factor, int offset","factor * value + offset",body),true),body);
