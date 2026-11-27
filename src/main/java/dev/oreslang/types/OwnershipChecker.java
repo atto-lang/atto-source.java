@@ -111,6 +111,9 @@ public final class OwnershipChecker {
     private BorrowMirAuditV1.Collector borrowMirAudit;
     private final RuntimeParkingLoanGraph runtimeParking = new RuntimeParkingLoanGraph();
     private Object currentParkingCallable;
+    // Check-only provenance from the exact expanded/type-checked AST; null for legacy passes.
+    private Set<Ast.CallExpr> typedParkingSites;
+    private final Set<Ast.CallExpr> visitedTypedParkingSites = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -162,9 +165,15 @@ public final class OwnershipChecker {
     }
 
     /** Check-only lane: no Task capability admission is published. */
-    static void checkCanonicalStdoutOnly(Ast.Program program, Map<Ast.BindingStmt, String> aliases) {
+    static void checkCanonicalStdoutOnly(Ast.Program program, Map<Ast.BindingStmt, String> aliases,
+                                        Set<Ast.CallExpr> typedSites) {
         OwnershipChecker checker = new OwnershipChecker(program, aliases);
+        checker.typedParkingSites = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        checker.typedParkingSites.addAll(java.util.Objects.requireNonNull(typedSites));
         checker.validate(program);
+        if (checker.visitedTypedParkingSites.size() != checker.typedParkingSites.size()) {
+            throw error(E_LOAN_SUSPEND, "unvisited typed stdout runtime-parking site; ownership proof incomplete");
+        }
     }
 
     /** Called only after TypeChecker has proved which short forms create aliases. */
@@ -2755,9 +2764,11 @@ public final class OwnershipChecker {
                 return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
             }
         }
-        if (isCanonicalParkingStdoutCall(call, scope)) {
+        if (typedParkingSites != null ? typedParkingSites.contains(call) : isCanonicalParkingStdoutCall(call, scope)) {
+            if (typedParkingSites != null) visitedTypedParkingSites.add(call);
             if (call.arguments().size() != 1 || call.typeArgumentsPresent()
-                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr
+                    || call.arguments().getFirst() instanceof Ast.NamedArgExpr) {
                 throw error(E_ARITY, "canonical stdout.write requires one positional string");
             }
             ValueInfo text = checkExpr(call.arguments().getFirst(), scope, false);

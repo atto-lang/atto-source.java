@@ -153,6 +153,7 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     private boolean canonicalStdoutCheckOnly;
     private boolean canonicalStdoutWildcardImport;
+    private final Set<Ast.CallExpr> canonicalStdoutSites = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -436,9 +437,8 @@ public final class TypeChecker {
      * full continuation, ownership and capability lowering is verified.
      */
     public static void checkCanonicalStdoutTypesAndOwnershipOnly(Ast.Program program) {
-        TypeCheckResult checked = checkTypesWithDiagnostics(program, false,
+        checkTypesWithDiagnostics(program, false,
                 AutomaticPrelude.Profile.HOSTED, false, true);
-        OwnershipChecker.checkCanonicalStdoutOnly(checked.program(), checked.shortInferredAliases());
     }
 
     private static TypeCheckResult checkTypesWithDiagnostics(
@@ -464,7 +464,12 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        if (!canonicalStdoutCheckOnly) CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
+        if (canonicalStdoutCheckOnly) {
+            OwnershipChecker.checkCanonicalStdoutOnly(program, checker.shortInferredTypeNames,
+                    checker.canonicalStdoutSites);
+        } else {
+            CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
+        }
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -4704,6 +4709,7 @@ public final class TypeChecker {
                 if (!canonicalStdoutCheckOnly) {
                     throw new IllegalArgumentException("STDOUT_RUNTIME_PARK_LOWERING_UNVERIFIED: canonical stdout.write is check-only");
                 }
+                canonicalStdoutSites.add(call);
                 return Primitive.VOID;
             }
             if (call.callee() instanceof Ast.MemberExpr console

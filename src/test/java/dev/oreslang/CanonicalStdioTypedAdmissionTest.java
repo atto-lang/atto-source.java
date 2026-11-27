@@ -28,4 +28,17 @@ final class CanonicalStdioTypedAdmissionTest {
             assertTrue(error.getMessage().contains("direct-write-only"), error.getMessage());
         }
     }
+    @Test void checkedOrdinaryCallChainRetainsDistinctIdenticalWriteSites() {
+        String source = "fnc leaf(): void { stdio.out.write(\"x\"); stdio.out.write(\"x\"); return; } "
+                + "fnc middle(): void { leaf(); return; } fnc root(): int { middle(); process.stdout.write(\"y\"); return 42; }";
+        assertDoesNotThrow(() -> checkOnly(source));
+    }
+    @Test void checkOnlyDoesNotLaunderMutuallyRecursiveParkingIntoNonparkingBorrow() {
+        String source = "fnc first(): void { second(); return; } "
+                + "fnc second(): void { first(); process.stdout.write(\"x\"); return; } "
+                + "fnc bad(borrow int x): void { first(); return; }";
+        var error = assertThrows(IllegalArgumentException.class, () -> checkOnly(source));
+        assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+    }
+
 }
