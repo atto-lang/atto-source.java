@@ -50,6 +50,8 @@ public final class Parser {
     // available: preserving ordinary CallExpr beats inventing guest authority.
     private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
     private int current;
+    // Exact token index of the standalone subject's closing single bar.
+    private int delimitedSubjectEnd = -1;
     // A long chain of contextual ownership prefixes must not exhaust the JVM
     // call stack before the compiler can issue a deterministic parse error.
     // This budget also covers other recursive unary and parenthesized forms.
@@ -5776,6 +5778,59 @@ public final class Parser {
         return expr;
     }
 
+    /**
+     * Parse a standalone subject header, not a callable parameter list.
+     * Scan only the bounded, balanced header to identify the closing single bar;
+     * paired logical OR and nested grouping keep their ordinary grammar.
+     * The real expression parser must consume exactly the delimited tokens.
+     */
+    private Ast.Expr parseDelimitedSubject(boolean allowProduct) {
+        if (!match(PIPE)) return parseExpression();
+        if (check(PIPE) || check(COMMA) || check(EOF)) {
+            throw error(peek(), "expected a nonempty delimited subject");
+        }
+        java.util.ArrayDeque<Token.Type> closers = new java.util.ArrayDeque<>();
+        int closing = -1;
+        for (int i = current; i < tokens.size() && i - current < 4096; i++) {
+            Token.Type kind = tokens.get(i).type();
+            if (kind == EOF) break;
+            if (kind == LPAREN) closers.push(RPAREN);
+            else if (kind == LBRACKET) closers.push(RBRACKET);
+            else if (kind == LBRACE) closers.push(RBRACE);
+            else if (kind == RPAREN || kind == RBRACKET || kind == RBRACE) {
+                if (closers.isEmpty() || closers.pop() != kind) {
+                    throw error(tokens.get(i), "unbalanced delimited subject");
+                }
+            } else if (closers.isEmpty() && kind == PIPE) {
+                if (i + 1 < tokens.size() && tokens.get(i + 1).type() == PIPE
+                        && adjacent(tokens.get(i), tokens.get(i + 1))) {
+                    i++;
+                } else {
+                    closing = i;
+                    break;
+                }
+            }
+        }
+        if (closing < 0) throw error(peek(), "missing closing bar or delimited subject exceeds token budget");
+        int saved = delimitedSubjectEnd;
+        delimitedSubjectEnd = closing;
+        try {
+            List<Ast.Expr> subjects = new ArrayList<>();
+            subjects.add(parseExpression());
+            while (match(COMMA)) {
+                if (!allowProduct) throw error(previous(), "multiple delimited switch subjects require checked product dispatch");
+                if (current == closing) throw error(peek(), "trailing comma in delimited subject");
+                if (subjects.size() >= 128) throw error(peek(), "delimited subject arity exceeds 128");
+                subjects.add(parseExpression());
+            }
+            if (current != closing) throw error(peek(), "expected closing bar of delimited subject");
+            consume(PIPE, "expected closing bar of delimited subject");
+            return subjects.size() == 1 ? subjects.getFirst() : new Ast.TupleExpr(subjects);
+        } finally {
+            delimitedSubjectEnd = saved;
+        }
+    }
+
     private Ast.MatchStmt parseMatch(boolean procedural) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
@@ -5786,17 +5841,19 @@ public final class Parser {
         // match remains proof-checked unless the historical contextual
         // `first` marker is present.
         boolean legacyFirst = matchContextualIdentifier("first");
+        boolean delimited = check(PIPE);
 
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
         Ast.Expr subject;
         try {
-            subject = parseExpression();
+            subject = parseDelimitedSubject(true);
         } finally {
             suppressRefinementOperators = previousSuppression;
         }
 
         boolean canonicalOver = match(OVER) || matchContextualIdentifier("over");
+        if (delimited && !canonicalOver) throw error(peek(), "delimited match requires 'over'");
         if (!canonicalOver) match(SEMICOLON);
         // "over { ... }" owns the outer braces, while "over ... end"
         // retains its established terminator. Neither form may consume the
@@ -5918,7 +5975,7 @@ public final class Parser {
             boolean previousSuppression = suppressRefinementOperators;
             suppressRefinementOperators = true;
             try {
-                subject = parseExpression();
+                subject = parseDelimitedSubject(true);
             } finally {
                 suppressRefinementOperators = previousSuppression;
             }
@@ -6413,7 +6470,11 @@ public final class Parser {
     }
 
     private Ast.SwitchStmt parseSwitch() {
-        Ast.Expr subject = parseExpression();
+        boolean delimited = check(PIPE);
+        Ast.Expr subject = parseDelimitedSubject(false);
+        if (delimited && !(match(OVER) || matchContextualIdentifier("over"))) {
+            throw error(peek(), "delimited switch requires 'over'");
+        }
         match(SEMICOLON);
         List<Ast.SwitchCase> cases = new ArrayList<>();
         List<Ast.Stmt> defaultBody = List.of();
@@ -6821,7 +6882,7 @@ public final class Parser {
 
     private Ast.Expr parseLogicalOr() {
         Ast.Expr expr = parseLogicalXor();
-        while (!isChannelCallbackDelimiter() && matchAdjacentPair(PIPE)) {
+        while (current != delimitedSubjectEnd && !isChannelCallbackDelimiter() && matchAdjacentPair(PIPE)) {
             expr = new Ast.BinaryExpr("||", expr, parseLogicalXor());
         }
         return expr;
@@ -6853,7 +6914,7 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseOr() {
         Ast.Expr expr = parseBitwiseXor();
-        while (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
+        while (current != delimitedSubjectEnd && !isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
             Token operator = previous();
             Ast.Expr right = parseBitwiseXor();
             // Distinct from legacy integer/conditional bitwise OR and from
