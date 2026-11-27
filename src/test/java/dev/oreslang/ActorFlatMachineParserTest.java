@@ -175,4 +175,32 @@ final class ActorFlatMachineParserTest {
                                 new Parser.FlatMachineEdge("AlphaEvent", 0)))));
         assertThrows(IllegalArgumentException.class, reversed::transitionTable);
     }
+
+    private static String nominalFixture(String name) throws java.io.IOException {
+        try (var in = ActorFlatMachineParserTest.class.getResourceAsStream(
+                "/actor-machine-nominal-inspection-v1/" + name + ".atto")) {
+            assertNotNull(in);
+            return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test void nominalEventsResolveFromSourceDeclarations() throws java.io.IOException {
+        String source = nominalFixture("nominal-forward");
+        var inspected = Parser.inspectNominalMachines(source);
+        assertEquals(1, inspected.size());
+        var machine = inspected.get(0);
+        assertEquals("Foo", machine.actor());
+        assertEquals(java.util.List.of("Start", "Stop"), machine.declarations());
+        assertEquals(java.util.List.of("Start", "Stop"), machine.table().events());
+        assertEquals(java.util.List.of(0, 1), machine.declarationIds());
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+    }
+
+    @Test void nominalInspectionRejectsIneligibleDeclarations() throws java.io.IOException {
+        for (String name : new String[]{"nominal-unknown", "nominal-actor", "nominal-payload", "nominal-duplicate"}) {
+            String source = nominalFixture(name);
+            assertThrows(IllegalArgumentException.class, () -> Parser.inspectNominalMachines(source));
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+        }
+    }
 }
