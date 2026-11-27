@@ -38,7 +38,9 @@ final class StructWithMembersTargetTest {
         for (String source : new String[]{GROUPED, CHAINED,
                 GROUPED.replace("int • sum()", "sum(): int"),
                 GROUPED.replace("int <- product()", "int • product()"),
-                GROUPED.replace("is_origin() : bool", "bool <- is_origin()")}) {
+                GROUPED.replace("is_origin() : bool", "bool <- is_origin()"),
+                GROUPED.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool"),
+                CHAINED.replace("type Point = struct", "define struct Point").replace("is_origin() : bool", "is_origin() -> bool")}) {
             assertTrue(failure(source).contains("attached struct members parsed"), source);
         }
     }
@@ -54,6 +56,9 @@ final class StructWithMembersTargetTest {
     @Test
     void duplicateNormalizedSignaturesRejectBeforeValueAbiGate() {
         assertTrue(failure(GROUPED.replace("int <- product()", "int <- sum()"))
+                .contains("duplicate attached struct method signature"));
+        assertTrue(failure(GROUPED.replace("type Point = struct", "define struct Point")
+                .replace("int <- product()", "sum() -> int"))
                 .contains("duplicate attached struct method signature"));
         assertTrue(failure(GROUPED.replace("constructor(int x, int y)",
                 "constructor(int a, int b) {} constructor(int x, int y)"))

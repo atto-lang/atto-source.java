@@ -557,6 +557,13 @@ public final class Parser {
                     rootDeclarations.add(recordVisibility(parseTypeAlias(modifiers.visibility), modifiers));
                     continue;
                 }
+                if (hasDirectStructAttachment()) {
+                    validateOnlyVisibilityModifiers(modifiers, "attached struct declarations");
+                    rejectCallableStructuralAnnotation(annotations, "attached struct declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "attached struct declarations");
+                    rootDeclarations.add(parseDirectStructAttachment(modifiers.visibility));
+                    continue;
+                }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
                 // denote the same file-root callable, with identical modifiers.
                 if (check(FNC) || check(ROUTINE) || looksLikeReturnFirstCallableHead()) {
@@ -1011,6 +1018,12 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "type aliases");
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return recordVisibility(parseTypeAlias(modifiers.visibility), modifiers);
+            }
+            if (hasDirectStructAttachment()) {
+                validateOnlyVisibilityModifiers(modifiers, "attached struct declarations");
+                rejectCallableStructuralAnnotation(annotations, "attached struct declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "attached struct declarations");
+                return parseDirectStructAttachment(modifiers.visibility);
             }
             // Legacy nested `define` is accepted, but never creates a new
             // scope or changes the callable's public symbol identity.
@@ -2880,6 +2893,27 @@ public final class Parser {
         }
         consumeStatementTerminator("type alias should end with ';'");
         return new Ast.TypeAliasDecl(name, visibility, generics, target);
+    }
+
+    private boolean hasDirectStructAttachment() {
+        if (!check(STRUCT) || !checkNext(IDENT) || current + 2 >= tokens.size()
+                || tokens.get(current + 2).type() != LBRACE) return false;
+        int depth = 0;
+        for (int i = current + 2; i < tokens.size(); i++) {
+            Token.Type kind = tokens.get(i).type();
+            if (kind == LBRACE) depth++;
+            else if (kind == RBRACE && --depth == 0)
+                return i + 1 < tokens.size() && tokens.get(i + 1).lexeme().equals("with");
+        }
+        return false;
+    }
+
+    private Ast.Decl parseDirectStructAttachment(Ast.Visibility visibility) {
+        consume(STRUCT, "expected struct after define");
+        String name = consumeTypeDeclarationName("expected struct name");
+        parseClosedAggregateType(true);
+        parseStructAttachmentTarget(name, visibility);
+        throw error(peek(), "attached struct value ABI required before execution");
     }
 
     /** Validate grouped/chained struct member headers through the ordinary
