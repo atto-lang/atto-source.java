@@ -1,0 +1,21 @@
+name: Strict destructuring leaf policy
+on:
+  push:
+    branches: ['feat/local-destructure-leaf-policy-v1-20261127']
+  pull_request:
+    paths: ['src/main/java/dev/oreslang/parser/Parser.java','src/test/java/dev/oreslang/DestructureLeafPolicyV1Test.java']
+permissions:
+  contents: read
+jobs:
+  java:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@7a445ee88d4e23b52c33d093024abcf8dd6a3e3
+        with:
+          distribution: graalvm
+          java-version: '25'
+      - run: mvn -B -ntp -Dtest=DestructureLeafPolicyV1Test,DestructureAndForOfMutabilityTest,DestructureSourceTupleOwnershipTest test
