@@ -24,6 +24,17 @@ final class ParametricBundleRefinement {
      * A caller must still resolve defaults, inference holes and cross-slot constraints. */
     static <V> Map<String, V> refine(List<Formal<V>> schema,
             List<Argument<V>> seed, List<Argument<V>> replacements) {
+        return bind(schema, seed, replacements, true);
+    }
+
+    /** Ordinary bundle application never replaces an already bound formal. */
+    static <V> Map<String, V> apply(List<Formal<V>> schema,
+            List<Argument<V>> first, List<Argument<V>> additional) {
+        return bind(schema, first, additional, false);
+    }
+
+    private static <V> Map<String, V> bind(List<Formal<V>> schema,
+            List<Argument<V>> seed, List<Argument<V>> replacements, boolean refine) {
         Map<String, Formal<V>> formals = new LinkedHashMap<>();
         for (Formal<V> formal : schema) {
             if (formals.putIfAbsent(formal.name(), formal) != null) {
@@ -31,7 +42,13 @@ final class ParametricBundleRefinement {
             }
         }
         Map<String, V> staged = checked(formals, seed);
-        staged.putAll(checked(formals, replacements));
+        Map<String, V> updates = checked(formals, replacements);
+        for (String name : updates.keySet()) {
+            if (!refine && staged.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate argument: " + name);
+            }
+        }
+        staged.putAll(updates);
         Map<String, V> canonical = new LinkedHashMap<>();
         for (String name : formals.keySet()) {
             if (staged.containsKey(name)) canonical.put(name, staged.get(name));
