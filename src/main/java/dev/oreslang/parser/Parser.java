@@ -1367,7 +1367,7 @@ public final class Parser {
         if (receiverFirst) {
             name = consumeCallableName("expected external actor method name after receiver");
         }
-        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
+        if (isStateAccessIntrinsic(name) || java.util.Set.of("on_panic", "on_throw", "on_raise",
                 "on_recover").contains(name)) {
             throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
         }
@@ -1759,6 +1759,11 @@ public final class Parser {
                 || (check(GPU) && tokens.get(current + 1).type() == ACTOR);
     }
 
+    private static boolean isStateAccessIntrinsic(String name) {
+        return name != null && java.util.Set.of(
+                "handle_state", "handle_state_ro", "handle_state_w", "state_ro", "state_w").contains(name);
+    }
+
     private Ast.Decl parseProtectedDeclaration(
             Modifiers modifiers, List<Ast.Annotation> annotations) {
         validateOnlyVisibilityModifiers(modifiers, "protected declarations");
@@ -1800,6 +1805,8 @@ public final class Parser {
         java.util.HashSet<String> methodsSeen = new java.util.HashSet<>();
         while (!check(END) && !check(EOF)) {
             String method = consume(IDENT, "expected protected method name").lexeme();
+            if (isStateAccessIntrinsic(method))
+                throw error(previous(), "protected state access is compiler-owned; user-defined authority is forbidden");
             consume(LPAREN, "expected '(' after protected method name");
             List<Ast.Param> parameters = new ArrayList<>();
             java.util.HashSet<String> parameterNames = new java.util.HashSet<>();
@@ -1807,6 +1814,8 @@ public final class Parser {
                 do {
                     Ast.TypeRef type = parseTypeRef();
                     String parameter = consume(IDENT, "expected protected method parameter").lexeme();
+                    if (isStateAccessIntrinsic(parameter))
+                        throw error(previous(), "protected parameter cannot shadow compiler-owned state access");
                     if (!parameterNames.add(parameter))
                         throw error(previous(), "duplicate protected parameter '" + parameter + "'");
                     parameters.add(new Ast.Param(type, parameter));
@@ -2156,7 +2165,7 @@ public final class Parser {
             // lifecycle/CONTROL admission rules below.
             String returnFirstActorName = peekReturnFirstCallableName();
             if (returnFirstActorName != null && java.util.Set.of(
-                    "tear_down", "handle_state", "on_panic", "on_throw",
+                    "tear_down", "handle_state", "handle_state_ro", "handle_state_w", "state_ro", "state_w", "on_panic", "on_throw",
                     "on_throws", "on_raise", "on_recover").contains(returnFirstActorName)) {
                 throw error(peek(), "return-first actor lifecycle/CONTROL method '"
                         + returnFirstActorName + "' is reserved; use the checked legacy hook declaration");
@@ -2203,8 +2212,8 @@ public final class Parser {
             // handle_state is reserved for a future intrinsic. A user
             // method with this name can spoof the critical-loan API, so no
             // actor may declare it while compiler-owned lowering is absent.
-            if (check(IDENT) && peek().lexeme().equals("handle_state")) {
-                throw error(peek(), "actor handle_state is compiler-owned; "
+            if (check(IDENT) && isStateAccessIntrinsic(peek().lexeme())) {
+                throw error(peek(), "actor " + peek().lexeme() + " is compiler-owned; "
                         + "user-defined state-loan authority is forbidden");
             }
             // Preserve critical as explicit AST metadata. It is never an
@@ -2237,7 +2246,7 @@ public final class Parser {
                     }
                 }
                 if (parsed.name().equals("receive") || parsed.name().equals("on_start")
-                        || parsed.name().equals("tear_down") || parsed.name().equals("handle_state")
+                        || parsed.name().equals("tear_down") || isStateAccessIntrinsic(parsed.name())
                         || parsed.name().equals("on_panic")) {
                     throw error(criticalToken,
                             "critical actor method cannot define runtime lifecycle or intrinsics");
