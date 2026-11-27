@@ -7,6 +7,6 @@ pub async routine main(): void {
   val Channel<int> ch = channel.rendezvous<int>();
   val Future<int> pending = channel.receive_pending<int>(ch);
   channel.close<int>(ch);
-  stdio.out.write(await pending);
+  stdio.stdout.write(await pending);
   return;
 }

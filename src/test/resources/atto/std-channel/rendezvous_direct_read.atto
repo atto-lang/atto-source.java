@@ -6,7 +6,7 @@ import module channel from "std/channel";
 pub async routine main(): void {
   val Channel<int> ch = channel.rendezvous<int>();
   val Future<void> writer = channel.send_pending<int>(ch, 42);
-  stdio.out.write(await channel.receive<int>(ch));
+  stdio.stdout.write(await channel.receive<int>(ch));
   await writer;
   channel.close<int>(ch);
   return;

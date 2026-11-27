@@ -8,10 +8,10 @@ pub routine main(): void {
   writech ch, 4;
   channel.close<int>(ch);
   channel.close<int>(ch);
-  stdio.out.write(readch ch);
-  stdio.out.write(readch ch);
+  stdio.stdout.write(readch ch);
+  stdio.stdout.write(readch ch);
   if channel.is_closed<int>(ch); do
-    stdio.out.write(":closed");
+    stdio.stdout.write(":closed");
   fi
   return;
 }

@@ -10,12 +10,12 @@ pub routine main(): void {
   val TryWriteResult<Array<int>> outcome =
       channel.try_send<Array<int>>(ch, take! payload);
   do match outcome over
-    on Accepted -> { stdio.out.write("accepted"); }
-    on Full(rejected) -> { stdio.out.write("full"); }
-    on Closed(rejected) -> { stdio.out.write("closed"); }
+    on Accepted -> { stdio.stdout.write("accepted"); }
+    on Full(rejected) -> { stdio.stdout.write("full"); }
+    on Closed(rejected) -> { stdio.stdout.write("closed"); }
   end
   // This original binding is dead. Only a recovered value (if rejected)
   // could be used by the caller, never a second alias of payload.
-  stdio.out.write(payload[0]);
+  stdio.stdout.write(payload[0]);
   return;
 }

@@ -8,7 +8,7 @@ pub async fnc main(): void {
   if task_api.remaining_slots(1, 2) != 1; do rt fail("quota"); fi
   if task_api.remaining_slots(3, 2) != 0; do rt fail("over quota"); fi
 
-  let group = task_api.group_policy(5, 2);
+  let mut group = task_api.group_policy(5, 2);
   if group.try_admit(4); do rt fail("wrong generation admitted"); fi
   if !group.try_admit(5); do rt fail("first admission"); fi
   if !group.try_admit(5); do rt fail("second admission"); fi

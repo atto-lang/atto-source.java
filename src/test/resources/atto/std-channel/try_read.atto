@@ -6,16 +6,16 @@ pub routine main(): void {
   val Channel<int> ch = channel.bounded<int>(1);
   val Option<int> probe = channel.try_receive<int>(ch);
   do match probe over
-    on None -> { stdio.out.write("empty"); }
-    on Some(value) -> { stdio.out.write("unexpected-ready"); }
+    on None -> { stdio.stdout.write("empty"); }
+    on Some(value) -> { stdio.stdout.write("unexpected-ready"); }
   end
   writech ch, 7;
   val Option<int> second = channel.try_receive<int>(ch);
   do match second over
-    on None -> { stdio.out.write("unexpected-empty"); }
+    on None -> { stdio.stdout.write("unexpected-empty"); }
     on Some(value) -> {
-      stdio.out.write(":");
-      stdio.out.write(value);
+      stdio.stdout.write(":");
+      stdio.stdout.write(value);
     }
   end
   channel.close<int>(ch);

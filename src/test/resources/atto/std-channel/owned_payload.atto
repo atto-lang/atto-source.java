@@ -8,13 +8,13 @@ pub async routine main(): void {
   val TryWriteResult<Array<int>> outcome =
       channel.try_send<Array<int>>(ch, take! payload);
   do match outcome over
-    on Accepted -> { stdio.out.write("accepted:"); }
-    on Full(rejected) -> { stdio.out.write("unexpected-full"); }
-    on Closed(rejected) -> { stdio.out.write("unexpected-closed"); }
+    on Accepted -> { stdio.stdout.write("accepted:"); }
+    on Full(rejected) -> { stdio.stdout.write("unexpected-full"); }
+    on Closed(rejected) -> { stdio.stdout.write("unexpected-closed"); }
   end
   val Array<int> received = await channel.receive<Array<int>>(ch);
-  stdio.out.write(received[0]);
-  stdio.out.write(received[1]);
+  stdio.stdout.write(received[0]);
+  stdio.stdout.write(received[1]);
   channel.close<Array<int>>(ch);
   return;
 }

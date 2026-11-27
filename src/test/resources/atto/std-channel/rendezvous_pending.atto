@@ -5,7 +5,7 @@ pub async routine main(): void {
   val Channel<int> ch = channel.rendezvous<int>();
   val Future<void> writer = channel.send_pending<int>(ch, 42);
   val Future<int> reader = channel.receive_pending<int>(ch);
-  stdio.out.write(await reader);
+  stdio.stdout.write(await reader);
   await writer;
   channel.close<int>(ch);
   return;

@@ -214,10 +214,11 @@ cancellation. GET/HEAD remain supported without bodies. A true native
 `Bytes` nominal guest type and network destination policies beyond
 canonical loopback are still separate compatibility/security gates.
 
-The native `ores.std/telemetry` module now provides a **pure**
+The native `atto.std/telemetry` module now provides a **pure**
 OTLP/HTTP protobuf-JSON encoder (`CompletedSpan.to_otlp_span_json`,
-`SpanBatch.to_otlp_json` for batches of 1..64) and
-`post_otlp_json_async(endpoint, json)`. The encoder emits lowercase
+`SpanBatch.to_otlp_json` for batches of 1..64). The network exporter
+`post_otlp_json_async(endpoint, json)` lives in `atto.std/telemetry_otlp`,
+so importing telemetry policy never requires the NETWORK capability. The encoder emits lowercase
 hex W3C IDs, numeric span kinds and **quoted decimal** nanosecond times per
 the [current OTLP JSON specification](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding).
 It fixes low-cardinality operation names and carries no free-form attributes,

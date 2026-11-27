@@ -6,20 +6,20 @@ pub async routine main(): void {
   val TryWriteResult<int> probe = channel.try_send<int>(ch, 1);
   val TryWriteResult<int> second = channel.try_send<int>(ch, 2);
   do match probe over
-    on Accepted -> { stdio.out.write("accepted"); }
-    on Full(value) -> { stdio.out.write("unexpected-probe-full"); }
-    on Closed(value) -> { stdio.out.write("unexpected-probe-closed"); }
+    on Accepted -> { stdio.stdout.write("accepted"); }
+    on Full(value) -> { stdio.stdout.write("unexpected-probe-full"); }
+    on Closed(value) -> { stdio.stdout.write("unexpected-probe-closed"); }
   end
   do match second over
-    on Accepted -> { stdio.out.write("unexpected-second-accepted"); }
+    on Accepted -> { stdio.stdout.write("unexpected-second-accepted"); }
     on Full(value) -> {
-      stdio.out.write(":full:");
-      stdio.out.write(value);
+      stdio.stdout.write(":full:");
+      stdio.stdout.write(value);
     }
-    on Closed(value) -> { stdio.out.write("unexpected-second-closed"); }
+    on Closed(value) -> { stdio.stdout.write("unexpected-second-closed"); }
   end
-  stdio.out.write(":");
-  stdio.out.write(await channel.receive<int>(ch));
+  stdio.stdout.write(":");
+  stdio.stdout.write(await channel.receive<int>(ch));
   channel.close<int>(ch);
   return;
 }
