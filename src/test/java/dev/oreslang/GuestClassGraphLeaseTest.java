@@ -293,6 +293,71 @@ final class GuestClassGraphLeaseTest {
         }
     }
 
+    @Test void flatSnapshotQuotaIsReleasedExactlyOnce() {
+        var d = new GuestClassSlots.Domain();
+        var original = store(d, Map.of("count", 1));
+        var snapshots = new GuestClassSlots.ShallowSnapshot[65536];
+        try {
+            for (int i = 0; i < snapshots.length; i++) {
+                snapshots[i] = original.shallowSnapshot(0, 1);
+            }
+            deny("E_COPY_BUDGET", () -> original.shallowSnapshot(0, 1));
+            assertFalse(original.isReadOnly());
+            original.replace("count", 2);
+            assertEquals(1, snapshots[0].get("count"));
+            snapshots[0].close();
+            assertThrows(IllegalStateException.class, snapshots[0]::close);
+            snapshots[0] = original.shallowSnapshot(0, 1);
+            assertEquals(2, snapshots[0].get("count"));
+            deny("E_COPY_BUDGET", () -> original.shallowSnapshot(0, 1));
+        } finally {
+            for (var snapshot : snapshots) {
+                if (snapshot != null) snapshot.close();
+            }
+        }
+        try (var recovered = original.shallowSnapshot(0, 1)) {
+            assertEquals(2, recovered.get("count"));
+        }
+    }
+
+    @Test void snapshotCloseAndSuccessorPublicationLinearize() throws Exception {
+        var d = new GuestClassSlots.Domain();
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 1000; i++) {
+                var leaf = store(d, Map.of("n", 20));
+                var root = store(d, Map.of("data", leaf));
+                var parent = root.shallowSnapshot(1, 2);
+                var barrier = new CyclicBarrier(2);
+                var successor = pool.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    try {
+                        return parent.shallowSnapshot(1, 2);
+                    } catch (IllegalStateException e) {
+                        if (!e.getMessage().startsWith("E_COPY_STALE")) throw e;
+                        return null;
+                    }
+                });
+                var retire = pool.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    parent.close();
+                    return true;
+                });
+                assertTrue(retire.get(10, TimeUnit.SECONDS));
+                try (var next = successor.get(10, TimeUnit.SECONDS)) {
+                    if (next != null) {
+                        assertSame(leaf, next.get("data"));
+                        deny("E_COPY_READONLY", () -> leaf.replace("n", 22));
+                    } else {
+                        assertFalse(leaf.isReadOnly());
+                    }
+                }
+                assertFalse(leaf.isReadOnly());
+                leaf.replace("n", 22);
+                assertEquals(22, leaf.get("n"));
+            }
+        }
+    }
+
     @Test void snapshotRootAndLeaseObserveSameConcurrentReplacement() throws Exception {
         var d = new GuestClassSlots.Domain();
         try(var pool=Executors.newFixedThreadPool(2)){
