@@ -15,7 +15,6 @@ import java.util.Objects;
  */
 public final class GuestClassSlots {
     private final Map<String, Object> slots;
-    private final Map<String, Object> view;
     private final Domain domain;
     private boolean initializing = true;
     private static final int MAX_READ_ONLY_LOANS = 65536;
@@ -409,7 +408,6 @@ public final class GuestClassSlots {
     public GuestClassSlots(Domain domain, Map<String, Object> initial) {
         this.domain = Objects.requireNonNull(domain);
         slots = new LinkedHashMap<>(initial);
-        view = Collections.unmodifiableMap(slots);
     }
 
     public Object get(String key) {
@@ -421,8 +419,17 @@ public final class GuestClassSlots {
     public int size() {
         synchronized (domain) { return slots.size(); }
     }
-    /** Live read-only view; callers still need existing ownership/read proof. */
-    public Map<String, Object> view() { return view; }
+    /** Stable, shallow read-only slot census. A live unmodifiable wrapper
+     * still races with slot replacement and leaks changing Map.Entry values
+     * into diagnostics, graph inspection and evaluator traversal. Capture
+     * under the domain monitor; never grant authority over the referents.
+     * This is not an atomic multi-object graph snapshot or a guest copy.
+     */
+    public Map<String, Object> view() {
+        synchronized (domain) {
+            return Collections.unmodifiableMap(new LinkedHashMap<>(slots));
+        }
+    }
 
     public void initialize(String key, Object value) {
         synchronized (domain) {

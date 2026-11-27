@@ -627,6 +627,43 @@ final class GuestClassGraphLeaseTest {
         }
     }
 
+    @Test void readOnlyCensusDoesNotObserveSubsequentSlotReplacement() {
+        var d = new GuestClassSlots.Domain();
+        var original = store(d, Map.of("a", 10, "b", 20));
+        var captured = original.view();
+        var entry = captured.entrySet().stream().filter(e -> e.getKey().equals("a")).findFirst().orElseThrow();
+        original.replace("a", 30);
+        assertEquals(10, captured.get("a"));
+        assertEquals(10, entry.getValue());
+        assertEquals(30, original.view().get("a"));
+        assertThrows(UnsupportedOperationException.class, () -> entry.setValue(99));
+        assertThrows(UnsupportedOperationException.class, () -> captured.put("a", 99));
+        assertEquals(30, original.get("a"));
+    }
+
+    @Test void censusAndConcurrentReplacementDoNotLeakLiveEntries() throws Exception {
+        var d = new GuestClassSlots.Domain();
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 1000; i++) {
+                var original = store(d, Map.of("a", 10));
+                var captured = original.view();
+                var barrier = new CyclicBarrier(2);
+                var writer = pool.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    original.replace("a", 42);
+                    return true;
+                });
+                var reader = pool.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    return captured.entrySet().iterator().next().getValue();
+                });
+                assertTrue(writer.get(10, TimeUnit.SECONDS));
+                assertEquals(10, reader.get(10, TimeUnit.SECONDS));
+                assertEquals(42, original.get("a"));
+            }
+        }
+    }
+
     @Test void flatSnapshotQuotaIsReleasedExactlyOnce() {
         var d = new GuestClassSlots.Domain();
         var original = store(d, Map.of("count", 1));
