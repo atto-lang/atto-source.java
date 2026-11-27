@@ -45,12 +45,13 @@ public final class ProtectedScalarMirV1 {
 
         public ScalarStateContainer new_state_container() {
             requireKind(Kind.STATE_CONTAINER);
-            return new ScalarStateContainer(initialValue, 4);
+            return new ScalarStateContainer(initialValue, 4, this);
         }
 
         public long invoke(ScalarStateContainer state, long argument) {
             requireKind(Kind.STATE_CONTAINER);
             Objects.requireNonNull(state, "state");
+            state.requireDeclarationOwner(this);
             // A single VM primitive is the verified implementation of this
             // exact MIR sequence: it owns the permit for load/check/store,
             // releases it on exceptional exits, and checks overflow before
@@ -137,7 +138,7 @@ public final class ProtectedScalarMirV1 {
         } else {
             throw invalid("expected dedicated state container or virtual actor AST");
         }
-        if (name.length() > 128 || fields.size() != 1 || methods.size() != 1)
+        if (!validStateName(name) || fields.size() != 1 || methods.size() != 1)
             throw invalid("exactly one state field and one method required");
         var field = fields.getFirst();
         var method = methods.getFirst();
@@ -148,12 +149,13 @@ public final class ProtectedScalarMirV1 {
                 || !isInt(method.parameters().getFirst().type()))
             throw invalid("method must have exactly one int parameter");
         Ast.Param arg = method.parameters().getFirst();
-        if (arg.structural() || arg.mutable() || !validStateName(arg.name()))
+        if (arg.structural() || arg.mutable() || !validStateName(arg.name())
+                || arg.name().equals(field.name()))
             throw invalid("structural or mutable parameters not yet supported");
         if (!(kind == Kind.STATE_CONTAINER ? isInt(method.returnType())
                                           : isVoid(method.returnType())))
             throw invalid("method return type is incompatible with protected declaration");
-        matchBody(method.bodyTokens(), method.bodyTokenKinds(), kind, field.name(), arg.name());
+        matchBody(method.bodyTokens(), method.bodyTokenKinds(), kind, name, field.name(), arg.name());
         return new Plan(kind, name, field.name(), method.name(), arg.name(), initial,
                 kind == Kind.STATE_CONTAINER ? STATE_WRITE : VIRTUAL_WRITE);
     }
@@ -245,7 +247,7 @@ public final class ProtectedScalarMirV1 {
     }
 
     private static void matchBody(List<String> tokens, List<String> kinds,
-                                  Kind kind, String field, String parameter) {
+                                  Kind kind, String declaration, String field, String parameter) {
         if (tokens.size() > 96 || tokens.size() != kinds.size())
             throw invalid("protected-method token provenance or budget exceeded");
         Cursor c = new Cursor(tokens, kinds);
@@ -265,8 +267,8 @@ public final class ProtectedScalarMirV1 {
         }
         c.need("|");
         String alias = c.ident();
-        if (alias.equals(parameter) || reservedStateName(alias) || alias.equals("_") || alias.equals("self"))
-            throw invalid("protected state alias shadows method parameter");
+        if (!validStateName(alias) || alias.equals(parameter) || alias.equals(field) || alias.equals(declaration))
+            throw invalid("protected state alias shadows declaration, field, or parameter");
         c.need("|");
         c.need("->");
         c.need("{");
