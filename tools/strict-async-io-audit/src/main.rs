@@ -76,7 +76,7 @@ fn audit_java(root: &Path) -> Result<(), String> {
         "strictNonblockingIoFuture("network.socket." + name)",
         "strictNonblockingIoFuture("http.listen")",
         "strictNonblockingIoFuture("http." + name)",
-        "strictNonblockingIoFuture("stdio.stdout." + name)",
+        "strictNonblockingIoFuture("stdio.out." + name)",
         "strictNonblockingIoFuture("stdio.stdin.read_line")",
     ] {
         if !dispatch.contains(required) {
@@ -201,7 +201,7 @@ mod tests {
     fn canonical_fail_closed_slice_is_accepted() {
         let ok = r#"
             if (receiver instanceof StdioFacade stdio) {
-                strictNonblockingIoFuture("stdio.stdout." + name);
+                strictNonblockingIoFuture("stdio.out." + name);
                 strictNonblockingIoFuture("stdio.stdin.read_line");
                 strictNonblockingIoFuture("fs." + name);
                 strictNonblockingIoFuture("network.connect");
