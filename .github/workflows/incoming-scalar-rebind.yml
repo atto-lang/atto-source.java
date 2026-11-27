@@ -1,0 +1,43 @@
+name: Incoming scalar rebind Java linked guest
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/test/java/dev/oreslang/IncomingScalarRebindTest.java'
+      - '.github/workflows/incoming-scalar-rebind.yml'
+  push:
+    branches:
+      - 'draft/fixed-parameter-ssa-rebind-20261126'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-scalar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head and tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          git rev-parse HEAD HEAD^{tree}
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Compile and execute scalar rebind tests and linked guests
+        run: mvn -B -ntp -Dtest=IncomingScalarRebindTest,BorrowParameterBindingDistinctionTest,DuplicateCallableParameterTest -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Require nonempty unskipped test evidence
+        run: |
+          set -euo pipefail
+          report=target/surefire-reports/TEST-dev.oreslang.IncomingScalarRebindTest.xml
+          test -s "$report"
+          test "$(grep -c '<testcase' "$report")" -eq 5
+          if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then exit 1; fi
