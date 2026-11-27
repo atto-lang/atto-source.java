@@ -1253,12 +1253,32 @@ public final class ActorRuntime implements AutoCloseable {
         this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher, null);
     }
 
+    /** Package-private host-test seam, never a guest scheduler capability. */
+    @FunctionalInterface
+    interface DispatcherFactoryForTesting {
+        ExecutorService create(ActorKind kind, int parallelism, int capacity);
+    }
+
     public ActorRuntime(
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher,
             PhysicalStopDispatcher physicalStopDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                physicalStopDispatcher, null);
+    }
+
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            PhysicalStopDispatcher physicalStopDispatcher,
+            DispatcherFactoryForTesting dispatcherFactoryForTesting) {
+        if (dispatcherFactoryForTesting != null && policyCeiling.adversarial()) {
+            throw new SecurityException("controlled dispatcher unavailable to adversarial runtime");
+        }
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
@@ -1286,10 +1306,19 @@ public final class ActorRuntime implements AutoCloseable {
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
         try {
-            privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
-                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
-            sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
-                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
+            privatePool = dispatcherFactoryForTesting == null
+                    ? newActorDispatcher(dispatcherConfig.privateParallelism(),
+                            dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-")
+                    : Objects.requireNonNull(dispatcherFactoryForTesting.create(
+                            ActorKind.PRIVATE, dispatcherConfig.privateParallelism(),
+                            dispatcherConfig.maxActors()), "test PRIVATE dispatcher");
+            sharedPool = dispatcherFactoryForTesting == null
+                    ? newActorDispatcher(dispatcherConfig.sharedParallelism(),
+                            dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-")
+                    : Objects.requireNonNull(dispatcherFactoryForTesting.create(
+                            ActorKind.SHARED, dispatcherConfig.sharedParallelism(),
+                            dispatcherConfig.maxActors()), "test SHARED dispatcher");
+            // Never inject a test executor into the untrusted carrier lane.
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
         } catch (RuntimeException | Error failure) {
