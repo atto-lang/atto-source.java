@@ -21,14 +21,22 @@ final class RecursiveRecordParserTest {
         assertEquals(parse("(x = (1, 2), y = (3, 4))"), parse("(\"x\" = (1, 2), \"y\" = (3, 4))"));
     }
     @Test void callArgumentsAreNotAssignmentsOrCoalescedRecords() {
-        assertEquals(parse("foo((x = 42))"), parse("foo(\"x\" = 42)"));
+        assertEquals(parse("foo(x = 42)"), parse("foo(\"x\" = 42)"));
+        assertEquals(parse("foo((x = 42))"), parse("foo((\"x\" = 42))"));
         assertEquals(parse("foo(x: 42)"), parse("foo(x = 42)"));
-        assertNotEquals(parse("foo(x = 42)"), parse("foo(\"x\" = 42)"));
-        assertEquals(parse("foo((x = 1), (y = 2))"), parse("foo(\"x\" = 1, \"y\" = 2)"));
+        assertNotEquals(parse("foo(x = 42)"), parse("foo((\"x\" = 42))"));
+        assertEquals(parse("foo(x = 1, y = 2)"), parse("foo(\"x\" = 1, \"y\" = 2)"));
+        assertEquals(parse("foo((x = 1), (y = 2))"), parse("foo((\"x\" = 1), (\"y\" = 2))"));
         assertNotEquals(parse("foo((x = 1, y = 2))"), parse("foo(\"x\" = 1, \"y\" = 2)"));
-        assertEquals(parse("foo((outer = (inner = 42)))"), parse("foo(\"outer\" = (\"inner\" = 42))"));
-        assertEquals(parse("foo((x = (1, 2)), 3)"), parse("foo(\"x\" = (1, 2), 3)"));
-        reject("foo(x = 1, \"y\" = 2)", "positional arguments cannot follow named arguments");
+        assertEquals(parse("foo(outer = (inner = 42))"), parse("foo(\"outer\" = (\"inner\" = 42))"));
+        assertEquals(parse("foo((outer = (inner = 42)))"), parse("foo((\"outer\" = (\"inner\" = 42)))"));
+        assertEquals(parse("foo((x = (1, 2)), 3)"), parse("foo((\"x\" = (1, 2)), 3)"));
+        assertEquals(parse("foo(x = 1, y = 2)"), parse("foo(x = 1, \"y\" = 2)"));
+        reject("foo(x = 1, (\"y\" = 2))", "positional arguments cannot follow named arguments");
+        reject("foo(\"x\" = 1, 2)", "positional arguments cannot follow named arguments");
+        reject("foo(x = 1, \"x\" = 2)", "duplicate named argument");
+        reject("foo(\"x\" = 1, \"\\u{78}\" = 2)", "duplicate named argument");
+        assertEquals(parse("Record.of(x = 42)"), parse("Record.of(\"x\" = 42)"));
         reject("foo(x = y = 42)", "E_RECORD_FIELD");
     }
     @Test void quotedLabelsAreValidatedAndComparedAfterDecoding() {
