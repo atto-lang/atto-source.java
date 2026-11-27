@@ -724,6 +724,7 @@ public final class Parser {
         // normalizer before any package/file lookup; never lower an unverified
         // namespace to a legacy filesystem import.
         if (check(SELF) || check(SUPER) ||
+                (check(IDENT) && "parent".equals(peek().lexeme())) ||
                 (check(IDENT) && "pkg".equals(peek().lexeme())
                         && current + 1 < tokens.size()
                         && tokens.get(current + 1).type() != STRING)) {
