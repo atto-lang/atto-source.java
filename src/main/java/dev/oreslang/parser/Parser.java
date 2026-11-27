@@ -7833,6 +7833,27 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // Closed single-break value expression, not a general loop CFG.
+        // Preserve contextual loop(...) callable references and ordinary
+        // statement loops; only expression-position loop followed by {
+        // select this narrow scalar profile.
+        if (check(LOOP) && checkNext(LBRACE)) {
+            Token site = advance();
+            consume(LBRACE, "expected '{' after value loop");
+            consume(BREAK, "value loop requires exactly one valued break");
+            if (check(SEMICOLON) || check(RBRACE)) {
+                throw error(peek(), "E_BREAK_VALUE: value loop requires a break operand");
+            }
+            Ast.Expr value = parseExpression();
+            if (!(value instanceof Ast.LiteralExpr || value instanceof Ast.UnaryExpr
+                    || value instanceof Ast.BinaryExpr || value instanceof Ast.ConditionalExpr)) {
+                throw error(site, "value-loop operand requires typed CFG lowering");
+            }
+            consume(SEMICOLON, "expected ';' after value break");
+            consume(RBRACE, "expected '}' after single value break");
+            if (check(LPAREN)) throw error(peek(), "calling a computed value loop");
+            return value;
+        }
         if (match(MATCH)) return parseValueMatch();
         if (canonicalAttoSource && match(IF, IFNOT, UNLESS)) return parseValueIf(previous().type());
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
