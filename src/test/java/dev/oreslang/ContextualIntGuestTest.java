@@ -130,6 +130,34 @@ final class ContextualIntGuestTest {
         assertEquals(2,executed);assertEquals(4,rejected);
         System.out.println("NAMED_SUMMARY executed="+executed+" rejectedUnclassified="+rejected);
     }
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="ATTO_EXPRESSION_CONTEXT_CORPUS",matches=".+")
+    void exactSharedExpressionCorpus() throws Exception {
+        var root=java.nio.file.Path.of(System.getenv("ATTO_EXPRESSION_CONTEXT_CORPUS"));
+        int executed=0,rejected=0;
+        for(String kind:new String[]{"pass","fail"}){
+            try(var paths=java.nio.file.Files.list(root.resolve(kind))){
+                for(var file:paths.sorted().toList()){
+                    String id=file.getFileName().toString().replaceFirst("\\.atto$","");
+                    byte[] bytes=java.nio.file.Files.readAllBytes(file);
+                    var sha=java.security.MessageDigest.getInstance("SHA-1");
+                    sha.update(("blob "+bytes.length+"\0").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                    String blob=java.util.HexFormat.of().formatHex(sha.digest(bytes));
+                    String src=new String(bytes,java.nio.charset.StandardCharsets.UTF_8);
+                    if(kind.equals("fail")){
+                        var error=assertThrows(IllegalArgumentException.class,
+                            ()->OresCompiler.parseAndTypeCheckNumericProfile(src,true),id);
+                        System.out.println("EXPRESSION_REJECT_UNCLASSIFIED "+id+" "+blob+" "+error.getMessage());rejected++;
+                    }else{
+                        long expected=switch(id){case "direct-terminal"->42;case "sibling-before","sibling-after"->43;case "two-permutations"->31;default->throw new AssertionError(id);};
+                        guest(src,expected);System.out.println("EXPRESSION_EXECUTED "+id+" "+blob+" "+expected);executed++;
+                    }
+                }
+            }
+        }
+        assertEquals(4,executed);assertEquals(4,rejected);
+        System.out.println("EXPRESSION_SUMMARY executed="+executed+" rejectedUnclassified="+rejected);
+    }
     @Test void directNamedTerminalReturn(){
         guest(source("int factor, int offset","factor * value + offset",
             "return Scale::(offset=7,factor=5).apply(7);"),42);
