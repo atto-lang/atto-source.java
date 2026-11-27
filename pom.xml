@@ -95,6 +95,17 @@
         </includes>
         <excludes><exclude>alloc/**</exclude></excludes>
       </resource>
+      <!-- Candidate generic allocation units: package the original Atto bytes,
+           not host-language replacements or a second source copy. -->
+      <resource>
+        <directory>stdlib/alloc</directory>
+        <targetPath>dev/oreslang/lib/alloc</targetPath>
+        <includes>
+          <include>box.atto</include>
+          <include>vec.atto</include>
+          <include>string.atto</include>
+        </includes>
+      </resource>
       <!-- The alloc tier has a separate closed, compiler-owned registry. -->
       <resource>
         <directory>stdlib/alloc</directory>
