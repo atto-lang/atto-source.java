@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
 import java.io.PrintWriter;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.List;
@@ -95,24 +94,28 @@ public final class AsyncStdioLogs implements AutoCloseable {
         return new OresFuture<>(() -> false, () -> { });
     }
 
-    private static int checkedBytes(String text) {
+    // Exact UTF-8 byte length without allocating an encoded temporary buffer.
+    static int checkedBytes(String text) {
         java.util.Objects.requireNonNull(text, "text");
         if (text.length() > MAX_RECORD_BYTES) {
             throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
         }
-        // Reject malformed UTF-16 instead of silently encoding a replacement byte.
+        int bytes = 0;
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
             if (Character.isHighSurrogate(c)) {
-                if (++i >= text.length() || !Character.isLowSurrogate(text.charAt(i)))
+                if (++i >= text.length() || !Character.isLowSurrogate(text.charAt(i))) {
                     throw new IllegalArgumentException("async stdio malformed UTF-16");
+                }
+                bytes += 4;
             } else if (Character.isLowSurrogate(c)) {
                 throw new IllegalArgumentException("async stdio malformed UTF-16");
+            } else {
+                bytes += c <= 0x7f ? 1 : c <= 0x7ff ? 2 : 3;
             }
-        }
-        int bytes = text.getBytes(StandardCharsets.UTF_8).length;
-        if (bytes > MAX_RECORD_BYTES) {
-            throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
+            if (bytes > MAX_RECORD_BYTES) {
+                throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
+            }
         }
         return bytes;
     }
