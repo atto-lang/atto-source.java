@@ -143,6 +143,49 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void bufferedAdmissionCountsInFlightBytesAndDoesNotOvertakeLargeWaiter() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicLong written = new java.util.concurrent.atomic.AtomicLong();
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+                written.addAndGet(len);
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        String frame = "x".repeat(65_536);
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            try {
+                logs.admitBuffered(frame).get(1, TimeUnit.SECONDS);
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                for (int i = 1; i < 64; i++) {
+                    logs.admitBuffered(frame).get(1, TimeUnit.SECONDS);
+                }
+                var large = logs.admitBuffered(frame);
+                var small = logs.admitBuffered("!");
+                assertFalse(large.isDone());
+                assertFalse(small.isDone());
+                assertThrows(IllegalStateException.class, () -> logs.logAsync("overtake"));
+                release.countDown();
+                large.get(5, TimeUnit.SECONDS);
+                small.get(5, TimeUnit.SECONDS);
+                logs.flushAsync().get(5, TimeUnit.SECONDS);
+                assertEquals(65L * 65_536 + 1, written.get());
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
     void bufferedAdmissionQuotaAndSealSettleUnadmittedWaiters() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
