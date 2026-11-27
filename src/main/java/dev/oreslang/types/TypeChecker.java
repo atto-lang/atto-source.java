@@ -3965,6 +3965,10 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.PairExpr || expr instanceof Ast.EntryExpr) {
+            throw new IllegalArgumentException(
+                    "E_NOMINAL_PRODUCT_UNSUPPORTED: parsed Pair/Entry requires typed nominal ownership and guest lowering");
+        }
         if (expr instanceof Ast.NamedArgExpr) {
             throw new IllegalArgumentException(
                     "NAMED_ARGUMENT_OUTSIDE_CALL: a named argument must remain attached to its call site");
