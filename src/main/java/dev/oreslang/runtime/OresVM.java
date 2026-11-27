@@ -29,6 +29,8 @@ public final class OresVM implements AutoCloseable {
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Admission sealing is distinct from observed physical CONTROL retirement.
+    private final AtomicBoolean retired = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
     private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
@@ -170,24 +172,26 @@ public final class OresVM implements AutoCloseable {
                     "OresVM must be closed outside actor, Mailman and scheduler turns");
         }
         synchronized (this) {
-            if (!closed.compareAndSet(false, true)) return;
+            if (retired.get()) return;
+            closed.set(true);
             startupState = StartupState.CLOSED;
+            rootScheduler.close();
+
+            // Let already-authorized cleanup leave the scheduler naturally.
+            // A failed physical-exit wait remains retryable.
+            controlExecutor.shutdown();
             try {
-                rootScheduler.close();
-            } finally {
-                controlExecutor.shutdownNow();
-                try {
-                    if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException(
-                                "Oreslang CONTROL scheduler carriers did not terminate");
-                    }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                     throw new IllegalStateException(
-                            "interrupted while closing Oreslang CONTROL scheduler",
-                            interrupted);
+                            "Oreslang CONTROL scheduler carriers did not terminate");
                 }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "interrupted while closing Oreslang CONTROL scheduler",
+                        interrupted);
             }
+            retired.set(true);
         }
     }
 }
