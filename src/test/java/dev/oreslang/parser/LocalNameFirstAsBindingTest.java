@@ -1,0 +1,42 @@
+package dev.oreslang.parser;
+
+import dev.oreslang.ast.Ast;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+final class LocalNameFirstAsBindingTest {
+    private static Ast.BindingStmt binding(String declaration) {
+        var program = Parser.parse("define fnc int • main() { " + declaration + " return 42; }");
+        var fn = program.modules().stream().flatMap(m -> m.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance).map(Ast.FunctionDecl.class::cast)
+                .findFirst().orElseThrow();
+        return assertInstanceOf(Ast.BindingStmt.class, fn.body().getFirst());
+    }
+
+    @Test void nameFirstAsMatchesColonAndPrefixForEveryExplicitQualifier() {
+        for (String qualifier : new String[]{"const", "const mut", "val", "let", "let mut"}) {
+            var prefix = binding(qualifier + " int x = 42;");
+            assertEquals(prefix, binding(qualifier + " x :int = 42;"));
+            assertEquals(prefix, binding(qualifier + " x as int = 42;"));
+        }
+    }
+
+    @Test void postfixCastStaysAnExpressionNotADeclarationAnnotation() {
+        var postfix = binding("const x = 42 as int;");
+        assertNull(postfix.declaredType());
+        var cast = assertInstanceOf(Ast.CastExpr.class, postfix.initializer());
+        assertEquals("int", cast.targetType().name());
+        assertEquals(Ast.CastMode.CHECKED, cast.mode());
+        var prefix = binding("const x as int = 42;");
+        assertEquals("int", prefix.declaredType().name());
+        assertFalse(prefix.initializer() instanceof Ast.CastExpr);
+    }
+
+    @Test void nestedTypeAndMalformedAnnotations() {
+        assertEquals(binding("val List<int> x = [1, 2];"),
+                binding("val x as List<int> = [1, 2];"));
+        assertThrows(IllegalArgumentException.class, () -> binding("const x as = 42;"));
+        assertThrows(IllegalArgumentException.class, () -> binding("const x as int : int = 42;"));
+        assertThrows(IllegalArgumentException.class, () -> binding("const x as int;"));
+    }
+}
