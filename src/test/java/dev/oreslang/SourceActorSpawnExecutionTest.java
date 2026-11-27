@@ -350,6 +350,42 @@ final class SourceActorSpawnExecutionTest {
         }
     }
 
+    @Test
+    void emptyGroupedSpawnUsesRealActorReadinessReceiveAndTermination() throws Exception {
+        String source = """
+                define actor Worker as
+                  let int initialized;
+                  on_start(): void {
+                    self.initialized = 42;
+                    return;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.send(self.initialized);
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = await spawn Worker() OPTIONS;
+                  worker.send("run");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        for (String options : java.util.List.of("", "with {}", "with { schedule {} resources {} init {} }")) {
+            assertEquals("42", run(source.replace("OPTIONS", options), "grouped-spawn-empty.ores"));
+        }
+        for (String options : java.util.List.of(
+                "with { schedule { max_parallelism = 1; } }",
+                "with { resources { heap_size = 1024; } }",
+                "with { init { seed = 42; } }")) {
+            assertThrows(PolyglotException.class,
+                    () -> run(source.replace("OPTIONS", options), "grouped-spawn-nonempty.ores"));
+        }
+    }
+
     private static String resource(String path) throws Exception {
         try (InputStream input =
                 SourceActorSpawnExecutionTest.class.getResourceAsStream(path)) {
