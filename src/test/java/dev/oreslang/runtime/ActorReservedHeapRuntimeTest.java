@@ -59,6 +59,45 @@ final class ActorReservedHeapRuntimeTest {
             assertEquals(0, runtime.sharedMemoryBytes());
         }
     }
+    @Test void reservedMailboxUsesPrechargedBytesAndRejectsOversize() throws Exception {
+        long mailbox = 1024;
+        var entered = new CountDownLatch(1); var proceed = new CountDownLatch(1);
+        try (var store = new SharedCodeImageStore(); var runtime = new ActorRuntime(policy(16*MIB+mailbox))) {
+            var code = store.publish("reserved-mailbox", Parser.parse("define actor Worker as state { let int count = 0; } end"));
+            var e = executor(code, false, entered, proceed);
+            var actor = runtime.spawnCodeActorWithReservedMailbox(policy(16*MIB), e, "Worker", mailbox);
+            var ready = actor.ready();
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(16*MIB+mailbox, runtime.sharedMemoryBytes());
+                // The aggregate budget is completely reserved. Small messages
+                // must consume the existing promise, not charge it again.
+                actor.send(42L);
+                assertThrows(IllegalStateException.class, () -> actor.send("x".repeat(4096)));
+                assertEquals(16*MIB+mailbox, runtime.sharedMemoryBytes());
+                assertTrue(actor.cancel());
+                assertEquals(16*MIB+mailbox, runtime.sharedMemoryBytes());
+            } finally { proceed.countDown(); }
+            assertThrows(ExecutionException.class, () -> ready.get(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.sharedMemoryBytes());
+        } finally { proceed.countDown(); }
+    }
+
+    @Test void combinedReservationIsAtomicOnAdmissionFailure() throws Exception {
+        try (var store = new SharedCodeImageStore(); var runtime = new ActorRuntime(policy(16*MIB))) {
+            var code = store.publish("reserved-mailbox-denial", Parser.parse("define actor Worker as state { let int count = 0; } end"));
+            var e = executor(code, false, null, null);
+            assertThrows(IllegalStateException.class, () -> runtime.spawnCodeActorWithReservedMailbox(
+                    policy(16*MIB), e, "Worker", 1024));
+            assertEquals(0, runtime.sharedMemoryBytes()); assertEquals(0, runtime.actorCount());
+            var actor = runtime.spawnCodeActorWithReservedHeap(ActorRuntime.ActorKind.SHARED, policy(16*MIB), e, "Worker");
+            actor.ready().get(5, TimeUnit.SECONDS); actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.sharedMemoryBytes());
+        }
+    }
+
     @Test void failedInitializationRefundsOnlyAfterPhysicalRetirement() throws Exception {
         try (var store = new SharedCodeImageStore(); var runtime = new ActorRuntime(policy(16*MIB))) {
             var code = store.publish("reserved-native-arena-failure", Parser.parse("define actor Worker as state { let int count = 0; } end"));
