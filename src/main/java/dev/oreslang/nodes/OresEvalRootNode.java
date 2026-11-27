@@ -1408,6 +1408,9 @@ public final class OresEvalRootNode extends RootNode {
             private final OresObject source;
             private final ReadonlyShapeProjectionV1.Plan witness;
             private final SharedCodeImageStore.CodeImage image;
+            private final Map<String, Object> scalarStruct;
+            private final Map<String, Ast.TypeRef> structFields;
+            private final Evaluator structOwner;
             private boolean active = true;
 
             private ReadonlyShapeLoan(
@@ -1417,9 +1420,53 @@ public final class OresEvalRootNode extends RootNode {
                 this.source = Objects.requireNonNull(source);
                 this.witness = Objects.requireNonNull(witness);
                 this.image = Objects.requireNonNull(image);
+                this.scalarStruct = null;
+                this.structFields = null;
+                this.structOwner = null;
+            }
+
+            // Only evaluator-owned concrete struct or readonly record tags
+            // may reach this constructor, never an arbitrary host/guest Map.
+            private ReadonlyShapeLoan(Map<String,Object> source, Ast.TypeRef target,
+                                      Evaluator owner) {
+                this.source = null;
+                this.witness = null;
+                this.image = Objects.requireNonNull(owner.linkedCodeImage);
+                this.structOwner = owner;
+                this.scalarStruct = Objects.requireNonNull(source);
+                this.structFields = Map.copyOf(target.recordMembers());
+                if (structFields.isEmpty() || structFields.size() > ReadonlyShapeProjectionV1.MAX_FIELDS
+                        || source.size() > ReadonlyShapeProjectionV1.MAX_FIELDS) {
+                    throw new IllegalArgumentException("readonly scalar struct shape exceeds verified bounds");
+                }
+                for (String field : structFields.keySet()) checkedStructField(field);
+            }
+
+            private Object checkedStructField(String name) {
+                Ast.TypeRef type = structFields.get(name);
+                if (type == null || !scalarStruct.containsKey(name)
+                        || !type.arguments().isEmpty() || type.isBorrow()) {
+                    throw new IllegalArgumentException("unknown or unsupported readonly struct field");
+                }
+                Object value = scalarStruct.get(name);
+                boolean valid = switch (type.name()) {
+                    case "int" -> value instanceof Long || value instanceof Integer;
+                    case "bool" -> value instanceof Boolean;
+                    case "String", "string" -> value instanceof String;
+                    default -> false;
+                };
+                if (!valid) throw new IllegalArgumentException("readonly struct field lacks a checked scalar value");
+                return value;
             }
 
             private Object read(String name) {
+                if (scalarStruct != null) {
+                    if (!active || structOwner.linkedCodeImage != image
+                            || image.program() != structOwner.program) {
+                        throw new IllegalStateException("readonly structural loan expired or code-image layout changed");
+                    }
+                    return checkedStructField(name);
+                }
                 if (!active || source.owner.linkedCodeImage != image
                         || image.checkedLayoutGeneration() != witness.layoutEpoch()) {
                     throw new IllegalStateException(
@@ -1577,12 +1624,17 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "readonly structural parameters require a verified synchronous, immutable call");
                     }
-                    if (!(value instanceof OresObject source)) {
+                    ReadonlyShapeLoan loan;
+                    if (value instanceof OresObject source) {
+                        loan = source.owner.checkedReadonlyShapeLoan(source, readonlyTarget, env);
+                    } else if (value instanceof MutableStructValue source && param.structural()) {
+                        loan = new ReadonlyShapeLoan(source, readonlyTarget, this);
+                    } else if (value instanceof ReadonlyRecordValue source && param.structural()) {
+                        loan = new ReadonlyShapeLoan(source, readonlyTarget, this);
+                    } else {
                         throw new IllegalArgumentException(
                                 "readonly class shape cannot be forged or reborrowed from an unknown value");
                     }
-                    ReadonlyShapeLoan loan =
-                            source.owner.checkedReadonlyShapeLoan(source, readonlyTarget, env);
                     env.registerReadonlyShapeLoan(loan);
                     value = loan;
                 }
