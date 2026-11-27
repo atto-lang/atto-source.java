@@ -8482,8 +8482,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
-            if (left == null || right == null) return false;
+            if (left == null || right == null) return left == right;
 
             if (left instanceof dev.oreslang.runtime.OresSymbol
                     || right instanceof dev.oreslang.runtime.OresSymbol) {
@@ -8503,6 +8502,10 @@ public final class OresEvalRootNode extends RootNode {
                     return false;
                 }
             }
+
+            // IEEE numeric comparisons precede reference identity: NaN != NaN,
+            // even for the same immutable boxed float or complex instance.
+            if (left == right) return true;
 
             // Class/actor instances have identity equality by default.
             if (left instanceof OresObject || right instanceof OresObject) return false;
@@ -8692,7 +8695,17 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
-        private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
+        private Complex asComplex(Object value) {
+            if (value instanceof Complex c) return c;
+            // Exact numeric carriers may require more than 53 bits; never
+            // silently narrow them into binary64 complex arithmetic.
+            if (value instanceof java.math.BigInteger || value instanceof java.math.BigDecimal) {
+                throw new IllegalArgumentException(
+                        "explicit conversion required from BigInt/Decimal to binary64 complex");
+            }
+            if (value instanceof Number n) return new Complex(n.doubleValue(), 0.0);
+            throw new IllegalArgumentException("value is not numeric");
+        }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
         }
@@ -9175,11 +9188,37 @@ public final class OresEvalRootNode extends RootNode {
 
     private record Complex(double real, double imaginary) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){return List.of();}
-        private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
-        private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
-        private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
-        private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
-        @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
+
+        private Complex add(Complex o) {
+            var value = dev.oreslang.runtime.Complex128Math.add(
+                    real, imaginary, o.real, o.imaginary);
+            return new Complex(value.real(), value.imaginary());
+        }
+
+        private Complex sub(Complex o) {
+            var value = dev.oreslang.runtime.Complex128Math.subtract(
+                    real, imaginary, o.real, o.imaginary);
+            return new Complex(value.real(), value.imaginary());
+        }
+
+        private Complex mul(Complex o) {
+            var value = dev.oreslang.runtime.Complex128Math.multiply(
+                    real, imaginary, o.real, o.imaginary);
+            return new Complex(value.real(), value.imaginary());
+        }
+
+        private Complex div(Complex o) {
+            var value = dev.oreslang.runtime.Complex128Math.divide(
+                    real, imaginary, o.real, o.imaginary);
+            return new Complex(value.real(), value.imaginary());
+        }
+
+        @Override public String toString() {
+            String imaginaryText = Double.toString(imaginary);
+            // Comparing with < 0 fails for IEEE negative zero.
+            return real + (imaginaryText.startsWith("-") ? "" : "+")
+                    + imaginaryText + "i";
+        }
     }
 
     /**
