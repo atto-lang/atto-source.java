@@ -34,8 +34,8 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
-    private final AsyncStdoutLog asyncStdout;
-    public AsyncStdoutLog asyncStdout() { return asyncStdout; }
+    private final ProcessChannels processChannels;
+    public ProcessChannels processChannels() { return processChannels; }
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
@@ -77,9 +77,9 @@ public final class OresContext implements AutoCloseable {
         long contextPerf = CorePerf.start();
         this.language = language;
         this.env = env;
-        this.input = new BufferedReader(new InputStreamReader(env.in()));
-        this.output = new PrintWriter(env.out(), true);
-        this.asyncStdout = new AsyncStdoutLog(this.output, 8192);
+        this.input = new BufferedReader(new InputStreamReader(env.in(), java.nio.charset.StandardCharsets.UTF_8));
+        this.output = new PrintWriter(env.out(), true, java.nio.charset.StandardCharsets.UTF_8);
+        this.processChannels = new ProcessChannels(this, this.input, this.output, new PrintWriter(env.err(), true, java.nio.charset.StandardCharsets.UTF_8));
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
@@ -100,7 +100,7 @@ public final class OresContext implements AutoCloseable {
                 });
         CorePerf.end(CorePerf.VM_CONTROL_STARTUP, controlPerf);
         if (!vm.started()) {
-            vm.close();
+            try { processChannels.close(); } finally { vm.close(); }
             throw new IllegalStateException(
                     "Oreslang VM startup barrier was not established before context admission");
         }
@@ -129,6 +129,7 @@ public final class OresContext implements AutoCloseable {
             if (actors != null) {
                 try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
+            try { processChannels.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
@@ -441,7 +442,7 @@ public final class OresContext implements AutoCloseable {
         }
         // Producers have stopped; drain accepted messages while the VM
         // and output stream are still alive, before carrier teardown.
-        try { asyncStdout.close(); }
+        try { processChannels.close(); }
         catch (RuntimeException e) { stdoutFailure = e; }
         try {
             vm.close();

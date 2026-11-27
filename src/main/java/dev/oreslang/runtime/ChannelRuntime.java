@@ -76,7 +76,7 @@ public final class ChannelRuntime {
      * <p>Null is deliberately rejected because Oreslang has no standalone null
      * value. Use Option<T> or an explicit signal/unit value instead.</p>
      */
-    public static final class Channel<T> implements AutoCloseable {
+    public static class Channel<T> implements AutoCloseable {
         private final int capacity;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
@@ -112,6 +112,16 @@ public final class ChannelRuntime {
             COORDINATOR.lock();
             try {
                 return closed;
+            } finally {
+                COORDINATOR.unlock();
+            }
+        }
+
+        /** True only after an orderly close without an attached I/O failure. */
+        public boolean isClosedNormally() {
+            COORDINATOR.lock();
+            try {
+                return closed && closeCause == null;
             } finally {
                 COORDINATOR.unlock();
             }
@@ -239,11 +249,28 @@ public final class ChannelRuntime {
     public record DefaultCase() implements SelectCase { }
 
     public static <T> ReadCase<T> read(Channel<T> channel) {
+        if (channel instanceof ProcessChannels.ConsoleChannel<?> console) console.checkGuestRead();
         return new ReadCase<>(channel);
     }
 
     public static <T> WriteCase<T> write(Channel<T> channel, T value) {
+        if (channel instanceof ProcessChannels.ConsoleChannel<?> console) console.checkGuestPayload(value);
         return new WriteCase<>(channel, value);
+    }
+
+    /** The console worker is an internal consumer, not a guest channel reader. */
+    static <T> OresFuture<T> readForRuntime(Channel<T> channel) {
+        return mapSelection(SelectSet.of(new ReadCase<>(channel))
+                .selectAsync(SelectPolicy.PRIORITY), result -> {
+                    @SuppressWarnings("unchecked") T value = (T) result.value();
+                    return value;
+                });
+    }
+
+    /** The stdin feeder is an internal producer, not a guest channel writer. */
+    static <T> OresFuture<Void> writeForRuntime(Channel<T> channel, T value) {
+        return mapSelection(SelectSet.of(new WriteCase<>(channel, value))
+                .selectAsync(SelectPolicy.PRIORITY), result -> null);
     }
 
     public static DefaultCase defaultCase() {

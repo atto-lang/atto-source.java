@@ -5,8 +5,8 @@
 - `stdio.stdout.log(...)` remains synchronous and preserves old behavior.
 - `stdio.stdout.log_async(...)` formats arguments before enqueue and returns a settled `Future<void>` for *admission*, **not durability/delivery**.
 - `await stdio.flush_async_logs()` waits for the FIFO barrier representing all accepted records before that barrier. It does not call `fsync`, wait for an external pipe reader, or guarantee remote collector delivery.
-- One bounded context-owned queue (8192 events), one dedicated stdout writer thread, explicit rejection at full capacity. No stdout write or queue-capacity wait on the submitting actor carrier.
-- Context shutdown drains queued stdout after async producers and actors stop and before VM shutdown. Failure/timeout is propagated to the embedding host instead of silently lost.
+- In the stacked channel implementation (#540), the single context-owned `process.stdout` / `stdio.out` channel (8192 text chunks) is the queue for async logs and ordinary channel writes. One dedicated I/O writer worker drains it; async-log admission rejects a full buffer without waiting on an actor carrier.
+- Context shutdown drains process-owned stdout **and stderr** channel output after async producers and actors stop and before VM shutdown. Failure/timeout is propagated to the embedding host instead of silently lost.
 - Existing direct synchronous writes and queued async writes share a PrintWriter; they are individually synchronized but **not globally ordered** across APIs. The explicit barrier orders only queued records. A follow-up can establish a single sequencer for mixed sync/async writes.
 
 ## Still required (not implemented by this branch)

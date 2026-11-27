@@ -1941,7 +1941,9 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (isBuiltinStdoutCall(call, "log", env) || isBuiltinStdoutCall(call, "log_async", env)) {
+            if (isBuiltinStdoutCall(call, "log", env)
+                    || isBuiltinStdoutCall(call, "log_blocking", env)
+                    || isBuiltinStdoutCall(call, "log_async", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -2775,9 +2777,35 @@ public final class TypeChecker {
                 if (member.member().equals("flush_async_logs")) return new Function(List.of(), new Named("Future", List.of(Primitive.VOID)));
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
+                if (member.member().equals("in") || member.member().equals("out")
+                        || member.member().equals("err"))
+                    return new Named("Channel", List.of(Primitive.STRING));
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            // Process and std.process expose precisely the same built-in
+            // channel handles as stdio; aliases have Channel<String> type.
+            if (sumReceiver instanceof Named proc && proc.name().equals("process")
+                    && (member.member().equals("stdout")
+                        || member.member().equals("stderr")
+                        || member.member().equals("stdin"))) {
+                return new Named("Channel", List.of(Primitive.STRING));
+            }
+            if (sumReceiver instanceof Named stream && stream.name().equals("ReadableStream")
+                    && stream.arguments().size() == 1 && member.member().equals("get_reader")) {
+                return new Function(List.of(), new Named("ReadableStreamReader", stream.arguments()));
+            }
+            if (sumReceiver instanceof Named streamReader
+                    && streamReader.name().equals("ReadableStreamReader")
+                    && streamReader.arguments().size() == 1) {
+                return switch (member.member()) {
+                    case "read_async" -> new Function(List.of(),
+                            new Named("Future", streamReader.arguments()));
+                    case "release_lock" -> new Function(List.of(), Primitive.VOID);
+                    default -> throw new IllegalArgumentException(
+                            "unknown ReadableStream reader member " + member.member());
+                };
+            }
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
@@ -2786,6 +2814,9 @@ public final class TypeChecker {
                 return switch (member.member()) {
                     case "close" -> new Function(List.of(), Primitive.VOID);
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
+                    case "is_closed_normally" -> new Function(List.of(), Primitive.BOOL);
+                    case "stream" -> new Function(List.of(),
+                            new Named("ReadableStream", channelType.arguments()));
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member '" + member.member() + "'");
                 };
@@ -2913,7 +2944,8 @@ public final class TypeChecker {
                 if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 }
-                if (member.member().equals("log") || member.member().equals("log_async")) {
+                if (member.member().equals("log") || member.member().equals("log_blocking")
+                        || member.member().equals("log_async")) {
                     throw new IllegalArgumentException(
                             "variadic stdio.stdout.log is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
                 }
@@ -4370,7 +4402,8 @@ public final class TypeChecker {
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")
+                || named.name().equals("ReadableStream") || named.name().equals("ReadableStreamReader")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
@@ -4452,7 +4485,8 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
-                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")
+                || named.name().equals("ReadableStream") || named.name().equals("ReadableStreamReader")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -7025,6 +7059,14 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 validateChannelPayloadType(element, "Channel<T>");
                 yield new Named("Channel", List.of(element));
+            }
+            case "ReadableStream", "ReadableStreamReader" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1)
+                    throw new IllegalArgumentException(ref.name() + " requires one explicit element type");
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID)
+                    throw new IllegalArgumentException("ReadableStream<void> is invalid");
+                yield new Named(ref.name(), List.of(element));
             }
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
