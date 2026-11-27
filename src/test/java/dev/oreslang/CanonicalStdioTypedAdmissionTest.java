@@ -21,4 +21,11 @@ final class CanonicalStdioTypedAdmissionTest {
         var error=assertThrows(IllegalArgumentException.class, () -> checkOnly(program));
         assertTrue(error.getMessage().contains("borrow"), error.getMessage());
     }
+    @Test void canonicalEndpointAndMethodCannotBeReifiedEvenInCheckOnlyLane() {
+        for (String expr : new String[]{"stdio.out", "process.stdout", "stdio.out.write", "process.stdout.write"}) {
+            var error=assertThrows(IllegalArgumentException.class,
+                    () -> checkOnly("fnc f(): void { val endpoint = "+expr+"; return; }"));
+            assertTrue(error.getMessage().contains("direct-write-only"), error.getMessage());
+        }
+    }
 }

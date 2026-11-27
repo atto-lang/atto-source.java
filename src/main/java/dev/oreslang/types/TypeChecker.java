@@ -6292,6 +6292,11 @@ public final class TypeChecker {
                     && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
                 return new Function(List.of(), Primitive.INT);
             }
+            if (member.receiver() instanceof Ast.NameExpr root
+                    && canonicalStdoutRoot(root.name(), env)
+                    && canonicalStdoutEndpoint(root.name(), member.member())) {
+                throw new IllegalArgumentException("canonical stdout endpoint is direct-write-only");
+            }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("print_blocking")
@@ -7594,14 +7599,22 @@ public final class TypeChecker {
                 || !(write.receiver() instanceof Ast.MemberExpr endpoint)
                 || !(endpoint.receiver() instanceof Ast.NameExpr root)
                 || env.lookup(root.name()) != null) return false;
-        String name = root.name();
-        if (canonicalStdoutWildcardImport || importedNames.contains(name)
-                || modules.containsKey(name) || classes.containsKey(name)
-                || ambiguousClasses.contains(name) || functions.containsKey(name)
-                || ambiguousFunctions.contains(name) || interfaces.containsKey(name)
-                || typeAliases.containsKey(name)) return false;
-        return name.equals("stdio") && endpoint.member().equals("out")
-                || name.equals("process") && endpoint.member().equals("stdout");
+        return canonicalStdoutRoot(root.name(), env)
+                && canonicalStdoutEndpoint(root.name(), endpoint.member());
+    }
+
+    private boolean canonicalStdoutRoot(String name, Env env) {
+        return env.lookup(name) == null && !canonicalStdoutWildcardImport
+                && !importedNames.contains(name) && !modules.containsKey(name)
+                && !classes.containsKey(name) && !ambiguousClasses.contains(name)
+                && !functions.containsKey(name) && !ambiguousFunctions.contains(name)
+                && !interfaces.containsKey(name) && !ambiguousInterfaces.contains(name)
+                && !typeAliases.containsKey(name) && !ambiguousTypeAliases.contains(name);
+    }
+
+    private static boolean canonicalStdoutEndpoint(String name, String member) {
+        return name.equals("stdio") && member.equals("out")
+                || name.equals("process") && member.equals("stdout");
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Env env) {
