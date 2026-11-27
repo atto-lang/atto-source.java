@@ -584,17 +584,24 @@ public final class OwnershipChecker {
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
         Scope scope = new Scope(parent);
         int[] livenessFuel = {32_768};
+        Ast.BindingStmt contiguousLoanOrigin = null;
         for (int i = 0; i < body.size(); i++) {
             Ast.Stmt stmt = body.get(i);
             checkStatement(stmt, scope, returnType);
             if (stmt instanceof Ast.BindingStmt binding) {
                 releaseUnusedDirectLoan(binding, body, i + 1, scope, livenessFuel);
-                // Only the immediately following scalar read is modeled here.
-                // No arbitrary intervening call, capture or alias is assumed safe.
-                if (i > 0 && body.get(i - 1) instanceof Ast.BindingStmt prior
-                        && isNonescapingScalarRead(binding, prior, scope)) {
-                    releaseUnusedDirectLoan(prior, body, i + 1, scope, livenessFuel);
+                // A contiguous run of already checked, independent int/bool
+                // field reads may retain the original loan candidate. Any
+                // other binding/statement resets the run; no capture, call,
+                // control-flow or alias is inferred through.
+                if (contiguousLoanOrigin != null
+                        && isNonescapingScalarRead(binding, contiguousLoanOrigin, scope)) {
+                    releaseUnusedDirectLoan(contiguousLoanOrigin, body, i + 1, scope, livenessFuel);
+                } else {
+                    contiguousLoanOrigin = binding;
                 }
+            } else {
+                contiguousLoanOrigin = null;
             }
         }
         scope.close();
@@ -660,7 +667,7 @@ public final class OwnershipChecker {
     // The admitted read has already been checked by checkBinding. Require
     // an inferred, non-rebindable primitive value (no annotated owner,
     // alias, lease, callable or aggregate). The receiver must be exactly the
-    // preceding direct loan's binder. The original release helper checks
+    // original contiguous direct loan's binder. The original release helper checks
     // provenance and the entire remaining suffix before releasing.
     private boolean isNonescapingScalarRead(Ast.BindingStmt read,
                                             Ast.BindingStmt prior, Scope scope) {
