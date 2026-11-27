@@ -66,4 +66,13 @@ final class ActorFlatMachineParserTest {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(GOOD.replace("state machine as", "pub state machine as")));
     }
+
+    @Test void duplicateMachineAndTrailingActorSyntaxAreChecked() {
+        String machine = "state machine as initial state Idle; final state Idle; end";
+        rejects("define actor Foo as " + machine + " " + machine + " end", "E_MACHINE_GRAPH");
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("define actor Foo as " + machine));
+        rejects("define actor Foo as " + machine + " state { let int count: 0; } end",
+                "E_MACHINE_LOWERING_UNSUPPORTED");
+    }
 }
