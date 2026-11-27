@@ -363,16 +363,19 @@ final class SourceActorSpawnExecutionTest {
                     return;
                   }
                 end
-                pub async routine main(): void {
+                pub async routine main(): int {
                   val a = await spawn Counter() with { resources { heap_size = 16 * 1024 * 1024; } };
                   a.send("run");
                   val result = (await a.outputs.next()).value.unwrap();
-                  process.stdout.write(result.value);
                   await a.get_done();
-                  return;
+                  return result.value;
                 }
                 """;
-        assertEquals("42", run(program, "grouped-heap-only.ores"));
+        Source source = Source.newBuilder(OresLanguage.ID, program, "grouped-heap-only.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(source).asLong());
+        }
     }
 
     @Test
