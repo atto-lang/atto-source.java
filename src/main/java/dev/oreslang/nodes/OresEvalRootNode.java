@@ -9364,6 +9364,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.ClosedRecurExpr loop) {
+                if (ActorRuntime.currentActorKind() != null || activeGeneratorEmitter.get() != null)
+                    throw new IllegalStateException("E_VALUE_LOOP_PROFILE: actor/generator cooperation not lowered");
+                return loop.plan().execute();
+            }
             if (expr instanceof Ast.NamedArgExpr) {
                 throw new IllegalStateException(
                         "NAMED_CALL_BINDING_UNSUPPORTED: named argument reached runtime without a checked call plan");

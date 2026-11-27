@@ -1579,6 +1579,10 @@ public final class OwnershipChecker {
             return new ValueInfo(source.type,
                     recordCopy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.ClosedRecurExpr) {
+            // Plan construction independently proves closed Copy primitive operands.
+            return new ValueInfo(inferLiteralType(0L), ValueKind.COPY, null);
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
@@ -5657,6 +5661,7 @@ public final class OwnershipChecker {
     }
 
     private Ast.TypeRef syntacticType(Ast.Expr expr, Scope scope) {
+        if (expr instanceof Ast.ClosedRecurExpr) return inferLiteralType(0L);
         if (expr instanceof Ast.CaptureExpr capture) return syntacticType(capture.value(), scope);
         if (expr instanceof Ast.LiteralExpr literal) return inferLiteralType(literal.value());
         if (expr instanceof Ast.NameExpr name) {
