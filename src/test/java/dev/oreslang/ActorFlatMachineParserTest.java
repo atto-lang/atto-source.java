@@ -203,4 +203,8 @@ final class ActorFlatMachineParserTest {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
         }
     }
+
+    @Test void scalarHostCommitReference() throws InterruptedException {
+        ScalarMachineCommitSmoke.main(new String[0]);
+    }
 }
