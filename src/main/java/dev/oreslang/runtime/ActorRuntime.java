@@ -7117,6 +7117,18 @@ public final class ActorRuntime implements AutoCloseable {
                 actorTypeName);
     }
 
+    /** Trusted host preview of reserved native arena capacity only.
+     * Not exposed as a source intrinsic: stack, mailbox-byte and startup
+     * payload lowering must be proved before grouped spawn is admitted. */
+    ActorRef<Object> spawnCodeActorWithReservedHeap(
+            ActorKind kind, IsolatePolicy policy, ActorCodeExecutor executor, String actorTypeName) {
+        Objects.requireNonNull(executor, "executor");
+        if (actorTypeName == null || actorTypeName.isBlank())
+            throw new IllegalArgumentException("source actor type name cannot be blank");
+        return spawnInternal(kind, policy, null, false,
+                Objects.requireNonNull(executor.codeImage()), executor, actorTypeName, true);
+    }
+
     private <M> ActorRef<M> spawnInternal(
             ActorKind kind,
             IsolatePolicy policy,
@@ -7146,6 +7158,14 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, codeImage,
+                codeExecutor, codeActorType, false);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind, IsolatePolicy policy, BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory, SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor, String codeActorType, boolean reserveNativeHeap) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -7220,6 +7240,7 @@ public final class ActorRuntime implements AutoCloseable {
             reserveActorSlot();
 
             ActorCell<M> cell = null;
+            ActorReservedArenaBudget heapCredit = null;
             boolean linkedToParent = false;
             boolean rootControlReserved = false;
             boolean parentControlReserved = false;
@@ -7229,6 +7250,16 @@ public final class ActorRuntime implements AutoCloseable {
                 // All potentially throwing incarnation construction belongs
                 // inside the same rollback boundary as actor registration.
                 // Otherwise generation/control reservation leaks are possible.
+                if (reserveNativeHeap) {
+                    // The existing aggregate memory counter includes the whole
+                    // promise. Arena slabs consume only local credit, never
+                    // charge the aggregate a second time.
+                    long heapLimit = effectivePolicy.maxHeapBytes();
+                    ActorReservedArenaBudget candidate = new ActorReservedArenaBudget(
+                            heapLimit, () -> releaseSharedRuntimeBytes(heapLimit));
+                    reserveSharedRuntimeBytes(heapLimit, "reserved actor native heap");
+                    heapCredit = candidate;
+                }
                 id = ActorId.create();
                 generation = nextActorGeneration.getAndIncrement();
                 if (generation <= 0) {
@@ -7246,7 +7277,8 @@ public final class ActorRuntime implements AutoCloseable {
                         codeImage,
                         codeExecutor,
                         codeActorType,
-                        parent);
+                        parent, heapCredit);
+                actorOutputStreams.add(cell.outputStream);
                 // Lazy pools: the first actor of a kind creates its carrier here.
                 startCarrierForAdmission(kind, cell.dispatchLane);
 
@@ -7331,6 +7363,19 @@ public final class ActorRuntime implements AutoCloseable {
                             inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
                         }
                     }
+                }
+                // A cell that never became visible to callers cannot have
+                // guest turns. Retire its unpublished resources before
+                // returning any promised heap credit. Fail closed on cleanup.
+                try {
+                    if (cell != null) {
+                        cell.outputStream.closeAndDrainFromRuntime();
+                        cell.heap.close();
+                        if (cell.memorySlice != null) cell.memorySlice.close();
+                    }
+                    if (heapCredit != null) heapCredit.releaseAfterArenaClose();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
                 }
                 actorCount.decrementAndGet();
                 throw failure;
@@ -10428,6 +10473,7 @@ public final class ActorRuntime implements AutoCloseable {
          */
         // Replaced only by a committed hot upgrade, on this actor's own turn.
         private volatile ActorNativeArena heap;
+        private final ActorReservedArenaBudget reservedHeapCredit;
         /** Code generation of this incarnation (spec ch. 27); bumped by a committed upgrade. */
         private volatile long codeGeneration = 1;
         /** Guarded by lifecycleLock: a requested upgrade waiting for generation N to drain. */
@@ -10552,7 +10598,8 @@ public final class ActorRuntime implements AutoCloseable {
                 SharedCodeImageStore.CodeImage codeImage,
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
-                ActorCell<?> parent) {
+                ActorCell<?> parent, ActorReservedArenaBudget reservedHeapCredit) {
+            this.reservedHeapCredit = reservedHeapCredit;
             this.storageActorOrdinal = nextStorageActorOrdinal.getAndIncrement();
             if (storageActorOrdinal <= 0) {
                 throw new IllegalStateException("runtime WAL actor slot sequence exhausted");
@@ -10584,7 +10631,6 @@ public final class ActorRuntime implements AutoCloseable {
             this.outputStream = new ActorOutputStream<>(
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
-            actorOutputStreams.add(outputStream);
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
@@ -10596,7 +10642,7 @@ public final class ActorRuntime implements AutoCloseable {
             return new ActorNativeArena(
                     policy.maxHeapBytes(),
                     this::requireHeapOwner,
-                    bytes -> {
+                    reservedHeapCredit != null ? reservedHeapCredit::reserve : bytes -> {
                         reserveSharedRuntimeBytes(bytes, "actor heap");
                         return () -> releaseSharedRuntimeBytes(bytes);
                     });
@@ -11370,9 +11416,16 @@ public final class ActorRuntime implements AutoCloseable {
             ActorOwnedGuestState retiringState = codeActorState;
             codeActorState = null;
             if (retiringState instanceof SealedActorStateRegion sealedState) {
-                try { sealedState.close(); }
+                try {
+                    sealedState.close();
+                    if (!sealedState.isReclaimed())
+                        throw new IllegalStateException("sealed actor region still has live loans");
+                }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                    virtualPhysicalCleanupComplete = false;
+                    recordFinalizationFailure(failure);
+                }
             }
             // Output observers, like ready/done, see the snapshot (#1223).
             mintTerminalNoticeIfAbsent();
@@ -11454,6 +11507,15 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
+            }
+            if (reservedHeapCredit != null && virtualPhysicalCleanupComplete
+                    && actorAndGroupDeregistered && parentReleased) {
+                try { reservedHeapCredit.releaseAfterArenaClose(); }
+                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+                catch (Throwable failure) {
+                    virtualPhysicalCleanupComplete = false;
+                    recordFinalizationFailure(failure);
+                }
             }
             if (virtualPhysicalCleanupComplete && actorAndGroupDeregistered && parentReleased) {
                 try {
