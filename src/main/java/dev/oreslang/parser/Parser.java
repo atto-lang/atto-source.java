@@ -5221,6 +5221,8 @@ public final class Parser {
         }
         if (functionShorthand) {
             name = consume(IDENT, "expected function binding name").lexeme();
+        } else if (canonicalAttoSource && check(IDENT) && checkNext(COLON_EQUAL)) {
+            throw error(tokens.get(current + 1), "E_PAIR_STORAGE_UNSUPPORTED: stored Pair bindings require nominal typed lowering");
         } else if (check(IDENT) && nameIsFollowedByIoDeclarationRead()) {
             name = advance().lexeme(); // `val name << source;`
         } else if (looksLikeNamedCallableBindingSignature()) {
@@ -6587,6 +6589,9 @@ public final class Parser {
 
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parsePipeline();
+        if (canonicalAttoSource && check(COLON_EQUAL)) {
+            throw error(peek(), "E_PAIR_STORAGE_UNSUPPORTED: standalone Pair values require nominal typed lowering");
+        }
         rejectUnsupportedActorPipeline();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
@@ -8191,13 +8196,27 @@ public final class Parser {
                 && tokens.get(current + 3).type() == LPAREN;
     }
 
+    // The atomic token must not be classified as named arguments or Record fields.
+    private boolean inlinePairLiteral() {
+        return canonicalAttoSource && (check(IDENT) || check(STRING)) && checkNext(COLON_EQUAL);
+    }
+
+    private Token readInlinePairLiteralKey() {
+        Token key = advance();
+        consume(COLON_EQUAL, "expected ':=' after literal Pair key");
+        return key;
+    }
+
     private String readInlinePairString() {
         Token key = consume(STRING, "Pair.of requires a string literal key in this bounded factory profile");
         return key.lexeme();
     }
 
     private String readInlineRecordPairName() {
-        String name = readInlinePairString();
+        return checkedInlineRecordPairName(readInlinePairString());
+    }
+
+    private String checkedInlineRecordPairName(String name) {
         // Use the same lexer as parameter declarations, and require exact
         // spelling, not merely one token after trivia/comment removal.
         List<Token> parts = new Lexer(name).scan();
@@ -8224,7 +8243,12 @@ public final class Parser {
             Ast.Expr key;
             Ast.Expr value;
             int itemKind = 0; // legacy arrow entry
-            if (inlineProductFactory("Pair") || inlineProductFactory("Entry")) {
+            if (inlinePairLiteral()) {
+                if (entryOnly) throw error(peek(), "Map.of_entries accepts Entry items only, not Pair");
+                itemKind = 1;
+                key = new Ast.LiteralExpr(readInlinePairLiteralKey().lexeme());
+                value = parseExpression();
+            } else if (inlineProductFactory("Pair") || inlineProductFactory("Entry")) {
                 boolean pair = inlineProductFactory("Pair");
                 if (entryOnly && pair)
                     throw error(peek(), "Map.of_entries accepts Entry items only, not Pair");
@@ -8288,12 +8312,15 @@ public final class Parser {
                 // their lifetime and partial-move proof is implemented.
                 fields.add(Ast.ObjectField.spreading(parseExpression()));
             } else {
-                boolean pair = inlineProductFactory("Pair");
+                boolean literalPair = inlinePairLiteral();
+                boolean pair = literalPair || inlineProductFactory("Pair");
                 if (pairStyle != null && pairStyle != pair)
                     throw error(peek(), "Record.of cannot mix named fields and Pair items in this profile");
                 pairStyle = pair;
                 String name;
-                if (pair) {
+                if (literalPair) {
+                    name = checkedInlineRecordPairName(readInlinePairLiteralKey().lexeme());
+                } else if (pair) {
                     openInlineProductFactory();
                     name = readInlineRecordPairName();
                     consume(COMMA, "Pair.of requires exactly two arguments");
@@ -8313,7 +8340,7 @@ public final class Parser {
                     throw error(previous(), "duplicate named field in Record.of: '" + name + "'");
                 }
                 Ast.Expr value = parseExpression();
-                if (pair) consume(RPAREN, "Pair.of requires exactly two arguments");
+                if (pair && !literalPair) consume(RPAREN, "Pair.of requires exactly two arguments");
                 fields.add(Ast.ObjectField.named(name, value));
             }
             if (!match(COMMA)) break;
@@ -8618,8 +8645,8 @@ public final class Parser {
         return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
     }
 
-    // Bounded canonical Record slice. Pair := is intentionally not accepted
-    // until the first-class Pair lexer/parser/type contract is implemented.
+    // Bounded canonical Record slice. Pair := remains distinct from bare
+    // Record fields; only explicit inline product factories admit it for now.
     // Braced quoted-colon Map syntax and empty literal classification remain
     // separate, unsupported in this slice, rather than silently misclassified.
     private Ast.ObjectExpr parseAnonymousRecord() {
