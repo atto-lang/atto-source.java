@@ -35,7 +35,7 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
       - name: Run production parser admission and general parser regression tests
-        run: mvn -B -ntp -Dtest=GroupedActorSpawnParserAdmissionTest,ParserTest,ActorStartupPayloadTest,ActorReservedHeapRuntimeTest,ActorStartupRuntimeTest,ActorReadinessLifecycleTest,SealedActorStateRegionTest,ActorJvmFirstCarrierAdmissionTest test
+        run: mvn -B -ntp -Dtest=GroupedActorSpawnParserAdmissionTest,GroupedSpawnPlanTest,ParserTest,ActorStartupPayloadTest,ActorReservedHeapRuntimeTest,ActorStartupRuntimeTest,ActorReadinessLifecycleTest,SealedActorStateRegionTest,ActorJvmFirstCarrierAdmissionTest test
       - name: Execute host-only quota and lifecycle smoke
         run: |
           set -euo pipefail
