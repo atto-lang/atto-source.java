@@ -18,6 +18,8 @@ final class ActorStartupRuntimeTest {
     private static final IsolatePolicy POLICY = new IsolatePolicy(
         Set.of(IsolatePolicy.Capability.SHARED_MEMORY, IsolatePolicy.Capability.ACTOR_SPAWN),
         16L*1024*1024, 8, Duration.ofSeconds(10));
+    private static final IsolatePolicy CEILING = new IsolatePolicy(
+        POLICY.capabilities(), 32L*1024*1024, POLICY.maxMailboxMessages(), POLICY.maxWallTime());
     private static final String SOURCE = "define actor Worker as state { let int count = 0; } end";
     private static ActorStartupPayload.Schema schema() {
         return new ActorStartupPayload.Schema(List.of(new ActorStartupPayload.Field("seed", ActorStartupPayload.Kind.INT)));
@@ -45,7 +47,7 @@ final class ActorStartupRuntimeTest {
         };
     }
     @Test void exactImageAndOneShotInitThenReceiveDenial() throws Exception {
-        try(var store=new SharedCodeImageStore(); var runtime=new ActorRuntime(POLICY)) {
+        try(var store=new SharedCodeImageStore(); var runtime=new ActorRuntime(CEILING)) {
             var program=Parser.parse(SOURCE);
             var code=store.publish("startup-exact",program);
             var s=schema(); var p=payload(s);
@@ -75,7 +77,7 @@ final class ActorStartupRuntimeTest {
     @Test void cancelledInitCannotConsumeAndRefundsAfterExit() throws Exception {
         var entered=new CountDownLatch(1); var proceed=new CountDownLatch(1);
         var checked=new CountDownLatch(1); var failure=new AtomicReference<Throwable>();
-        try(var store=new SharedCodeImageStore(); var runtime=new ActorRuntime(POLICY)) {
+        try(var store=new SharedCodeImageStore(); var runtime=new ActorRuntime(CEILING)) {
             var program=Parser.parse(SOURCE); var code=store.publish("startup-cancel",program);
             var s=schema(); var e=executor(code,ctx->{
                 entered.countDown();
@@ -95,7 +97,7 @@ final class ActorStartupRuntimeTest {
         } finally { proceed.countDown(); }
     }
     @Test void unusedPayloadCannotEscapeInitialization() throws Exception {
-        try(var store=new SharedCodeImageStore(); var runtime=new ActorRuntime(POLICY)) {
+        try(var store=new SharedCodeImageStore(); var runtime=new ActorRuntime(CEILING)) {
             var program=Parser.parse(SOURCE); var code=store.publish("startup-unused",program);
             var s=schema(); var received=new CountDownLatch(1); var failure=new AtomicReference<Throwable>();
             var e=executor(code,ctx->{},ctx->{
