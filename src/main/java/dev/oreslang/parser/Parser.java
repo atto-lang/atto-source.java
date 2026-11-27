@@ -55,6 +55,59 @@ public final class Parser {
         return List.copyOf(parser.machineInspections);
     }
 
+    /** File-local declaration indices only, not typed MIR or message authority. */
+    public record NominalMachineInspection(String actor, List<String> declarations,
+                                            List<Integer> declarationIds, FlatMachineTable table) {
+        public NominalMachineInspection {
+            declarations = List.copyOf(declarations);
+            declarationIds = List.copyOf(declarationIds);
+        }
+    }
+
+    /**
+     * Resolve the restricted payload-free event profile against declarations
+     * produced by this parser, not a caller-supplied symbol table.
+     * No package resolution, type-checker or Sendable proof is claimed.
+     */
+    public static List<NominalMachineInspection> inspectNominalMachines(String source) {
+        var parser = new Parser(new Lexer(source).scan());
+        parser.inspectMachines = true;
+        var program = parser.parseProgram();
+        if (program.namespace() != null || !program.imports().isEmpty() || !program.exports().isEmpty()
+                || program.modules().size() != 1 || !program.modules().get(0).name().equals(ROOT_MODULE))
+            throw new IllegalArgumentException("E_MACHINE_EVENT_TYPE: file-root declarations only");
+        var seen = new java.util.HashSet<String>();
+        var emptyClasses = new java.util.TreeSet<String>((x, y) -> java.util.Arrays.compareUnsigned(
+                x.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                y.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        for (var decl : program.modules().get(0).declarations()) {
+            if (!(decl instanceof Ast.ClassDecl c))
+                throw new IllegalArgumentException("E_MACHINE_EVENT_TYPE: class and actor declarations only");
+            if (!seen.add(c.name()))
+                throw new IllegalArgumentException("E_MACHINE_EVENT_TYPE: duplicate nominal declaration");
+            if (c.actorKind() == Ast.ActorKind.NONE && !c.isAbstract()
+                    && c.genericParameters().isEmpty() && c.parents().isEmpty() && c.interfaces().isEmpty()
+                    && c.fields().isEmpty() && c.methods().isEmpty() && c.constructor() == null
+                    && c.annotations().isEmpty())
+                emptyClasses.add(c.name());
+        }
+        var declarations = List.copyOf(emptyClasses);
+        var result = new ArrayList<NominalMachineInspection>();
+        for (var actor : parser.machineInspections) {
+            if (actor.machine() == null) continue;
+            var table = actor.machine().transitionTable();
+            var ids = new ArrayList<Integer>();
+            for (String event : table.events()) {
+                int id = declarations.indexOf(event);
+                if (id < 0)
+                    throw new IllegalArgumentException("E_MACHINE_EVENT_TYPE: event must resolve to a unique empty ordinary class in this file");
+                ids.add(id);
+            }
+            result.add(new NominalMachineInspection(actor.actor(), declarations, ids, table));
+        }
+        return List.copyOf(result);
+    }
+
     private final List<Token> tokens;
     private final boolean singletonCheckOnly;
     /** Compiler-only static proxy requests; no runtime reflection descriptors. */
