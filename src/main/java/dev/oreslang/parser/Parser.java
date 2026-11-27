@@ -7420,7 +7420,7 @@ public final class Parser {
         }
 
         void require(RefinedQuantity actual, String category, String operation) {
-            if (unit.equals(VerifiedQuantityUnit.SCALAR) && !actual.unit.equals(unit)) {
+            if (!category.equals("E_REFINEMENT_BINDING") && unit.equals(VerifiedQuantityUnit.SCALAR) && !actual.unit.equals(unit)) {
                 throw new IllegalArgumentException("E_UNIT_ERASURE: " + operation + " requires dimensionless scale one");
             }
             unit.requireCompatible(actual.unit);
@@ -7894,8 +7894,12 @@ public final class Parser {
                 if (body.size() >= 128) throw error(peek(), "E_REFINEMENT_LIMIT: too many immutable bindings");
                 Token first = consume(IDENT, "expected a binding type or name");
                 String localName;
-                RefinedQuantity type;
-                if (match(COLON)) {
+                RefinedQuantity type = null;
+                if (check(EQUAL)) {
+                    localName = first.lexeme();
+                    if (localName.equals("self") || isVerifiedCarrier(localName))
+                        throw error(first, "E_REFINEMENT_NAME: reserved binding name");
+                } else if (match(COLON)) {
                     localName = first.lexeme();
                     type = readRefinedType(consume(IDENT, "expected a binding type"));
                 } else {
@@ -7904,6 +7908,7 @@ public final class Parser {
                 }
                 consume(EQUAL, "expected '=' before immutable initializer");
                 var term = parseVerifiedExpression(0);
+                if (type == null) type = term.type();
                 type.require(term.type(), "E_REFINEMENT_BINDING", "binding " + localName);
                 consume(SEMICOLON, "expected ';' after immutable binding");
                 var localType = new RefinedQuantity(type.unit(), term.type().range(), type.i32());
