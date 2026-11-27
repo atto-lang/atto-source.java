@@ -29,7 +29,11 @@ final class ContextualIntLowering {
         int at,slots,depth;
         String owner,member;
         int contextCount,ordinaryCount;
-        List<String> schema;
+        List<String> schema,ordinarySchema;
+        String memberBody;
+        int mainHeaderAt;
+        final Map<List<Integer>,String> variants=new LinkedHashMap<>();
+        final StringBuilder variantSource=new StringBuilder();
         Reader(List<Token> input) {
             this.input=input;
             if(input.size()>8192)throw deny("token budget");
@@ -86,11 +90,25 @@ final class ContextualIntLowering {
                 String n=token().lexeme();at++;
                 if(calls&&(n.equals(owner)||aliases.containsKey(n))){
                     List<String> args=new ArrayList<>();
-                    if(n.equals(owner)){need(DOUBLE_COLON);args.addAll(args(contextCount));}
-                    else args.addAll(aliases.get(n));
+                    String target=PREFIX+"member";
+                    if(n.equals(owner)){
+                        need(DOUBLE_COLON);
+                        boolean named=at+2<input.size()&&token().type()==LPAREN&&
+                            input.get(at+1).type()==IDENT&&input.get(at+2).type()==EQUAL;
+                        if(named){
+                            need(LPAREN);List<Integer> order=new ArrayList<>();
+                            for(int k=0;k<contextCount;k++){
+                                if(k>0)need(COMMA);
+                                String key=name();need(EQUAL);int j=schema.indexOf(key);
+                                if(j<0||order.contains(j))throw deny("unknown or duplicate named context");
+                                order.add(j);args.add(plain(false));
+                            }
+                            need(RPAREN);target=variant(order);
+                        }else args.addAll(args(contextCount));
+                    }else args.addAll(aliases.get(n));
                     need(DOT);if(!name().equals(member))throw deny("unknown contextual member");
                     args.addAll(args(ordinaryCount));
-                    return PREFIX+"member("+String.join(", ",args)+")";
+                    return target+"("+String.join(", ",args)+")";
                 }
                 if(!locals.containsKey(n))throw deny("unresolved scalar operand");
                 return locals.get(n);
@@ -104,6 +122,19 @@ final class ContextualIntLowering {
             }
             if(result.size()!=count)throw deny("argument arity");
             return result;
+        }
+        String variant(List<Integer> order){
+            var key=List.copyOf(order);String old=variants.get(key);
+            if(old!=null)return old;
+            if(variants.size()>=16)throw deny("named invocation specialization budget");
+            String target=PREFIX+"order_"+variants.size();
+            var parameters=new ArrayList<String>();
+            for(int j:order)parameters.add("int "+schema.get(j));
+            for(String ordinary:ordinarySchema)parameters.add("int "+ordinary);
+            variantSource.append("fnc ").append(target).append("(").append(String.join(", ",parameters))
+                .append("):int { return ").append(memberBody).append("; }\n");
+            if(variantSource.length()>65536)throw deny("named specialization budget");
+            variants.put(key,target);return target;
         }
         List<String> captureSlots(){
                 word(owner);need(DOUBLE_COLON);need(LPAREN);
@@ -128,19 +159,19 @@ final class ContextualIntLowering {
             need(DEFINE);need(CLASS);owner=name();need(AS);need(PUB);need(STATIC);need(FNC);
             member=name();need(DOUBLE_COLON);
             List<String> captures=params(),ordinary=params();
-            schema=List.copyOf(captures);contextCount=captures.size();ordinaryCount=ordinary.size();
+            schema=List.copyOf(captures);ordinarySchema=List.copyOf(ordinary);contextCount=captures.size();ordinaryCount=ordinary.size();
             List<String> all=new ArrayList<>(captures);all.addAll(ordinary);
             if(contextCount<1||contextCount>8||all.size()>16||new HashSet<>(all).size()!=all.size()||all.contains(owner))
                 throw deny("invalid context schema");
             for(String parameter:all)locals.put(parameter,parameter);
             if(!eat(ARROW))need(COLON);word("int");need(LBRACE);need(RETURN);
-            String body=plain(false);need(SEMICOLON);need(RBRACE);need(END);
+            String body=plain(false);memberBody=body;need(SEMICOLON);need(RBRACE);need(END);
             out.append("fnc ").append(PREFIX).append("member(");
             for(int i=0;i<all.size();i++){if(i>0)out.append(", ");out.append("int ").append(all.get(i));}
             out.append("):int { return ").append(body).append("; }\n");
             locals.clear();
             need(FNC);word("main");need(LPAREN);need(RPAREN);need(ARROW);word("int");need(LBRACE);
-            out.append("pub fnc main():int {\n");
+            mainHeaderAt=out.length();out.append("pub fnc main():int {\n");
             while(token().type()==CONST||token().type()==LET||
                   (token().type()==IDENT&&token().lexeme().equals("set"))){
                 if(token().type()!=CONST){
@@ -169,17 +200,11 @@ final class ContextualIntLowering {
                 if(out.length()>65536)throw deny("lowering budget");
             }
             need(RETURN);
-            boolean directNamed=at+4<input.size()&&token().lexeme().equals(owner)&&
-                input.get(at+1).type()==DOUBLE_COLON&&input.get(at+2).type()==LPAREN&&
-                input.get(at+3).type()==IDENT&&input.get(at+4).type()==EQUAL;
-            if(directNamed){
-                var captured=captureSlots();need(DOT);
-                if(!name().equals(member))throw deny("unknown contextual member");
-                captured.addAll(args(ordinaryCount));
-                out.append("return ").append(PREFIX).append("member(").append(String.join(", ",captured)).append("); }");
-            }else out.append("return ").append(plain(true)).append("; }");
+            out.append("return ").append(plain(true)).append("; }");
             need(SEMICOLON);need(RBRACE);need(EOF);
             if(at!=input.size()-1||out.length()>65536)throw deny("trailing input or output budget");
+            if(out.length()+variantSource.length()>65536)throw deny("lowering budget");
+            out.insert(mainHeaderAt,variantSource);
             return new Lexer(out.toString()).scan();
         }
     }
