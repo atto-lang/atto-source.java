@@ -221,6 +221,19 @@ public final class GuestClassSlots {
          * Unlike generic replace(), it can retire this snapshot's own loans.
          */
         public GuestClassSlots replaceWithFresh(String key, Map<String, Object> values) {
+            return replaceWithFreshOn(copy, key, values);
+        }
+
+        /** Trusted original-side replacement. Retire only this token's loans
+         * when this is the sole direct snapshot of an ordinary source root.
+         * Other generations and independent loans remain protected. Snapshot
+         * sources must be edited through their own live snapshot handle.
+         */
+        public GuestClassSlots replaceOriginalWithFresh(String key, Map<String, Object> values) {
+            return replaceWithFreshOn(source, key, values);
+        }
+
+        private GuestClassSlots replaceWithFreshOn(GuestClassSlots root, String key, Map<String, Object> values) {
             // Stable ordinary map supplied by trusted runtime code. No caller
             // map methods are invoked under the domain monitor.
             if (values.size() > maxEdges) throw new IllegalArgumentException("E_COPY_BUDGET: fresh fields");
@@ -234,14 +247,18 @@ public final class GuestClassSlots {
             }
             synchronized (copy.domain) {
                 requireOpen();
-                if (copy.readOnlyLoans != 0) throw new IllegalArgumentException("E_COPY_READONLY: shared class referent");
-                if (!copy.slots.containsKey(key)) throw new IllegalArgumentException("E_COPY_LAYOUT: unknown class slot");
+                if (root == source && source.snapshotRoot) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: edit source through its own live snapshot handle");
+                }
+                if (root.readOnlyLoans != 0) throw new IllegalArgumentException("E_COPY_READONLY: shared class referent");
+                if (!root.slots.containsKey(key)) throw new IllegalArgumentException("E_COPY_LAYOUT: unknown class slot");
+                boolean releaseUnreachable = root == copy || source.activeSnapshots == 1;
                 var fresh = new GuestClassSlots(copy.domain, initial);
                 fresh.finishInitialization();
                 var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
                 var pending = new ArrayDeque<GuestClassSlots>();
                 int edges = 0;
-                for (var e : copy.slots.entrySet()) {
+                for (var e : root.slots.entrySet()) {
                     if (edges >= maxEdges) throw new IllegalArgumentException("E_COPY_BUDGET: graph edge limit");
                     edges++;
                     Object value = Objects.equals(e.getKey(), key) ? fresh : e.getValue();
@@ -266,7 +283,7 @@ public final class GuestClassSlots {
                 var retired = new ArrayList<GuestClassSlots>();
                 for (GuestClassSlots store : lease.protectedStores) {
                     if (store.readOnlyLoans <= 0) throw stale();
-                    if (seen.containsKey(store)) {
+                    if (!releaseUnreachable || seen.containsKey(store)) {
                         kept.add(store);
                         nextRetained.put(store, Boolean.TRUE);
                     } else {
@@ -276,7 +293,7 @@ public final class GuestClassSlots {
                 List<GuestClassSlots> next = List.copyOf(kept);
                 // All checks and allocations above; publish the slot and retire
                 // only this token's unreachable nodes under the same monitor.
-                copy.slots.put(key, fresh);
+                root.slots.put(key, fresh);
                 for (int i = 0; i < retired.size(); i++) retired.get(i).readOnlyLoans--;
                 lease.protectedStores = next;
                 retained = nextRetained;
