@@ -12,7 +12,7 @@ final class ScalarFieldSnapshotLastUseTest {
               pub let int value = 40;
             end
             pub fnc main(): int {
-              let counter = new Counter();
+              let mut counter = new Counter();
               val view = borrow! counter.value;
               val snapshot = rt copy view;
             """;
@@ -35,7 +35,8 @@ final class ScalarFieldSnapshotLastUseTest {
               return snapshot + (rt copy view);
             }
             """;
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("E_BORROW"), error::getMessage);
     }
 
     @Test void independentLiveLoanStillBlocksMutation() {
@@ -44,7 +45,7 @@ final class ScalarFieldSnapshotLastUseTest {
               pub let int value = 40;
             end
             pub fnc main(): int {
-              let counter = new Counter();
+              let mut counter = new Counter();
               val other = borrow! counter.value;
               val view = borrow! counter.value;
               val snapshot = rt copy view;
@@ -52,6 +53,7 @@ final class ScalarFieldSnapshotLastUseTest {
               return snapshot + (rt copy other);
             }
             """;
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("E_BORROW"), error::getMessage);
     }
 }
