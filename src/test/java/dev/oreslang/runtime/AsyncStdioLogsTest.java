@@ -186,6 +186,44 @@ final class AsyncStdioLogsTest {
     }
 
     @Test
+    void cancellationOfLargeHeadPromotesFittingSuccessorWhileSinkRemainsGated() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            try {
+                String frame = "x".repeat(65_536);
+                for (int i = 0; i < 63; i++) logs.admitBuffered(frame).get(1, TimeUnit.SECONDS);
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                logs.admitBuffered("x".repeat(65_535)).get(1, TimeUnit.SECONDS);
+                var head = logs.admitBuffered("XX");
+                var tail = logs.admitBuffered("Y");
+                assertFalse(head.isDone());
+                assertFalse(tail.isDone());
+                assertTrue(head.cancel(false));
+                tail.get(1, TimeUnit.SECONDS);
+                assertFalse(tail.cancel(false));
+                assertThrows(IllegalArgumentException.class,
+                        () -> logs.admitBuffered(String.valueOf((char) 0xd800)));
+                release.countDown();
+                logs.flushAsync().get(3, TimeUnit.SECONDS);
+            } finally { release.countDown(); }
+        }
+    }
+
+    @Test
     void bufferedAdmissionQuotaAndSealSettleUnadmittedWaiters() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);

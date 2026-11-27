@@ -50,11 +50,14 @@ public final class AsyncStdioLogs implements AutoCloseable {
     }
 
     private boolean cancelWaiting(PendingAdmission pending) {
+        List<PendingAdmission> promoted = new ArrayList<>();
         synchronized (lock) {
             if (!waiting.remove(pending)) return false;
             waitingBytes -= pending.bytes;
-            return true;
+            promoteWaitingLocked(promoted);
         }
+        completeAdmissions(promoted);
+        return true;
     }
 
     // All queue/sequence changes and cancellation arbitration occur under lock.
@@ -74,6 +77,20 @@ public final class AsyncStdioLogs implements AutoCloseable {
         wake.release();
     }
 
+    private void promoteWaitingLocked(List<PendingAdmission> promoted) {
+        while (accepting && failure == null && !waiting.isEmpty()
+                && canAdmitLocked(waiting.peekFirst().bytes)) {
+            PendingAdmission next = waiting.removeFirst();
+            waitingBytes -= next.bytes;
+            enqueueLocked(next.text, next.bytes, deliveryFuture());
+            promoted.add(next);
+        }
+    }
+
+    private static void completeAdmissions(List<PendingAdmission> promoted) {
+        for (PendingAdmission admission : promoted) admission.admitted.completeFromRuntime(null);
+    }
+
     private static OresFuture<Void> deliveryFuture() {
         return new OresFuture<>(() -> false, () -> { });
     }
@@ -82,6 +99,16 @@ public final class AsyncStdioLogs implements AutoCloseable {
         java.util.Objects.requireNonNull(text, "text");
         if (text.length() > MAX_RECORD_BYTES) {
             throw new IllegalArgumentException("async stdio record exceeds 65536 UTF-8 bytes");
+        }
+        // Reject malformed UTF-16 instead of silently encoding a replacement byte.
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= text.length() || !Character.isLowSurrogate(text.charAt(i)))
+                    throw new IllegalArgumentException("async stdio malformed UTF-16");
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("async stdio malformed UTF-16");
+            }
         }
         int bytes = text.getBytes(StandardCharsets.UTF_8).length;
         if (bytes > MAX_RECORD_BYTES) {
@@ -224,7 +251,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     }
                 }
                 List<Barrier> ready = new ArrayList<>();
-                PendingAdmission promoted = null;
+                List<PendingAdmission> promoted = new ArrayList<>();
                 List<PendingAdmission> rejected = List.of();
                 synchronized (lock) {
                     if (error != null && failure == null) failure = error;
@@ -238,10 +265,8 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     deliveringCompletions = true;
                     if (error != null) {
                         rejected = detachWaitingLocked();
-                    } else if (accepting && !waiting.isEmpty() && canAdmitLocked(waiting.peekFirst().bytes)) {
-                        promoted = waiting.removeFirst();
-                        waitingBytes -= promoted.bytes;
-                        enqueueLocked(promoted.text, promoted.bytes, deliveryFuture());
+                    } else {
+                        promoteWaitingLocked(promoted);
                     }
                     // Barrier sequence numbers are nondecreasing by admission.
                     // Complete the ready prefix in FIFO registration order so a
@@ -255,7 +280,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
                     }
                     barriers.subList(0, readyCount).clear();
                 }
-                if (promoted != null) promoted.admitted.completeFromRuntime(null);
+                completeAdmissions(promoted);
                 if (error != null) rejectWaiting(rejected, error);
                 if (error == null) record.completion().completeFromRuntime(null);
                 else record.completion().failFromRuntime(error);
