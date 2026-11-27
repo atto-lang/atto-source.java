@@ -81,4 +81,15 @@ final class ContextualIntGuestTest {
         System.out.println("SHARED_SUMMARY executed="+executed+" rejectedUnclassified="+rejected+" outside="+outside);
     }
 
+    @Test void storedNamedContexts(){
+        guest(source("int factor, int offset","factor * value + offset",
+            "const x = Scale::(offset=7,factor=5); return x.apply(7);"),42);
+        for(String body:new String[]{
+            "const x = Scale::(offset=7,offset=5); return x.apply(7);",
+            "const x = Scale::(unknown=7,factor=5); return x.apply(7);",
+            "const x = Scale::(offset=7,5); return x.apply(7);",
+            "const x = Scale::(offset=7); return x.apply(7);"
+        })assertThrows(IllegalArgumentException.class,()->OresCompiler.parseAndTypeCheckNumericProfile(
+            source("int factor, int offset","factor * value + offset",body),true),body);
+    }
 }
