@@ -75,4 +75,33 @@ final class StateContainerAccessGateTest {
         assertNull(gate.tryWrite());
         assertEquals(0, gate.readerCount());
     }
+
+    @Test
+    void storageRejectsForeignLeasesEvenWithMatchingVersions() {
+        var a = new StateContainerAccessGate(2);
+        var b = new StateContainerAccessGate(2);
+        var ar = a.tryRead();
+        var bw = b.tryWrite();
+        assertEquals(ar.version(), bw.version());
+        a.requireOwnedActive(ar, READ);
+        b.requireOwnedActive(bw, READ);
+        b.requireOwnedActive(bw, WRITE);
+        assertThrows(IllegalStateException.class, () -> a.requireOwnedActive(bw, READ));
+        assertThrows(IllegalStateException.class, () -> a.requireOwnedActive(bw, WRITE));
+        assertThrows(IllegalStateException.class, () -> b.requireOwnedActive(ar, READ));
+        assertThrows(IllegalStateException.class, () -> b.requireOwnedActive(ar, WRITE));
+        assertThrows(IllegalStateException.class, () -> a.requireOwnedActive(null, READ));
+        assertThrows(IllegalStateException.class, () -> a.requireOwnedActive(ar, WRITE));
+        assertEquals(1, a.readerCount());
+        assertTrue(b.writerActive());
+        a.close();
+        assertThrows(IllegalStateException.class, () -> a.requireOwnedActive(ar, READ));
+        b.requireOwnedActive(bw, WRITE);
+        ar.close();
+        assertTrue(a.leasesQuiescentAfterClose());
+        bw.close();
+        assertThrows(IllegalStateException.class, () -> b.requireOwnedActive(bw, WRITE));
+        b.close();
+        assertTrue(b.leasesQuiescentAfterClose());
+    }
 }
