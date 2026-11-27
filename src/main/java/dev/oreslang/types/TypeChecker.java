@@ -9078,7 +9078,7 @@ public final class TypeChecker {
                 unwrapMutexGuard(deref(rawReceiver)));
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
-                    "cannot mutate a readonly structural record value");
+                    "cannot mutate a read-only structural record value");
         }
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
