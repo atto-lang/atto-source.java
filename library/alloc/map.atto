@@ -84,6 +84,59 @@ define module map as
       return false;
     }
 
+    // Read-only keyed predicates; compare scalar values, never reference identity.
+    // Tombstones and unused slots are not keys. Capacity need not match.
+    pub contains_entry(int key, int value): bool {
+      let int start = self.start_slot(key);
+      for (let int probe = 0; probe < self.limit; probe = probe + 1) {
+        let int slot = Integer.rem((start + probe), self.limit);
+        let int state = self.states.get(slot);
+        if state eq 0; do return false; fi
+        if state eq 1 && self.keys.get(slot) eq key; do
+          return self.values.get(slot) eq value;
+        fi
+      }
+      return false;
+    }
+
+    pub same_keys(borrow IntMap other): bool {
+      if self.count neq other.len(); do return false; fi
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1 && !other.contains_key(self.keys.get(i)); do
+          return false;
+        fi
+      done
+      return true;
+    }
+
+    pub has_overlap(borrow IntMap other): bool {
+      if self.count eq 0 || other.is_empty(); do return false; fi
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1 && other.contains_key(self.keys.get(i)); do
+          return true;
+        fi
+      done
+      return false;
+    }
+
+    // Candidate nonvacuous rule: disjoint inputs do not match; both empty match.
+    // This is not an equivalence relation and is never a hash witness.
+    pub overlapping_values_equal(borrow IntMap other): bool {
+      if self.count eq 0; do return other.is_empty(); fi
+      if other.is_empty(); do return false; fi
+      let mut bool shared = false;
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1; do
+          let int key = self.keys.get(i);
+          if other.contains_key(key); do
+            if !other.contains_entry(key, self.values.get(i)); do return false; fi
+            shared = true;
+          fi
+        fi
+      done
+      return shared;
+    }
+
     // Returns old value on replacement, None for new insertion.
     // On CapacityExceeded, no existing key/value/state has changed.
     pub try_insert(mut self)(int key, int value): Result<Option<int>, String> {
