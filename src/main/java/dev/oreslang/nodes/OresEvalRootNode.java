@@ -1843,8 +1843,11 @@ public final class OresEvalRootNode extends RootNode {
                     initialBlockEnv = null;
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
+                    // Async trap may settle Err only from the terminal SourceFlow
+                    // after cleanup, not from an unexpected evaluator exception.
                     if (!cancellationUnwinding && function != null
-                            && function.trapped() && isTrappableFailure(failure)) {
+                            && function.trapped() && !function.async()
+                            && isTrappableFailure(failure)) {
                         return OresScheduler.done(trapErr(failure));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -2166,7 +2169,23 @@ public final class OresEvalRootNode extends RootNode {
                 switch (flow.kind()) {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
-                    case THROW -> throw sourceFailure(flow.failure());
+                    case THROW -> {
+                        if (function != null && function.trapped() && function.async()) {
+                            Throwable failure = flow.failure();
+                            if (dev.oreslang.runtime.AsyncTrapAdmission.accepts(
+                                    failure, cancellationUnwinding, activeCleanup.isEmpty())) {
+                                done(trapErr(failure));
+                            } else {
+                                // Preserve wrapper/suppression information. A
+                                // general unwrap here could erase terminal causes.
+                                if (failure instanceof RuntimeException runtime) throw runtime;
+                                if (failure instanceof Error error) throw error;
+                                throw new RuntimeException(failure);
+                            }
+                        } else {
+                            throw sourceFailure(flow.failure());
+                        }
+                    }
                     case BREAK, CONTINUE ->
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
@@ -2182,6 +2201,11 @@ public final class OresEvalRootNode extends RootNode {
                         function != null
                                 ? "function " + function.name()
                                 : "method " + method.name();
+                if (function != null && function.trapped() && function.async()
+                        && (cancellationUnwinding || !activeCleanup.isEmpty())) {
+                    throw new IllegalStateException(
+                            "async trap attempted success before physical cleanup");
+                }
                 Object shaped = shapeReturnedValue(returnType, value, label);
                 return function != null && function.trapped()
                         ? trapOk(shaped) : shaped;
@@ -7251,7 +7275,7 @@ public final class OresEvalRootNode extends RootNode {
             if (fn.actorKind() == Ast.ActorKind.NONE) {
                 // Imported calls may select the scheduler path. Keep the trap
                 // wrapper around that path as well as direct execution.
-                if (fn.trapped()) return callFunctionBodyRaw(fn, normalized);
+                if (fn.trapped() && !fn.async()) return callFunctionBodyRaw(fn, normalized);
                 if (fn.async() || functionContainsPotentialSuspension(fn)) {
                     OresFuture<Object> future =
                             startSourceFunctionTask(
@@ -7526,7 +7550,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
-            if (!fn.trapped() || functionContainsPotentialSuspension(fn)) {
+            if (!fn.trapped() || fn.async() || functionContainsPotentialSuspension(fn)) {
                 // SourceTask owns the trap boundary for scheduled execution.
                 return callFunctionBodyUnchecked(fn, args);
             }

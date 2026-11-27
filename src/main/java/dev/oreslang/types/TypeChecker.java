@@ -1475,7 +1475,7 @@ public final class TypeChecker {
                             trappedSignature.parameters(),
                             trappedSignature.mutableParameters(),
                             trappedSignature.async(),
-                            trapResult(true, trappedSignature.result()),
+                            trapWrappedCallType(fn.async(), trappedSignature.result()),
                             trappedSignature.effects());
                 }
 
@@ -1686,8 +1686,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "*_blocking function '" + fn.name() + "' must declare suspends");
         if (fn.trapped()) {
-            if (fn.async()) {
-                throw new IllegalArgumentException("async trap callables are not enabled until the trap boundary spans every await");
+            if (fn.suspends()) {
+                throw new IllegalArgumentException("suspending trap callables require a verified inline unwind boundary");
             }
             if (fn.generator()) {
                 throw new IllegalArgumentException("trap generators are not enabled until the trap boundary spans generator suspension");
@@ -12773,6 +12773,18 @@ public final class TypeChecker {
         return callableResult(async, suspends, false, trapResultType(result));
     }
 
+    /** Function and module member signatures have already lifted their return into Future.
+     * Keep the Result inside the Future, never Result<Future<T>, Error>.
+     */
+    private Type trapWrappedCallType(boolean async, Type lifted) {
+        if (!async) return trapResultType(lifted);
+        if (!(lifted instanceof Named future) || !future.name().equals("Future")
+                || future.arguments().size() != 1) {
+            throw new IllegalStateException("async trap callable signature requires Future<T>");
+        }
+        return new Named("Future", List.of(trapResultType(future.arguments().getFirst())));
+    }
+
     private Function trapFunctionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
         Function raw = functionType(
                 fn.parameters(),
@@ -12787,7 +12799,7 @@ public final class TypeChecker {
                 raw.parameters(),
                 raw.mutableParameters(),
                 raw.async(),
-                trapResult(true, raw.result()),
+                trapWrappedCallType(fn.async(), raw.result()),
                 raw.effects());
     }
 

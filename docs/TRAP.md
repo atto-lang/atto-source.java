@@ -16,6 +16,21 @@
 >
 > Sections below that mention `Option`, `Some` or `None` describe the previous contract.
 
+## Current-main async reconciliation candidate (2026-11-25)
+
+The old #579 Option implementation is superseded by the existing scheduler-owned
+Result completion path. The candidate admits top-level/module async trap declarations
+in the compatibility frontend, including the bang alias. It lifts Result **inside**
+Future for direct calls, module signatures and function values; existing Result
+payloads are not wrapped twice. Scheduler-owned cancellation and panic are never
+ordinary Err. Unlike the historical synchronous compatibility sanitizer, the async
+path captures only a directly typed GuestOrdinaryThrow after active cleanup has
+retired. The strict Atto frontend gate remains intact: canonical source throw,
+raise, panic and nominal trait lowering depend on the separate #1704 integration.
+Real pending-producer suspension, ownership retirement and native AOT need the
+shared #598 guest witnesses and executed evidence. These source and JUnit changes
+are not a claim of JVM execution or full async parity.
+
 This document defines the Oreslang contract for the `trap` callable modifier
 and its interaction with `throw`, `raise`, `panic`, async/Future execution,
 select, actors, and runtime cancellation.
