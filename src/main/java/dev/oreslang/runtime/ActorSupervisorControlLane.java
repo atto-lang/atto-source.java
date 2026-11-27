@@ -73,7 +73,7 @@ final class ActorSupervisorControlLane {
             throw new IllegalStateException("duplicate actor CONTROL reservation");
         }
         if (slots.size() == capacity) {
-            reservationRejected++;
+            reservationRejected = saturatingIncrement(reservationRejected);
             throw new RejectedExecutionException(
                     "actor supervisor CONTROL slots exhausted; drain terminal events");
         }
@@ -84,12 +84,12 @@ final class ActorSupervisorControlLane {
         Objects.requireNonNull(notice, "notice");
         Slot slot = required(notice.actor(), notice.generation());
         if (slot.notice != null) {
-            duplicatePublishRejected++;
+            duplicatePublishRejected = saturatingIncrement(duplicatePublishRejected);
             return false;
         }
         slot.notice = notice;
         enqueue(slot);
-        published++;
+        published = saturatingIncrement(published);
         return true;
     }
 
@@ -118,7 +118,7 @@ final class ActorSupervisorControlLane {
         slot.inFlight = false;
         slot.notice = null;
         inFlight = 0;
-        acknowledged++;
+        acknowledged = saturatingIncrement(acknowledged);
     }
 
     synchronized void retry(ActorRuntime.ActorId child, long generation) {
@@ -128,7 +128,7 @@ final class ActorSupervisorControlLane {
         }
         slot.inFlight = false;
         inFlight = 0;
-        retried++;
+        retried = saturatingIncrement(retried);
         enqueue(slot);
     }
 
@@ -162,7 +162,7 @@ final class ActorSupervisorControlLane {
                 iterator.remove();
                 slot.inFlight = false;
                 inFlight = 0;
-                transferred++;
+                transferred = saturatingIncrement(transferred);
                 break; // single-flight invariant means at most one
             }
         }
@@ -178,7 +178,7 @@ final class ActorSupervisorControlLane {
             slot.queued = false;
             pending--;
             slots.remove(slot.child);
-            transferred++;
+            transferred = saturatingIncrement(transferred);
         }
         tail = null;
     }
@@ -224,5 +224,9 @@ final class ActorSupervisorControlLane {
         else tail.next = slot;
         tail = slot;
         pending++;
+    }
+
+    private static long saturatingIncrement(long value) {
+        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
     }
 }
