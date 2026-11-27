@@ -164,19 +164,19 @@ public final class GuestClassSlots {
          * lifetime of raw host references remain caller proof obligations.
          * The domain monitor must be held throughout traversal and publication.
          */
-        private void validateReplacement(GuestClassSlots child) {
+        private void validateReplacement(GuestClassSlots child, GuestClassSlots opposite) {
             var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
             var pending = new ArrayDeque<GuestClassSlots>();
             pending.add(child);
             int edges = 0;
             while (!pending.isEmpty()) {
                 GuestClassSlots store = pending.removeFirst();
+                if (store.domain != copy.domain) {
+                    throw new IllegalArgumentException("E_COPY_DOMAIN: foreign replacement store");
+                }
                 if (seen.put(store, Boolean.TRUE) != null) continue;
                 if (seen.size() > maxNodes) {
                     throw new IllegalArgumentException("E_COPY_BUDGET: replacement graph node limit");
-                }
-                if (store.domain != copy.domain) {
-                    throw new IllegalArgumentException("E_COPY_DOMAIN: foreign replacement store");
                 }
                 if (store.initializing) {
                     throw new IllegalStateException("E_COPY_LAYOUT: unpublished replacement store");
@@ -189,6 +189,26 @@ public final class GuestClassSlots {
                 }
                 edges = enqueueChildren(store, pending, edges, maxEdges);
             }
+            // A retired loan must not be silently resurrected by reattaching
+            // a value still reachable from the opposite root. Check identity,
+            // not structural equality. All traversal is under the domain lock.
+            var otherSeen = new IdentityHashMap<GuestClassSlots, Boolean>();
+            int otherEdges = enqueueChildren(opposite, pending, 0, maxEdges);
+            while (!pending.isEmpty()) {
+                GuestClassSlots store = pending.removeFirst();
+                if (store.domain != copy.domain) {
+                    throw new IllegalArgumentException("E_COPY_DOMAIN: foreign opposite-root store");
+                }
+                if (otherSeen.put(store, Boolean.TRUE) != null) continue;
+                if (otherSeen.size() > maxNodes) {
+                    throw new IllegalArgumentException("E_COPY_BUDGET: opposite graph node limit");
+                }
+                if (store.initializing) throw new IllegalStateException("E_COPY_LAYOUT: unpublished class");
+                if (seen.containsKey(store) && !retained.containsKey(store)) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: reattachment would share an unprotected referent");
+                }
+                otherEdges = enqueueChildren(store, pending, otherEdges, maxEdges);
+            }
         }
         private void requireOpen() {
             if (closed) throw stale();
@@ -200,17 +220,33 @@ public final class GuestClassSlots {
             }
         }
         public void replace(String key, Object value) {
+            replaceOn(copy, source, key, value);
+        }
+
+        /** Checked original-side replacement; does not retire loans. The
+         * typed caller must route source writes through this handle whenever
+         * it uses the early-detachment profile. Multiple live source handles
+         * require the ordinary ownership proof, not this single-token API.
+         */
+        public void replaceOriginal(String key, Object value) {
+            replaceOn(source, copy, key, value);
+        }
+
+        private void replaceOn(GuestClassSlots root, GuestClassSlots opposite, String key, Object value) {
             synchronized (copy.domain) {
                 requireOpen();
+                if (root == source && (source.snapshotRoot || source.activeSnapshots != 1)) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: original replacement requires sole ordinary source handle");
+                }
                 // This class-only snapshot never accepts a foreign, unpublished
                 // or opaque replacement root. The caller still proves transitive
                 // ownership and lifetime; this check cannot mint write authority.
                 if (value instanceof GuestClassSlots child) {
-                    validateReplacement(child);
+                    validateReplacement(child, opposite);
                 } else if (value != null && !CopyScalarAdmission.isImmutableScalar(value)) {
                     throw new IllegalArgumentException("E_COPY_UNPROVEN: unsupported replacement payload");
                 }
-                copy.replace(key, value);
+                root.replace(key, value);
             }
         }
         /**

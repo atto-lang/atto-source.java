@@ -587,6 +587,46 @@ final class GuestClassGraphLeaseTest {
         }
     }
 
+    @Test void retiredLoanCannotBeResurrectedByCopySideReattachment() {
+        var d = new GuestClassSlots.Domain();
+        var old = store(d, Map.of("n", 10));
+        var root = store(d, Map.of("data", old));
+        try (var snapshot = root.shallowSnapshot(3, 5)) {
+            var fresh = snapshot.replaceWithFresh("data", Map.of("n", 20));
+            assertFalse(old.isReadOnly());
+            deny("E_COPY_SHALLOW_ALIAS", () -> snapshot.replace("data", old));
+            deny("E_COPY_SHALLOW_ALIAS", () -> snapshot.replace("data", store(d, Map.of("nested", old))));
+            assertSame(fresh, snapshot.get("data"));
+            assertSame(old, root.get("data"));
+            old.replace("n", 12);
+            assertEquals(12, old.get("n"));
+            var independent = store(d, Map.of("n", 30));
+            snapshot.replace("data", independent);
+            assertSame(independent, snapshot.get("data"));
+        }
+    }
+
+    @Test void retiredLoanCannotBeResurrectedByCheckedOriginalReattachment() {
+        var d = new GuestClassSlots.Domain();
+        var old = store(d, Map.of("n", 10));
+        var root = store(d, Map.of("data", old));
+        try (var snapshot = root.shallowSnapshot(3, 5)) {
+            var fresh = snapshot.replaceOriginalWithFresh("data", Map.of("n", 20));
+            assertFalse(old.isReadOnly());
+            deny("E_COPY_SHALLOW_ALIAS", () -> snapshot.replaceOriginal("data", old));
+            deny("E_COPY_SHALLOW_ALIAS", () -> snapshot.replaceOriginal("data", store(d, Map.of("nested", old))));
+            assertSame(fresh, root.get("data"));
+            assertSame(old, snapshot.get("data"));
+            var independent = store(d, Map.of("n", 30));
+            snapshot.replaceOriginal("data", independent);
+            assertSame(independent, root.get("data"));
+            try (var sibling = root.shallowSnapshot(3, 5)) {
+                deny("E_COPY_SHALLOW_ALIAS", () -> snapshot.replaceOriginal("data", 0));
+                assertSame(independent, sibling.get("data"));
+            }
+        }
+    }
+
     @Test void flatSnapshotQuotaIsReleasedExactlyOnce() {
         var d = new GuestClassSlots.Domain();
         var original = store(d, Map.of("count", 1));
