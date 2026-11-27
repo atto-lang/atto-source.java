@@ -8,6 +8,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class StateContainerAccessGateTest {
     @Test
+    void concurrentShutdownCancellationAndMutation() throws Exception {
+        StateContainerConcurrencyProbe.run();
+    }
+
+    @Test
     void differentialAdmissionAndOverflowCleanup() {
         StateContainerDifferentialProbe.run();
     }
