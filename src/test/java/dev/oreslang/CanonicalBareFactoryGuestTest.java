@@ -27,7 +27,7 @@ final class CanonicalBareFactoryGuestTest {
             end
             pub fnc main(): void {
               val Cart c = Cart.new();
-              stdio.stdout.write(c.get_count());
+              stdio.out.write(c.get_count());
               return;
             }
             """;
