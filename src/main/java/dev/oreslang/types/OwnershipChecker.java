@@ -798,7 +798,14 @@ public final class OwnershipChecker {
                 unpacked.forEach(scope::define);
                 return;
             }
-            ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            boolean scalarSnapshot = scalarArraySnapshotDestructure(destructure, scope);
+            ValueInfo source = checkExpr(destructure.initializer(), scope, !scalarSnapshot);
+            if (scalarSnapshot && (source.type == null || source.type.isBorrow()
+                    || !source.type.name().equals("Array") || source.type.arguments().size() != 1
+                    || !isPrimitiveCopyType(source.type.arguments().getFirst())
+                    || !isCopyType(source.type.arguments().getFirst()))) {
+                throw error(E_BORROW, "scalar array destructure requires a proven Copy element type");
+            }
             // Generic destructuring creates independent bindings without a
             // provenance-carrying scoped loan. The immediate tuple fast path
             // above individually checks lexical borrow bindings, but a
@@ -2042,6 +2049,7 @@ public final class OwnershipChecker {
                     throw error(E_UNKNOWN, "unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                rejectBorrowedProjectionConsumption(member.receiver(), receiverValue, valueKind, consuming, scope);
                 return new ValueInfo(valueType, valueKind, null);
             }
             // Built-in Array/List.size is a computed Copy scalar, not
@@ -2080,6 +2088,7 @@ public final class OwnershipChecker {
                         throw error(E_ACTOR_LOAN_ESCAPE, "cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
+                    rejectBorrowedProjectionConsumption(member.receiver(), receiverValue, fieldKind, consuming, scope);
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
                 if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
@@ -2101,6 +2110,7 @@ public final class OwnershipChecker {
                     && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error(E_ACTOR_LOAN_ESCAPE, "cannot move actor-owned indexed state out of its mailbox turn");
             }
+            rejectBorrowedProjectionConsumption(indexed.receiver(), receiver, elementKind, consuming, scope);
             // Ordinary projection is an aliasing read, not an implicit partial
             // move. Explicit ownership transfer remains spelled rt take; indexed
             // rt take stays fail-closed below until projection-level move
@@ -4541,6 +4551,22 @@ public final class OwnershipChecker {
         shadowEvent(mutable ? "BORROW_MUT" : "BORROW_SHARED", root);
     }
 
+    // A non-Copy projection of a loan is not a new owned value. Check the
+    // lexical root as well as the immediate receiver: an intermediate field
+    // read may already have erased its ValueInfo borrow provenance.
+    private void rejectBorrowedProjectionConsumption(
+            Ast.Expr receiver, ValueInfo value, ValueKind projectedKind,
+            boolean consuming, Scope scope) {
+        if (!consuming || projectedKind == ValueKind.COPY) return;
+        Ast.Expr base = projectionBase(receiver);
+        VarState root = base instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
+        if (isBorrowValue(value) || (root != null
+                && (root.kind == ValueKind.IMM_BORROW || root.kind == ValueKind.MUT_BORROW
+                    || root.type.isBorrow()))) {
+            throw error(E_BORROW, "cannot consume a non-Copy projection of a borrowed value as owned data");
+        }
+    }
+
     private void requireKnownReceiverBorrow(ValueInfo receiver) {
         // Returned loans currently have no call-site lifetime summary. A
         // method/field/index receiver must not hide its owner from later
@@ -6693,6 +6719,37 @@ public final class OwnershipChecker {
             return value;
         }
 
+        // A direct structural parameter is an immutable view of its declared
+        // interface. Recover only the closed, non-generic scalar field domain;
+        // never infer an owned result from an unknown or move-only field.
+        if (indexed.receiver() instanceof Ast.NameExpr name) {
+            VarState view = scope.lookup(name.name());
+            Ast.InterfaceDecl contract = findInterface(concrete.name());
+            if (view != null && view.origin == Origin.PARAM
+                    && view.kind == ValueKind.IMM_BORROW && !view.type.isBorrow()
+                    && view.type.equals(concrete) && contract != null
+                    && contract.declarationKind() == Ast.InterfaceKind.INTERFACE
+                    && contract.parents().isEmpty() && contract.genericParameters().isEmpty()
+                    && concrete.arguments().isEmpty() && !concrete.inferArguments()
+                    && findClass(concrete.name()) == null && !hasLocalTypeAliasNamed(concrete.name())) {
+                Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+                for (Ast.InterfaceMember member : contract.members()) {
+                    if (!(member instanceof Ast.InterfaceFieldDecl field)) continue;
+                    if (fields.putIfAbsent(field.name(), field.type()) != null)
+                        return Ast.TypeRef.inferred();
+                }
+                if (constantIndex instanceof String key) {
+                    Ast.TypeRef selected = fields.get(key);
+                    return isPrimitiveCopyType(selected) && isCopyType(selected)
+                            ? selected : Ast.TypeRef.inferred();
+                }
+                if (fields.isEmpty() || !fields.values().stream()
+                        .allMatch(t -> isPrimitiveCopyType(t) && isCopyType(t)))
+                    return Ast.TypeRef.inferred();
+                return Ast.TypeRef.union(new ArrayList<>(fields.values()));
+            }
+        }
+
         if (concrete.isClosedAggregateType()) {
             Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
             if (constantIndex instanceof String key) {
@@ -6825,6 +6882,33 @@ public final class OwnershipChecker {
             return result;
         }
         return Ast.TypeRef.inferred();
+    }
+
+    // The synchronous sequence binder copies scalar elements and constructs a
+    // fresh ArrayList for the rest. Admit only a direct known builtin Array
+    // field of an explicit incoming shared borrow; never reinterpret an
+    // arbitrary iterator, owned result, mutable loan or non-Copy element.
+    private boolean scalarArraySnapshotDestructure(Ast.DestructureStmt stmt, Scope scope) {
+        if (stmt.kind() != Ast.DestructureKind.SEQUENCE
+                || !(stmt.initializer() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr name)) return false;
+        VarState root = scope.lookup(name.name());
+        if (!isIncomingBorrow(root) || !root.type.isBorrow() || root.type.mutableBorrow()
+                || isActorConfinedBorrow(root) || isScopedMutexReceiver(root)) return false;
+        Ast.TypeRef owner = root.type.borrowedTarget();
+        Ast.ClassDecl klass = findClass(owner.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || !klass.genericParameters().isEmpty() || !owner.arguments().isEmpty()
+                || hasLocalTypeAliasNamed(owner.name())) return false;
+        ResolvedField field = findFieldTarget(klass, owner, member.member(), new LinkedHashSet<>());
+        if (field == null || field.owner() != klass
+                || field.field().visibility() != Ast.Visibility.PUBLIC) return false;
+        Ast.TypeRef array = ownershipFieldType(field.field());
+        return !array.isBorrow() && !array.inferArguments()
+                && array.name().equals("Array") && array.arguments().size() == 1
+                && findClass("Array") == null && !hasLocalTypeAliasNamed("Array")
+                && isPrimitiveCopyType(array.arguments().getFirst())
+                && isCopyType(array.arguments().getFirst());
     }
 
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
