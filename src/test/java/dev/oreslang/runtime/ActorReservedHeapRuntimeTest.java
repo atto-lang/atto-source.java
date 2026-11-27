@@ -70,7 +70,7 @@ final class ActorReservedHeapRuntimeTest {
             assertEquals(0, runtime.sharedMemoryBytes());
         }
     }
-    @Test void stopDuringInitRetainsCapacityUntilTheTurnExits() throws Exception {
+    @Test void cancelDuringInitRetainsCapacityUntilTheTurnExits() throws Exception {
         var entered = new CountDownLatch(1); var proceed = new CountDownLatch(1);
         try (var store = new SharedCodeImageStore(); var runtime = new ActorRuntime(policy(16*MIB))) {
             var code = store.publish("reserved-native-arena-cancel", Parser.parse("define actor Worker as state { let int count = 0; } end"));
@@ -79,7 +79,7 @@ final class ActorReservedHeapRuntimeTest {
             var ready = actor.ready();
             try {
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
-                actor.stop();
+                assertTrue(actor.cancel());
                 assertEquals(16*MIB, runtime.sharedMemoryBytes());
                 assertThrows(IllegalStateException.class, () -> runtime.spawnCodeActorWithReservedHeap(
                     ActorRuntime.ActorKind.SHARED, policy(16*MIB), e, "Worker"));
