@@ -122,7 +122,7 @@ define module map as
     // Candidate nonvacuous rule: disjoint inputs do not match; both empty match.
     // This is not an equivalence relation and is never a hash witness.
     pub overlapping_values_equal(borrow IntMap other): bool {
-      if self.count eq 0; do return other.is_empty(); fi
+      if self.count eq 0; do return other.len() eq 0; fi
       if other.is_empty(); do return false; fi
       let mut bool shared = false;
       for (let int i = 0; i < self.limit; i = i + 1) do
