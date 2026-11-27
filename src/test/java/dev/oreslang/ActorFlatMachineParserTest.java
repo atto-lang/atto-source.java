@@ -193,6 +193,7 @@ final class ActorFlatMachineParserTest {
         assertEquals(java.util.List.of("Start", "Stop"), machine.declarations());
         assertEquals(java.util.List.of("Start", "Stop"), machine.table().events());
         assertEquals(java.util.List.of(0, 1), machine.declarationIds());
+        assertEquals(java.util.List.of(1, 0), machine.parsedClassIds());
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
     }
 
