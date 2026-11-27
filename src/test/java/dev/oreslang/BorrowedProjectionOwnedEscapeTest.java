@@ -58,4 +58,27 @@ final class BorrowedProjectionOwnedEscapeTest {
         assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
                 + "fnc valid(borrow Array<int> input): int { return input[0]; }")));
     }
+
+    @Test void structuralScalarIndexRetainsClosedFieldDomain() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
+                + "define interface PointLike x: int; y: int; end "
+                + "fnc read(structural PointLike input, string key): int { return input[key]; }")));
+    }
+    @Test void structuralMixedIndexCannotBecomeOwned() {
+        reject("define interface Mixed x: int; child: Leaf; end "
+                + "fnc bad(structural Mixed input, string key): Leaf { return input[key]; }");
+    }
+    @Test void structuralKnownScalarIndexDoesNotRequireAllFieldsCopy() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(TYPES
+                + "define interface Mixed x: int; child: Leaf; end "
+                + "fnc read(structural Mixed input): int { return input[\"x\"]; }")));
+    }
+    @Test void structuralKnownNonCopyIndexCannotBecomeOwned() {
+        reject("define interface Mixed x: int; child: Leaf; end "
+                + "fnc bad(structural Mixed input): Leaf { return input[\"child\"]; }");
+    }
+    @Test void structuralUnknownKeyDoesNotBecomeCopy() {
+        reject("define interface PointLike x: int; y: int; end "
+                + "fnc bad(structural PointLike input): int { return input[\"extra\"]; }");
+    }
 }
