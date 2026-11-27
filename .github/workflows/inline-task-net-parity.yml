@@ -7,6 +7,7 @@ on:
       - 'pom.xml'
       - 'tests/fixtures/inline-task-net-parity/**'
       - 'tools/run-inline-task-net-parity.py'
+      - 'tools/run-inline-task-branch-parity.sh'
       - '.github/workflows/inline-task-net-parity.yml'
   workflow_dispatch:
 permissions:
@@ -47,6 +48,7 @@ jobs:
           github-token: ${{ github.token }}
           cache: maven
       - name: Build real compiler
+        id: compiler
         env:
           MODE: ${{ matrix.mode }}
         run: |
@@ -71,11 +73,22 @@ jobs:
           grep -Fx 'INLINE_TASK_EARLY_CONDITIONAL_JAVA_PASS 1/1' target/inline-task-net-parity.log
           grep -Fx 'INLINE_TASK_MULTI_CONDITIONAL_JAVA_PASS 1/1' target/inline-task-net-parity.log
           grep -Fx 'INLINE_TASK_SHORTCIRCUIT_JAVA_PASS 1/1' target/inline-task-net-parity.log
+      - name: Check and execute exact branch-writeback fixtures
+        if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          bash tools/run-inline-task-branch-parity.sh "$MODE" | tee target/inline-task-branch-parity.log
+          grep -Fx 'INLINE_TASK_BRANCH_WRITEBACK_JAVA 4/4' target/inline-task-branch-parity.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: inline-task-net-parity-${{ matrix.runner }}-${{ matrix.mode }}
-          path: target/inline-task-net-parity.log
+          path: |
+            target/inline-task-net-parity.log
+            target/inline-task-branch-parity.log
           if-no-files-found: warn
 
   trace-entropy:
