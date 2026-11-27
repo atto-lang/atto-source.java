@@ -17,9 +17,23 @@ public final class ScalarStateContainer implements AutoCloseable {
     private long value;
     private boolean closed;
 
+    private final Object declarationOwner;
+
     public ScalarStateContainer(long initialValue, int maxReaders) {
+        this(initialValue, maxReaders, null);
+    }
+
+    /** Trusted compiler/VM construction; never expose owner objects to guests. */
+    public ScalarStateContainer(long initialValue, int maxReaders, Object declarationOwner) {
         gate = new StateContainerAccessGate(maxReaders);
         value = initialValue;
+        this.declarationOwner = declarationOwner;
+    }
+
+    /** Identity, not equals(): separate compilation plans are not interchangeable. */
+    public void requireDeclarationOwner(Object expected) {
+        if (expected == null || declarationOwner != expected)
+            throw new IllegalArgumentException("foreign or unbound protected state declaration");
     }
 
     public OptionalLong tryRead() {
