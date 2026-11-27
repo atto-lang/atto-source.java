@@ -7,14 +7,14 @@ pub routine main(): void {
   channel.close<Array<int>>(ch);
   val Array<int> original = [5, 6];
   val TryWriteResult<Array<int>> outcome =
-      channel.try_send<Array<int>>(ch, rt take original);
+      channel.try_send<Array<int>>(ch, take! original);
   do match outcome over
-    on Accepted -> { stdio.stdout.write("unexpected-accepted"); }
-    on Full(rejected) -> { stdio.stdout.write("unexpected-full"); }
+    on Accepted -> { stdio.out.write("unexpected-accepted"); }
+    on Full(rejected) -> { stdio.out.write("unexpected-full"); }
     on Closed(rejected) -> {
-      stdio.stdout.write("closed:");
-      stdio.stdout.write(rejected[0]);
-      stdio.stdout.write(rejected[1]);
+      stdio.out.write("closed:");
+      stdio.out.write(rejected[0]);
+      stdio.out.write(rejected[1]);
     }
   end
   return;

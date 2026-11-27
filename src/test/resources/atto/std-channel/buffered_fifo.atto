@@ -5,11 +5,11 @@ pub async routine main(): void {
   val Channel<int> ch = channel.bounded<int>(2);
   await channel.send<int>(ch, 10);
   await channel.send<int>(ch, 20);
-  stdio.stdout.write(await channel.receive<int>(ch));
-  stdio.stdout.write(await channel.receive<int>(ch));
+  stdio.out.write(await channel.receive<int>(ch));
+  stdio.out.write(await channel.receive<int>(ch));
   channel.close<int>(ch);
   if channel.is_closed<int>(ch); do
-    stdio.stdout.write("C");
+    stdio.out.write("C");
   fi
   return;
 }

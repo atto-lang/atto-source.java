@@ -3,6 +3,6 @@ import module channel from "std/channel";
 
 pub routine main(): void {
   val Channel<int> ch = channel.bounded<int>(-1);
-  stdio.stdout.write("unexpected");
+  stdio.out.write("unexpected");
   return;
 }
