@@ -7892,6 +7892,13 @@ public final class Parser {
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
+            // Grouped spawn options bind to spawn, not immutable with-update.
+            // Parse the closed grammar, but deny execution until lowering is safe.
+            if (isContextualIdentifier("with") && checkNext(LBRACE)) {
+                Token site = peek();
+                parseGroupedSpawnOptions();
+                throw error(site, "E_SPAWN_OPTIONS_UNSUPPORTED: grouped actor spawn requires typed initialization, resource admission and runtime lowering");
+            }
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
             // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
@@ -8451,6 +8458,65 @@ public final class Parser {
             args.add(parseExpression());
         } while (match(COMMA));
         return List.copyOf(args);
+    }
+
+    // Closed syntax-only shape: cannot enter executable Ast.Expr visitors.
+    private GroupedSpawnOptions<Ast.Expr> parseGroupedSpawnOptions() {
+        advance();
+        consume(LBRACE, "expected '{' after spawn with");
+        List<GroupedSpawnOptions.Group<Ast.Expr>> sections = new ArrayList<>();
+        var seenSections = java.util.EnumSet.noneOf(GroupedSpawnOptions.Section.class);
+        while (!check(RBRACE) && !check(EOF)) {
+            Token section = consume(IDENT, "expected spawn option section");
+            var kind = switch (section.lexeme()) {
+                case "schedule" -> GroupedSpawnOptions.Section.SCHEDULE;
+                case "resources" -> GroupedSpawnOptions.Section.RESOURCES;
+                case "init" -> GroupedSpawnOptions.Section.INIT;
+                default -> throw error(section, "E_SPAWN_OPTION_SECTION: unknown section " + section.lexeme());
+            };
+            if (!seenSections.add(kind))
+                throw error(section, "E_SPAWN_OPTION_DUPLICATE: duplicate section " + section.lexeme());
+            consume(LBRACE, "expected '{' after spawn option section");
+            List<GroupedSpawnOptions.Entry<Ast.Expr>> entries = new ArrayList<>();
+            java.util.Set<String> seenKeys = new java.util.HashSet<>();
+            while (!check(RBRACE) && !check(EOF)) {
+                if (entries.size() >= 256)
+                    throw error(peek(), "E_SPAWN_OPTION_LIMIT: at most 256 entries per section in this parser profile");
+                Token key = consume(IDENT, "expected spawn option key");
+                String field = key.lexeme();
+                if (!seenKeys.add(field))
+                    throw error(key, "E_SPAWN_OPTION_DUPLICATE: duplicate key " + field);
+                GroupedSpawnOptions.ScheduleKey scheduleKey = null;
+                GroupedSpawnOptions.ResourceKey resourceKey = null;
+                switch (kind) {
+                    case SCHEDULE -> scheduleKey = switch (field) {
+                        case "max_parallelism" -> GroupedSpawnOptions.ScheduleKey.MAX_PARALLELISM;
+                        case "affinity" -> GroupedSpawnOptions.ScheduleKey.AFFINITY;
+                        case "pool" -> GroupedSpawnOptions.ScheduleKey.POOL;
+                        default -> throw error(key, "E_SPAWN_OPTION_KEY: unknown schedule key " + field);
+                    };
+                    case RESOURCES -> resourceKey = switch (field) {
+                        case "heap_size" -> GroupedSpawnOptions.ResourceKey.HEAP_SIZE;
+                        case "stack_size" -> GroupedSpawnOptions.ResourceKey.STACK_SIZE;
+                        case "mailbox_capacity" -> GroupedSpawnOptions.ResourceKey.MAILBOX_CAPACITY;
+                        default -> throw error(key, "E_SPAWN_OPTION_KEY: unknown resources key " + field);
+                    };
+                    case INIT -> { }
+                }
+                consume(EQUAL, "expected '=' after spawn option key");
+                Ast.Expr value = parseExpression();
+                entries.add(switch (kind) {
+                    case SCHEDULE -> new GroupedSpawnOptions.ScheduleEntry<>(scheduleKey, value);
+                    case RESOURCES -> new GroupedSpawnOptions.ResourceEntry<>(resourceKey, value);
+                    case INIT -> new GroupedSpawnOptions.InitEntry<>(field, value);
+                });
+                consume(SEMICOLON, "expected ';' after spawn option value");
+            }
+            consume(RBRACE, "expected '}' after spawn option entries");
+            sections.add(new GroupedSpawnOptions.Group<>(kind, entries));
+        }
+        consume(RBRACE, "expected '}' after grouped spawn options");
+        return new GroupedSpawnOptions<>(sections);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
