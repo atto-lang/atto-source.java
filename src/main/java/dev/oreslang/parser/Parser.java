@@ -8302,7 +8302,9 @@ public final class Parser {
                     }
                     // Retain existing colon spelling for compatibility.
                     if (match(EQUAL)) {
-                        if (fieldToken.type() != IDENT)
+                        if (canonicalAttoSource && fieldToken.type() == STRING)
+                            name = checkedQuotedRecordLabel(fieldToken);
+                        else if (fieldToken.type() != IDENT)
                             throw error(fieldToken, "Record.of equals field must be a parameter identifier");
                     } else consume(COLON, "Record.of requires '=' or legacy ':' after a field name");
                 }
@@ -8628,9 +8630,11 @@ public final class Parser {
                 args.add(new Ast.SpreadExpr(parseExpression()));
                 continue;
             }
-            if (check(IDENT) && (checkNext(COLON) || (canonicalAttoSource && checkNext(EQUAL)))) {
+            if ((check(IDENT) && (checkNext(COLON) || (canonicalAttoSource && checkNext(EQUAL))))
+                    || (canonicalAttoSource && check(STRING) && checkNext(EQUAL))) {
                 namedStarted = true;
-                String name = advance().lexeme();
+                Token label = advance();
+                String name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
                 advance(); // ':' or '=' in canonical Atto
                 if (!seenLabels.add(name)) {
                     throw error(previous(), "duplicate named argument '" + name + "'");
@@ -8641,16 +8645,7 @@ public final class Parser {
             if (namedStarted) {
                 throw error(peek(), "positional arguments cannot follow named arguments");
             }
-            if (canonicalAttoSource && check(STRING) && checkNext(EQUAL)) {
-                Token label = advance();
-                String name = checkedQuotedRecordLabel(label);
-                consume(EQUAL, "expected '=' after quoted Record field");
-                Ast.Expr value = parseRecordFieldValue();
-                args.add(new Ast.ObjectExpr(List.of(Ast.ObjectField.named(name, value)),
-                        Ast.ObjectKind.RECORD, List.of()));
-            } else {
-                args.add(parseExpression());
-            }
+            args.add(parseExpression());
         } while (match(COMMA));
         return List.copyOf(args);
     }
