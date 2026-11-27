@@ -134,10 +134,53 @@ public final class GuestClassSlots {
     public static final class ShallowSnapshot implements AutoCloseable {
         private final GuestClassSlots copy;
         private final GraphLease lease;
+        private final GuestClassSlots source;
+        private final IdentityHashMap<GuestClassSlots, Boolean> retained;
+        private final int maxNodes;
+        private final int maxEdges;
         private boolean closed;
-        private ShallowSnapshot(GuestClassSlots copy, GraphLease lease) {
+        private ShallowSnapshot(GuestClassSlots source, GuestClassSlots copy,
+                GraphLease lease, int maxNodes, int maxEdges) {
+            this.source = source;
             this.copy = copy;
             this.lease = lease;
+            this.maxNodes = maxNodes;
+            this.maxEdges = maxEdges;
+            retained = new IdentityHashMap<>();
+            for (GuestClassSlots store : lease.protectedStores) retained.put(store, Boolean.TRUE);
+        }
+
+        /** Reject known unsafe replacement graphs before any slot write.
+         * Existing externally leased nodes cannot be imported unless this
+         * snapshot independently retains them. Uniqueness of other nodes and
+         * lifetime of raw host references remain caller proof obligations.
+         * The domain monitor must be held throughout traversal and publication.
+         */
+        private void validateReplacement(GuestClassSlots child) {
+            var seen = new IdentityHashMap<GuestClassSlots, Boolean>();
+            var pending = new ArrayDeque<GuestClassSlots>();
+            pending.add(child);
+            int edges = 0;
+            while (!pending.isEmpty()) {
+                GuestClassSlots store = pending.removeFirst();
+                if (seen.put(store, Boolean.TRUE) != null) continue;
+                if (seen.size() > maxNodes) {
+                    throw new IllegalArgumentException("E_COPY_BUDGET: replacement graph node limit");
+                }
+                if (store.domain != copy.domain) {
+                    throw new IllegalArgumentException("E_COPY_DOMAIN: foreign replacement store");
+                }
+                if (store.initializing) {
+                    throw new IllegalStateException("E_COPY_LAYOUT: unpublished replacement store");
+                }
+                if (store == source || store == copy) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: replacement reaches a snapshot root");
+                }
+                if (store.readOnlyLoans != 0 && !retained.containsKey(store)) {
+                    throw new IllegalArgumentException("E_COPY_SHALLOW_ALIAS: replacement depends on an external loan");
+                }
+                edges = enqueueChildren(store, pending, edges, maxEdges);
+            }
         }
         private void requireOpen() {
             if (closed) throw stale();
@@ -155,12 +198,7 @@ public final class GuestClassSlots {
                 // or opaque replacement root. The caller still proves transitive
                 // ownership and lifetime; this check cannot mint write authority.
                 if (value instanceof GuestClassSlots child) {
-                    if (child.domain != copy.domain) {
-                        throw new IllegalArgumentException("E_COPY_DOMAIN: foreign replacement store");
-                    }
-                    if (child.initializing) {
-                        throw new IllegalStateException("E_COPY_LAYOUT: unpublished replacement store");
-                    }
+                    validateReplacement(child);
                 } else if (value != null && !CopyScalarAdmission.isImmutableScalar(value)) {
                     throw new IllegalArgumentException("E_COPY_UNPROVEN: unsupported replacement payload");
                 }
@@ -201,7 +239,7 @@ public final class GuestClassSlots {
             }
             GuestClassSlots copy = new GuestClassSlots(domain, slots);
             copy.finishInitialization();
-            ShallowSnapshot result = new ShallowSnapshot(copy, lease);
+            ShallowSnapshot result = new ShallowSnapshot(this, copy, lease, maxNodes, maxEdges);
             activate(lease);
             return result;
         }
