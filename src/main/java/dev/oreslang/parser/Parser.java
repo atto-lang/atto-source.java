@@ -76,6 +76,10 @@ public final class Parser {
             explicitlyPrivate.add(declaration);
         return declaration;
     }
+    // Private, analysis-only sidecar. Never returned as an executable Program.
+    private boolean actorInitDeclarationPreview;
+    private final java.util.IdentityHashMap<Ast.ClassDecl,List<ActorInitField>> initSchemas =
+            new java.util.IdentityHashMap<>();
     private final List<ForwardType> rootForwards = new ArrayList<>();
     private List<ForwardType> moduleForwards;
     public Parser(List<Token> tokens) {
@@ -2023,6 +2027,7 @@ public final class Parser {
         // allocation and critical loan lowering are proven.
         List<Ast.ProtectedStateField> sealedStateFields = new ArrayList<>();
         boolean declaredSealedState = false;
+        List<ActorInitField> startupSchema = null;
         int requestConcurrency = 1;
         int messageConcurrency = 1;
         boolean declaredRequestConcurrency = false;
@@ -2041,8 +2046,12 @@ public final class Parser {
                         || mods.shared || mods.untrusted || mods.structural
                         || mods.nonLexical || mods.trapped)
                     throw error(site, "E_SPAWN_INIT_SCHEMA: init schema cannot have modifiers or annotations");
-                parseActorInitSchema();
-                throw error(site, "E_SPAWN_INIT_SCHEMA_UNSUPPORTED: compiler-authenticated startup schema lowering is not implemented");
+                if (startupSchema != null)
+                    throw error(site, "E_SPAWN_INIT_SCHEMA: duplicate init schema");
+                startupSchema = parseActorInitSchema();
+                if (!actorInitDeclarationPreview)
+                    throw error(site, "E_SPAWN_INIT_SCHEMA_UNSUPPORTED: compiler-authenticated startup schema lowering is not implemented");
+                continue;
             }
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
                 if (declaredSealedState)
@@ -2289,11 +2298,14 @@ public final class Parser {
         }
         if (declaredSealedState && !fields.isEmpty())
             throw error(previous(), "sealed actor state cannot mix ordinary actor fields");
-        return new Ast.ClassDecl(
+        Ast.ClassDecl declaration = new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
                         prefix.serial()),
                 sealedStateFields, new Ast.ActorMessageContract(receives, sends));
+        if (actorInitDeclarationPreview && startupSchema != null)
+            initSchemas.put(declaration, startupSchema);
+        return declaration;
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -8500,6 +8512,51 @@ public final class Parser {
         p.match(SEMICOLON);
         p.consume(EOF, "expected end of grouped spawn preview");
         return new GroupedSpawnSyntax(actor, args, sections, awaited);
+    }
+
+    /**
+     * Resolve a complete same-file actor declaration for the analysis-only
+     * grouped spawn preview. No Program, executable declaration or runtime
+     * capability escapes this method. Imports/generics need real typed HIR.
+     */
+    public static GroupedSpawnPlan.Preview checkDeclaredGroupedSpawnPreview(
+            String declarations, String spawnSource, GroupedSpawnPlan.Ceiling ceiling) {
+        Parser p = new Parser(new Lexer(declarations).scan());
+        p.actorInitDeclarationPreview = true;
+        Ast.Program program = p.parseProgram();
+        GroupedSpawnSyntax syntax = parseGroupedSpawnPreview(spawnSource);
+        Ast.TypeRef type = syntax.actorType();
+        if (!type.arguments().isEmpty() || type.inferArguments() || type.isBorrow()
+                || !program.imports().isEmpty())
+            throw new IllegalArgumentException("E_SPAWN_NOMINAL_UNSUPPORTED");
+        Ast.ClassDecl selected = null;
+        for (var module : program.modules()) {
+            for (var decl : module.declarations()) {
+                if (!(decl instanceof Ast.ClassDecl actor)) continue;
+                String qualified = module.name() + "." + actor.name();
+                if (!type.name().equals(actor.name()) && !type.name().equals(qualified)) continue;
+                if (selected != null)
+                    throw new IllegalArgumentException("E_SPAWN_NOMINAL_AMBIGUOUS");
+                selected = actor;
+            }
+        }
+        if (selected == null || selected.actorKind() == Ast.ActorKind.NONE
+                || !selected.genericParameters().isEmpty())
+            throw new IllegalArgumentException("E_SPAWN_NOMINAL_ACTOR");
+        List<ActorInitField> schema = p.initSchemas.get(selected);
+        // A transform replacing a declaration object must not silently erase
+        // its startup metadata. Reject all preview programs with lost identity.
+        var live = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<Ast.ClassDecl,Boolean>());
+        for (var module : program.modules())
+            for (var decl : module.declarations())
+                if (decl instanceof Ast.ClassDecl actor) live.add(actor);
+        if (!live.containsAll(p.initSchemas.keySet()))
+            throw new IllegalArgumentException("E_SPAWN_NOMINAL_UNSUPPORTED");
+        var narrowed = new GroupedSpawnPlan.Ceiling(ceiling.heap(), ceiling.stack(),
+                ceiling.messages(), ceiling.parallelism(),
+                ceiling.serial() || selected.actorConcurrency().serialReceive());
+        return GroupedSpawnPlan.check(syntax, schema == null ? List.of() : schema, narrowed);
     }
 
     /** Analysis-only scalar init schema fragment. Not an admitted declaration. */
