@@ -3901,6 +3901,13 @@ public final class TypeChecker {
         return true;
     }
 
+    private static String calleeLabel(Ast.Expr callee) {
+        if (callee instanceof Ast.NameExpr name) return "'" + name.name() + "'";
+        if (callee instanceof Ast.MemberExpr member) return "'" + calleeLabel(member.receiver()).replace("'", "")
+                + "." + member.member() + "'";
+        return "function value";
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.NamedArgExpr) {
             throw new IllegalArgumentException(
@@ -6127,7 +6134,26 @@ public final class TypeChecker {
                     expandFixedCallArguments(
                             call.arguments(), env, generics, self,
                             "function value call");
-            if (fn.parameters().size() != expanded.size()) throw new IllegalArgumentException("call arity mismatch");
+            // http.request(method, url, headers[, body]): the runtime accepts an
+            // optional bounded String or Bytes body as a fourth argument.
+            if (fn.parameters().size() == 3 && expanded.size() == 4
+                    && call.callee() instanceof Ast.MemberExpr httpCall
+                    && httpCall.member().equals("request")
+                    && httpCall.receiver() instanceof Ast.NameExpr httpName
+                    && httpName.name().equals("http") && env.lookup("http") == null) {
+                Type body = expandedCallArgumentType(expanded.get(3), Unknown.INSTANCE, env, generics, self);
+                Type expectedBody = body instanceof Named bytes && bytes.name().equals("Bytes")
+                        ? body : Primitive.STRING;
+                List<Type> withBody = new ArrayList<>(fn.parameters());
+                withBody.add(expectedBody);
+                List<Boolean> mutability = new ArrayList<>(fn.mutableParameters());
+                mutability.add(false);
+                fn = new Function(withBody, mutability, fn.async(), fn.result(), fn.effects());
+            }
+            if (fn.parameters().size() != expanded.size()) {
+                throw new IllegalArgumentException("call arity mismatch: " + calleeLabel(call.callee())
+                        + " takes " + fn.parameters().size() + " argument(s), got " + expanded.size());
+            }
             for (int i = 0; i < fn.parameters().size(); i++) {
                 ExpandedCallArgument argument = expanded.get(i);
                 if (argument.expression() != null) {
