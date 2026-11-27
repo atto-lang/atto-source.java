@@ -26,6 +26,7 @@ public final class ActorReceiveAdmission implements AutoCloseable {
     private final Set<Permit> active = Collections.newSetFromMap(new IdentityHashMap<>());
     private long nextTicket;
     private int peak;
+    private boolean fenced;
     private boolean closed;
 
     private ActorReceiveAdmission(long incarnation, int maximum, boolean serialReceive) {
@@ -59,7 +60,7 @@ public final class ActorReceiveAdmission implements AutoCloseable {
     public synchronized Permit tryEnter(long actorIncarnation) {
         if (actorIncarnation != incarnation)
             throw new SecurityException("stale or foreign actor incarnation");
-        if (closed) throw new IllegalStateException("actor receive admission closed");
+        if (fenced || closed) throw new IllegalStateException("actor receive admission closed");
         if (active.size() >= maximum) return null;
         if (nextTicket == Long.MAX_VALUE)
             throw new IllegalStateException("receive admission ticket sequence exhausted");
@@ -94,12 +95,16 @@ public final class ActorReceiveAdmission implements AutoCloseable {
         }
     }
 
+    /** Fences new DATA admission without retiring existing physical work. */
+    public synchronized void fence() { fenced = true; }
+
     /**
      * Closing a retired actor fences every old permit. No permit can ever be
      * applied to a different gate/incarnation, even if ticket numbers repeat.
      */
     @Override public synchronized void close() {
         if (closed) return;
+        fenced = true;
         closed = true;
         for (Permit permit : active) permit.retired = true;
         active.clear();

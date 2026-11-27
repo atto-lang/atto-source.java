@@ -1,7 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
-import dev.oreslang.types.TypeChecker;
+import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -10,9 +10,13 @@ import static org.junit.jupiter.api.Assertions.*;
 final class CanonicalSixConditionalMainTest {
     private static void assertResult(String body, int expected) throws Exception {
         String source = "pub fnc main(): int { " + body + " }";
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto(source)));
-        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
-            var value = context.eval(Source.newBuilder(OresLanguage.ID, source, "conditional.atto").build());
+        var checked = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        String name = "conditional.atto";
+        // Explicit canonical source admission; never reparse via the legacy
+        // launcher and never reuse a checked AST across different source bytes.
+        try (var lease = OresLanguage.openPrecheckedProgram(name, source, checked);
+             Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            var value = context.eval(Source.newBuilder(OresLanguage.ID, source, name).build());
             assertTrue(value.fitsInInt(), "expected guest int: " + source);
             assertEquals(expected, value.asInt(), source);
         }
