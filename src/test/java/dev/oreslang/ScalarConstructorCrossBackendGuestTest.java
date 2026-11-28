@@ -23,6 +23,21 @@ final class ScalarConstructorCrossBackendGuestTest {
     }
 
     @Test
+    void deferredFinalCannotBePublishedBeforeRequiredWrites() {
+        for (String constructor : new String[]{
+                "constructor(int x) { return; self.a = x; }",
+                "constructor(int x) { self.a = self.a; }",
+                "constructor(int x) { if true { self.a = x; } fi }",
+                ""}) {
+            String source = "define class Ticket as pub final int a; " + constructor
+                    + " end pub fnc main(): int { return 42; }";
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.parser.Parser.parse(source), constructor);
+            assertTrue(failure.getMessage().contains("E_INIT"), failure::getMessage);
+        }
+    }
+
+    @Test
     void duplicateUnknownAndMissingFinalFieldInitializationRejectBeforeExecution() {
         for (String name : new String[]{"duplicate", "unknown", "missing"}) {
             Path fixture = ROOT.resolve("class-scalar-constructor-field-init-" + name + ".atto");
